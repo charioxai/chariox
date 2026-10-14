@@ -560,7 +560,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     startProviderLogin: (provider, accountProfile, method) =>
       startProviderLogin(client, provider, accountProfile, method),
     runProviderSetupToken: (profile, replace) => runProviderSetupToken(client, profile, replace, {
-      sessionId: sessionState().id,
+      ...(isAttached() ? { sessionId: sessionState().id } : {}),
     }),
     getProviderLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),

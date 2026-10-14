@@ -490,7 +490,7 @@ async fn exercise_post_connect_confirmation(
     )
     .await
     .expect("worker relay should become connected");
-    let task = spawn_pending_managed_slice_activation_confirmation_after_connect(
+    let task = spawn_pending_managed_slice_activation_confirmation_on_connected_socket(
         Arc::clone(&worker_router),
         Arc::clone(&worker_state),
     )

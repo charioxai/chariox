@@ -703,9 +703,9 @@ impl CommandRouter {
             return Err(commit_error);
         }
 
-        // Imported profiles start `unknown`, which admits no new work. Refresh each
-        // as a user's Refresh would, independently, and announce it once settled;
-        // provider status probes are bounded, so every refresh settles.
+        // Imported profiles start `unknown`, which admits no new work. Refresh
+        // native observations independently. Setup-token profiles require an
+        // explicit user Refresh; importing must not start a paid model turn.
         if let crate::managed_context::package::ManagedContextImportedProviderAccounts::Selected {
             accounts,
         } = &receipt.provider_accounts
@@ -716,12 +716,14 @@ impl CommandRouter {
                 let (provider, profile_id) = (account.provider.clone(), account.profile_id.clone());
                 let runtime_state = self.runtime_state.clone();
                 tokio::spawn(async move {
+                    let config = runtime_state.config_snapshot().await;
                     let refreshed = tokio::task::spawn_blocking(move || {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &registry,
                             &owner_user_id,
                             &provider,
                             &profile_id,
+                            &config,
                         )
                         .map_err(|error| (provider, profile_id, error))
                     })

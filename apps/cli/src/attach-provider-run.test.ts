@@ -116,3 +116,23 @@ test("settleAttachProviderRun still surfaces unrelated provider launch failures"
     (error) => error === launchError,
   )
 })
+
+test("attaching an existing agent preserves its explicit account instead of CLI defaults", async () => {
+  let launchedAccount: string | null = null
+  const launchError = new Error("stop before provider execution")
+  await assert.rejects(settleAttachProviderRun(
+    session,
+    { provider: "opencode", model: "default", effort: "" },
+    "default",
+    false,
+    {
+      launchProviderRun: async (_id, _provider, account) => {
+        launchedAccount = account
+        throw launchError
+      },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    },
+  ), (error) => error === launchError)
+  assert.equal(launchedAccount, "codex-secondary")
+})

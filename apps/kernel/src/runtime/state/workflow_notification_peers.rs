@@ -100,13 +100,42 @@ impl KernelRuntimeState {
         self.ensure_notification_home_role()?;
         self.ensure_notification_profile_owner(owner)?;
         let projection = self.owned.notification_inventory_projection.clone();
+        let stale_after_ms = self
+            .owned
+            .config_projection
+            .snapshot()
+            .relay_heartbeat_ms
+            .saturating_mul(2)
+            .max(1_000);
+        // Reuse the same heartbeat-bounded presence used by kernel attachment.
+        // Repeating discovery for every picker can exhaust the read deadline
+        // even though the shared projection already has a live, authorized peer.
+        if projection.is_fresh(crate::session::unix_epoch_ms(), stale_after_ms) {
+            return self
+                .refresh_notification_sources_from_inventory(owner, true)
+                .await;
+        }
         // Refresh uses the same Cloud inventory credential as the waiting room.
-        // No workflow data is sent to Cloud. A picker failure retains cache offline.
+        // No workflow data is sent to Cloud. Directory failure preserves source
+        // identities; only a current peer reply establishes remote availability.
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),
             projection.clone(),
         );
-        let fresh = matches!(tokio::time::timeout(TIMEOUT, refresh).await, Ok(Ok(())));
+        let refresh_result = tokio::time::timeout(TIMEOUT, refresh).await;
+        let fresh = matches!(refresh_result, Ok(Ok(())));
+        if !fresh {
+            crate::logging::debug_with_fields(
+                "daemon.workflow_notifications",
+                "notification source discovery unavailable",
+                serde_json::json!({
+                    "timeout": refresh_result.is_err(),
+                }),
+            );
+            // A directory timeout does not prevent a live reply from a
+            // previously authorized, pinned source. Relay admission and the
+            // peer owner check still determine whether it is reachable.
+        }
         self.refresh_notification_sources_from_inventory(owner, fresh)
             .await
     }
@@ -129,59 +158,67 @@ impl KernelRuntimeState {
         }
         // At most four outstanding requests, a bounded 128-kernel picker.
         let deadline = tokio::time::Instant::now() + TIMEOUT;
-        if fresh {
-            for peers in kernels
-                .iter()
-                .filter(|k| k.kernel_id != home)
-                .take(128)
-                .collect::<Vec<_>>()
-                .chunks(4)
-            {
-                if tokio::time::Instant::now() >= deadline {
-                    break;
-                }
-                let mut set = tokio::task::JoinSet::new();
-                for peer in peers {
-                    let runtime = self.clone();
-                    let kernel = peer.kernel_id.clone();
-                    let owner = owner.to_owned();
-                    set.spawn(async move {
-                        let response = tokio::time::timeout_at(
-                            deadline,
-                            runtime.notification_peer(
-                                &owner,
-                                &kernel,
-                                RelayPeerRequest::ListWorkflowNotificationSources {
-                                    protocol_version: VERSION,
-                                },
-                            ),
-                        )
-                        .await
-                        .ok()
-                        .and_then(Result::ok);
-                        (kernel, response)
-                    });
-                }
-                while let Some(Ok((kernel, response))) = set.join_next().await {
-                    if let Some(RelayPeerResponse::WorkflowNotificationSources {
-                        protocol_version: VERSION,
-                        sources,
-                    }) = response
-                    {
-                        if sources.len() > 1024
-                            || sources.iter().any(|s| {
-                                s.kernel_id != kernel || s.fields.len() > 14 || s.name.len() > 512
-                            })
-                        {
-                            continue;
-                        }
-                        touched.insert(kernel.clone());
-                        cache.retain(|s| s.kernel_id != kernel);
-                        cache.extend(sources.into_iter().map(|mut s| {
-                            s.available = true;
-                            s
-                        }));
+        let mut candidates = kernels
+            .iter()
+            .filter(|k| k.kernel_id != home && (fresh || touched.contains(&k.kernel_id)))
+            .collect::<Vec<_>>();
+        // An unrelated slow peer must not consume the known-source budget.
+        candidates.sort_by_key(|peer| !touched.contains(&peer.kernel_id));
+        candidates.truncate(128);
+        for peers in candidates.chunks(4) {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            let mut set = tokio::task::JoinSet::new();
+            for peer in peers {
+                let runtime = self.clone();
+                let kernel = peer.kernel_id.clone();
+                let owner = owner.to_owned();
+                set.spawn(async move {
+                    let result = tokio::time::timeout_at(
+                        deadline,
+                        runtime.notification_peer(
+                            &owner,
+                            &kernel,
+                            RelayPeerRequest::ListWorkflowNotificationSources {
+                                protocol_version: VERSION,
+                            },
+                        ),
+                    )
+                    .await;
+                    if !matches!(&result, Ok(Ok(_))) {
+                        crate::logging::debug_with_fields(
+                            "daemon.workflow_notifications",
+                            "notification source peer query unavailable",
+                            serde_json::json!({
+                                "kernel_id": kernel,
+                                "timeout": result.is_err(),
+                            }),
+                        );
                     }
+                    let response = result.ok().and_then(Result::ok);
+                    (kernel, response)
+                });
+            }
+            while let Some(Ok((kernel, response))) = set.join_next().await {
+                if let Some(RelayPeerResponse::WorkflowNotificationSources {
+                    protocol_version: VERSION,
+                    sources,
+                }) = response
+                {
+                    if sources.len() > 1024
+                        || sources.iter().any(|s| {
+                            s.kernel_id != kernel || s.fields.len() > 14 || s.name.len() > 512
+                        })
+                    {
+                        continue;
+                    }
+                    touched.insert(kernel.clone());
+                    cache.retain(|s| s.kernel_id != kernel);
+                    cache.extend(sources.into_iter().map(|mut s| {
+                        s.available = true;
+                        s
+                    }));
                 }
             }
         }
@@ -823,14 +860,41 @@ mod tests {
         target_runtime
             .owned
             .notification_inventory_projection
-            .update(vec![], vec![presence]);
+            .update(vec![], vec![presence.clone()]);
         target_runtime
             .refresh_notification_sources_from_inventory("local", false)
             .await
             .unwrap();
-        assert!(!target.store.notification_cached_sources("local").unwrap()[0].available);
+        assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
         target_runtime
-            .refresh_notification_sources_from_inventory("local", true)
+            .refresh_notification_sources("local")
+            .await
+            .unwrap();
+        assert!(target.store.notification_cached_sources("local").unwrap()[0].available);
+        // A failed directory read preserves source identities, but unpinned
+        // availability must be verified before attachment can resume.
+        target_runtime
+            .owned
+            .notification_inventory_projection
+            .clear();
+        let mut unavailable = tc.clone();
+        unavailable.relay_url = Some("ws://127.0.0.1:1".into());
+        target_runtime.owned.config_projection.update(unavailable);
+        let failed_refresh = target_runtime.refresh_notification_sources("local").await;
+        target_runtime.owned.config_projection.update(tc.clone());
+        assert!(failed_refresh.is_ok());
+        let retained = target.store.notification_cached_sources("local").unwrap();
+        assert_eq!(retained[0].source_id, source_record.source_id);
+        assert!(
+            !retained[0].available,
+            "unpinned availability must not be assumed"
+        );
+        target_runtime
+            .owned
+            .notification_inventory_projection
+            .update(vec![], vec![presence]);
+        target_runtime
+            .refresh_notification_sources_from_inventory("local", false)
             .await
             .unwrap();
         assert!(target.store.notification_cached_sources("local").unwrap()[0].available);

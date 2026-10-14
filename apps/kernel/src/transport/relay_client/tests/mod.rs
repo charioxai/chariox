@@ -12,3 +12,5 @@ mod subscriptions;
 mod token_rollover;
 mod support;
 mod worker_steer_receipt_restart;
+
+mod activation_confirmation;
