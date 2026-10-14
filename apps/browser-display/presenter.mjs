@@ -1,3 +1,4 @@
+import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -61,7 +62,7 @@ export class BrowserDisplayPresenter {
   getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
   validate(frame,sequence) {
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= sequence) return false;
-    if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !((frame.css_width===1280 && frame.css_height===800) || (frame.css_width===1920 && frame.css_height===1080 && frame.device_scale_factor===1)) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
+    if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !displayGeometryMatches(this.binding,frame) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
     return true;
   }
   prepareVideo(frame) {
@@ -184,7 +185,7 @@ export class BrowserDisplayPresenter {
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
-    return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, input };
+    return { op: 'display_input', tab_id: this.binding.tab_id, generation: this.binding.generation, document_id: this.documentId, ...regionInputBinding(this.binding), input };
   }
   close({preserveFrame=false}={}) { this.videoSink.close({preserveFrame}); this.stripeDecoder?.close();this.prediction?.close();for(const key of ['back','scratch'])if(this[key]){this[key].width=1;this[key].height=1;this[key]=null;} this.workerDecoder?.close();this.workerDecoder=null;this.decoder?.close(); this.decoder=null; this.closed = true; this.documentId = null; if(!preserveFrame){this.canvas.width = 1; this.canvas.height = 1;} }
 }
@@ -195,6 +196,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // a stream so an old JSON-only adapter cannot receive unusable pixels.
   if (!Number.isSafeInteger(transport.kernelProtocolVersion) || transport.kernelProtocolVersion < minimumProtocolVersion || transport.displayEventEncoding !== 'CXD1')
     throw Error('MP-08/MP-10: protocol466 binary display adapter required');
+  if (options.target && transport.kernelProtocolVersion < regionMinimumProtocolVersion)
+    throw Error('MP-08/MP-10: protocol519 region display adapter required');
   const request = async command => {
     const reply = await transport.request({ KernelBrowser: { command } });
     return reply.KernelBrowser.result;
@@ -211,7 +214,11 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
   // The reply's generation wins (protocol 491 replies carry it).
-  const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
+  const binding = { ...tab, ...await request({ op: 'display_subscribe', ...tab, ...(options.target ? {target:options.target} : {}), codecs: options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs, bitrate: options.bitrate ?? 2_000_000, device_scale_factor: options.deviceScaleFactor ?? 1 }) };
+  if (options.target && !regionBindingCurrent(binding)) {
+    await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
+    throw Error('MP-08/MP-11: invalid region negotiation');
+  }
   const onTiming = options.onTiming ?? (() => {});
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
