@@ -10,22 +10,12 @@ const hiddenInstructionBlockPattern = new RegExp(
   "g",
 )
 
-const workflowInstructionStartPattern = /<workflow-level-prompt>|<node-level-prompt>|<workflow-runtime-instructions>|<system-node-level-prompt>|Workflow-level prompt:\n/g
+const workflowInstructionBlockPattern = /(?:\r?\n|\n)?(?:<workflow-level-prompt>|<node-level-prompt>|<workflow-runtime-instructions>|<system-node-level-prompt>|Workflow-level prompt:\n)[\s\S]*$/g
 
 export function redactHiddenInstructions(value: string): string {
-  const visible = value.replace(hiddenInstructionBlockPattern, "")
-  for (const match of visible.matchAll(workflowInstructionStartPattern)) {
-    const index = match.index
-    // A code span containing only a marker is a public literal, not context.
-    // Spans that also contain a body remain subject to the normal redaction.
-    const before = visible.slice(0, index).match(/`+$/)?.[0]
-    const after = visible.slice(index + match[0].length).match(/^`+/)?.[0]
-    if (match[0].startsWith("<") && before && before === after) continue
-    const start = visible.slice(0, index).endsWith("\r\n") ? index - 2
-      : visible[index - 1] === "\n" ? index - 1 : index
-    return visible.slice(0, start)
-  }
-  return visible
+  return value
+    .replace(hiddenInstructionBlockPattern, "")
+    .replace(workflowInstructionBlockPattern, "")
 }
 
 export function redactHiddenInstructionsFromJson(value: unknown): unknown {

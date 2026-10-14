@@ -7,16 +7,6 @@ import {
   redactHiddenInstructionsFromJson,
 } from "./hidden-instructions.js"
 
-test("MP-08 / MP-10 / MP-11: a literal marker mention does not erase the public answer", () => {
-  for (const marker of ["<workflow-runtime-instructions>", "<workflow-level-prompt>", "<node-level-prompt>", "<system-node-level-prompt>"]) {
-    const publicText = `The source contains \`${marker}\`; retain this assessment and final reference.`
-    assert.equal(redactHiddenInstructions(publicText), publicText)
-    assert.equal(redactHiddenInstructions(`${publicText}\n${marker}private context`), publicText)
-    assert.equal(redactHiddenInstructions(`public \`${marker}private context\``), "public `")
-    assert.equal(redactHiddenInstructions(`public ${marker}private context`), "public ")
-  }
-})
-
 test("redacts tagged workflow prompt components after the visible endpoint prompt", () => {
   const prompt = [
     "<endpoint-prompt>",

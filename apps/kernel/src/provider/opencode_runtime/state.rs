@@ -51,8 +51,6 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
-    pub(super) active_continuation_user_ids: BTreeSet<String>,
-    pub(super) compaction_summary_message_ids: BTreeSet<String>,
     pub(in crate::provider) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     active_prompt_submitted_at: Option<Instant>,
     pub(super) session_errors_require_prompt_match: bool,
@@ -82,8 +80,6 @@ impl OpenCodeRuntimeState {
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
-            active_continuation_user_ids: BTreeSet::new(),
-            compaction_summary_message_ids: BTreeSet::new(),
             active_prompt_submitted_at: None,
             session_errors_require_prompt_match: false,
             unmatched_session_error: None,
@@ -105,7 +101,6 @@ impl OpenCodeRuntimeState {
     }
 
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
-        self.active_continuation_user_ids.clear();
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = Some(Instant::now());
@@ -175,8 +170,6 @@ impl OpenCodeRuntimeState {
         self.preexisting_message_ids.clear();
         self.completed_assistant_message_ids.clear();
         self.active_user_message_id = None;
-        self.active_continuation_user_ids.clear();
-        self.compaction_summary_message_ids.clear();
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = None;
         self.unmatched_session_error = None;
@@ -186,25 +179,15 @@ impl OpenCodeRuntimeState {
     }
 
     pub(super) fn message_belongs_to_active_prompt(&self, message_id: &str) -> bool {
-        if self.active_user_message_id.is_none() {
+        let Some(active_user_message_id) = self.active_user_message_id.as_deref() else {
             return false;
-        }
-        if self.preexisting_message_ids.contains(message_id)
-            || self.compaction_summary_message_ids.contains(message_id)
-        {
+        };
+        if self.preexisting_message_ids.contains(message_id) {
             return false;
         }
         self.message_parent_ids
             .get(message_id)
             .and_then(|parent_id| parent_id.as_deref())
-            .is_none_or(|parent_id| self.is_active_prompt_parent(parent_id))
-    }
-
-    pub(super) fn is_active_prompt_parent(&self, parent_id: &str) -> bool {
-        self.active_user_message_id
-            .as_deref()
-            .is_some_and(|active| {
-                parent_id == active || self.active_continuation_user_ids.contains(parent_id)
-            })
+            .is_none_or(|parent_id| parent_id == active_user_message_id)
     }
 }

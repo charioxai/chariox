@@ -1,46 +1,6 @@
 use super::*;
 
 #[test]
-fn opencode_observation_keeps_real_users_but_not_internal_compaction_turns() {
-    let synthetic = serde_json::json!({
-        "info": { "id": "continue-user", "role": "user" },
-        "parts": [{ "id": "continue-part", "type": "text", "synthetic": true,
-                    "text": "Continue if you have next steps." }]
-    });
-    assert!(opencode_message_observed_turns(&synthetic).is_empty());
-    let mixed = serde_json::json!({
-        "info": { "id": "real-user", "role": "user", "summary": { "title": "Continue" } },
-        "parts": [{ "type": "text", "text": "Continue if you have next steps." },
-                  { "type": "text", "synthetic": true, "text": "generated context" }]
-    });
-    let turns = opencode_message_observed_turns(&mixed);
-    assert_eq!(turns.len(), 1);
-    assert_eq!(turns[0].text, "Continue if you have next steps.");
-    let summary = serde_json::json!({
-        "info": { "id": "summary", "role": "assistant", "summary": true,
-                  "finish": "stop", "time": { "completed": 123 } },
-        "parts": [{ "type": "text", "text": "Internal summary" }]
-    });
-    assert!(opencode_message_observed_turns(&summary).is_empty());
-}
-
-#[test]
-fn opencode_sqlite_observation_omits_summary_completion_and_synthetic_user_parts() {
-    let temp = temp_dir("opencode-internal-compaction-observation");
-    let db = temp.path().join("opencode.db");
-    seed_opencode_sqlite(&db);
-    let connection = Connection::open(&db).unwrap();
-    connection.execute("update message set data = json_set(data, '$.summary', json('true')) where id = 'msg_assistant'", []).unwrap();
-    let turns = read_opencode_sqlite_observed_turns(temp.path(), "ses_sqlite_1");
-    assert_eq!(turns.len(), 1, "summary text and its completion must stay internal");
-    assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
-    let synthetic = r#"{"type":"text","synthetic":true,"text":"Continue if you have next steps."}"#;
-    assert!(opencode_sqlite_part_observed_turn(Some("user"), "continue", "continue-part", Some("text"), synthetic, None).is_none());
-    let real = r#"{"type":"text","synthetic":false,"text":"Continue if you have next steps."}"#;
-    assert!(opencode_sqlite_part_observed_turn(Some("user"), "real", "real-part", Some("text"), real, None).is_some());
-}
-
-#[test]
 fn reads_opencode_observed_json_turns() {
     let temp = temp_dir("opencode-observed-turns");
     let root = temp.path();

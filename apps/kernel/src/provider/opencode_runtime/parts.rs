@@ -79,17 +79,6 @@ pub(super) fn handle_message_part_updated(
     if !state.message_roles.contains_key(&part.message_id) {
         refresh_opencode_message_metadata(state, provider_run_id)?;
     }
-    // Native compaction introduces a synthetic user before its assistant
-    // starts. Correlate it from the full native snapshot before streaming.
-    if part.synthetic
-        && state
-            .message_roles
-            .get(&part.message_id)
-            .is_some_and(|role| role == "user")
-        && state.active_user_message_id.is_some()
-    {
-        refresh_opencode_message_metadata(state, provider_run_id)?;
-    }
     if !state.message_belongs_to_active_prompt(&part.message_id) {
         return Ok(());
     }

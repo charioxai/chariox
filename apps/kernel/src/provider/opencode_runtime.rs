@@ -1,8 +1,5 @@
 #[cfg(test)]
 mod cancellation_tests;
-mod compaction;
-#[cfg(test)]
-mod compaction_tests;
 mod drain;
 mod parts;
 mod permission;
@@ -77,8 +74,6 @@ mod tests {
     fn renders_structured_tool_update_with_input_and_output() {
         let payload = render_tool_transcript_update(
             &OpenCodePart {
-                synthetic: false,
-                auto: false,
                 id: "part-1".to_string(),
                 session_id: "session-1".to_string(),
                 message_id: "message-1".to_string(),
@@ -135,8 +130,6 @@ mod tests {
         };
         let payload = render_tool_transcript_update(
             &OpenCodePart {
-                synthetic: false,
-                auto: false,
                 id: "part-home".to_string(),
                 session_id: "session-1".to_string(),
                 message_id: "message-1".to_string(),
@@ -189,8 +182,6 @@ mod tests {
                 .expect("message info should deserialize"),
                 parts: vec![
                     OpenCodePart {
-                        synthetic: false,
-                        auto: false,
                         id: "part-1".to_string(),
                         session_id: "session-1".to_string(),
                         message_id: "message-1".to_string(),
@@ -201,8 +192,6 @@ mod tests {
                         time: None,
                     },
                     OpenCodePart {
-                        synthetic: false,
-                        auto: false,
                         id: "part-2".to_string(),
                         session_id: "session-1".to_string(),
                         message_id: "message-1".to_string(),
@@ -213,8 +202,6 @@ mod tests {
                         time: None,
                     },
                     OpenCodePart {
-                        synthetic: false,
-                        auto: false,
                         id: "part-3".to_string(),
                         session_id: "session-1".to_string(),
                         message_id: "message-1".to_string(),
@@ -418,8 +405,6 @@ mod tests {
             "provider-run-1",
             &RemoteExtensionManifest::default(),
             OpenCodePart {
-                synthetic: false,
-                auto: false,
                 id: "part-1".to_string(),
                 session_id: "session-1".to_string(),
                 message_id: "message-1".to_string(),
@@ -451,8 +436,6 @@ mod tests {
             "provider-run-1",
             &RemoteExtensionManifest::default(),
             OpenCodePart {
-                synthetic: false,
-                auto: false,
                 id: "part-1".to_string(),
                 session_id: "session-1".to_string(),
                 message_id: "message-1".to_string(),
@@ -489,7 +472,7 @@ mod tests {
                     "time": { "completed": 1 }
                 }))
                 .expect("message info should deserialize"),
-                parts: vec![OpenCodePart { synthetic: false, auto: false,
+                parts: vec![OpenCodePart {
                     id: "part-1".to_string(),
                     session_id: "session-1".to_string(),
                     message_id: "message-1".to_string(),
@@ -1300,8 +1283,6 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
                 part: Box::new(OpenCodePart {
-                    synthetic: false,
-                    auto: false,
                     id: "text-1".to_string(),
                     session_id: "session-1".to_string(),
                     message_id: "message-1".to_string(),
@@ -1356,8 +1337,6 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
                 part: Box::new(OpenCodePart {
-                    synthetic: false,
-                    auto: false,
                     id: "tool-1".to_string(),
                     session_id: "session-1".to_string(),
                     message_id: "message-1".to_string(),
@@ -1394,8 +1373,6 @@ mod tests {
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessagePartUpdated {
                 part: Box::new(OpenCodePart {
-                    synthetic: false,
-                    auto: false,
                     id: "tool-1".to_string(),
                     session_id: "session-1".to_string(),
                     message_id: "message-1".to_string(),
@@ -1579,8 +1556,6 @@ mod tests {
             .message_roles
             .insert("message-1".to_string(), "assistant".to_string());
         let part = |text: &str| OpenCodePart {
-            synthetic: false,
-            auto: false,
             id: "part-1".to_string(),
             session_id: "session-1".to_string(),
             message_id: "message-1".to_string(),
