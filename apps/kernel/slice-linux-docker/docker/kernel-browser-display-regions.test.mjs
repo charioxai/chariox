@@ -14,7 +14,7 @@ function fixture(kind='region') {
   chromium:{display:{},child:{pid:42},scale:2},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
   mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
-  chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
+  arbiter:{isActiveTab:async()=>true},chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
  class Capture {constructor(options){this.options=options;this.region={css_width:options.rect.width/2,css_height:options.rect.height/2};calls.push(options);}async start(){return this;}async close(){calls.push('close');} valid(){return alive;}}
  const command={op:'display_subscribe',tab_id:'t',generation:2,codecs:['png','avc1.420033'],bitrate:2_000_000,device_scale_factor:1,
   target:kind==='region'?{kind,mirror_subscription_id:'mirror',document_id:'doc',sequence:3,region_id:'n1'}:{kind,window_generation:7}};
@@ -78,7 +78,7 @@ test('MP-08/MP-11 actual credit and frame path uses crop/window lifetime; retire
  const source={native:true,attested:true,regionRevision:0,policy,tab,closed:false,valid:()=>true,allowed:()=>true,sample:()=>sample};
  const stream=new DisplayStream({subscription_id:'s',tab_id:'t',codec:'avc1.420033',bitrate:2_000_000,device_scale_factor:2,css_width:100,css_height:50,dependencies:true},{encoder:{close:async()=>{}},wait:async()=>{}});
  const producer={source,feedback(){},retireUnsent(){},invalidate(){},take:()=>sample,close:async()=>{}};
- Object.assign(stream,{regionSource:source,regionLease:{isAlive:()=>current,isCurrent:async()=>{checks++;return current;}},regionWindow:{isCurrent:()=>current},compositorRegionRevision:0,producer,
+ Object.assign(stream,{regionSource:source,regionLease:{isAlive:()=>current},regionCurrent:async()=>{checks++;return current;},regionWindow:{isCurrent:()=>current},compositorRegionRevision:0,producer,
   refinerDocument:tab.document_id,refiner:{request:()=>null,invalidate(){},close:async()=>{}}});
  const host={generation:2,protection:policy,compositors:new Map(),inputEpochs:new Map(),inputChangedAt:new Map(),timing:()=>{},compositorFor:async()=>source,
   displayTarget:()=>{throw Error('band must not acquire a page document');}};
@@ -87,4 +87,11 @@ test('MP-08/MP-11 actual credit and frame path uses crop/window lifetime; retire
   assert.equal(result.frame_sent,true);assert.equal(result.display_frame.document_id,tab.document_id);assert.equal(result.display_frame.width,200);assert.equal(result.display_frame.css_width,100);assert(checks>=2);
   current=false;await assert.rejects(displayCredit(host,stream,{generation:2,after_sequence:1}));assert.equal(stream.sequence,1);
  }finally{await stream.close();}
+});
+test('MP-11 page region refuses a missing or changed owner native active-tab fence',async()=>{
+ const f=fixture();delete f.host.arbiter;
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));assert.equal(f.host.displays.size,0);
+ const g=fixture();await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture});
+ const s=[...g.host.displays.values()][0];g.host.arbiter.isActiveTab=async()=>false;
+ assert.equal(await s.regionCurrent(),false);await assert.rejects(regionInput(g.host,{op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a'));await s.close();
 });

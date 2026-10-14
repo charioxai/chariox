@@ -16,7 +16,7 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
   const region=stream.regionLease;
-  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await region.isCurrent()))throw Error('MP-11: region lease retired');
+  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await stream.regionCurrent()))throw Error('MP-11: region lease retired');
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;
   const empty=()=>nativeCreditEmpty(stream,cachedSource,host.protection,host.inputEpochs.get(stream.tab_id)??0,
       host.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
@@ -151,7 +151,7 @@ export async function displayCredit(host, stream, command, signal) {
     assertNotCancelled(signal);
     if(!source.motion&&(host.inputEpochs.get(tab.tab_id)??0)!==epoch)compositor?.rejected?.('epoch');
     if(region){
-      if(!await region.isCurrent()||!stream.regionWindow.isCurrent()||!compositor.valid())return false;
+      if(!await stream.regionCurrent()||!stream.regionWindow.isCurrent()||!compositor.valid())return false;
     }else if(native){
       if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
