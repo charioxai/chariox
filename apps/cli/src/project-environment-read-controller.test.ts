@@ -231,3 +231,28 @@ test("TUI previous page returns to the actual prior byte-bounded offset", async 
   assert.deepEqual(offsets,[3,5,3])
   controller.close()
 })
+
+// MP-08 / MP-10 / MP-11: TUI proposal exclusion is an unchanged-content
+// Save too. It must retain the compact kernel clock after a real Check reply.
+for (const offset of [-600000,600000]) test(`review0634 TUI Save preserves checked rows at clock offset ${offset}`,async()=>{
+ const realNow=Date.now,kernelNow=realNow();Date.now=()=>realNow()+offset
+ let controller:ReturnType<typeof createProjectEnvironmentReadController>|undefined
+ try {
+  const row={requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],required:true,legacy_entry:null}
+  const env:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{environment_id:"env",project_id:"lineage"},folders:[],project_requirements:[row],proposals:[{proposal_id:"optional",requirement:{...row,requirement_id:"optional",title:"Optional",required:false}}],operations:[],observations:[],delivered_capabilities:{enabled_environment_operations:["get","save","check"],supported_schema:1}}
+  let operationId="",saved=false
+  const current=()=>({...env,revision:saved?2:1,proposals:saved?[]:env.proposals,operations:operationId?[{operation_id:operationId,kind:"check",phase:"ready",per_item_results:[]}]:[],observations:operationId?[{environment_id:"env",requirement_id:"node",revision_digest:"digest",status:"ready",checked_at_ms:kernelNow,stale:false,safe_summary:"Named probe passed",target:{machine_id:"machine",target_instance_generation:"boot",slice_ref:null},measured_facts:{}}]:[]})
+  controller=createProjectEnvironmentReadController({render(){},pageSize:()=>100,send:async(request:any)=>{
+   if(request.RelayStatus===null)return {RelayStatus:{status:{machine_id:"machine",daemon_id:"kernel"}}}
+   if(request.CheckProjectEnvironment){operationId=request.CheckProjectEnvironment.operationId;return {EnvironmentOperation:{operation:{operation_id:operationId,phase:"ready"}}}}
+   if(request.SaveProjectEnvironmentRevision){saved=true;return {ProjectEnvironmentSaved:{environment:current()}}}
+   if(request.GetProjectEnvironment)return {ProjectEnvironmentView:{view:{observed_at_ms:realNow(),snapshot_digest:saved?"saved":operationId?"checked":"initial",environment:current(),proposal_count:current().proposals.length,proposal_offset:0,next_proposal_offset:null,proposals:current().proposals,operation_item_counts:[]}}}
+   throw new Error("unexpected request")
+  }})
+  await controller.open("project");await controller.check()
+  assert(controller.visibleLines().some(line=>line.includes("Node · Ready")))
+  await controller.review("exclude")
+  assert(saved)
+  assert(controller.visibleLines().some(line=>line.includes("Node · Ready")),"Save discarded the kernel clock reference")
+ }finally{controller?.close();Date.now=realNow}
+})
