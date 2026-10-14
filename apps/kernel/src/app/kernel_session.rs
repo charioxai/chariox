@@ -280,6 +280,17 @@ impl<'a> KernelSessionService<'a> {
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
+        if request
+            .kernel_ref
+            .as_deref()
+            .is_none_or(|k| self.app.kernel_ref_is_local(k))
+        {
+            crate::runtime::agent_account_admission::resolve_spawn_account(
+                self.app.config(),
+                &self.app.provider_account_profile_registry(),
+                &mut request,
+            )?;
+        }
         let obligation = if self.app.config().room_agent_tools {
             request
                 .spawned_by_agent_id

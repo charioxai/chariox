@@ -52,6 +52,21 @@ impl<'a> KernelSessionService<'a> {
             &mut definition,
             provider_rebindings,
         )?;
+        // Resolve every generated node before creating any agent, so a bad
+        // downstream selection cannot leave a partially spawned workflow.
+        for node in &mut definition.nodes {
+            if let WorkflowCodeAgentBinding::Create(agent) = &mut node.agent {
+                let mut request = CreateAgentRequest::new(session_id, &agent.provider)
+                    .with_owner_user_id(created_by_user_id.clone());
+                request.account_profile = agent.account_profile.clone();
+                crate::runtime::agent_account_admission::resolve_spawn_account(
+                    self.app.config(),
+                    &self.app.provider_account_profile_registry(),
+                    &mut request,
+                )?;
+                agent.account_profile = request.account_profile;
+            }
+        }
         let mut target_validation = WorkflowCodeValidationReport {
             ok: true,
             diagnostics: Vec::new(),
