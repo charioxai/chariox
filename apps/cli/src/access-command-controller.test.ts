@@ -3,9 +3,21 @@ import test from "node:test"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { parseSlashCommand } from "./commands.js"
 const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "note", note_id: "note" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
-function fixture() {
+test("MP-08 / MP-11 leased Computer uses explicit target and rejects older kernels", async () => {
+  const old = fixture(494)
+  await assert.rejects(old.controller.handle(["grant-computer", "holder", "desktop", "g"]), /500/)
+  assert.equal(old.requests.length, 0); old.controller.stop()
+  const h = fixture(500)
+  await h.controller.handle(["grant-computer", "holder", "desktop", "g"])
+  assert.deepEqual(h.requests.at(-1), { KernelBrowser: { command: { op: "grant_leased_computer", agent_id: "holder", target: { surface_id: "desktop", generation: "g" } } } })
+  await h.controller.handle(["revoke-computer", "holder"])
+  assert.deepEqual(h.requests.at(-1), { KernelBrowser: { command: { op: "revoke_leased_computer", agent_id: "holder" } } })
+  for (const args of [["grant-computer", "holder"], ["grant-computer", "all", "s", "g"], ["revoke-computer", "all"]]) await assert.rejects(h.controller.handle(args), /Usage/)
+  h.controller.stop()
+})
+function fixture(version = 494) {
   const requests: any[] = [], lines: string[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
+  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: version, async send<T>(request: unknown): Promise<T> { requests.push(request); if ((request as any).KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {}); return { KernelBrowser: { result: snapshot } } as T } }, appendNotice: message => lines.push(message) })
   return { controller, requests, lines }
 }
 test("access parser has a word boundary and passes revoke arguments", () => {
@@ -31,7 +43,7 @@ test("invalid syntax issues no mutations", async () => {
 })
 test("retained-use feed prints the shared notice once and stops after cleanup", async () => {
   const lines: string[] = [], pending: ((response: unknown) => void)[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 443, async send<T>(request: any): Promise<T> {
+  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 494, async send<T>(request: any): Promise<T> {
     if (request.KernelBrowser.command.op === "subscribe_grants") return new Promise(resolve => pending.push(value => resolve(value as T)))
     return { KernelBrowser: { result: snapshot } } as T
   } }, appendNotice: line => lines.push(line) })
@@ -46,10 +58,39 @@ test("retained-use feed prints the shared notice once and stops after cleanup", 
   pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 4, notice: { ...notice, at_ms: 600 } } } }); await tick()
   assert.equal(lines.length, 1)
 })
+test("MP-08 / MP-10 / MP-11 owner re-grants Room Computer through Access", async()=>{
+  const h=fixture(494)
+  await h.controller.handle(["grant","holder"])
+  assert.deepEqual(h.requests.find(r=>r.KernelBrowser.command.op==="grant_room_computer"),{KernelBrowser:{command:{op:"grant_room_computer",agent_id:"holder"}}})
+  assert.match(h.lines.at(-1)!,/Granted Room Computer control/)
+  h.controller.stop()
+})
+test("MP-08 / MP-11 bulk revoke and bulk restore print visible notices", async()=>{
+  const old=fixture(460)
+  await assert.rejects(old.controller.handle(["grant","all"]),/494/)
+  assert(!old.requests.some(r=>r.KernelBrowser.command.op==="grant_room_computer")); old.controller.stop()
+  const h=fixture(494)
+  await h.controller.handle(["revoke","all"])
+  assert.match(h.lines.at(-1)!,/^Revoked access and Room Computer control for all agents\./)
+  await h.controller.handle(["grant","all"])
+  assert.deepEqual(h.requests.at(-1),{KernelBrowser:{command:{op:"grant_room_computer",agent_id:null}}})
+  assert.match(h.lines.at(-1)!,/^Restored Room Computer control for all agents\./)
+  h.controller.stop()
+})
+
+test("MP-08 / MP-10 / MP-11 predecessor kernels receive no access command", async () => {
+  for (const version of [472, 487, 493]) {
+    const h = fixture(version)
+    h.controller.start()
+    for (const args of [[], ["list"], ["revoke", "all"], ["grant", "holder"]]) await assert.rejects(h.controller.handle(args), /494/)
+    assert.equal(h.requests.length, 0)
+    h.controller.stop()
+  }
+})
 
 test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL without control", async () => {
   const requests: any[] = [], lines: string[] = []
-  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 486, async send<T>(r: any) {
+  const controller = createAccessCommandController({client: {localDaemonProtocolVersion: 507, async send<T>(r: any) {
     requests.push(r)
     if (r.KernelBrowser.command.op === "subscribe_grants") return new Promise(() => {})
     if (r.KernelBrowser.command.op === "list_grants") return {KernelBrowser: {result: snapshot}} as T
@@ -64,9 +105,9 @@ test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL witho
 })
 
 // MP-08/MP-11: published PR937 cannot promise opener provenance.
-test("MP-08 TUI agent tabs require allocated protocol 486", async () => {
+test("MP-08 TUI agent tabs require merged protocol 507", async () => {
   const h = fixture()
-  await assert.rejects(h.controller.handle(["tabs"]), /protocol 486/)
+  await assert.rejects(h.controller.handle(["tabs"]), /protocol 507/)
   assert(h.requests.every(r => r.KernelBrowser.command.op !== "state"))
   h.controller.stop()
 })

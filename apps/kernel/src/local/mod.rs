@@ -293,6 +293,7 @@ pub use api::{
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+    KernelComputerCommand, KernelComputerInput, KernelComputerKeyState, KernelDesktopTarget,
 };
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,

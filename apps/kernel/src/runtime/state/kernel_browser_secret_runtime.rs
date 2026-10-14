@@ -62,8 +62,8 @@ impl KernelRuntimeState {
         }
         let gate = self.owned.kernel_browser_host.display_gate(user);
         let _input = (method == "host.secret" || params["op"] == "input").then(|| gate.input());
-        let _capture = if params["display_subscription_id"].is_string() {
-            Some(gate.capture().await.map_err(host_error)?)
+        let _capture = if let Some(subscription) = params["display_subscription_id"].as_str() {
+            Some(gate.capture(subscription).await.map_err(host_error)?)
         } else {
             None
         };
@@ -125,14 +125,20 @@ impl KernelRuntimeState {
             }
         });
         let (user, method) = (user.to_string(), method.to_string());
-        let pixels =
-            method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
+        let pixels = matches!(method.as_str(), "host.browser" | "host.computer")
+            && (params["op"] == "screenshot" || params["op"] == "poll");
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
+        let input =
+            matches!(method.as_str(), "host.browser" | "host.computer") && params["op"] == "input";
         let at = std::time::Instant::now();
         let result = tokio::task::spawn_blocking(move || {
+            // MP-08/MP-10/MP-11: numeric queue attribution, never request data.
+            if input {
+                crate::transport::kernel_browser_display::timing("input_blocking_queue", at);
+            }
             host.protected_request_admitted(&user, admission.as_ref(), &method, params, policy)
         })
         .await

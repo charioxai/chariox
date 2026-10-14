@@ -198,11 +198,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 let detail = if persist_remote_prompt_reconciliation_pending(state, dispatch, true)
                     .is_ok()
                 {
-                    "the request may have reached the worker, but no submission acknowledgement was recorded"
+                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})")
                 } else {
-                    "the request may have reached the worker, but no submission acknowledgement was recorded and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay"
+                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay")
                 };
-                state.report_remote_prompt_reconciliation_pending(dispatch, detail);
+                state.report_remote_prompt_reconciliation_pending(dispatch, &detail);
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt delivery is pending worker receipt reconciliation",

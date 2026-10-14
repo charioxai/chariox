@@ -8,6 +8,7 @@ const retired = new WeakMap();
 // Keep the completed lifecycle until its target is pruned: a measurement may
 // still hold a field read from before completion across a CDP release await.
 const filling = new WeakMap();
+const fillBindings = new WeakMap();
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
@@ -55,9 +56,23 @@ export async function recordBrowserFill(connection, options, value, revision) {
     value_hash:digest(options.action?.append ? previous.value+value : value),fill_revision:revision};
   retired.get(connection)?.delete(fillKey(target));
   if(!filling.has(connection))filling.set(connection,new Map());
+  fillBindings.set(target,{connection,sessionId,backendNodeId});
   filling.get(connection).set(fillKey(target),{target,pending:true});return target;
 }
-export function finishBrowserFill(connection,target) {const state=filling.get(connection)?.get(fillKey(target));if(state?.target===target)state.pending=false;}
+export async function finishBrowserFill(connection,target) {
+  const binding=fillBindings.get(target);
+  if(!binding||binding.connection!==connection)throw Error('MP-11: fill completion unavailable');
+  const state=await fieldState(connection,binding,{frameId:target.frame_id},binding.backendNodeId);
+  const frame=visit(await frameTree(connection,binding.sessionId),target.frame_id);
+  if(!state.exists||!state.editable||!frame||frame.loaderId!==target.frame_document_id)
+    throw Error('MP-11: fill completion unavailable');
+  // HTML input setters strip newlines; textarea setters normalize CRLF.
+  // Bind the actual result before releasing the in-flight capture protection.
+  target.value_hash=digest(state.value);
+  const lifecycle=filling.get(connection)?.get(fillKey(target));
+  if(lifecycle?.target===target)lifecycle.pending=false;
+  fillBindings.delete(target);
+}
 async function stableFieldState(connection,entry,document,backendNodeId,target,lifecycle) {
   const key=fillKey(target),check=()=>{
     if(lifecycle!==filling.get(connection)?.get(key)||lifecycle&&((target.fill_revision!==undefined&&target.fill_revision!==lifecycle.target.fill_revision)||target.value_hash&&target.value_hash!==lifecycle.target.value_hash))throw Error('MP-11: fill changed during protection measurement');
@@ -157,7 +172,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const {cssVisualViewport:visual}=await connection.send('Page.getLayoutMetrics',{},sessionId);
   const page={url:top.frame.url,document_id:top.frame.loaderId,dpr:metrics.dpr,zoom:visual?.zoom??1,viewport:[Math.round(metrics.width*metrics.dpr),Math.round(metrics.height*metrics.dpr)],regions:[],withheld:[]};
   const dead=retired.get(connection)??new Set();retired.set(connection,dead);
-  const targets=(policy.targets??[]).filter(t=>t.target_id===targetId&&!t.echo_only&&!dead.has(fillKey(t)));
+  // A supplied copy of a tracked fill measures its live lifecycle target, whose
+  // fingerprint binds the completed (possibly normalized) field value.
+  const live=t=>filling.get(connection)?.get(fillKey(t))?.target??t;
+  const targets=[...new Set((policy.targets??[]).filter(t=>!t.echo_only).map(live))].filter(t=>t.target_id===targetId&&typeof t.value_hash==='string'&&!dead.has(fillKey(t)));
   const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
   // MP-11: preserve the pending state observed before awaiting the snapshot.
   const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
@@ -205,7 +223,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // Actionability may wait while an editor is temporarily disabled. Its
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
-        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || (target.value_hash?digest(state.value)!==target.value_hash:!(policy.values??[]).includes(state.value)))) {dead.add(key);continue;}
+        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
         // confirmed absence of layout for the entire field subtree permits
@@ -265,6 +283,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
 
 export async function measureBrowserProtection(browser,policy) {
   if(policy?.unknown||!Array.isArray(policy?.targets))throw Error('MP-11: fill policy unavailable');
+  // MP-08/MP-10/MP-11: registration alone contributes no browser pixels.
+  // Pending fills enter the private map before input and keep the full fence.
+  const filled=policy.targets.some(target=>target.kind==='browser'&&typeof target.value_hash==='string');
+  if(!filled&&!(browser?.fillTargets?.size))return {pages:[]};
   const connection=await browser.ensureConnection(),{targetInfos=[]}=await connection.send('Target.getTargets');
   const pages=[];
   for(const info of targetInfos.filter(t=>t.type==='page')) {
@@ -289,6 +311,7 @@ export const protectionDigest = measurement => createHash('sha256').update(JSON.
 // two animation frames, pixels derive from that layout or later. One frame
 // suffices before re-measuring: it applies pending compositor scroll offsets.
 export async function awaitPresented(browser, pages, frames = 2) {
+  if(!pages.length)return;
   const nested = 'requestAnimationFrame(() => resolve(true))';
   const callback = frames === 2 ? `requestAnimationFrame(() => ${nested})` : nested;
   const connection = await browser.ensureConnection();
@@ -318,11 +341,14 @@ export async function fenceBrowserCapture(browser, policy, capture, attempts = 3
   for (let attempt = 0; attempt < attempts; attempt++) {
     const before = await measurePresented(browser, policy);
     if (!before) break;
+    const captured = Date.now();
     const result = await capture(before);
+    const ended = Date.now() + 1;
     // One frame first: the re-measurement then sees compositor scrolls too.
     let after = null;
     try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy); } catch {}
-    if (after && protectionDigest(after) === protectionDigest(before)) return result;
+    if (after && protectionDigest(after) === protectionDigest(before) &&
+        (!browser.connection?.presentationFence || browser.connection.presentationFence.stable(captured, ended))) return result;
   }
   throw Error('MP-11: fill-target capture fence unavailable');
 }

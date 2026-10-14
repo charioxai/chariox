@@ -1,4 +1,4 @@
-//! MD-2: protocol 447 sessionless host-browser snapshots.
+//! MD-2: protocol 461 sessionless host-browser snapshots.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as Command, KernelBrowserInput as Input, KernelBrowserRequest,
@@ -92,7 +92,10 @@ fn kernel_browser_protocol_443_request_snapshots() {
             Command::Input {
                 tab_id: "t".into(),
                 generation: 2,
-                input: Input::Key { key: "Tab".into() },
+                input: Input::Key {
+                    key: "Tab".into(),
+                    modifiers: 0,
+                },
             },
             serde_json::json!({"op":"input","tab_id":"t","generation":2,"input":{"kind":"key","key":"Tab"}}),
         ),
@@ -259,4 +262,45 @@ fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
         ),
         "cf8e119de5af3e428663bdd2795f6f75e68ac8aa2d3d76291f7c95795b259b55"
     );
+}
+
+// MP-08/MP-11: protocol498 bounds modifiers at deserialization, shared by
+// local, remote and provider input. Legacy keys still omit the zero mask.
+#[test]
+fn kernel_browser_protocol_498_bounded_modifiers() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 525);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        133
+    );
+    let input = Input::Key {
+        key: "a".into(),
+        modifiers: 2,
+    };
+    let wire = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"kind":"key","key":"a","modifiers":2})
+    );
+    assert_eq!(
+        serde_json::from_value::<Input>(wire.clone()).unwrap(),
+        input
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "1cdc9ff0b2391e8a184cad088c6b2fab792fd2f95b0ee37265cb600687e3cc8c"
+    );
+    for value in [
+        serde_json::json!(-1),
+        serde_json::json!(16),
+        serde_json::json!(256),
+        serde_json::json!(1.5),
+        serde_json::json!(null),
+        serde_json::json!("2"),
+    ] {
+        assert!(serde_json::from_value::<Input>(
+            serde_json::json!({"kind":"key","key":"a","modifiers":value})
+        )
+        .is_err());
+    }
 }

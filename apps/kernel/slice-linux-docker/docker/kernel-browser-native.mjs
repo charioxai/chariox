@@ -12,9 +12,10 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
-import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
+import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
+import {fitNativeViewport} from './kernel-browser-native-viewport.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create,refused=()=>{}}){
  if(platform!=='linux'||!ownsDisplay(display)){refused(platform!=='linux'?'platform':'display_not_owned');return null;}
  try{return await create()}catch{return null}
@@ -49,6 +50,7 @@ export class LinuxCapture {
   Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
+ async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
  valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
  onCdp(m){
   if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
@@ -72,21 +74,14 @@ export class LinuxCapture {
    // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
    // Window bounds are host DIPs: the negotiated raster divided by host scale.
-   const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
-   // The X window resize is asynchronous; the worker needs its final size.
-   // Chromium can drop a bounds change (the first DPR1 viewer after a browser
-   // launch kept 1280x887 DIPs): re-send until it reports the requested size.
-   for(let n=0;n<50;n++){if(n%10===0)await this.connection.send('Browser.setWindowBounds',{windowId,bounds});const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
-   await this.connection.send('Page.bringToFront',{},this.sessionId);
-   await delay(100);
-   // Force the emulated viewport to paint before establishing its native crop.
-   await this.screenshot();
+   await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:geometry.width*this.scale,height:geometry.height*this.scale,hostScale:this.hostScale,
+    measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
-   this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
-   this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
+   this.poolRoot=await this.createRasterPool();
+   this.phase='readback';const executable=nativeWorkerResource()?.executable;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
    const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
@@ -159,17 +154,18 @@ export class LinuxCapture {
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
+    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
+   }
    const revision=this.regionRevision;
-   // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
-   // page targets fence this source by event (onCdp); every delivered frame
-   // still passes the credit's document check, which CDP orders after those
-   // events. The owned single-tab window is never occluded or hidden.
+   // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
+   // and geometry. Document changes also retire the source through onCdp.
    let at=performance.timeOrigin+performance.now();let regions;
    try{
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
    }catch(error){
-    if(/fill-target capture unavailable/.test(error?.message??'')){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
+    if(error.code==='fill_capture_retry'){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);

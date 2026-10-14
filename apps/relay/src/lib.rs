@@ -5,6 +5,7 @@ pub mod frame_transport;
 pub mod protocol;
 pub mod revocation_sync;
 pub mod server;
+pub mod transport_timing;
 
 mod registry;
 

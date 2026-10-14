@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
-import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
@@ -55,7 +55,7 @@ export class MirrorService {
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
     // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
-    const tab=await (command.wire===2&&this.host.displayTarget?this.host.displayTarget(command):this.host.target(command)),scale=hostViewport().device_scale_factor;
+    const tab=await (command.wire===2&&this.host.displayTarget?this.host.displayTarget(command):this.host.target(command)),scale=this.host.viewport().device_scale_factor;
     if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     // MP-08/MP-10: target() reconciles the kernel-owned viewport. An
     // attached mirror is an observer and must never resize the shared page.
@@ -188,7 +188,7 @@ export class MirrorService {
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0,typedAt=this.host.inputChangedAt?.get(tab.tab_id)??-Infinity;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&performance.now()-typedAt>=refineQuietMs;
       const clip=refine?{x:0,y:0,width:geometry.width,height:geometry.height,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
-      const masks=await captureRegionMasks(world.connection,world.sessionId);
+      const masks=await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy});
       mark('tile_masks_before');
       const captured=await this.host.screenshot(tab,refine?null:clip);
       stream.refinePending=!refine;stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;

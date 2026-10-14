@@ -30,9 +30,9 @@ test('MP-08: semantic hash survives Rust map ordering and removed-node patches',
  const p=packet(),base=validateMirrorPacket(p,new Map());const next=validateMirrorPacket({...p,reset:false,nodes:[{...p.nodes[0]!,text:'changed'}]},base)
  assert.equal(next.get('n1')?.text,'changed');assert.equal(base.get('n1')?.text,undefined)
 })
-test('MP-08: protocol 443/unknown rejects before allocating a subscription or frame',async()=>{
- assert.equal(browserMirrorMinimumProtocolVersion,443)
- for(const protocolVersion of [435,442,0,NaN])await assert.rejects(attachBrowserMirror({protocolVersion,request:async()=>assert.fail('must not request')},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},()=>{}),/protocol 443/)
+test('MP-08 / MP-10 / MP-11: protocol 494/unknown rejects before allocating a subscription or frame',async()=>{
+ assert.equal(browserMirrorMinimumProtocolVersion,494)
+ for(const protocolVersion of [435,472,487,493,0,NaN])await assert.rejects(attachBrowserMirror({protocolVersion,request:async()=>assert.fail('must not request')},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},()=>{}),/protocol 494/)
 })
 
 test('MP-11: admitted nodes do not retain mutable transport-owned references',()=>{

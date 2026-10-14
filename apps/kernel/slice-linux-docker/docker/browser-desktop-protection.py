@@ -4,7 +4,7 @@ browser-protection-regions.mjs measures every frame of every visible page in
 device pixels relative to its content viewport. Chromium's own AT-SPI document
 extents prove where each viewport is on the desktop. A browser window is
 precise only when its visible pages and its documents pair one-to-one by URL,
-viewport size and exact window geometry; otherwise it contributes no fill mask.
+viewport size and exact window geometry; unproven filled-field placement refuses capture.
 """
 import math
 from collections import deque
@@ -107,7 +107,7 @@ def _screen_scale(window, client):
 
 
 def window_masks(protection, client, frame, docs):
-    """Exact fill masks for one browser X window; no mask without placement.
+    """Exact fill masks for one browser X window, or None to refuse capture.
 
     client: X11 client rectangle; frame: window-manager frame rectangle;
     docs: document_rects() of the window's application. The AT-SPI document
@@ -116,14 +116,14 @@ def window_masks(protection, client, frame, docs):
     screen scale times its page zoom) has no provable fill mapping.
     """
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
-        return []
+        return None
     pages = [page for page in protection['pages'] if _screen_scale(page.get('window'), client)]
     inside = [doc for doc in docs if _inside(doc['rect'], client)]
     if not pages or len(pages) != len(inside):
-        return []  # No proven fill placement.
+        return None  # Capture retries an unbound filled field without a broad mask.
     scale = _screen_scale(pages[0]['window'], client)
     if any(_screen_scale(page['window'], client) != scale for page in pages):
-        return []
+        return None
     masks, used = [], set()
     pad = math.ceil(PAD_DIP*scale)
     for doc in inside:
@@ -135,15 +135,15 @@ def window_masks(protection, client, frame, docs):
                     isinstance(dpr, (int, float)) and isinstance(zoom, (int, float)) and abs(dpr-scale*zoom) <= .01*scale)
         matches = [index for index, page in enumerate(pages) if _url(page.get('url')) == _url(doc['uri']) and fits(page)]
         if len(matches) != 1 or matches[0] in used:
-            return []
+            return None
         used.add(matches[0])
         page = pages[matches[0]]
         regions = page.get('regions')
         if not isinstance(regions, list):
-            return []
+            return None
         for region in regions:
             if not isinstance(region, list) or len(region) != 4 or not all(isinstance(v, int) for v in region):
-                return []
+                return None
             rx, ry, rw, rh = region
             placed = _clip([x+rx-pad, y+ry-pad, rw+2*pad, rh+2*pad], doc['rect'])
             if placed:

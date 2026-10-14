@@ -5,7 +5,7 @@ import type { UserDomainGrant, UserDomainGrantEvent } from "./kernel-types-kerne
 const grant: UserDomainGrant = { agent_id: "a", session_id: "s", kernel_id: "k", resources: [{ kind: "note", note_id: "n" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800, expiry_rule: "kernel policy" }
 const event = (cursor: number, grants = [grant], notice: UserDomainGrantEvent["notice"] = null): UserDomainGrantEvent => ({ event: "user_domain_grants_changed", cursor, grants, notice })
 const tick = () => new Promise(resolve => setImmediate(resolve))
-function fixture(version = 443) {
+function fixture(version = 494) {
   const requests: any[] = [], pending: { resolve(value: unknown): void; options: any }[] = []
   let current = event(1), binding = "owner/kernel", connected = true
   const client: UserDomainAccessClient = { localDaemonProtocolVersion: version, async send<T>(request: any, options: any): Promise<T> {
@@ -16,9 +16,9 @@ function fixture(version = 443) {
   const controller = new UserDomainAccessController({ client: () => connected ? client : null, bindingKey: () => binding })
   return { controller, requests, pending, set: (value: UserDomainGrantEvent) => { current = value }, move: () => { binding = "other/owner" }, disconnect: () => { connected = false } }
 }
-test("grant consumers alone require 443 and send nothing to older kernels", () => {
-  for (const version of [0, 435, 442]) {
-    const h = fixture(version); h.controller.sync(); assert.match(h.controller.error!, /443/); assert.equal(h.requests.length, 0); h.controller.stop()
+test("grant consumers alone require 494 and send nothing to older kernels", () => {
+  for (const version of [0, 435, 442, 472, 487, 493]) {
+    const h = fixture(version); h.controller.sync(); assert.match(h.controller.error!, /494/); assert.equal(h.requests.length, 0); h.controller.stop()
   }
 })
 test("cursor feed observes retained use and suppresses repeats, revoke cancels authority", async () => {
@@ -86,7 +86,7 @@ test("successful lower-cursor replay refreshes authority and fences concurrent o
   const notice = { agent_id: "a", resource: grant.resources[0]!, at_ms: 500 }
   let current = event(100, [grant], notice)
   const requests: any[] = [], pending: { options: any; resolve(value: unknown): void }[] = []
-  const client: UserDomainAccessClient = { localDaemonProtocolVersion: 443, async send<T>(request: any, options: any): Promise<T> {
+  const client: UserDomainAccessClient = { localDaemonProtocolVersion: 494, async send<T>(request: any, options: any): Promise<T> {
     options?.beforeSend?.()
     const command = request.KernelBrowser.command
     requests.push(command)
@@ -118,4 +118,26 @@ test("successful lower-cursor replay refreshes authority and fences concurrent o
   pending[2]!.resolve({ KernelBrowser: { result: event(2, [grant], { ...notice, at_ms: 600 }) } }); await tick()
   assert.equal(controller.lastObservedRetainedUse(grant), 600)
   assert.equal(requests.at(-1).after, 2)
+})
+
+// MP-08 / MP-10 / MP-11: the new grant operation alone requires 494.
+test("Room Computer grant is version gated and uses the existing Access transport", async () => {
+  const old = fixture(448); old.controller.sync(); await tick()
+  await assert.rejects(old.controller.grantRoomComputer("a"), /494/)
+  assert(!old.requests.some(r => r.KernelBrowser.command.op === "grant_room_computer")); old.controller.stop()
+  const h = fixture(494); h.controller.sync(); await tick()
+  h.set({ ...event(2), room_computer: [{ agent_id: "a", session_id: "s", allowed: true }] })
+  await h.controller.grantRoomComputer("a")
+  assert.deepEqual(h.requests.at(-1).KernelBrowser.command, { op: "grant_room_computer", agent_id: "a" })
+  assert.equal(h.controller.snapshot!.room_computer![0]!.allowed, true); h.controller.stop()
+})
+
+// MP-08 / MP-11: bulk restore (null agent) alone requires 494; older kernels receive nothing.
+test("Room Computer bulk restore is explicit null and version gated", async () => {
+  const old = fixture(460); old.controller.sync(); await tick()
+  await assert.rejects(old.controller.grantRoomComputer(null), /494/)
+  assert(!old.requests.some(r => r.KernelBrowser.command.op === "grant_room_computer")); old.controller.stop()
+  const h = fixture(494); h.controller.sync(); await tick()
+  await h.controller.grantRoomComputer(null)
+  assert.deepEqual(h.requests.at(-1).KernelBrowser.command, { op: "grant_room_computer", agent_id: null }); h.controller.stop()
 })

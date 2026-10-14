@@ -211,7 +211,6 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
     hidden: false,
   })) as MutableTranscriptDisplayEntry[]
   const collapsedTurnIdSet = new Set(collapsedTurnIds)
-  let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
   const activeHistoryTurnIds = openHistoryTurnIds(normalized)
 
@@ -261,8 +260,11 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
       continue
     }
 
+    // Display-only toggles use non-positive ids (outside the entry id space) so
+    // a later history reindex never hands an id a client already saw to a new
+    // entry. `|| 0` avoids -0 for serialized turn 0.
     normalized.splice(anchorIndex + 1, 0, {
-      id: ++nextId,
+      id: -turnId || 0,
       role: "turn_toggle",
       text: expanded ? "click to collapse" : "click to expand",
       turnId,

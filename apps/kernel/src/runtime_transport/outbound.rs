@@ -36,19 +36,8 @@ impl OutboundBoundary {
             return false;
         }
         let message = match payload {
-            // MP-08/MP-10: protocol 466 display events are binary WebSocket messages
-            // with raw payload segments. External peers never receive them (MP-11).
-            Payload::Frame(KernelOutgoingFrame::Event { event, .. })
-                if self.peer.is_none()
-                    && matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
-            {
-                match crate::transport::kernel_browser_display::encode_display_event(*event) {
-                    Ok(bytes) => Message::Binary(bytes.into()),
-                    Err(_) => return false,
-                }
-            }
             Payload::Frame(frame) => {
-                let payload = if self.peer.is_some() {
+                if self.peer.is_some() {
                     if let KernelOutgoingFrame::Event { event, .. } = &frame {
                         classify_event(event);
                     }
@@ -56,7 +45,7 @@ impl OutboundBoundary {
                         Ok(v) => v,
                         Err(_) => return false,
                     };
-                    match project_payload(value) {
+                    let payload = match project_payload(value) {
                         Ok(value) => {
                             match crate::transport::kernel_protocol::serialize_frame_value(value) {
                                 Ok(s) => s,
@@ -77,14 +66,28 @@ impl OutboundBoundary {
                             }
                             KernelOutgoingFrame::Event { .. } => return false,
                         },
-                    }
+                    };
+                    Message::Text(payload.into())
                 } else {
-                    match serialize_frame(&frame) {
-                        Ok(s) => s,
-                        Err(_) => return false,
+                    // MP-08/MP-10: protocol 466 display events are binary WebSocket
+                    // messages with raw payload segments; other frames stay JSON text.
+                    match frame {
+                        KernelOutgoingFrame::Event { event, .. }
+                            if matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
+                        {
+                            match crate::transport::kernel_browser_display::encode_display_event(
+                                *event,
+                            ) {
+                                Ok(bytes) => Message::Binary(bytes.into()),
+                                Err(_) => return false,
+                            }
+                        }
+                        frame => match serialize_frame(&frame) {
+                            Ok(s) => Message::Text(s.into()),
+                            Err(_) => return false,
+                        },
                     }
-                };
-                Message::Text(payload.into())
+                }
             }
             Payload::Control(Message::Close(mut frame)) => {
                 if self.peer.is_some() {
@@ -164,7 +167,9 @@ macro_rules! public_events {
         fn classify_event(event: &KernelEvent) {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
-                KernelEvent::PasskeyPromptsChanged { .. } | KernelEvent::KernelBrowserFrame { .. } => {},
+                KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // MP-11: browser display frames stay off external streams.
+                KernelEvent::KernelBrowserFrame { .. } => {},
             }
         }
         fn public_event(name: &str) -> bool { matches!(name, $($wire)|*) }

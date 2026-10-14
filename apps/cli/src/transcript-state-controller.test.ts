@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { TranscriptEntry } from "./cli-types.js"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
+import type { SessionHistoryBlobContent, TranscriptEntry } from "./cli-types.js"
 import { createTranscriptStateController } from "./transcript-state-controller.js"
 
 test("transcript state controller appends entries with ids and active turn ids", () => {
@@ -54,14 +55,14 @@ test("transcript state controller toggles turns through shared display state", (
   const harness = transcriptHarness({
     entries: [
       entry(1, "user", "prompt", { turnId: 1 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
+      entry(-1, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 1 }),
     ],
     collapsedTurnIds: [1],
   })
 
-  harness.controller.toggleTurn(1, 4)
+  harness.controller.toggleTurn(1, -1)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
@@ -72,12 +73,12 @@ test("transcript state controller toggles turns through shared display state", (
     harness.entries.map((candidate) => [candidate.id, candidate.role, candidate.hidden ?? false, candidate.toggleMode ?? null]),
     [
       [1, "user", false, null],
-      [4, "turn_toggle", false, "collapse"],
+      [-1, "turn_toggle", false, "collapse"],
       [2, "reasoning", false, null],
       [3, "assistant", false, null],
     ],
   )
-  assert.equal(harness.entryCounter, 4)
+  assert.equal(harness.entryCounter, 3)
   assert.equal(harness.persisted.length, 1)
   assert.equal(harness.reconciled.length, 1)
   assert.equal(harness.focusRetained, 1)
@@ -87,14 +88,14 @@ test("transcript state controller toggles serialized zero turn ids", () => {
   const harness = transcriptHarness({
     entries: [
       entry(1, "user", "prompt", { turnId: 0 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
+      entry(0, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 0, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 0 }),
     ],
     collapsedTurnIds: [0],
   })
 
-  harness.controller.toggleTurn(0, 4)
+  harness.controller.toggleTurn(0, 0)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
@@ -139,11 +140,66 @@ test("transcript state controller ignores missing blob entries", () => {
   assert.equal(harness.focusRetained, 0)
 })
 
+test("transcript state controller hydrates overlapping blob loads after ids shift", async () => {
+  // MP-08/MP-10: a first blob that expands to several entries renumbers the
+  // transcript before a second, still-loading blob resolves.
+  const page = (index: number, kind: "provider_tool" | "provider_reasoning" | "provider_output", text: string) => ({
+    entry_index: index,
+    fragment_start: 0,
+    fragment_end: text.length,
+    total_chars: text.length,
+    entry: { kind, text },
+  })
+  const blob = (blobId: string, kind: "provider_tool" | "provider_reasoning", start: number, count: number) => ({
+    blob_id: blobId,
+    kind,
+    title: kind,
+    summary: blobId,
+    sequence_start: start,
+    sequence_end: start + count - 1,
+    entry_count: count,
+    total_chars: 80,
+    timestamp_ms: start,
+  })
+  const tool = (id: string) => JSON.stringify({ id, tool: "ocr", status: "completed", output: id })
+  const pending = new Map<string, (content: SessionHistoryBlobContent) => void>()
+  const harness = transcriptHarness({
+    entries: hydrateSessionHistoryOutlineAgentEntries({
+      agent_id: "agent-1",
+      turns: [{
+        turn_id: "turn-1",
+        prompt_id: "prompt-1",
+        started_at_ms: 1,
+        lifecycle: "completed",
+        completed_at_ms: 5,
+        user_prompt: page(0, "provider_output", "read the page\n"),
+        entries: [],
+        summary: page(4, "provider_output", "Linux\n"),
+        blobs: [blob("blob-tools", "provider_tool", 1, 2), blob("blob-reasoning", "provider_reasoning", 3, 1)],
+      }],
+      next_cursor: null,
+    } as never) as TranscriptEntry[],
+    loadHistoryBlobContent: (_agentId, blobId) => new Promise((resolve) => pending.set(blobId, resolve)),
+  })
+  const placeholder = (blobId: string) => harness.entries.find((candidate) => candidate.historyBlobId === blobId)
+  harness.controller.toggleBlob(placeholder("blob-tools")!.id, false)
+  harness.controller.toggleBlob(placeholder("blob-reasoning")!.id, false)
+
+  pending.get("blob-tools")!({ blob_id: "blob-tools", entries: [page(1, "provider_tool", tool("tool-1")), page(2, "provider_tool", tool("tool-2"))] } as never)
+  await new Promise((resolve) => setImmediate(resolve))
+  pending.get("blob-reasoning")!({ blob_id: "blob-reasoning", entries: [page(3, "provider_reasoning", "checked the article title\n")] } as never)
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(harness.entries.some((candidate) => candidate.historyBlobLoading === true), false)
+  assert.ok(harness.entries.some((candidate) => candidate.role === "reasoning" && /checked the article title/.test(candidate.text)))
+})
+
 function transcriptHarness(options: {
   entries?: TranscriptEntry[]
   entryCounter?: number
   currentTurnId?: number | null
   collapsedTurnIds?: number[]
+  loadHistoryBlobContent?: (agentId: string, blobId: string) => Promise<SessionHistoryBlobContent>
 }) {
   const harness = {
     entries: options.entries ?? [],
@@ -188,6 +244,7 @@ function transcriptHarness(options: {
     enforceTranscriptRetention: () => {
       harness.enforced += 1
     },
+    ...(options.loadHistoryBlobContent ? { loadHistoryBlobContent: options.loadHistoryBlobContent } : {}),
   })
   return harness as typeof harness & { controller: ReturnType<typeof createTranscriptStateController> }
 }

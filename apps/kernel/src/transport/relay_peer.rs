@@ -100,7 +100,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes over the multidomain and main worker shapes.
+/// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
+/// MP-08/MP-11: reserved peer89 shares the owned-desktop local contract.
+/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes.
+/// MP-08/MP-11: version 92 adds Room AT-SPI target actions and owner Computer revoke.
 /// Older worker contracts are rejected before dispatch.
 /// Version 101 (main) binds the embedded local response union to local protocol 491,
 /// restores owner-private workflow notifications to the Browser/Computer peer
@@ -111,10 +114,13 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
 /// waiting-room and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 125;
+/// MP-08/MP-10/MP-11: allocated 133 carries the local 525 resumption union.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 133;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
+/// MP-08/MP-11: typed leased Computer grants require peer 109.
+pub(crate) const MINIMUM_LEASED_COMPUTER_PEER_VERSION: u32 = 109;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -324,6 +330,19 @@ pub struct RemoteExtensionInvocationContext {
     pub worker_machine_id: Option<String>,
 }
 
+/// MP-08/MP-11 peer109: value-free, home-selected lease and desktop authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeasedComputerGrant {
+    pub epoch: String,
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub desktop_kernel_id: String,
+    pub target: crate::local::KernelDesktopTarget,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteRoomBrowserRuntimeToolCall {
     pub tool_name: String,
@@ -355,6 +374,9 @@ impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteRoomComputerObservationCall {
+    Snapshot {
+        observer: String,
+    },
     ScreenStatus,
     Ocr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,6 +392,7 @@ pub enum RemoteRoomComputerObservationCall {
 impl std::fmt::Debug for RemoteRoomComputerObservationCall {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Snapshot { .. } => formatter.write_str("Snapshot(<redacted>)"),
             Self::ScreenStatus => formatter.write_str("ScreenStatus"),
             Self::Ocr { .. } => formatter.write_str("Ocr(<redacted>)"),
             Self::FindText { .. } => formatter.write_str("FindText(<redacted>)"),
@@ -936,6 +959,15 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    SetLeasedComputerGrant {
+        leased_agent_id: String,
+        epoch: String,
+        grant: Option<LeasedComputerGrant>,
+    },
+    CheckLeasedComputerGrant {
+        context: RemoteExtensionInvocationContext,
+        epoch: String,
+    },
     ForwardRoomBrowserRuntimeTool {
         context: RemoteExtensionInvocationContext,
         call: RemoteRoomBrowserRuntimeToolCall,
@@ -1246,6 +1278,10 @@ pub enum RelayPeerResponse {
     },
     MetaRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    LeasedComputerGrantUpdated {},
+    LeasedComputerGrantChecked {
+        grant: LeasedComputerGrant,
     },
     RoomBrowserRuntimeToolHandled {
         result: RemoteRoomBrowserRuntimeToolResult,

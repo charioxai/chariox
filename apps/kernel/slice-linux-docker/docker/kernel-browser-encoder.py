@@ -242,10 +242,14 @@ def main():
                 elif selected.startswith('avc1'):
                     # MP-08/MP-10: Selkies/pixelflux CBR at the negotiated rate,
                     # 1.5-frame VBV, infinite GOP; IDR only on an explicit reset.
+                    # MP-08 / MP-11: VBV must not raise protected black blocks
+                    # to grey through excessive quantization. The decoded mask
+                    # guard still rejects uncertain output.
+                    private_qp = ':qpmax=32' if regions else ''
                     codec.bit_rate=int(request['bitrate'])
                     codec.options={'forced-idr':'1','preset':'ultrafast','tune':'zerolatency','profile':'baseline',
                      'level':'5.1','g':'-1','bf':'0',
-                     'x264-params':f'keyint=infinite:scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0:bitrate={codec.bit_rate//1000}:vbv-maxrate={codec.bit_rate//1000}:vbv-bufsize={max(32,codec.bit_rate*3//120000)}:filler=0'}
+                     'x264-params':f'keyint=infinite:scenecut=0:sync-lookahead=0:repeat-headers=1:annexb=1:rc-lookahead=0{private_qp}:bitrate={codec.bit_rate//1000}:vbv-maxrate={codec.bit_rate//1000}:vbv-bufsize={max(32,codec.bit_rate*3//120000)}:filler=0'}
                 configuration, sequence = config, 0
                 mask_guard=protection.DecodedMaskGuard(selected) if regions else None
             frame = frame.reformat(format='yuv420p')

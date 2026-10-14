@@ -764,7 +764,10 @@ fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
     let error = validate_local_docker_slice_backup(&test_record(), &backup)
         .expect_err("an invalid archive path must fail without renaming it");
 
-    assert!(error.to_string().contains("cannot be quarantined safely"));
+    assert!(
+        error.to_string().contains("cannot be quarantined safely"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read(&unowned).expect("unowned file must remain readable"),
         b"must-remain"
@@ -1279,18 +1282,19 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
         )
     );
+    // MP-08/MP-11: repeated chords use the same strict XTEST helper as text
+    // (xdotool can report success for unknown keysyms without input).
     assert_eq!(
         std::fs::read_to_string(&keyboard_stdin_log)
             .expect("keyboard text should reach the Selkies helper stdin"),
-        "Grüße 世界"
+        "Grüße 世界ctrl+shift+p"
     );
     assert_eq!(
         std::fs::read_to_string(&keyboard_log)
-            .expect("text and reset should use the shared keyboard helper"),
-        "slice-keyboard.py\nslice-keyboard.py reset\n"
+            .expect("text, repeat and reset should use the shared keyboard helper"),
+        "slice-keyboard.py\nslice-keyboard.py key-repeat\nslice-keyboard.py reset\n"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }

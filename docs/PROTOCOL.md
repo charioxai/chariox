@@ -11,14 +11,23 @@ never substitute for a terminal grant. Transient target loss reconnects and
 retries within the admitted grant lifetime. The existing relay peer protocol
 and `client_connect` frames remain unchanged.
 
-Client grants retain the existing 30-minute lifetime, including keyed issuance
-and renewal. Initial `/relay cloud client-token` commands issued by a local
+Account-session CLIENT grants are capped at Cloud’s 15-minute ceiling, including
+keyed issuance and renewal. Machine-capability grants retain their existing
+30-minute lifetime; clients use the returned expiry. Initial `/relay cloud client-token` commands issued by a local
 account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
 The shared client authenticates that local endpoint from the same private CLI
 profile, checks the issuing kernel ID and renewal capability, and renews the
 admitted subject, key, session and target through that kernel. Runtime requests
 and events still travel directly to the target over the encrypted relay lanes.
 A machine-only managed target must never replace the account issuer.
+
+MP-08/MP-10/MP-11: an issuing kernel grants one canonical kernel target. For
+this account's own kernels (the issuing kernel or its relay inventory) a Room
+ID stays in the kernel attachment path and is not sent as a Cloud
+shared-session identity. A foreign target keeps the Cloud shared-session scope
+that admits the grant, and the client reports the session the grant carries.
+Pairing aliases label the invitation and never appear in the grant’s allowed
+targets.
 
 If the original issuer is unavailable, the client displays a notice and retries
 within the existing grant lifetime without changing authority or dropping the
@@ -3777,3 +3786,167 @@ The combined request snapshot is browser-mirror-517.json with a canonical SHA-25
 shape guard. Run the installed signed Todo App through the real /app open client
 flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
 These tests supplement exact-head review and real hosted acceptance.
+### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-10 / MP-11: protected desktop display (local 474, peer 96)
+
+A human terminal subscribes with `KernelBrowser` Computer `display_subscribe`,
+its current native `surface_id` and generation, video codecs, bounded bitrate,
+and DPR 1 or 2. The kernel returns the native source identity and physical
+geometry alongside the existing numeric controller generation and viewer lease.
+Only this new desktop viewer requires protocol 474. Agent MCP retains bounded,
+on-demand protected observations and cannot subscribe to continuous video.
+
+The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
+credit window and encrypted CXD1 relay transport. It has no separate streaming
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
+
+Multiple admitted viewers share one protected capture source. Each lease remains
+bound to its authenticated terminal, native generation and controller generation;
+disconnect, expiry and last-viewer close release its resources. Per-credit
+cancellation does not own the encoder lifetime. The existing display attach,
+next and unsubscribe operations address these leases. This section adds no
+relay frame of its own; its events use the display encoding below. Peer 97
+remains unused.
+
+Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
+events change; every other event stays JSON. On the local WebSocket they are
+binary messages; over the relay they are the encrypted plaintext. The format is
+`CXD1`, a big-endian u32 header length, the JSON event header naming its
+segments, then the raw segment bytes in order. JSON plaintexts never start with
+`CXD1`. These events are sent only on a display delivery: a local
+`display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
+that never register display delivery never receive `CXD1`. Peer 96 adds an
+optional `CXR1` WebSocket binary relay envelope, negotiated with the
+`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
+relay reads only the routing header. Kernels fall back to JSON/base64 for older
+relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
+that decodes `CXD1` before kernels at 466 or later serve it Browser display;
+an older bundle cannot parse these frames.
+
+The shared presenter accepts desktop pixels only at the exact admitted physical
+geometry, with CSS dimensions divided by the selected DPR. It converts viewer
+coordinates to native coordinates and routes input, takeover and release through
+the existing kernel Computer admission and actor ledger. Browser viewports retain
+their existing path. A Cloud client must expose the native source and use this
+shared presenter before the desktop feature is user-visible.
+
+
+### MP-08 / MP-10 / MP-11: shared display resumption (local525 / peer133)
+
+`KernelBrowser` commands `display_suspend` and `display_resume` carry only
+`subscription_id` and numeric `generation`. They address the existing shared
+Browser/Desktop display producer, including region producers using that stream.
+They are human terminal operations; provider MCP cannot invoke them. A prior ID
+is a resume hint, never an admission credential. Resume repeats current terminal
+admission, caller ownership, controller generation, protected source/document
+binding and protection policy checks. Revocation, source replacement or a changed
+policy refuses resumption and retires the retained producer.
+
+Suspension keeps the encoder and a bounded independently decodable protected
+frame in the shared motion queue for at most five seconds. Repeated suspension
+cannot extend that grace. An unannounced transport loss can resume only within
+five seconds of the last admitted display request. Resume replaces the delivery
+ID, resets its sequence and fences old outstanding credits; encrypted relay
+delivery uses fresh packet nonces and a new delivery registration. Old packets,
+opening grants and input gestures are never replayed. Explicit unsubscribe,
+terminal retirement and expiry retain their permanent cleanup behavior.
+
+The shared presenter keeps the painted canvas on transient teardown and exposes
+a bounded resume hint to its application adapter. A replacement passes that hint
+through `display_resume` before registering the fresh delivery. Only adapters
+using this behavior require local525. Older adapters retain their existing
+minimum versions. Desktop ownership moves atomically from the old viewer lease
+to the new one after admission; suspension bounds that lease to the same grace.
+It does not take control anew or change session membership, attachments or history.
+
+Snapshot/hash: `mp08_mp10_mp11_display_resumption_525_133_snapshot_hash`.
+Shared producer/presenter lifetime tests supplement the required hosted live
+network-change drill; they do not establish its one-second repaint gate.
+
+### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
+
+The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
+agent_id,target:{surface_id,generation}}` for the agent's bound ordinary Linux
+desktop worker. `revoke_leased_computer` names the same agent; ordinary Access
+revoke also retires it. The TUI exposes `/access grant-computer <agent-id>
+<surface-id> <generation>` and `/access revoke-computer <agent-id>`, requiring
+local500 and worker peer109 before sending the new contract.
+
+`SetLeasedComputerGrant` uses the existing authenticated home lease caller gate.
+It binds HOME kernel/session/agent, leased agent, desktop kernel, surface,
+generation and epoch. The desktop validates the current observed generation
+and grants only the Computer resource; it does not change focus or grant
+Browser, Vault, video, shell, Room access or authority over another kernel.
+Before every provider Computer invocation, `CheckLeasedComputerGrant` returns
+to HOME through the authenticated forwarded-worker/run gate. HOME requires
+the current explicit grant epoch, owner membership and live session/lease/run.
+The desktop then uses its ordinary protected Computer service, mutation ledger
+and human takeover. Queued admissions retain the epoch and provider run.
+
+HOME commits revocation before sending it to the worker; failed delivery cannot
+authorize a subsequent call. Delivered revocation cancels in-flight admission.
+Delayed revocations name their epoch and cannot retire a newer grant. Idle
+expiry, ended runs/sessions, changed leases and worker restarts fail closed.
+Ordinary focus cannot revive an expired or revoked explicit grant. No grant
+is restored from disk or inferred from Room membership. Agent `start` reads the
+already granted desktop and cannot create a replacement generation.
+
+### MP-08 / MP-11: installed graphical application launch (local494)
+
+`KernelBrowser.command={op:"computer",command:...}` and the official provider
+`chariox.kernel_computer` tool share two bounded commands:
+
+- `installed_applications`: current `target={surface_id,generation}`; returns
+  eligible installed desktop application IDs and names (at most256).
+- `launch_application`: the same current target plus one `application_id` from
+  that inventory. No command string, caller arguments, files, URLs or environment
+  are accepted. The kernel resolves the installed entry in its desktop user's
+  normal application inventory, starts its fixed Exec without a shell on the
+  existing owned display/bus, and retains process cleanup ownership. Unsupported
+  shell/env launchers and invalid desktop field codes refuse.
+
+Launch is a normal Computer mutation: provider capability/resource admission,
+current desktop generation, human takeover, cancellation and native observation
+protection all apply. Its reply identifies the application and includes a
+protected native observation; it never grants process control. Cancellation or
+failed launch observation settles the newly started process. Successful apps
+live until ordinary owned-desktop cleanup. No peer frame changes; peer103 is
+unused. Supplementary descriptor, command-shape and takeover tests cannot close
+MP-10 Drill D; that requires an official agent, real TUI/web/hostedWSS and public
+native document work at DPR1/2.
+
+### MP-08 / MP-10 / MP-11 bounded host-browser keys (498 / peer107)
+
+`KernelBrowserInput` keys accept an optional `modifiers` integer in 0..15,
+using Chromium's Alt=1, Control=2, Meta=4 and Shift=8 bits. Omitted/zero
+modifiers preserve the legacy key wire shape. Modified keys dispatch paired
+CDP key events under the existing document, cancellation, mirror and live
+sensitive-focus fences. Control/Meta/Alt chords emit no inserted text and
+cannot read or modify protected fields. Native input remains available for
+unmodified and Shift keys on the admitted owned display. Canvas clients send
+modifiers only to protocol498 or newer; trusted local paste retains the
+existing text-ingress path. The kernel remains the input authority.

@@ -76,7 +76,8 @@ export class BrowserEncoder {
   return this.context;
  }
  async encode(image,bitrate,reset=false,codec='vp09.00.10.08',regions=[]){
-  if(this.closed||this.busy)throw Error('MD-DISPLAY: browser encoder closed/busy');
+  if(this.closed)throw Error('MD-DISPLAY: browser encoder closed');
+  if(this.busy)throw Object.assign(Error('MD-DISPLAY: browser encoder busy'),{busy:true});
   this.busy=true;
   try{
   if(typeof image==='object'||regions.length||process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE==='1')return await this.fallback.encode(image,bitrate,reset,codec,regions);

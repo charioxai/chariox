@@ -156,6 +156,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
                     | crate::local::KernelBrowserCommand::DisplayAck { .. }
                     | crate::local::KernelBrowserCommand::ListGrants
                     | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
+                    | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
                     | crate::local::KernelBrowserCommand::RevokeGrants { .. }
                     | crate::local::KernelBrowserCommand::MirrorNext { .. }
             })

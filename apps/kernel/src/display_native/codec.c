@@ -228,6 +228,14 @@ static void motion_geometry(struct Codec *c,int protected) {
 /* MP-08/MP-10: Selkies/pixelflux rate control (encoders/software.rs): CBR
  * at the negotiated rate split by row height, VBV of 1.5 frames at 60 fps
  * (pixelflux vbv_bits with an infinite GOP), no filler. */
+/* MP-08/MP-10/MP-11: OpenH264 pads partial macroblocks with black.
+ * Align internal stripe edges so padding cannot contaminate visible seams.
+ * This same geometry owns encoding, damage, masks and exact repair. */
+int cx_codec_row_y(int height,int count,int index) {
+    if(index==count)return height;
+    int block=height>=16*count?16:2;
+    return block*((height*index/count)/block);
+}
 static int row_rate(struct Codec *c,int h) {int rate=(int)((double)c->bitrate*h/c->height/1000);return rate<16?16:rate;}
 static int row_vbv(int rate) {int vbv=rate*3/120;return vbv<16?16:vbv;}
 static void row_rate_control(x264_param_t *p,int rate) {
@@ -313,7 +321,7 @@ int cx_codec_rate(struct Codec *c,int bitrate) {
     c->bitrate=bitrate;
     for (int r=0;r<c->row_count;r++) {
         struct Row *row=&c->rows[r];if(!row->codec&&!row->openh264)continue;
-        int h=2*((c->height/2*(r+1))/c->row_count)-2*((c->height/2*r)/c->row_count);
+        int h=cx_codec_row_y(c->height,c->row_count,r+1)-cx_codec_row_y(c->height,c->row_count,r);
         if (row->openh264) {if (cx_openh264_rate(row->openh264,row_rate(c,h)*1000)) return -1;continue;}
         x264_param_t p;x264_encoder_parameters(row->codec,&p);row_rate_control(&p,row_rate(c,h));
         if (x264_encoder_reconfig(row->codec,&p)<0) return -1;
@@ -356,7 +364,7 @@ static int mask_span(const struct Codec *c,const struct Rect *region,int y,int b
 }
 static void mask_macroblocks(struct Codec *c,uint8_t *pixels,const struct Rect *regions,size_t count) {
     for (size_t n=0;n<count;n++) for (int row=0;row<c->row_count;row++) {
-        int box[4],y=2*((c->height/2*row)/c->row_count),bottom=2*((c->height/2*(row+1))/c->row_count);
+        int box[4],y=cx_codec_row_y(c->height,c->row_count,row),bottom=cx_codec_row_y(c->height,c->row_count,row+1);
         if (!mask_span(c,&regions[n],y,bottom,box))continue;
         for (int dy=box[1];dy<box[3];dy++) for (int x=box[0];x<box[2];x++) {
             uint8_t *p=pixels+((size_t)dy*c->width+x)*4;
@@ -423,7 +431,7 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
     motion_geometry(c,count>0);
     int total=0;
     for (int r=0;r<c->row_count;r++) {
-        int y=2*((c->height/2*r)/c->row_count),bottom=2*((c->height/2*(r+1))/c->row_count),h=bottom-y;
+        int y=cx_codec_row_y(c->height,c->row_count,r),bottom=cx_codec_row_y(c->height,c->row_count,r+1),h=bottom-y;
         const uint8_t *data=pixels+(size_t)y*c->width*4;
         size_t size=(size_t)h*c->width*4;
         struct Row *row=&c->rows[r];
@@ -517,8 +525,8 @@ void cx_codec_repair_bounds(struct Codec *c,const uint8_t *source,const uint8_t 
     int left=x+w,top=y+h,right=x,bottom=y;
     int scaled=c->row_count==1&&c->enc_width!=c->width;
     for (int dy=y;dy<y+h;dy++) {
-        int r=0;while (r+1<c->row_count && dy>=2*((c->height/2*(r+1))/c->row_count))r++;
-        int row_y=2*((c->height/2*r)/c->row_count),local=dy-row_y;
+        int r=0;while (r+1<c->row_count && dy>=cx_codec_row_y(c->height,c->row_count,r+1))r++;
+        int row_y=cx_codec_row_y(c->height,c->row_count,r),local=dy-row_y;
         int video=(video_rows&(c->row_count==1?255:(1u<<r)))!=0;
         const struct Row *row=&c->rows[r];AVFrame *f=row->decoded;
         /* Planar decode (hardware/protected) or interleaved x264 NV12 recon. */

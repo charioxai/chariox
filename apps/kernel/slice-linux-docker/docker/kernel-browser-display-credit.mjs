@@ -140,7 +140,7 @@ export async function displayCredit(host, stream, command, signal) {
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
   },()=>!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
-    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encoded_ms:source.encoded_ms});
+    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };
@@ -149,7 +149,7 @@ export async function displayCredit(host, stream, command, signal) {
 // MP-08/MP-10: a push credit returns a frame or, after a bounded wait on
 // encoder/refiner/source readiness, nothing. The kernel pump re-issues it.
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
-  if (command.push.reset) stream.invalidate();
+  if (command.push.reset) stream.resetForDelivery();
   const deadline = now() + budgetMs;
   for (;;) {
     const reply = await displayCredit(host, stream, command, signal);

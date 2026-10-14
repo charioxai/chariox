@@ -52,6 +52,11 @@ impl PumpState {
             .unwrap_or_default()
     }
     fn admit(&mut self, now: Instant) -> Gate {
+        // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
+        crate::transport::kernel_browser_display::timing(
+            "push_rtt_floor",
+            now.checked_sub(self.rtt_floor()).unwrap_or(now),
+        );
         if let Some(&(_, oldest)) = self.sent.front() {
             let age = now.saturating_duration_since(oldest);
             if age > STALL {
@@ -64,6 +69,7 @@ impl PumpState {
                 self.sent.clear();
                 self.reset = true;
             } else if age > self.rtt_floor() + GATE_ALLOWANCE {
+                crate::transport::kernel_browser_display::timing("push_oldest_unacked", oldest);
                 if self.gated_at.is_none() {
                     self.gated_at = Some(now);
                     self.closes.push_back(now);
@@ -103,6 +109,7 @@ impl PumpState {
             }
             self.sent.pop_front();
             if sent == sequence {
+                crate::transport::kernel_browser_display::timing("push_frame_ack", at);
                 self.rtt.push_back((now, now.saturating_duration_since(at)));
             }
         }

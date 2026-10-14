@@ -1,5 +1,6 @@
 """MD-DISPLAY-02/04: XDamage-triggered XShm browser-window readback.
-Private binary pipe, no root-window capture. Caller proves display ownership.
+Private binary pipe. Caller proves display ownership; owned desktop mode masks
+before pixels cross the pipe or enter hashing, damage, or codec state.
 """
 import ctypes as c
 import ctypes.util
@@ -41,10 +42,41 @@ def pid_of(d,w):
         if data:free(data)
 def children(d,w):
     root=L();parent=L();values=c.POINTER(L)();n=U()
-    if not query_tree(d,w,c.byref(root),c.byref(parent),c.byref(values),c.byref(n)):return []
+    if not query_tree(d,w,c.byref(root),c.byref(parent),c.byref(values),c.byref(n)):raise ValueError('owned window tree unavailable')
     try:return list(values[:n.value])
     finally:
         if values:free(values)
+def frame_insets(d,w):
+    actual=L();fmt=I();n=L();remaining=L();data=P()
+    status=property_(d,w,atom(d,b'_GTK_FRAME_EXTENTS',0),0,4,0,6,c.byref(actual),c.byref(fmt),c.byref(n),c.byref(remaining),c.byref(data))
+    try:
+        if status!=0:raise ValueError('client frame insets unavailable')
+        if actual.value==0:return [0,0,0,0]
+        if actual.value!=6 or fmt.value!=32 or n.value!=4 or remaining.value or not data:raise ValueError('client frame insets invalid')
+        values=list(c.cast(data,c.POINTER(L))[:4])
+        if any(value>64 for value in values):raise ValueError('client frame insets bound')
+        return values
+    finally:
+        if data:free(data)
+def owned_windows(d, root, owner, width, height):
+    # MP-08/MP-11: reparenting never grants the WM frame's pixels. Complete
+    # the bounded search and require one exact-PID client, as the native worker.
+    pending = [(root, 0)]; matches = []; remaining = 2048
+    while pending:
+        parent, depth = pending.pop()
+        descendants = children(d, parent)
+        if len(descendants) > remaining or descendants and depth >= 8:
+            raise ValueError('owned window tree bound')
+        remaining -= len(descendants)
+        for window in descendants:
+            if pid_of(d, window) == owner:
+                w, h = dims(d, window)
+                left,right,top,bottom=frame_insets(d,window)
+                if w == width+left+right and height+top+bottom <= h <= height+400:
+                    matches.append(window); continue
+            pending.append((window, depth + 1))
+    return matches
+
 def dims(d,w):
     r=L();xx=I();yy=I();width=U();height=U();border=U();dep=U()
     if not geometry(d,w,c.byref(r),c.byref(xx),c.byref(yy),c.byref(width),c.byref(height),c.byref(border),c.byref(dep)):raise ValueError('window unavailable')
@@ -52,7 +84,7 @@ def dims(d,w):
 
 d=None;image=None;shm=Shm(shmid=-1);attached=False;dam=0;pixmap=0;window=0
 pool=[];free_slots=set();leased={}
-stage='start'
+stage='start';config={}
 try:
     config=json.loads(sys.stdin.buffer.readline());owner=config['pid'];width=config['width'];height=config['height']
     if not isinstance(owner,int) or owner<=1 or not raster_damage.capture_geometry_allowed(width,height):raise ValueError('admission')
@@ -67,12 +99,23 @@ try:
     event_base=I();error_base=I()
     if not query_damage(d,c.byref(event_base),c.byref(error_base)):raise ValueError('XDamage unavailable')
     stage='window'
-    windows=[w for w in children(d,root_window(d)) if pid_of(d,w)==owner and dims(d,w)[0]==width and dims(d,w)[1]>=height]
+    desktop=config.get('desktop') is True
+    if desktop:
+        spec=importlib.util.spec_from_file_location('native_accessibility',Path(__file__).with_name('native-accessibility.py'))
+        accessibility=importlib.util.module_from_spec(spec);spec.loader.exec_module(accessibility)
+    windows=[] if desktop else owned_windows(d,root_window(d),owner,width,height)
+    if desktop:windows=[root_window(d)]
     if len(windows)!=1:raise ValueError('owned browser window ambiguous')
-    window=windows[0];ww,hh=dims(d,window);offset=hh-height
+    window=windows[0];ww,hh=dims(d,window);insets=[0,0,0,0] if desktop else frame_insets(d,window)
+    xoffset=insets[0];offset=hh-insets[3]-height
     # Bottom-aligned viewport is independently attested against CDP before use.
     if offset>400:raise ValueError('viewport crop bound')
-    redirect(d,window,0);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
+    if desktop:
+        if dims(d,window)!=(width,height):raise ValueError('owned desktop geometry')
+        pixmap=window
+    else:
+        redirect_mode=1 if os.environ.get('CHARIOX_OWNED_VIRTUAL_DISPLAY')=='1' else 0
+        redirect(d,window,redirect_mode);sync(d,0);pixmap=name_pixmap(d,window);sync(d,0)
     if not pixmap:raise ValueError('window backing unavailable')
     stage='image'
     image=create_image(d,visual(d,0),depth(d,0),2,None,c.byref(shm),width,height)
@@ -97,13 +140,26 @@ try:
             data=os.read(sys.stdin.fileno(),4096)
             if not data:break
             control+=data
-            if len(control)>8192:raise ValueError('pool control bound')
+            if len(control)>(1<<20 if desktop else 8192):raise ValueError('pool control bound')
             while b'\n' in control:
                 line,control=control.split(b'\n',1)
                 release=json.loads(line)
                 if release == {'wake':True}:
                     urgent_until=time.monotonic()+.1;wake_ms=time.time()*1000
                     continue
+                if desktop and set(release)-{'values'}=={'refresh','processes','browser_processes','browser_protection','protection_serial'} and release['refresh'] is True:
+                    # Owner 2026-10-09: Vault values are masked best effort by text box.
+                    values=release.get('values',[])
+                    if not isinstance(values,list) or len(values)>256 or not all(isinstance(v,str) and 0<len(v)<=4096 for v in values):raise ValueError('desktop values')
+                    config['values']=values
+                    for field in ('processes','browser_processes'):
+                        if not isinstance(release[field],list) or len(release[field])>256:raise ValueError('desktop process scope')
+                        config[field]=release[field]
+                    # MP-08/MP-11: CDP regions the kernel measured stable and
+                    # presented; null withholds every kernel-browser window.
+                    if release['browser_protection'] is not None and not isinstance(release['browser_protection'],dict) or type(release['protection_serial']) is not int:raise ValueError('desktop protection')
+                    config['browser_protection']=release['browser_protection'];config['protection_serial']=release['protection_serial']
+                    release={'refresh':True}
                 if release == {'refresh':True}:
                     # MP-11: trusted protection changes can be paint-free.
                     # One complete readback per coalesced refresh, no polling.
@@ -117,7 +173,7 @@ try:
             next_event(d,c.byref(event))
             if c.cast(event,c.POINTER(I))[0]==event_base.value:
                 rect=c.cast(event,c.POINTER(DamageEvent)).contents.area
-                x0=max(0,rect.x);y0=max(0,rect.y-offset);x1=min(width,rect.x+rect.width);y1=min(height,rect.y+rect.height-offset)
+                x0=max(0,rect.x-xoffset);y0=max(0,rect.y-offset);x1=min(width,rect.x+rect.width-xoffset);y1=min(height,rect.y+rect.height-offset)
                 if x1>x0 and y1>y0:
                     if not dirty:damage_ready_ms=time.time()*1000
                     area=[min(area[0],x0),min(area[1],y0),max(area[2],x1),max(area[3],y1)] if dirty else [x0,y0,x1,y1];dirty=True
@@ -128,13 +184,30 @@ try:
         # Adding their cost to16ms misses the next60Hz damage notification.
         input_wake_ms=wake_ms if time.monotonic()<urgent_until else None
         last=time.monotonic();urgent_until=0;wake_ms=None;at=time.time()*1000
-        if pid_of(d,window)!=owner or dims(d,window)!=(ww,hh):raise ValueError('window fence')
+        if (not desktop and pid_of(d,window)!=owner) or dims(d,window)!=(ww,hh):raise ValueError('window fence')
+        protection_serial=config.get('protection_serial',0)
+        if desktop:before=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
         stage='get_image'
         get_image_ms=time.time()*1000
-        if not get_image(d,pixmap,image,0,offset,0xffffffff):raise ValueError('readback')
+        if not desktop and frame_insets(d,window)!=insets:raise ValueError('client frame insets changed')
+        if not get_image(d,pixmap,image,xoffset,offset,0xffffffff):raise ValueError('readback')
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
-        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000;sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
+        raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
+        protected_regions=[]
+        if desktop:
+            after=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))
+            # MP-08/MP-11: only currently plain Vault-filled fields are masked.
+            if config.get('mask') or before!=after or not before.get('available') or not before.get('complete'):
+                continue
+            else:protected_regions=before.get('masks',before.get('uncovered',[]))
+            protected=bytearray(raw)
+            for rx,ry,rw,rh in protected_regions:
+                if any(type(v) is not int for v in [rx,ry,rw,rh]) or rx<0 or ry<0 or rw<1 or rh<1 or rx+rw>width or ry+rh>height:
+                    raise ValueError('fill geometry unavailable')
+                for row in range(ry,ry+rh):protected[(row*width+rx)*4:(row*width+rx+rw)*4]=bytes(rw*4)
+            raw=bytes(protected)
+        sig=fingerprint.update(raw);fingerprint_ms=time.time()*1000;dirty=False
         if not fingerprint.changed_bands and not refresh:continue
         refresh=False
         signature=sig;serial+=1
@@ -148,12 +221,12 @@ try:
         if pool:
             slot=min(free_slots);free_slots.remove(slot);leased[slot]=serial
             pool[slot][:]=raw;payload=b"\0";patch=None
-        header=json.dumps(dict(input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
+        header=json.dumps(dict(protected_regions=protected_regions,protection_serial=protection_serial,input_wake_ms=input_wake_ms,slot=slot,width=width,height=height,length=len(payload),serial=serial,base_serial=serial-1,patch=patch,signature=sig,captured_ms=at,capture_ms=time.time()*1000-at,readback_ms=readback_ms,fingerprint_ms=fingerprint_ms,damage_ms=damage_ms,damage=area,window_height=hh,offset=offset,damage_ready_ms=damage_ready_ms,get_image_ms=get_image_ms,image_ready_ms=image_ready_ms)).encode()
         sys.stdout.buffer.write(struct.pack('!I',len(header))+header+payload);sys.stdout.buffer.flush()
 except Exception:
     sys.stderr.write('MD-DISPLAY: native stage '+stage+'\n');sys.exit(1)
 finally:
-    if d and pixmap:free_pixmap(d,pixmap);unredirect(d,window,0)
+    if d and pixmap and not config.get('desktop'):free_pixmap(d,pixmap);unredirect(d,window,redirect_mode)
     if d and dam:destroy_damage(d,dam)
     if d and attached:detach(d,c.byref(shm));sync(d,0)
     if image:image.contents.data=None;destroy_image(image)
