@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+mod utility_admission;
+pub(crate) use utility_admission::ProviderUtilityAdmission;
 mod account_credential;
 mod claude;
 mod claude_runtime;
@@ -187,6 +189,19 @@ pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> 
     }
 }
 
+/// The model's context window in tokens. Neither the Claude nor the Codex
+/// catalog reports one, so this is each harness's documented window: Codex's
+/// effective window (it reports 258,400 at turn start) and Claude's 200k, or
+/// 1M for a `[1m]` model.
+pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
+    match canonical_provider_family(provider) {
+        Some("codex") => 258_400,
+        Some("claude") if model.to_ascii_lowercase().ends_with("[1m]") => 1_000_000,
+        Some("claude") => 200_000,
+        _ => 128_000,
+    }
+}
+
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
 }
@@ -334,14 +349,48 @@ pub(crate) fn run_blocking_provider_utility_prompt(
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, crate::error::DaemonError> {
+    run_blocking_provider_utility_prompt_with_admission(
+        run,
+        visible_user_prompt,
+        hidden_system_context,
+        timeout,
+        operation,
+        policy,
+        None,
+    )
+}
+
+pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
+    run: &RuntimeProviderRun,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    admission: Option<ProviderUtilityAdmission>,
+) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
-        "codex" => codex_runtime::run_codex_utility_prompt(
-            run,
-            visible_user_prompt,
-            hidden_system_context,
-            timeout,
-            policy,
-        ),
+        "codex" => match admission {
+            Some(admission) => codex_runtime::run_codex_utility_prompt_with_admission(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+                Some(admission),
+            ),
+            None => codex_runtime::run_codex_utility_prompt(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+            ),
+        },
+        "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
+            operation,
+            message: "protected utility submission is unavailable for the OpenCode adapter".into(),
+        }),
         "opencode" => opencode_binding::run_opencode_utility_prompt(
             run,
             visible_user_prompt,

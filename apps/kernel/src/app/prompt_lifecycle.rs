@@ -369,6 +369,8 @@ pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) provider_run_id: String,
     pub(crate) prompt_id: String,
     pub(crate) source_attachment_id: String,
+    // Capture pending composer ownership before cancellation can settle.
+    pub(crate) pty_input: &'static [u8],
 }
 
 impl DaemonApp {

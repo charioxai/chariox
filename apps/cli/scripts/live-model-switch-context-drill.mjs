@@ -12,6 +12,12 @@
 //   [--queued-follow-up]  submit a second prompt while the recall turn runs; the kernel
 //     log shows the handoff rendered once for the new session
 //   [--keep-session]  leave the drill session for inspection instead of deleting it
+//   [--bulk-turns N --bulk-kb K]  scripted long session: N turns that each paste K KB of
+//     notes and ask for a summary, so the history outgrows any fixed handoff
+//   [--rich-probes]  also probe an answer-only fact, a superseded decision, the current
+//     task and next step, a file a tool created, and the latest tool result
+//   [--allow-recall]  let the recall turn use the chariox.search_recall tool
+//   [--round-trip]  after the recall, plant one more fact and switch back to the first profile
 import assert from "node:assert/strict"
 import { execSync } from "node:child_process"
 import { randomInt } from "node:crypto"
@@ -80,6 +86,9 @@ const to = profile(option("to", ""))
 const timeoutMs = Number(option("timeout-ms", "300000"))
 const fillerTurns = Number(option("filler-turns", "0"))
 const recallAttachmentBytes = Number(option("recall-attachment-bytes", "0"))
+const bulkTurns = Number(option("bulk-turns", "0"))
+const bulkBytes = Number(option("bulk-kb", "40")) * 1024
+const richProbes = process.argv.includes("--rich-probes")
 const TOPICS = ["tide pools", "bread baking", "lighthouses", "glaciers", "chess openings", "bees", "volcanoes", "paper making", "kites", "river deltas", "telescopes", "salt marshes"]
 const evidenceRoot = path.resolve(option("evidence-root", path.join(process.env.HOME ?? process.cwd(), ".codex/evidence/model-switch-context")))
 if (!kernelUrl || !from.provider || !to.provider) {
@@ -88,6 +97,20 @@ if (!kernelUrl || !from.provider || !to.provider) {
 }
 
 const facts = { codename: `${pick()}-${pick()}`, port: String(20000 + randomInt(40000)), fruit: `${pick()}fruit` }
+if (richProbes) {
+  Object.assign(facts, {
+    cache_database: `${pick()}db`, current_task: `migrate-${pick()}-${pick()}`, next_step: `write-${pick()}-rollback`,
+    created_file: `ctx-${pick()}-${randomInt(1000, 9999)}.txt`, python_output: null, release_name: null,
+  })
+}
+// Notes a scripted long session pastes: numbered, varied lines, about 4 bytes per token.
+const notes = (turn) => {
+  const lines = []
+  for (let line = 0; lines.join("\n").length < bulkBytes; line++) {
+    lines.push(`Note ${turn}.${line}: the ${pick()} ${pick()} report measured ${randomInt(100000)} units near the ${pick()} ${pick()} station, ${pick()} grade ${randomInt(1, 9)}.`)
+  }
+  return lines.join("\n")
+}
 const evidence = { from, to, facts, started_at_ms: Date.now(), turns: [] }
 const client = new LocalIpcClient(kernelUrl)
 let sessionId = null
@@ -123,10 +146,30 @@ try {
   }
 
   await ask("fact-1", `Remember this for later in our conversation: the project codename is ${facts.codename}. Do not use tools. Reply with just OK.`)
-  await ask("fact-2", `Also remember: the staging deploy port is ${facts.port}, and my favourite fruit is the ${facts.fruit}. Do not use tools. Reply with just OK.`)
+  if (richProbes) {
+    const release = await ask("release", "Do not use tools. Invent a release name made of two lowercase English words joined by a hyphen, and reply with just that name.")
+    facts.release_name = release.text.trim().toLowerCase().match(/[a-z]+-[a-z]+/)?.[0] ?? "missing-release"
+    await ask("decision-old", "We will use SQLite for the cache. Do not use tools. Reply with just OK.")
+  }
+  const bulk = async (from, to) => {
+    for (let index = from; index < to; index++) {
+      await ask(`bulk-${index}`, `Reference notes, part ${index}:\n${notes(index)}\n\nWithout using tools, summarize these notes in about 80 words.`)
+    }
+  }
+  await bulk(0, Math.floor(bulkTurns / 2))
+  await ask("fact-2", `Also remember: the staging deploy port is ${facts.port}. Do not use tools. Reply with just OK.`)
+  await bulk(Math.floor(bulkTurns / 2), bulkTurns)
+  await ask("fact-3", `And my favourite fruit is the ${facts.fruit}. Do not use tools. Reply with just OK.`)
 
   for (let index = 0; index < fillerTurns; index++) {
     await ask(`filler-${index}`, `Without using tools, write one paragraph of about 120 words about ${TOPICS[index % TOPICS.length]}.`)
+  }
+  if (richProbes) {
+    await ask("decision-new", `Decision changed: we will use ${facts.cache_database} for the cache instead of SQLite. Our current task is ${facts.current_task}, and the next step is ${facts.next_step}. Do not use tools. Reply with just OK.`)
+    await ask("file", `Using one shell command, create the file ${path.join(workspace, facts.created_file)} containing the line ${facts.codename}. Reply with just DONE.`)
+    const [a, b] = [randomInt(1000, 9999), randomInt(1000, 9999)]
+    facts.python_output = String(a * b)
+    await ask("tool", `Run the shell command python3 -c "print(${a}*${b})" and reply with just its output.`)
   }
 
   const hook = (name) => {
@@ -151,11 +194,37 @@ try {
     files.push({ url: `file://${notes}`, mime: "text/plain", filename: "notes.txt" })
     evidence.recall_attachment_bytes = recallAttachmentBytes
   }
-  const recall = await ask("recall", "Without using any tools, answer from our conversation so far: what is the project codename, the staging deploy port, and my favourite fruit? Reply on one line exactly as codename=<value> port=<value> fruit=<value>, writing UNKNOWN for anything you were not told.", files,
+  const questions = {
+    codename: "the project codename", port: "the staging deploy port", fruit: "my favourite fruit",
+    release_name: "the release name you invented", cache_database: "the database we use for the cache now",
+    current_task: "our current task", next_step: "the next step", created_file: "the name of the file you created (name only)",
+    python_output: "the output of the last python3 command you ran", colour: "my favourite colour",
+  }
+  const tools = process.argv.includes("--allow-recall")
+    ? "You may use the chariox.search_recall tool, but no other tool"
+    : "Without using any tools"
+  const probe = async (label, files = [], followUp = null) => {
+    const keys = Object.keys(facts)
+    const recall = await ask(label, `${tools}, answer from our conversation so far: ${keys.map(key => questions[key]).join("; ")}. Reply on one line exactly as ${keys.map(key => `${key}=<value>`).join(" ")}, writing UNKNOWN for anything you were not told.`, files, followUp)
+    // Score each key on its own answer: the value up to the next key must
+    // contain the fact as a whole token.
+    const line = recall.text.split("\n").find(line => line.includes("=")) ?? ""
+    const answers = Object.fromEntries([...line.matchAll(/([a-z_]+)=(.*?)(?=\s+[a-z_]+=|$)/g)].map(([, key, value]) => [key, value.toLowerCase()]))
+    return Object.fromEntries(Object.entries(facts).map(([key, value]) => [key, (answers[key] ?? "").split(/[\s,;`'"]+/).map(token => token.replace(/\.$/, "")).includes(String(value).toLowerCase())]))
+  }
+  evidence.recalled = await probe("recall", files,
     process.argv.includes("--queued-follow-up") ? "Without using tools, reply with just the word DONE." : null)
-  evidence.recalled = Object.fromEntries(Object.entries(facts).map(([key, value]) => [key, recall.text.includes(value)]))
-  evidence.passed = Object.values(evidence.recalled).every(Boolean)
-  assert.ok(evidence.passed, `facts lost after switch: ${JSON.stringify(evidence.recalled)}`)
+  // A round trip switches back to the first profile after one more turn there.
+  if (process.argv.includes("--round-trip")) {
+    facts.colour = `${pick()}-blue`
+    await ask("fact-4", `One more thing to remember: my favourite colour is ${facts.colour}. Do not use tools. Reply with just OK.`)
+    variant(await client.send(updateAgentProfileRequest({
+      sessionId, agentId, provider: from.provider, model: from.model, effort: from.effort, accountProfile: from.accountProfile,
+    })), "AgentProfileUpdated")
+    evidence.recalled_after_return = await probe("recall-return")
+  }
+  evidence.passed = [evidence.recalled, evidence.recalled_after_return ?? {}].every(recalled => Object.values(recalled).every(Boolean))
+  assert.ok(evidence.passed, `facts lost after switch: ${JSON.stringify([evidence.recalled, evidence.recalled_after_return])}`)
 } catch (error) {
   evidence.passed = false
   evidence.failure = error instanceof Error ? error.message : String(error)
@@ -167,6 +236,7 @@ try {
   }
   await client.close().catch(() => {})
   if (scratch) await rm(scratch, { recursive: true, force: true })
+  if (facts.created_file) await rm(path.join(workspace, facts.created_file), { force: true })
 }
 
 await mkdir(evidenceRoot, { recursive: true })

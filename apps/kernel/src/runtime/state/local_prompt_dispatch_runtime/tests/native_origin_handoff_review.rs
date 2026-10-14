@@ -15,13 +15,22 @@ impl Drop for OwnNativePty {
 
 #[tokio::test]
 async fn native_origin_first_turn_receives_handoff_once_after_session_start() {
+    native_hook_context_case(false).await;
+}
+
+#[tokio::test]
+async fn native_hook_prepares_steering_context_for_the_current_active_turn() {
+    native_hook_context_case(true).await;
+}
+
+async fn native_hook_context_case(steering: bool) {
     let root = crate::test_support::TestWorktree::new("native-origin-handoff-review");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests()).unwrap();
     let (session, agent) = KernelSessionService::new(&mut app)
         .create_session(root.session_request())
         .unwrap();
-    KernelSessionService::new(&mut app)
+    let attachment = KernelSessionService::new(&mut app)
         .attach(AttachRequest::new(
             session.id(),
             "native-origin-observer",
@@ -117,18 +126,97 @@ async fn native_origin_first_turn_receives_handoff_once_after_session_start() {
     app.sessions_mut()
         .set_active_provider_run(session.id(), Some(run.id().into()))
         .unwrap();
+    if steering {
+        let active = match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                attachment.id(),
+                agent.id(),
+                "active native request",
+                vec![],
+            )
+            .unwrap()
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            _ => panic!("native target must start"),
+        };
+        std::fs::write(
+            root.path().join("active-prompt-id"),
+            "injected:steering-request",
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{}.approval-origin", context.display()),
+            active.id(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("headless-submit-retry.json"),
+            serde_json::json!({
+                "prompt_id":"steering-request","count":0,"last_attempt_ms":0,
+                "visible_prompt":"steering continuation",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Full dispatch inputs precede rendering and are bound to the active target.
+        std::fs::write(format!("{}.managed-inputs",context.display()),serde_json::json!({
+            "prompt_id":"steering-request","origin_prompt_id":active.id(),
+            "prompt":"steering continuation","hidden_system_context":"current-steering-control native-steering-room-secret",
+            "attachments":[],
+        }).to_string()).unwrap();
+        std::fs::write(&events,[
+            serde_json::json!({"hook_event_name":"SessionStart","session_id":"new-claude-session"}).to_string(),
+            serde_json::json!({"hook_event_name":"UserPromptSubmit","prompt":"steering continuation","hook_context_request_id":"native-first"}).to_string(),
+        ].join("\n")).unwrap();
+    }
     let app = Arc::new(Mutex::new(app));
     let _pty_cleanup = OwnNativePty {
         app: app.clone(),
         run_id: run.id().into(),
     };
     let runtime = owned_runtime_state(&app).await;
+    if steering {
+        // A Room secret registered after staging must be protected at the hook boundary.
+        runtime
+            .owned
+            .room_secret_observations
+            .register(session.id(), "native-steering-room-secret")
+            .unwrap();
+    }
     let outcome = runtime
         .pump_owned_provider_output(session.id(), run.id(), vec![], true)
         .await;
     outcome
         .as_ref()
         .expect("native pump must reach its hook processing seam");
+    if steering {
+        let response = root.path().join("hook-context-responses/native-first.txt");
+        assert!(
+            response.exists(),
+            "fresh native hook ignored the steering input bound to its active turn"
+        );
+        let context = std::fs::read_to_string(response).unwrap();
+        runtime
+            .with_app_side_effect(|app| app.pty_mut().remove_process(run.id()))
+            .await
+            .unwrap();
+        assert!(
+            context.contains("current-steering-control"),
+            "hook must preserve this steering dispatch's hidden inputs"
+        );
+        assert!(!context.contains("stale cached context"));
+        assert!(
+            !context.contains("native-steering-room-secret"),
+            "staged steering inputs bypassed current Room protection"
+        );
+        assert!(
+            !context.contains("native-origin-amber-fact"),
+            "steering replayed the existing turn handoff"
+        );
+        return;
+    }
     let first =
         std::fs::read_to_string(root.path().join("hook-context-responses/native-first.txt"))
             .unwrap();

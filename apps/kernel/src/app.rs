@@ -79,9 +79,9 @@ pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
-    claude_native_recent_terminal_failure, format_claude_permission_message,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome, NativePromptHandoffPolicy,
-    CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,

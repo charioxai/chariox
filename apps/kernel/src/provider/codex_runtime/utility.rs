@@ -25,6 +25,24 @@ pub fn run_codex_utility_prompt(
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, DaemonError> {
+    run_codex_utility_prompt_with_admission(
+        run,
+        prompt,
+        hidden_system_context,
+        timeout,
+        policy,
+        None,
+    )
+}
+
+pub(crate) fn run_codex_utility_prompt_with_admission(
+    run: &RuntimeProviderRun,
+    prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
     let endpoint = run
         .structured_endpoint()
         .ok_or_else(|| DaemonError::ProviderProtocol {
@@ -93,6 +111,10 @@ pub fn run_codex_utility_prompt(
     state.notification_only = true;
     let input = codex_input(prompt, &[]);
     let thread_id = state.thread_id().to_string();
+    let guard = admission
+        .as_ref()
+        .map(|check| check.acquire())
+        .transpose()?;
     let response = client.turn_start(
         &mut state.socket,
         &mut state.next_request_id,
@@ -107,6 +129,7 @@ pub fn run_codex_utility_prompt(
         input,
         &mut state.buffered_notifications,
     )?;
+    drop(guard);
     if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
         state.active_turn_id = Some(turn_id);
     }

@@ -3,10 +3,20 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 
 use crate::provider::RuntimeProviderRun;
 
+mod brief;
+pub(super) mod brief_refresh;
 mod builder;
-use builder::{load_agent_conversation, AgentConversation, MAX_HANDOFF_BYTES};
+mod facts;
+mod protection;
+use builder::{load_agent_conversation, AgentConversation};
 
 const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separately.";
+/// The packet's share of the target model's window, and the bytes it allows
+/// per token: conservative, since code and paths tokenize densely.
+const HANDOFF_WINDOW_PERCENT: u64 = 15;
+const HANDOFF_BYTES_PER_TOKEN: u64 = 3;
+/// The prompt-prefix transport's cap, whatever the window.
+const MAX_PROMPT_HANDOFF_BYTES: u64 = 256_000;
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingAgentContextHandoff {
@@ -17,6 +27,11 @@ pub(super) struct PendingAgentContextHandoff {
     pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
     conversation: AgentConversation,
+    /// Derived from history for a provider switch, so it carries the agent's
+    /// handoff brief.
+    pub(super) derived: bool,
+    /// Explicit snapshots cannot outlive the Room policy that protected them.
+    pub(super) room_revision: Option<u64>,
 }
 
 /// Explicit handoffs for runs that start outside the agent's own conversation:
@@ -28,6 +43,9 @@ pub(super) struct PendingAgentContextHandoffStore {
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
     conversation_runs: Arc<StdMutex<BTreeMap<String, ConversationRun>>>,
+    /// Unsupported brief models are remembered only for this kernel lifetime,
+    /// and only for the selected provider account and exact model.
+    unavailable_brief_models: Arc<StdMutex<std::collections::BTreeSet<(String, String, String)>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +69,28 @@ pub(super) fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
 }
 
 impl PendingAgentContextHandoffStore {
+    pub(super) fn brief_model_is_unavailable(&self, run: &RuntimeProviderRun) -> bool {
+        self.unavailable_brief_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(
+                run.provider().to_string(),
+                run.account_profile().to_string(),
+                run.model().to_string(),
+            ))
+    }
+
+    pub(super) fn remember_unavailable_brief_model(&self, run: &RuntimeProviderRun) {
+        self.unavailable_brief_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((
+                run.provider().to_string(),
+                run.account_profile().to_string(),
+                run.model().to_string(),
+            ));
+    }
+
     fn write(&self) -> StdMutexGuard<'_, BTreeMap<String, PendingAgentContextHandoff>> {
         self.inner
             .lock()
@@ -132,6 +172,10 @@ impl PendingAgentContextHandoffStore {
 }
 
 impl PendingAgentContextHandoff {
+    pub(super) fn needs_brief(&self) -> bool {
+        self.derived && !self.conversation.fits_without_brief(self.budget())
+    }
+
     fn matches_target(&self, target_run: &RuntimeProviderRun) -> bool {
         self.target_provider == target_run.provider()
             && self.target_account_profile == target_run.account_profile()
@@ -143,6 +187,17 @@ impl PendingAgentContextHandoff {
                 .target_model
                 .as_deref()
                 .is_none_or(|model| model == target_run.model())
+    }
+
+    /// The packet size the target allows: 15% of its model's window, within
+    /// the prompt transport's cap.
+    fn budget(&self) -> usize {
+        let window = crate::provider::model_context_window_tokens(
+            &self.target_provider,
+            self.target_model.as_deref().unwrap_or_default(),
+        );
+        (window * HANDOFF_WINDOW_PERCENT / 100 * HANDOFF_BYTES_PER_TOKEN)
+            .min(MAX_PROMPT_HANDOFF_BYTES) as usize
     }
 
     /// The handoff as the provider reads it, in at most `max_bytes`.
@@ -166,6 +221,7 @@ impl PendingAgentContextHandoff {
                 "target_provider_run_id": self.target_provider_run_id,
                 "max_bytes": max_bytes,
                 "context_bytes": handoff.len(),
+                "brief_bytes": self.conversation.brief.as_ref().map(String::len),
             }),
         );
         Some(handoff)
@@ -174,7 +230,7 @@ impl PendingAgentContextHandoff {
     /// The handoff as Claude native hidden context, sized to `room`: the space
     /// the turn's other hidden context leaves under the hook ceiling.
     pub(super) fn render_hidden(&self, room: usize) -> String {
-        room.min(MAX_HANDOFF_BYTES)
+        room.min(self.budget())
             .checked_sub(HIDDEN_HANDOFF_SUFFIX.len() + 2)
             .and_then(|max_bytes| self.render(max_bytes))
             .map(|handoff| format!("{handoff}\n\n{HIDDEN_HANDOFF_SUFFIX}"))
@@ -184,7 +240,7 @@ impl PendingAgentContextHandoff {
 
 pub(super) fn inject_context_handoff(prompt: &str, handoff: &PendingAgentContextHandoff) -> String {
     handoff
-        .render(MAX_HANDOFF_BYTES)
+        .render(handoff.budget())
         .map(|context| crate::provider::encode_account_handoff(&context, prompt))
         .unwrap_or_else(|| prompt.to_string())
 }
@@ -251,6 +307,7 @@ impl super::KernelRuntimeOwnedState {
         let (target_provider, target_account_profile, target_model) = target_profile;
         self.pending_agent_context_handoffs
             .clear(session_id, agent_id);
+        let room_revision = self.room_secret_observations.revision(session_id).ok();
         if let Some(conversation) =
             self.agent_conversation(session_id, source_history_agent_id, None)
         {
@@ -265,6 +322,8 @@ impl super::KernelRuntimeOwnedState {
                     target_account_profile: target_account_profile.to_string(),
                     target_model: target_model.map(str::to_string),
                     conversation,
+                    derived: false,
+                    room_revision,
                 },
             );
         }
@@ -316,6 +375,7 @@ impl super::KernelRuntimeOwnedState {
         if steering {
             return None;
         }
+        let started = std::time::Instant::now();
         if let Some(mut handoff) = self
             .pending_agent_context_handoffs
             .peek_matching(session_id, agent_id, target_run)
@@ -399,11 +459,17 @@ impl super::KernelRuntimeOwnedState {
             Some(latest) if holds_conversation(latest) => None,
             _ => self.agent_conversation(session_id, agent_id, Some(prompt_id)),
         };
-        let Some(conversation) = conversation else {
+        let Some(mut conversation) = conversation else {
             self.pending_agent_context_handoffs
                 .note_run_holds_conversation(session_id, agent_id, target_run);
             return None;
         };
+        self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
+        // Structured harnesses load the brief once during refresh. Other harnesses
+        // carry the last stored brief alongside their deterministic packet.
+        if !brief_refresh::writes_handoff_briefs(target_run) {
+            conversation.brief = self.stored_handoff_brief(session_id, agent_id);
+        }
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -414,6 +480,7 @@ impl super::KernelRuntimeOwnedState {
                 "source_provider_run_id": latest.and_then(|latest| latest.provider_run_id.as_deref()),
                 "source_provider_session_id": latest.and_then(|latest| latest.provider_session_id.as_deref()),
                 "target_provider_run_id": target_run.id(),
+                "derive_ms": started.elapsed().as_millis() as u64,
             }),
         );
         Some(PendingAgentContextHandoff {
@@ -428,7 +495,94 @@ impl super::KernelRuntimeOwnedState {
             target_account_profile: target_run.account_profile().to_string(),
             target_model: Some(target_run.model().to_string()),
             conversation,
+            derived: true,
+            room_revision: self.room_secret_observations.revision(session_id).ok(),
         })
+    }
+
+    pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
+        self.protected_stored_handoff_brief(session_id, agent_id)
+            .inspect_err(|error| {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_context_handoff",
+                    "failed to load the agent's handoff brief",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            })
+            .ok()
+            .flatten()
+            .map(|stored| stored.brief)
+    }
+
+    /// All persisted brief consumers share current Room cache policy. A rejected
+    /// cache cannot keep a watermark that skips the now-protected source history.
+    fn protected_stored_handoff_brief(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::history::AgentHandoffBrief>, crate::error::DaemonError> {
+        let Some(mut stored) = self
+            .operational_history_store
+            .load_agent_handoff_brief(session_id, agent_id)?
+        else {
+            return Ok(None);
+        };
+        match self
+            .room_secret_observations
+            .scrub_cached_result(session_id, stored.brief)
+        {
+            Ok(brief) => {
+                stored.brief = brief;
+                Ok(Some(stored))
+            }
+            Err(_) => {
+                self.operational_history_store
+                    .delete_agent_handoff_brief(session_id, agent_id)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// The agent's open interactions and prompts queued behind `prompt_id`.
+    fn add_session_facts(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        conversation: &mut AgentConversation,
+    ) {
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return;
+        };
+        conversation.facts.open_interactions = session
+            .active_interactions()
+            .iter()
+            .filter(|interaction| interaction.agent_id() == Some(agent_id))
+            .map(|interaction| match interaction.title() {
+                Some(title) => format!("{title}: {}", interaction.message()),
+                None => interaction.message().to_string(),
+            })
+            .collect();
+        let (_, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
+        conversation.facts.queued_prompts = queued
+            .iter()
+            .filter(|queued| queued.id() != prompt_id)
+            .map(|queued| queued.prompt().to_string())
+            .collect();
+        let facts = (
+            std::mem::take(&mut conversation.facts.open_interactions),
+            std::mem::take(&mut conversation.facts.queued_prompts),
+        );
+        let (interactions, prompts) = self
+            .room_secret_observations
+            .scrub_cached_result(session_id, facts)
+            .unwrap_or_default();
+        conversation.facts.open_interactions = interactions;
+        conversation.facts.queued_prompts = prompts;
     }
 
     pub(super) fn prompt_with_pending_context_handoff(
@@ -479,6 +633,9 @@ fn model_label(model: Option<&str>) -> &str {
 
 #[cfg(test)]
 mod tests {
+    mod brief_protection;
+    mod revalidation_review;
+    use super::builder::MAX_HANDOFF_BYTES;
     use super::*;
     use crate::runtime::state::KernelRuntimeState;
     use std::sync::Arc;
@@ -570,6 +727,8 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: Some("model-new".to_string()),
                 conversation: conversation("prior context"),
+                derived: false,
+                room_revision: Some(0),
             },
         );
 
@@ -875,6 +1034,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_model_switch_keeps_user_next_step_and_later_assistant_risk_distinct() {
+        let fixture = DerivedHandoffFixture::new().await;
+        // Shape of the real Codex audit: an explicit next step followed by a
+        // later assistant risk summary, then a no-tool recall after a model
+        // change. The observed paraphrase must not be mistaken for a brief
+        // dropping or superseding the user's words.
+        let next_step = "Next step: check queued delivery ordering. Inspect queued-prompt promotion logic and summarize the ownership guard.";
+        let risk = "With restart continuity prioritized, the main audit risks remain launch-policy ID clearing and unverified serialization between profile changes and queued promotion; persisted metadata and history provide supporting source evidence, not live recall proof.";
+        fixture.user(1, next_step);
+        fixture.output(2, "run-source", "codex", Some("thread-audit"), "These checks guard against stale delivery, but the inspected source does not establish serialization with profile changes.");
+        fixture.user(
+            3,
+            "Assess the documented protocol contract and list the remaining audit risks.",
+        );
+        fixture.output(4, "run-source", "codex", Some("thread-audit"), risk);
+        fixture.user(5, "Without tools or reading any file, recall our audit conversation. Preserve the original short decision phrases; do not infer missing facts.");
+
+        let resumed = test_run_in_session(
+            "run-target",
+            &fixture.agent_id,
+            "codex",
+            "gpt-6-sol",
+            Some("thread-audit"),
+        );
+        assert!(fixture.dispatch(&resumed, 5).is_none());
+
+        // A genuinely fresh session would instead receive both statements in
+        // their original order, without treating the risk as a user update.
+        let fresh = fixture.run("run-fresh", "codex", None);
+        let packet = fixture.dispatch(&fresh, 5).unwrap();
+        assert!(packet.contains(next_step), "{packet}");
+        assert!(packet.contains(risk), "{packet}");
+        assert!(packet.find(next_step).unwrap() < packet.find(risk).unwrap());
+    }
+
+    #[tokio::test]
     async fn new_provider_session_receives_the_conversation_until_it_answers() {
         let fixture = DerivedHandoffFixture::new().await;
         fixture.user(1, "remember the codename amber-kestrel");
@@ -1118,7 +1313,7 @@ mod tests {
         for room in [0, 100, 1_000, 9_000, 18_000, 48_000] {
             let hidden = handoff.render_hidden(room);
             assert!(
-                hidden.len() <= room.min(MAX_HANDOFF_BYTES),
+                hidden.len() <= room.min(handoff.budget()),
                 "{} > {room}",
                 hidden.len()
             );
@@ -1180,6 +1375,60 @@ mod tests {
         assert!(!handoff.contains("try again on claude"), "{handoff}");
     }
 
+    #[tokio::test]
+    async fn a_switch_carries_the_stored_brief_and_the_packet_fits_the_target_window() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        fixture.output(2, "run-old", "codex", Some("thread-old"), "OK");
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: "## Goal\nShip amber-kestrel.\n## Next Steps\nTest.".to_string(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+
+        let handoff = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.run("run-new", "claude", None),
+                "prompt-next",
+                false,
+            )
+            .expect("the new session receives the conversation");
+
+        let handoff = fixture
+            .runtime
+            .with_current_handoff_brief(
+                &fixture.runtime.owned,
+                handoff,
+                &fixture.session_id,
+                &fixture.agent_id,
+                "prompt-next",
+                &fixture.run("run-new", "claude", None),
+                || true,
+            )
+            .await;
+        assert!(handoff.derived);
+        assert_eq!(handoff.budget(), 90_000);
+        assert!(handoff
+            .render(handoff.budget())
+            .unwrap()
+            .contains("Ship amber-kestrel."));
+        let codex = PendingAgentContextHandoff {
+            target_provider: "codex".to_string(),
+            ..handoff
+        };
+        assert_eq!(codex.budget(), 116_280);
+    }
+
     fn test_run_in_session(
         run_id: &str,
         agent_id: &str,
@@ -1202,6 +1451,166 @@ mod tests {
     }
 
     #[test]
+    fn codex_briefs_default_to_the_fast_model_and_configuration_wins() {
+        let handoff = |source_provider: &str, source_model: &str| PendingAgentContextHandoff {
+            source_provider: source_provider.to_string(),
+            source_model: source_model.to_string(),
+            target_provider_run_id: None,
+            target_provider: String::new(),
+            target_account_profile: "default".to_string(),
+            target_model: None,
+            conversation: AgentConversation::default(),
+            derived: true,
+            room_revision: Some(0),
+        };
+        let codex = test_run_in_session("run", "agent", "codex", "gpt-5.5", None);
+        let claude = test_run_in_session("run", "agent", "claude", "opus", None);
+        let brief_model = super::brief_refresh::brief_model;
+
+        assert_eq!(
+            brief_model(None, &handoff("claude", "sonnet"), &codex),
+            "gpt-6-luna"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("codex", "gpt-6"), &codex),
+            "gpt-6-luna"
+        );
+        assert_eq!(
+            brief_model(Some("gpt-5.6-luna"), &handoff("claude", "sonnet"), &codex),
+            "gpt-5.6-luna"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("claude", "sonnet"), &claude),
+            "sonnet"
+        );
+        assert_eq!(
+            brief_model(Some("haiku"), &handoff("claude", "sonnet"), &claude),
+            "haiku"
+        );
+        assert_eq!(
+            brief_model(None, &handoff("claude-headless", "sonnet"), &claude),
+            "sonnet"
+        );
+        assert_eq!(brief_model(None, &handoff("claude", "  "), &claude), "opus");
+        assert_eq!(
+            brief_model(None, &handoff("codex", "gpt-6"), &claude),
+            "opus"
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11: a legacy fold can already have lost an early exact
+    // proposal; its watermark must not hide the source needed to repair it.
+    #[tokio::test]
+    async fn a_brief_rendering_change_replays_covered_source_once() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "Remember the assistant proposal verbatim.");
+        fixture.output(
+            2,
+            "old",
+            "codex",
+            Some("old-thread"),
+            "proposal=Switch Queue Continuity\nChecks follow later.",
+        );
+        fixture.user(3, "Continue the real investigation.");
+        let legacy = "## Goal\nAudit.\n## Next Steps\nContinue.";
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: legacy.into(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+        let (stored, events) = fixture
+            .runtime
+            .owned
+            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "the old fold cannot acknowledge the corrected source format"
+        );
+        let rebuilt_source = super::brief::transcript_chunks(&events);
+        assert!(rebuilt_source.iter().any(|chunk| chunk
+            .text
+            .contains("proposal=Switch Queue Continuity\\nChecks")));
+        let current = super::brief::parse_brief(legacy).unwrap();
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: current.clone(),
+                    covered_through_sequence: 2,
+                },
+            )
+            .unwrap();
+        let (stored, events) = fixture
+            .runtime
+            .owned
+            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .unwrap();
+        assert_eq!(stored.unwrap().brief, current);
+        assert!(events.iter().all(|event| event.sequence > 2));
+        assert!(events
+            .iter()
+            .any(|event| event.content.as_deref() == Some("Continue the real investigation.")));
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_uses_the_last_stored_brief() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(
+            1,
+            &format!("remember amber-kestrel {}", "notes ".repeat(500)),
+        );
+        fixture.output(2, "old", "codex", Some("old-thread"), "OK");
+        let target = fixture.run("new", "claude", None);
+        let handoff = fixture
+            .runtime
+            .owned
+            .context_handoff_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &target,
+                "prompt-next",
+                false,
+            )
+            .unwrap();
+        // A successful fold is durable even when the next utility call fails.
+        let brief = "## Goal\nShip amber-kestrel.\n## Next Steps\nTest.";
+        fixture
+            .history
+            .save_agent_handoff_brief(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &crate::history::AgentHandoffBrief {
+                    brief: brief.into(),
+                    covered_through_sequence: 1,
+                },
+            )
+            .unwrap();
+        // No target runtime: the utility fails, as a later chunk can in production.
+        let handoff = fixture
+            .runtime
+            .with_current_handoff_brief(
+                &fixture.runtime.owned,
+                handoff,
+                &fixture.session_id,
+                &fixture.agent_id,
+                "prompt-next",
+                &target,
+                || true,
+            )
+            .await;
+        assert_eq!(handoff.conversation.brief.as_deref(), Some(brief));
+    }
+
+    #[test]
     fn handoff_injection_is_source_agnostic() {
         let store = PendingAgentContextHandoffStore::default();
         store.set(
@@ -1215,6 +1624,8 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: None,
                 conversation: conversation("workflow context"),
+                derived: false,
+                room_revision: Some(0),
             },
         );
 
@@ -1239,6 +1650,8 @@ mod tests {
             target_account_profile: "default".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
             conversation: conversation("prior context"),
+            derived: false,
+            room_revision: Some(0),
         };
         let hidden = handoff.render_hidden(MAX_HANDOFF_BYTES);
 
@@ -1265,6 +1678,8 @@ mod tests {
                 target_account_profile: "default".to_string(),
                 target_model: Some("gpt-5".to_string()),
                 conversation: conversation("prior context"),
+                derived: false,
+                room_revision: Some(0),
             },
         );
 

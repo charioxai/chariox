@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) use handoff_brief::AgentHandoffBrief;
+mod handoff_brief;
 pub(crate) mod leased_projection;
 mod operational_archive;
 mod operational_legacy_import;
@@ -1233,6 +1235,15 @@ CREATE TABLE IF NOT EXISTS history_session_markers (
     session_id TEXT PRIMARY KEY,
     legacy_fallback_disabled_at_ms INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    covered_through_sequence INTEGER NOT NULL,
+    brief TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id)
+) WITHOUT ROWID;
 "#;
 
 /// The provider sessions that answered each agent, kept apart from the events

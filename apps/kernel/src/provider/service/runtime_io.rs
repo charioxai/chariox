@@ -279,14 +279,15 @@ impl ProviderProcessService {
         )
     }
 
-    pub(crate) fn run_structured_utility_prompt(
+    pub(crate) fn enqueue_structured_utility_prompt(
         &mut self,
         run: &RuntimeProviderRun,
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
-    ) -> Result<String, DaemonError> {
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
                 operation: "run structured utility prompt",
@@ -312,12 +313,13 @@ impl ProviderProcessService {
                 PromptAssemblyMode::UtilityTurn,
             )?
         };
-        self.run_actor_mailbox.run_utility(
+        self.run_actor_mailbox.enqueue_utility(
             run.id().to_string(),
             run.clone(),
             envelope,
             timeout,
             policy,
+            admission,
         )
     }
 
