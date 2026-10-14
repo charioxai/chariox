@@ -60,13 +60,29 @@ impl Transfer {
 // The next ordered chunk receipt accounts for these bytes too.
 const INLINE_RESPONSE_BYTES: usize = 1024 * 1024;
 fn independent_small(message: &Message) -> bool {
-    if message.len() > INLINE_RESPONSE_BYTES { return false; }
+    if message.len() > INLINE_RESPONSE_BYTES {
+        return false;
+    }
     match message {
         Message::Ping(_) | Message::Pong(_) | Message::Close(_) => true,
         Message::Text(text) => serde_json::from_str::<serde_json::Value>(text)
-            .ok().and_then(|value| value.get("kind").and_then(|kind| kind.as_str()).map(str::to_string))
-            .is_some_and(|kind| matches!(kind.as_str(), "client_response" | "client_metadata_response" | "daemon_peer_response")
-                || message.len() <= CHUNK_BYTES && matches!(kind.as_str(), "client_connected" | "daemon_request" | "daemon_incoming_peer_request")),
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("kind")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_string)
+            })
+            .is_some_and(|kind| {
+                matches!(
+                    kind.as_str(),
+                    "client_response" | "client_metadata_response" | "daemon_peer_response"
+                ) || message.len() <= CHUNK_BYTES
+                    && matches!(
+                        kind.as_str(),
+                        "client_connected" | "daemon_request" | "daemon_incoming_peer_request"
+                    )
+            }),
         _ => false,
     }
 }
@@ -163,7 +179,8 @@ pub(super) async fn run_writer<S>(
             earlier_request |= request;
             control(message)
                 || active.as_ref().is_some_and(|transfer| {
-                    transfer.small_sent - transfer.small_acked + message.len() <= INLINE_RESPONSE_BYTES
+                    transfer.small_sent - transfer.small_acked + message.len()
+                        <= INLINE_RESPONSE_BYTES
                         && independent_small(message)
                         && ordered
                 })
@@ -311,6 +328,56 @@ mod tests {
         );
         task.await.unwrap();
         let _ = client.close(None).await;
+    }
+
+    // MP-08/MP-10/MP-11: a real socket can deliver a mirror-sized opaque
+    // reply while catalog transport credit is deliberately held.
+    #[tokio::test]
+    async fn medium_reply_bypasses_a_bulk_catalog_without_its_receipts() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connecting = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = connecting.await.unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (_ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let catalog = serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(2 * INLINE_RESPONSE_BYTES)}).to_string();
+        tx.send(Message::Text(catalog.into())).await.unwrap();
+        let writer = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, control_rx));
+        let first = client.next().await.unwrap().unwrap();
+        assert!(matches!(first, Message::Text(ref text) if text.contains("transport_chunk")));
+        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(256 * 1024)}).to_string();
+        tx.send(Message::Text(reply.clone().into())).await.unwrap();
+        let delivered = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            while let Some(Ok(message)) = client.next().await {
+                if matches!(message, Message::Text(ref text) if text.as_str() == reply) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        writer.abort();
+        let _ = writer.await;
+        let _ = client.close(None).await;
+        assert!(
+            delivered,
+            "mirror-sized reply must not wait for catalog receipts"
+        );
+        assert!(!independent_small(&Message::Text(serde_json::json!({"kind":"client_response","payload":"x".repeat(INLINE_RESPONSE_BYTES)}).to_string().into())));
+        assert!(!independent_small(&Message::Text(
+            serde_json::json!({"kind":"client_event","payload":"x".repeat(32 * 1024)})
+                .to_string()
+                .into()
+        )));
     }
 
     // MP-08 / MP-10 / MP-11: ACK of a later chunk must release drained small traffic
