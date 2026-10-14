@@ -43,7 +43,7 @@ test("waiting room model and effort helpers project provider model variants", ()
   const modelOption = catalogModelOptions(catalog, "opencode")[0]
   const model = waitingRoomModel(waitingRoomState({ modelId: modelOption?.id ?? "" }), catalog)
 
-  assert.equal(model?.label, "GPT-5.4")
+  assert.equal(model?.label, "gpt-5.4")
   assert.equal(waitingRoomEfforts(model).includes("high"), true)
   assert.deepEqual(waitingRoomEfforts(null), [""])
 })

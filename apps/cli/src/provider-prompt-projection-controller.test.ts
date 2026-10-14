@@ -94,7 +94,7 @@ test("provider prompt projection derives prompt meta and usage", () => {
 
   assert.deepEqual(
     controller.promptMetaParts().map((part) => part.text),
-    ["OpenCode", "OpenCode GPT-5.4", "High"],
+    ["OpenCode", "opencode/gpt-5.4", "High"],
   )
   assert.equal(controller.promptUsageMeta()?.tokensLabel, "42,100 tok")
   assert.equal(controller.promptUsageMeta()?.usageLabel, "4%")
@@ -142,7 +142,7 @@ test("provider prompt projection uses owned provider run metadata for focused ag
 
   assert.deepEqual(
     controller.promptMetaParts().map((part) => part.text),
-    ["OpenCode", "OpenCode GPT-5.4", "High"],
+    ["OpenCode", "opencode/gpt-5.4", "High"],
   )
   assert.equal(controller.promptUsageMeta()?.tokensLabel, "42,100 tok")
   assert.equal(controller.promptUsageMeta()?.usageLabel, "4%")
