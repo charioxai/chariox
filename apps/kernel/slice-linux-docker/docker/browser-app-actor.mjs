@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: native Chromium task ancestry survives timers and async/await.
 export const APP_BRIDGE_URL = 'chariox-internal-app-bridge';
-export function installAppActorTasks(controlKey, initialTask, ownerTask) {
+export function installAppActorTasks(controlKey, initialTask, ownerTask, notify) {
   const createTask = console.createTask.bind(console), trace = console.trace.bind(console), apply = Reflect.apply;
   const NativeMap = Map, NativeWeakMap = WeakMap;
   const mapGet = Map.prototype.get, mapSet = Map.prototype.set, mapInstance = Function.prototype[Symbol.hasInstance];
@@ -33,6 +33,10 @@ export function installAppActorTasks(controlKey, initialTask, ownerTask) {
     return scoped(name, createTask(name), () => apply(callback, receiver, [event]));
   };
   const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
+  // Tell the host which task started a page load: a gesture names the dispatched
+  // input or the owner, a script navigation the task that ran it.
+  if (globalThis.navigation) apply(add, globalThis.navigation, ['navigate',
+    event => notify(event.userInitiated ? (dispatching ? input : ownerTask) : origin())]);
   EventTarget.prototype.addEventListener = function(type, callback, options) {
     if (!callback) return apply(add, this, [type, callback, options]);
     let callbacks = get(listeners, this);

@@ -71,6 +71,25 @@ const landed = async (tabs, via) => {
   }
   throw new Error(`no call landed via ${via}`);
 };
+const agent7 = { kind: 'agent', id: 'agent-7' };
+for (const [name, selector, via, physical] of [['same-origin link', '#link', '?landed=link', true], ['location.reload()', '#reload', '?landed=reload', false], ['delayed location.href', '#delayed', '?landed=delayed', false]]) {
+  test(`MP-08/MP-10/MP-11: agent ${name} keeps the agent on the destination document`, async () => {
+    const { browser, page, tabs } = await mountApp();
+    try {
+      const done = await tabs.beginInput('t1', 'agent-7');
+      await page.click(selector); await done();
+      assert.deepEqual((await landed(tabs, via)).actor, agent7);
+    } finally { await browser.close(); }
+  });
+}
+test('MP-08/MP-10/MP-11: owner navigation stays owner after an agent drove the previous document', async () => {
+  const { browser, page, tabs } = await mountApp();
+  try {
+    await (await tabs.beginInput('t1', 'agent-7'))();
+    await page.click('#link');                    // direct native owner click: no beginInput
+    assert.equal((await landed(tabs, '?landed=link')).actor, undefined);
+  } finally { await browser.close(); }
+});
 test('MP-08/MP-10/MP-11: direct native owner input is not the previous agent', async () => {
   const { browser, page, tabs } = await mountApp();
   try {

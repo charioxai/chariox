@@ -25,6 +25,7 @@ const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
 const BINDING = "__charioxAppCall";
+const NAVIGATION_BINDING = "__charioxAppNavigation";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:", "font-src 'self'", "connect-src 'none'", "frame-src 'none'",
@@ -60,7 +61,9 @@ const bridgeSource = (controlKey, initialTask, ownerTask) => `(() => {
   const call = globalThis.${BINDING};
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
-  const tasks = (${installAppActorTasks.toString()})(${JSON.stringify(controlKey)}, ${JSON.stringify(initialTask)}, ${JSON.stringify(ownerTask)});
+  const notify = typeof globalThis.${NAVIGATION_BINDING} === "function" ? globalThis.${NAVIGATION_BINDING} : () => {};
+  delete globalThis.${NAVIGATION_BINDING};
+  const tasks = (${installAppActorTasks.toString()})(${JSON.stringify(controlKey)}, ${JSON.stringify(initialTask)}, ${JSON.stringify(ownerTask)}, notify);
   const resolveKey = ${JSON.stringify(controlKey)};
   const pending = new Map(), NativePromise = Promise;
   const setPending = Map.prototype.set.bind(pending), getPending = Map.prototype.get.bind(pending), deletePending = Map.prototype.delete.bind(pending);
@@ -154,13 +157,13 @@ export class AppTabs {
     const actor = agent ? { kind: "agent", id: agent } : undefined;
     const task = !agent ? app.ownerTask : [...app.actors].find(([, retained]) => retained?.id === agent)?.[0] ?? randomUUID();
     app.actors.set(task, actor);
-    if (agent) app.agentObserved = true;
-    if (navigation) app.initialActor = actor;
+    if (agent) { app.agentObserved = true; app.lastAgent = actor; }
+    if (navigation) app.hostNavigation = actor;
     const set = (name, active) => this.connection.send("Runtime.evaluate", {
       expression: `globalThis.__charioxAppInput?.(${JSON.stringify(app.controlKey)}, ${JSON.stringify(name)}, ${active}, ${Boolean(agent)})`,
     }, sessionId);
     await set(task, true);
-    return () => set(task, false);
+    return () => { app.hostNavigation = undefined; return set(task, false); };
   }
 
   async open(params) {
@@ -215,6 +218,7 @@ export class AppTabs {
       await connection.send("Debugger.enable", {}, sessionId);
       await connection.send("Debugger.setAsyncCallStackDepth", { maxDepth: 64 }, sessionId);
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
+      await connection.send("Runtime.addBinding", { name: NAVIGATION_BINDING }, sessionId);
       await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: bridgeSource(opened.controlKey, opened.initialTask, opened.ownerTask) }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
     } catch (error) {
@@ -311,6 +315,11 @@ export class AppTabs {
       app.bridgeScript = null;
       app.pending.clear();
       app.traces.clear();
+      // A page load runs as whoever started it. The old document reported that
+      // task from its navigate listener; an unknown one never upgrades an agent.
+      const started = app.navigation;
+      app.navigation = undefined;
+      app.initialActor = started === undefined ? app.hostNavigation : app.actors.has(started) ? app.actors.get(started) : app.lastAgent;
       app.actors.set(app.initialTask, app.initialActor);
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
@@ -320,6 +329,8 @@ export class AppTabs {
         app.traces.set(id, appCallActor(connection, message.sessionId, app, message.params.stackTrace));
         if (app.traces.size > MAX_ANSWERABLE_CALLS) app.traces.delete(app.traces.keys().next().value);
       }
+    } else if (message.method === "Runtime.bindingCalled" && message.params?.name === NAVIGATION_BINDING) {
+      if (typeof message.params.payload === "string" && message.params.payload.length <= 128) app.navigation = message.params.payload;
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
       await this.enqueueCall(app, message.params.payload, message.sessionId);
     }

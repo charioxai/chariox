@@ -124,7 +124,7 @@ test("open intercepts every request, installs the bridge, and navigates to the A
   assert.deepEqual(result, { target_id: "t1", origin: "https://app.todo-1.invalid" });
   assert.deepEqual(connection.sent.map((m) => m.method), ["Target.getTargets", "Target.createTarget", "Browser.getWindowForTarget",
     "Browser.getWindowBounds", "Browser.setWindowBounds", "Fetch.enable",
-    "Debugger.enable", "Debugger.setAsyncCallStackDepth", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
+    "Debugger.enable", "Debugger.setAsyncCallStackDepth", "Runtime.addBinding", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.navigate"]);
   // Its own fullscreen window: page coordinates are desktop coordinates.
   assert.equal(connection.sent.find(m => m.method === "Target.createTarget").params.newWindow, true);
   assert.equal(connection.windowState, "fullscreen");
