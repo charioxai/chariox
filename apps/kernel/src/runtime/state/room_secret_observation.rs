@@ -417,6 +417,30 @@ impl RoomSecretObservations {
         self.scrub_values(room, input, true)
     }
 
+    /// MP-08 / MP-10 / MP-11: callers hold the Room barrier through handoff.
+    /// Base64 substrings depend on their byte offset; scrub decoded attachment
+    /// text with the other inputs, then restore the provider's wire encoding.
+    pub(super) fn scrub_prompt_inputs(
+        &self,
+        room: &str,
+        (prompt, hidden, attachments): (String, String, Vec<crate::session::PromptAttachment>),
+    ) -> Result<(String, String, Vec<crate::session::PromptAttachment>), DaemonError> {
+        let texts: Vec<_> = attachments
+            .iter()
+            .map(crate::session::PromptAttachment::text_contents)
+            .collect();
+        let (prompt, hidden, mut attachments, texts) =
+            self.scrub(room, (prompt, hidden, attachments, texts))?;
+        for (attachment, text) in attachments.iter_mut().zip(texts) {
+            if let Some(text) = text {
+                *attachment = attachment
+                    .clone()
+                    .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(text));
+            }
+        }
+        Ok((prompt, hidden, attachments))
+    }
+
     // A missing-value fence restricts observations, not workflow, messaging or
     // credential mutations. Their results still scrub every available known value.
     pub(super) fn scrub_runtime_result<T: Serialize + DeserializeOwned>(

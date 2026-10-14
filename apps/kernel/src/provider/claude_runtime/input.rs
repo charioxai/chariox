@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::session::PromptAttachment;
@@ -33,20 +32,14 @@ fn claude_attachment_content(attachment: &PromptAttachment) -> Vec<Value> {
                 }
             })];
         }
-        if attachment_is_textual(attachment.mime()) {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                if let Ok(text) = String::from_utf8(bytes) {
-                    return vec![json!({
-                        "type": "text",
-                        "text": format!(
-                            "Attachment: {label} ({}) at {}\n\n{}",
-                            attachment.mime(),
-                            attachment.url(),
-                            text,
-                        ),
-                    })];
-                }
-            }
+        if let Some(text) = attachment.text_contents() {
+            return vec![json!({
+                "type": "text",
+                "text": format!(
+                    "Attachment: {label} ({}) at {}\n\n{}",
+                    attachment.mime(), attachment.url(), text,
+                ),
+            })];
         }
     }
     vec![json!({
@@ -57,19 +50,4 @@ fn claude_attachment_content(attachment: &PromptAttachment) -> Vec<Value> {
             attachment.url(),
         ),
     })]
-}
-
-fn attachment_is_textual(mime: &str) -> bool {
-    mime.starts_with("text/")
-        || matches!(
-            mime,
-            "application/json"
-                | "application/javascript"
-                | "application/typescript"
-                | "application/xml"
-                | "application/yaml"
-                | "application/x-yaml"
-        )
-        || mime.ends_with("+json")
-        || mime.ends_with("+xml")
 }
