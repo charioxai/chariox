@@ -5,7 +5,7 @@ import { constants } from "node:fs"
 import { mkdir, open, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import { preferencesPath, publicRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"
-import { cloudClientRequest, CloudClientAuthError } from "./cloud-client-http.js"
+import { cloudClientRequest, CloudClientAuthError, endsCloudLogin } from "./cloud-client-http.js"
 export { CloudClientAuthError } from "./cloud-client-http.js"
 
 export type CloudClientCredential = {
@@ -77,7 +77,7 @@ export class CloudClientCredentialStore {
         try {
           next = await cloudClientRequest(value.profile.apiUrl, "/auth/client/refresh", { body: { accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId } })
         } catch (error) {
-          if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) await rm(this.filePath, { force: true })
+          if (error instanceof CloudClientAuthError && endsCloudLogin(error.code)) await rm(this.filePath, { force: true })
           throw error
         }
         const expiresAtMs = Date.parse(next.cloudSessionExpiresAt)

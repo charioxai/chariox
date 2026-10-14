@@ -26,7 +26,12 @@ export function createCloudWaitingRoomController(options: {
         if (options.isKernelConnected()) return
         options.setMachines(projection.machines); options.setKernels(projection.kernels)
         options.setStatus("ready"); options.reconcile()
-      } catch { if (!options.isKernelConnected()) options.setStatus("error") }
+      } catch {
+        if (options.isKernelConnected()) return
+        // The login ended during the request: one signed-out room, not a directory error.
+        if (!await options.client!.profile()) { options.setMachines([]); options.setKernels([]); options.setStatus("ready"); options.reconcile() }
+        else options.setStatus("error")
+      }
     })().finally(() => { pending = undefined })
     return pending
   }

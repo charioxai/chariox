@@ -31,7 +31,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
   const streams = new Set<ReturnType<typeof setInterval>>()
   const metrics = { starts: 0, refreshes: 0, grants: 0, connections: 0, subscriptions: 0, logouts: 0, requests: 0 }
   const paths: string[] = [], errors: unknown[] = []
-  let sequence = 0, wrongKey = false, failLogout = false, invalidEnrollment = false
+  let sequence = 0, wrongKey = false, failLogout = false, invalidEnrollment = false, signedOut = false
   const targets = [
     { daemonId: "remote-a", daemonAlias: "Work", machineId: "host-a", machineAlias: "Laptop", status: "ONLINE" as const },
     { daemonId: "remote-b", daemonAlias: "Build", machineId: "host-b", machineAlias: "Builder", status: "ONLINE" as const },
@@ -76,6 +76,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
         metrics.refreshes++; rotate(family)
         send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+accessLifetimeMs).toISOString() })
       } else if (path === "/relay/targets") {
+        if (signedOut) return send({ error: { code: "identity_revoked", message: "Session access has been deactivated", details: { reason: "signed_out" } } }, 401)
         if (!active(request.headers.authorization?.slice("Bearer ".length))) return deny("session_invalid")
         send({ targets })
       } else if (path === "/relay/token") {
@@ -130,7 +131,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
     })
   })
   return { apiUrl: `http://127.0.0.1:${apiAddress.port}`, metrics, paths, families,
-    setInvalidEnrollment: () => { invalidEnrollment = true }, setWrongKey: () => { wrongKey = true }, setFailLogout: (value: boolean) => { failLogout = value }, revoke,
+    setInvalidEnrollment: () => { invalidEnrollment = true }, setWrongKey: () => { wrongKey = true }, setFailLogout: (value: boolean) => { failLogout = value }, setSignedOut: () => { signedOut = true }, revoke,
     async close() {
       for (const timer of expiries.values()) clearTimeout(timer)
       for (const timer of streams) clearInterval(timer)
@@ -211,6 +212,46 @@ test("MP-08 / MP-11: background client revocation remains explicit on later cont
     await assert.rejects(terminal.client.issue("remote-a"), authCode("client_revoked"))
   } finally {
     clearTimeout(deadline)
+    terminal.client.stop()
+    await cloud.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("MP-08 / MP-11 BY-03: a Cloud answer that the login ended signs this terminal out once and clears its credential", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-signed-out-")), cloud = await fixture()
+  const terminal = profile(root)
+  let revoked = 0
+  try {
+    await terminal.client.login(cloud.apiUrl, () => {})
+    await terminal.client.resume(() => { revoked++ })
+    cloud.setSignedOut()
+    await assert.rejects(terminal.client.directory(), authCode("signed_out"))
+    assert.equal(await terminal.store.load(), null)
+    assert.equal(await terminal.client.profile(), null)
+    assert.equal(revoked, 1)
+    await assert.rejects(terminal.client.directory(), error => error instanceof CloudClientAuthError)
+    assert.equal(revoked, 1)
+  } finally {
+    terminal.client.stop()
+    await cloud.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("MP-08 / MP-11 BY-03: a profile another terminal signed out is noticed on the next profile read, once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-signed-out-elsewhere-")), cloud = await fixture()
+  const terminal = profile(root)
+  let revoked = 0
+  try {
+    await terminal.client.login(cloud.apiUrl, () => {})
+    await terminal.client.resume(() => { revoked++ })
+    assert.ok(await terminal.client.profile())
+    await terminal.store.clear()
+    assert.equal(await terminal.client.profile(), null)
+    assert.equal(await terminal.client.profile(), null)
+    assert.equal(revoked, 1)
+  } finally {
     terminal.client.stop()
     await cloud.close()
     await rm(root, { recursive: true, force: true })

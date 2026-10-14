@@ -11,6 +11,7 @@ import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { CloudClient } from "./cloud-client.js"
+import { presentCloudSignedOut } from "./cloud-signed-out.js"
 import { mergeRelayCloudProfile, saveRelayCloudProfile } from "./preferences.js"
 import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
@@ -713,11 +714,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     blockedAccountTarget = undefined
   }
   onCleanup(providerAccountRecovery.close)
-  void cloudClient.resume(() => {
-    setPreferencesState(current => mergeRelayCloudProfile(current, null))
-    void saveRelayCloudProfile(null).catch(() => {})
-    flashFooter("Terminal sign-in was revoked. Run /cloud login.", "error")
-  })
+  void cloudClient.resume(() => presentCloudSignedOut({
+    clearProfile: () => {
+      setPreferencesState(current => mergeRelayCloudProfile(current, null))
+      void saveRelayCloudProfile(null).catch(() => {})
+    },
+    clearDirectory: () => { setRemoteMachinesState([]); setRemoteKernelsState([]); setWaitingRoomInventoryStatus("ready") },
+    notify: appendCloudNotice,
+  }))
     .catch(() => flashFooter("Unable to read this terminal's Cloud profile", "error"))
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({

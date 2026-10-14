@@ -32,3 +32,23 @@ test("an absent profile resolving after attachment cannot clear the kernel direc
   const result = refresh(); connected = true; release(); await result
   assert.equal(writes, 0)
 })
+
+test("BY-03: a directory refusal that ended the login shows the signed-out room, not a directory error", async () => {
+  let signedOut = false, machines: unknown[] = ["stale"], kernels: unknown[] = ["stale"], status = "", reconciled = 0
+  const client = {
+    profile: async () => signedOut ? null : {accountId: "account"},
+    directory: async () => { signedOut = true; throw new Error("signed_out") },
+  } as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => false, setMachines: rows => {machines = rows}, setKernels: rows => {kernels = rows}, setStatus: value => {status = value}, reconcile: () => {reconciled++}})
+  await refresh()
+  assert.deepEqual([machines, kernels, status], [[], [], "ready"])
+  assert.equal(reconciled, 1)
+})
+
+test("a directory failure with the login intact is still a directory error", async () => {
+  let status = ""
+  const client = {profile: async () => ({accountId: "account"}), directory: async () => { throw new Error("offline") }} as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => false, setMachines: () => {}, setKernels: () => {}, setStatus: value => {status = value}, reconcile: () => {}})
+  await refresh()
+  assert.equal(status, "error")
+})
