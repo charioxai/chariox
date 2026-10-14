@@ -181,6 +181,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   kernel's position (last writer wins). A viewer ignores kernel echoes only
   while it is scrolling itself, and the kernel does not send a viewer its own
   scroll position back. Wheel over opaque regions drives the kernel.
+- **Paint holding (MP-08/MP-10, owner A/B 2026-10-14).** Like Chrome, a navigated
+  document's first snapshot waits for its first contentful paint (or `load`),
+  at most 2.5 s, so viewers keep showing the previous page instead of a white,
+  half-parsed one. The viewer keeps its attachment across documents.
 - **No tree hash.** Correctness comes from sequenced deltas, base checks,
   resnapshot on a gap and independent client validation.
 - **Observer bounds.** Instances are least recently used first, at most 16 per
