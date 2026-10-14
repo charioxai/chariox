@@ -620,7 +620,8 @@ impl KernelBrowserHost {
         // MP-08/MP-10/MP-11: a read-only state poll waits for the page's reconcile; input
         // must not queue behind it. The ledger ignores observations older than its newest.
         let state = method == "host.browser" && params["op"] == "state";
-        let long_poll = method == "host.browser" && params["op"] == "mirror_next" && params["wait_ms"].is_u64();
+        let long_poll =
+            method == "host.browser" && params["op"] == "mirror_next" && params["wait_ms"].is_u64();
         let mut result = if display
             || long_poll
             || method == "browser.app.calls"

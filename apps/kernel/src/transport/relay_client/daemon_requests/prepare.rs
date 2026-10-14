@@ -217,8 +217,8 @@ mod tests {
             generation: 1,
             after_sequence: 3,
             drift_nodes: vec![],
-                wait_ms: Some(1500),
-                resend: None,
+            wait_ms: Some(1500),
+            resend: None,
         })
         .browser_input_key()
         .unwrap();
