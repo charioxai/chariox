@@ -3,7 +3,7 @@ import {clientModule,playwrightModule} from './paths.mjs';
 // MP-08 / MP-10 / MP-11: exact frozen builds, real TUI controls, owned lifecycle.
 import {randomBytes,createHash} from 'node:crypto';
 import {createWriteStream} from 'node:fs';
-import {mkdir,readFile,writeFile,rm,statfs} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,rm,statfs,readdir} from 'node:fs/promises';
 import net from 'node:net';
 const {LocalIpcClient}=await import(clientModule('ipc.js'));
 const req=await import(clientModule('ipc-requests.js'));
@@ -29,6 +29,7 @@ export async function stack(label,name,token,{worker=false}={}){
  await writeFile(`${root}/home/config.toml`,`version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`,{mode:0o600});
  const ports=await Promise.all(Array.from({length:5},port)),relaySecret=randomBytes(32).toString('base64url'),passphrase=randomBytes(32).toString('base64url');
  const env={PATH:process.env.PATH,LANG:'C.UTF-8',HOME:`${root}/os-home`,CHARIOX_HOME:`${root}/home`,TMPDIR:`${root}/tmp`,XDG_CONFIG_HOME:`${root}/config`,XDG_DATA_HOME:`${root}/data`,XDG_STATE_HOME:`${root}/state`,XDG_CACHE_HOME:`${root}/cache`,CHARIOX_CLAUDE_BIN:process.env.CHARIOX_CLAUDE_BIN??'claude',CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_PORT:String(ports[4]),CHARIOX_RELAY_URL:`ws://127.0.0.1:${ports[4]}`,CHARIOX_RELAY_TOKEN:relaySecret,CHARIOX_DAEMON_SOCKET:`${root}/daemon.sock`,NODE_OPTIONS:'--max-old-space-size=4096',RUST_MIN_STACK:'16777216'};
+ if(process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT)env.CLAUDE_CODE_DISABLE_1M_CONTEXT=process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
  if(process.env.CTXVAL_NATIVE_CODEX_PROFILE)env.CODEX_HOME=process.env.CTXVAL_NATIVE_CODEX_PROFILE;
  if(process.env.CHARIOX_OPENCODE_BIN)env.CHARIOX_OPENCODE_BIN=process.env.CHARIOX_OPENCODE_BIN;
  if(process.env.CTXVAL_OPENCODE_CONFIG)env.OPENCODE_CONFIG=process.env.CTXVAL_OPENCODE_CONFIG;
@@ -59,7 +60,7 @@ export async function stack(label,name,token,{worker=false}={}){
  async function selectedModel(){
   const snapshot=await tui.send('snapshot'),id=snapshot.session.focusedAgentId;
   if(!workerObserver)return snapshot.session.agents.find(a=>a.id===id)?.model;
-  const current=await binding();const brief=current.runs.at(-1);if(!brief)return snapshot.session.agents.find(a=>a.id===id)?.model;
+  const current=await binding();const brief=current.runs.at(-1);if(!brief||!brief.id.startsWith('leased:'))return snapshot.session.agents.find(a=>a.id===id)?.model;
   const run=variant(await workerObserver.client.send(req.getProviderRunRequest(brief.id.split(':').at(-1))),'ProviderRun').provider_run;
   const state=variant(await workerObserver.client.send(req.getSessionStateRequest(run.session_id)),'SessionState');
   if(state.session.agents.length!==1)throw Error('Selected model status is ambiguous');
@@ -68,8 +69,8 @@ export async function stack(label,name,token,{worker=false}={}){
  async function close(){const owned=children.flatMap(c=>descendants(c.pid));if(tui)owned.push(...descendants(tui.child.pid));await record('owned-before-cleanup',{processes:owned.map(p=>({pid:p.pid,ppid:p.ppid,start:p.start,state:p.state}))});if(tui)await tui.close().catch(()=>{});if(client){const r=await client.send(req.listSessionsRequest()).catch(()=>({}));for(const s of r.SessionsListed?.sessions??[])await client.send(req.deleteSessionRequest(s.id)).catch(()=>{});await client.send(req.teardownProviderProcessesRequest(null,false)).catch(()=>{});await client.close().catch(()=>{})}for(const c of [...children].reverse())await stop(c);await providerNet?.close();await sleep(3000);let remaining=processSnapshot().filter(p=>owned.some(x=>x.pid===p.pid&&x.start===p.start)&&p.state!=='Z');for(const p of remaining)signalOwnedPid(p.pid,'SIGTERM');await sleep(2000);remaining=processSnapshot().filter(p=>owned.some(x=>x.pid===p.pid&&x.start===p.start)&&p.state!=='Z');for(const p of remaining)signalOwnedPid(p.pid,'SIGKILL');await sleep(500);remaining=processSnapshot().filter(p=>owned.some(x=>x.pid===p.pid&&x.start===p.start)&&p.state!=='Z');await record('cleanup',{children:children.map(c=>({pid:c.pid,exitCode:c.exitCode,signal:c.signalCode})),remaining:remaining.map(p=>({pid:p.pid,state:p.state})),scratch:root,sharedAccountsPreserved:true});if(remaining.length)throw Error('Owned live processes remain');await rm(root,{recursive:true,force:true})}
  try{
  if(process.env.CTXVAL_ISOLATE_CODEX==='1'){const {providerNetwork}=await import('./provider-proxy.mjs');providerNet=await providerNetwork({root,env,record})}
- const harnessHashes={};for(const f of ['runtime.mjs','common.mjs','drill.mjs','web-live.mjs','remote-tui.mjs','history-observe.py','log-observe.py'])harnessHashes[f]=hash(await readFile(harness+'/'+f));
- await record('identity',{harnessHashes,label,head:pins[label],tree,kernelEndpoint:url,kernelSha256:hash(await readFile(`${lane}/bin/kernel-${label}`)),relaySha256:hash(await readFile(`${lane}/bin/relay-${label}`)),clientSource:build.client,clientEntrySha256:hash(await readFile(`${lane}/client/apps/cli/dist/index.js`)),tuiBinarySha256:hash(await readFile(`${lane}/bin/chariox`)),protocol:build.protocol});
+ const harnessHashes={};for(const f of (await readdir(harness)).filter(name=>/\.(mjs|py)$/.test(name)))harnessHashes[f]=hash(await readFile(harness+'/'+f));
+ await record('identity',{harnessHashes,toolingHead:execFileSync('git',['-C',harness,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),label,head:pins[label],tree,charioxHome:env.CHARIOX_HOME,kernelEndpoint:url,kernelSha256:hash(await readFile(`${lane}/bin/kernel-${label}`)),relaySha256:hash(await readFile(`${lane}/bin/relay-${label}`)),clientSource:build.client,clientEntrySha256:hash(await readFile(`${lane}/client/apps/cli/dist/index.js`)),tuiBinarySha256:hash(await readFile(`${lane}/bin/chariox`)),protocol:build.protocol});
  start(`${lane}/bin/relay-${label}`,'relay');kernel=start(`${lane}/bin/kernel-${label}`,'kernel');client=await connect();
  if(process.env.CTXVAL_ORIGIN){
   const origin=process.env.CTXVAL_ORIGIN,relay=origin.replace('https://','wss://').replace('.val.','relay.val.');
