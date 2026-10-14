@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {NativeKeyboardChannel} from './native-keyboard-channel.mjs';
 
-for(const [name,text,expected] of [['ASCII','x'.repeat(128),7120],['Unicode','漢字🧪'.repeat(42)+'漢字',12240]]) {
+for(const [name,text,expected] of [['ASCII','x'.repeat(128),7120],['Unicode','漢字🧪'.repeat(42)+'漢字',17360]]) {
   test(`MP-08/MP-10/MP-11 ${name} warm text retains a bounded deadline covering all 128 characters`,async t=>{
     const channel=new NativeKeyboardChannel({});
     channel.start=async()=>{};

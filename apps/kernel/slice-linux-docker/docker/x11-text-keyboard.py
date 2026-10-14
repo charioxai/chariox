@@ -49,7 +49,10 @@ class _XTestKeyboard:
     def prebind(self, keysyms): return False  # Bounded recycling at each stroke.
     def _settle(self):
         self.connection.sync()
-        time.sleep(0.04)
+        # MP-08/MP-10/MP-11: sync settles the server mapping, while Chrome
+        # refreshes its client keymap asynchronously. Allow that reply to land
+        # before pressing the recycled code under an active native display.
+        time.sleep(0.08)
 
     def _overlay_keycode(self, keysym):
         if keysym in self.overlay: return self.overlay[keysym]

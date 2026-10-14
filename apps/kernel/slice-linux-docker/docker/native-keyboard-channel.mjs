@@ -47,11 +47,11 @@ export class NativeKeyboardChannel {
     });
     signal?.addEventListener('abort',abort,{once:true});
     // MP-08/MP-10/MP-11: committed text is bounded to 128 characters by
-    // the adapter/helper. Unicode can pay both 40 ms mapping settlement and
+    // the adapter/helper. Unicode can pay both 80 ms portable mapping settlement and
     // 40 ms delivery pacing per character, still within the 20 s native RPC.
     const text=request.input?.kind==='text'?request.input.text:'';
-    const textMs=(/[^\x00-\x7f]/.test(text)?80:40)*[...text].length;
-    const timeout=setTimeout(abort,Math.min(14000,2000+textMs));
+    const textMs=(/[^\x00-\x7f]/.test(text)?120:40)*[...text].length;
+    const timeout=setTimeout(abort,Math.min(18000,2000+textMs));
     try{return await response;}finally{clearTimeout(timeout);signal?.removeEventListener('abort',abort);}
   }
   async close(){

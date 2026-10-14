@@ -27,6 +27,34 @@ class TextTests(unittest.TestCase):
                 self.keyboard.press(symbol);self.keyboard.release(symbol)
             self.keyboard.release_group_lock()
         self.assertEqual(self.mapping[8],[0,0])
+    def test_unicode_waits_for_the_client_keymap_before_each_physical_stroke(self):
+        # MP-08/MP-10/MP-11: X sync acknowledges the server, not the client
+        # keymap refresh. Model Chrome's delayed map reply under display load.
+        now = 0
+        client_mapping = {}
+        updates = []
+        delivered = []
+        def mapping(code, rows):
+            self.mapping[code] = rows[0]
+            updates.append((now + 0.06, code, rows[0][0]))
+        def sleep(seconds):
+            nonlocal now
+            now += seconds
+            while updates and updates[0][0] <= now:
+                _, code, symbol = updates.pop(0)
+                client_mapping[code] = symbol
+        def event(_connection, kind, code):
+            if kind == module.X.KeyPress:
+                delivered.append(client_mapping.get(code, 0))
+        symbols = [module.universal_text_keysym(c) for c in '漢字🧪' * 4]
+        self.connection.change_keyboard_mapping.side_effect = mapping
+        with patch.object(module.time, 'sleep', side_effect=sleep), patch.object(module.xtest, 'fake_input', side_effect=event):
+            for symbol in symbols:
+                self.keyboard.press(symbol)
+                self.keyboard.release(symbol)
+                sleep(0.04)
+        self.assertEqual(delivered, symbols)
+
     def test_occupied_or_modifier_slots_fail_before_injection(self):
         self.mapping[8]=self.mapping[92]=[ord('b')]*2
         with patch.object(module.xtest,'fake_input') as inject:
