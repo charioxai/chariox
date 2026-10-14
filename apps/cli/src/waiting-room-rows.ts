@@ -41,7 +41,7 @@ export function waitingRoomRows(
   const choice = waitingRoomChoice(state, sessions, catalog, remote)
   const inventoryLoading = waitingRoomInventoryPending(remote, waitingRoomSessions(sessions).length > 0)
     || (providerCatalogIsLocalFallback(catalog)
-      && (remote.collaborationBackend !== "cloud" || Boolean(remote.kernels?.length)))
+      && (remote.collaborationBackend !== "cloud" || Boolean(remote.relay?.daemon_id)))
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
