@@ -418,6 +418,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setMachines: deps.setRemoteMachinesState, setKernels: deps.setRemoteKernelsState,
     setStatus: deps.setWaitingRoomInventoryStatus,
     reconcile: () => reconcileWaitingRoomProjection(deps.waitingRoomState()),
+    preferredKernelRef: () => deps.waitingRoomState().selectedKernelRef,
+    hydrateKernel: async (kernelId, machineId) => {
+      deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), selectedKernelRef: kernelId, selectedMachineRef: machineId })
+      await connectDetachedKernelFromWaitingRoom()
+    },
   })
   const refreshWaitingRoomDataNow = async () => {
     if (!deps.kernelConnected()) return refreshCloudDirectory()

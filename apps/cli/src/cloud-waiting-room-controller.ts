@@ -7,8 +7,11 @@ export function createCloudWaitingRoomController(options: {
   setKernels: (kernels: NonNullable<WaitingRoomRemoteState["kernels"]>) => void
   setStatus: (status: "loading" | "ready" | "error") => void
   reconcile: () => void
+  hydrateKernel?: (kernelId: string, machineId: string) => Promise<void>
+  preferredKernelRef?: () => string | undefined
 }) {
   let pending: Promise<void> | undefined
+  let initialHydration = !options.isKernelConnected()
   return async (): Promise<void> => {
     if (!options.client || options.isKernelConnected()) return
     if (pending) return pending
@@ -25,6 +28,13 @@ export function createCloudWaitingRoomController(options: {
         // A kernel pivot may have completed while the Cloud request was pending.
         if (options.isKernelConnected()) return
         options.setMachines(projection.machines); options.setKernels(projection.kernels)
+        if (initialHydration && options.hydrateKernel && projection.kernels.length) {
+          options.reconcile()
+          const kernel = projection.kernels.find(kernel => kernel.kernel_id === options.preferredKernelRef?.()) ?? projection.kernels[0]!
+          await options.hydrateKernel(kernel.kernel_id, kernel.machine_id)
+          initialHydration = false
+          return
+        }
         options.setStatus("ready"); options.reconcile()
       } catch { if (!options.isKernelConnected()) options.setStatus("error") }
     })().finally(() => { pending = undefined })

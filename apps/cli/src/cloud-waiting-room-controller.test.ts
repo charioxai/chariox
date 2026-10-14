@@ -32,3 +32,22 @@ test("an absent profile resolving after attachment cannot clear the kernel direc
   const result = refresh(); connected = true; release(); await result
   assert.equal(writes, 0)
 })
+
+test("MP-08/MP-10 cold detached discovery waits for kernel information before ready", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let status = "", connected = false, hydrated = 0
+  const client = { profile: async () => ({ accountId: "account" }), directory: async () => [
+    { daemonId: "kernel", machineId: "machine", status: "ONLINE" },
+  ] } as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({ client, isKernelConnected: () => connected,
+    setMachines: () => {}, setKernels: () => {}, setStatus: value => { status = value }, reconcile: () => {},
+    hydrateKernel: async () => { hydrated++; await pending; connected = true },
+  })
+  const result = refresh()
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+  assert.equal(hydrated, 1)
+  assert.equal(status, "loading")
+  release(); await result
+  assert.notEqual(status, "error")
+})
