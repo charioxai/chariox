@@ -1,0 +1,41 @@
+import {clientModule,playwrightModule} from './paths.mjs';
+// MP-08 / MP-10 / MP-11: real Cloud controls/composer, both display densities.
+const {chromium}=await import(playwrightModule());
+import {startViewerNetwork} from './viewer-network.mjs';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {sleep} from './runtime.mjs';
+let evidenceSerial=0;
+export async function webClients(run,remote){
+ const callId=String(++evidenceSerial).padStart(2,'0');
+ const e=JSON.parse(await readFile(run.out+'/enrollment.json','utf8')),clients=[];
+ try{for(const dpr of [1,2]){
+  const out=run.out+'/web-'+callId+'-dpr'+dpr;await mkdir(out,{recursive:true,mode:0o700});
+  const network=await startViewerNetwork(e.relay,{httpsOrigins:[e.origin]});
+  const wrapper=run.root+'/chrome-ns-wrapper.sh';const quote=v=>"'"+v.replaceAll("'","'\\''")+"'";await writeFile(wrapper,'#!/bin/sh\nexec '+remote.chromePrefix.map(quote).join(' ')+" /opt/google/chrome/chrome \"$@\"\n",{mode:0o700});
+  const browser=await chromium.launch({headless:true,executablePath:wrapper,proxy:{server:network.proxyUrl.replace('127.0.0.1','10.0.2.2')},args:['--no-sandbox','--disable-dev-shm-usage','--js-flags=--max-old-space-size=3072','--renderer-process-limit=2']});
+  const ctx=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:dpr}),page=await ctx.newPage();network.attach(page);const logs=[];
+  const safe=x=>String(x).replace(/sk-(?:ant-oat01-)?[A-Za-z0-9_-]{20,}|Bearer\s+[^\s"\\]+|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,'[redacted]');
+  page.on('console',m=>{const text=safe(m.text()).replace(/((?:token|credential|authorization|secret)[\w -]*[:=]\s*)[^,;\n]+/gi,'$1[redacted]');logs.push({at:Date.now(),type:m.type(),text})});page.on('pageerror',e=>logs.push({at:Date.now(),type:'pageerror',text:safe(e.message)}));
+  let serial=0;
+  const item={dpr,page,network,async capture(label){const name=String(++serial).padStart(3,'0')+'-'+label;await page.screenshot({path:out+'/'+name+'.png',fullPage:true});await writeFile(out+'/'+name+'.visible.txt',safe(await page.locator('body').innerText()),{mode:0o600});const trace=await page.evaluate(()=>window.__charioxBadgeTrace?.export()??null);await writeFile(out+'/'+name+'.badge.json',safe(JSON.stringify(trace)),{mode:0o600});await writeFile(out+'/console.json',JSON.stringify(logs,null,2),{mode:0o600});await run.record('web-step-'+callId+'-'+dpr+'-'+serial,{dpr,name,at:new Date().toISOString()})},async close(){await run.record('web-network-final-'+callId+'-dpr'+dpr,await network.snapshot());await browser.close();await network.close()}};clients.push(item);
+  await page.goto(e.origin+'/waiting-room?badgeTrace=1');await page.getByText('Waiting Room Ready',{exact:true}).waitFor({timeout:60000});await sleep(5000);
+  const scripts=await page.evaluate(async()=>{const urls=[...document.querySelectorAll('script[src]')].map(e=>e.src).filter(u=>new URL(u).origin===location.origin);return Promise.all(urls.map(async url=>{const response=await fetch(url);const bytes=await response.arrayBuffer();const digest=await crypto.subtle.digest('SHA-256',bytes);return {url,bytes:bytes.byteLength,sha256:[...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')}}))});await run.record('web-bundle-'+callId+'-dpr'+dpr,{origin:e.origin,scripts});
+  const dashboard=await page.evaluate(async()=>{const response=await fetch('/dashboard');if(!response.ok)throw Error('Dashboard status '+response.status);return response.json()});if(!dashboard.relayTargets.some(t=>t.machineId===e.machine_id&&t.daemonId===e.daemon_id&&t.status==='ONLINE'))throw Error('Fresh hosted target is not ONLINE');
+  for(const [key,id]of [['machine',e.machine_id],['kernel',e.daemon_id]]){await page.locator(`[data-waiting-row-key="${key}"]`).click();await page.locator(`[data-option-picker-value="${id}"]`).click({timeout:60000});await sleep(1500)}
+  const s=await run.tui.send('snapshot');await page.locator('[data-waiting-row-key="join"]').click();const row=page.locator(`[data-session-picker-session-id="${s.session.id}"]`);await row.waitFor({timeout:30000});const b=await row.boundingBox();await row.dblclick({position:{x:Math.max(60,b.width*.55),y:b.height/2}});await page.locator('[data-terminal-prompt]').waitFor({timeout:30000});await sleep(5000);
+  await item.capture('attached');
+  item.select=async(provider,model,{modelOnly=false}={})=>{
+   const state=await run.tui.send('snapshot'),id=state.session.focusedAgentId,account=run.profiles[provider.startsWith('claude')?'claude':provider];
+   const pane=page.locator(`.freeform-agent-pane[data-agent-id="${id}"]`);await pane.click({position:{x:8,y:8}});await page.locator(`.freeform-agent-pane.focused[data-agent-id="${id}"]`).waitFor({timeout:30000});await item.capture('focused-for-profile');
+   async function option(field,value){await page.locator(`.freeform-prompt-config-menu[data-freeform-inline-field="${field}"] summary:visible`).click();const choices=page.locator(`.freeform-prompt-config-menu [data-freeform-option-field="${field}"]:visible`);await choices.first().waitFor({timeout:60000});const vals=await choices.evaluateAll(es=>es.map(e=>e.dataset.freeformOptionValue));const v=vals.find(x=>x===value)||vals.find(x=>x.endsWith('/'+value));if(!v)throw Error('Real web option not offered '+field+' '+value);await page.locator(`.freeform-prompt-config-menu [data-freeform-option-field="${field}"][data-freeform-option-value="${v}"]:visible`).click();let committed=false;for(let n=0;n<480;n++){const state=await run.tui.send('snapshot'),agent=state.session.agents.find(a=>a.id===id),actual=field==='account'?agent.accountProfile:field==='model'?await run.selectedModel():agent[field];if(actual===value||actual===v||(field==='model'&&actual===provider+'/'+value)){committed=true;break}await sleep(250)}if(!committed)throw Error('Web field did not commit '+field);await item.capture(field+'-'+provider)}
+   if(modelOnly){const current=state.session.agents.find(a=>a.id===id);if(current.provider!==provider||current.accountProfile!==account)throw Error('Model-only change cannot alter provider/account');}else{await option('provider',provider);await option('account',account);}await option('model',model);
+   for(let n=0;n<480;n++){const s=await run.tui.send('snapshot'),a=s.session.agents.find(a=>a.id===id);if(a.provider===provider&&a.accountProfile===account&&[model,provider+'/'+model].includes(await run.selectedModel()))return;await sleep(250)}throw Error('Web profile did not commit');
+  };
+  item.probe=async(facts,ten=false)=>{
+   const expected=ten?{...facts,tenth_decision:'validate queue once'}:facts,marker='CTXVAL_WEB_R4_'+dpr+'_'+Date.now();
+   const input=page.locator('[data-terminal-prompt]:not(:disabled)');await input.fill('Without tools or reading files, recall our existing audit records as JSON with exactly '+Object.keys(expected).join(', ')+'. Return every requested key, using null only for a value you cannot recall. End with '+marker+'.');await input.press('Enter');await item.capture('prompt');
+   const turn=await run.turn('',marker,240000,false);const {scoreContextValidationRecall}=await import('./context-switch-validation-records.mjs');const score=scoreContextValidationRecall(turn.state.agentPanes[turn.state.session.focusedAgentId],marker,expected);await run.record('web-score-'+dpr+'-'+Date.now(),score);await item.capture('settled');if(score.score!==Object.keys(expected).length||score.toolCount)throw Error('Real web no-tool recall '+score.score+'/'+Object.keys(expected).length);return score;
+  };
+ }}catch(e){await Promise.allSettled(clients.map(c=>c.capture('failed')));await Promise.allSettled(clients.map(c=>c.close()));throw e}
+ return clients;
+}
