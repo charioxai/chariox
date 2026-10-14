@@ -34,7 +34,7 @@ import { DisplaySessions } from './kernel-display-resumption.mjs';
 // to one attempt a minute.
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
-export function scheduleHostRequest(request, browser) {
+export function scheduleHostRequest(request, browser, viewport = hostViewport()) {
   // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
   // stay independent of input and lifecycle barriers on the host as in Rooms.
   // A state poll waits for every page's reconcile: once the viewport is applied
@@ -42,7 +42,7 @@ export function scheduleHostRequest(request, browser) {
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(hostViewport(), { browserBarVisible: false }) === true)
+    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport, { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -193,7 +193,7 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-10/MP-11: native page density applies to the private display
   // only; the owned Computer desktop stays at its 1x X11 density.
-  viewport() { return hostViewport(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' && !this.chromium.desktop); }
+  viewport() { return hostViewport(!this.chromium.desktop && (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || process.env.CHARIOX_KERNEL_BROWSER_MIRROR === '1')); }
   // MP-08/MP-11: on the owned Computer desktop the Browser window is the
   // visible one, and an emulated density leaves it unbindable (withheld):
   // drop a tab's viewer emulation with its last Browser viewer or mirror.
@@ -283,7 +283,7 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport() }, this.protection.values);
   }
   async reconcile() {
     const observation = ++this.observations;
@@ -812,5 +812,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser))).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport()))).run().finally(() => host.stop());
 }

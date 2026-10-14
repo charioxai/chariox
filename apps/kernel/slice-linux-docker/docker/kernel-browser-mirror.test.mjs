@@ -364,3 +364,17 @@ test('MP-10 canonical mirror geometry at 1920x1080',()=>{
  assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
  assert.equal(run.status,0,run.stdout+run.stderr);
 });
+
+// MP-08/MP-10/MP-11: merge #958's owned desktop with the v2 mirror observer.
+test('MP-08 mirror observes the owned desktop density without changing it for the viewer',async()=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+ try{for(const wire of [1,2])for(const device_scale_factor of [1,2]){
+  const {host,service,calls}=fixture();host.viewport=()=>({...hostViewport(),device_scale_factor:1});
+  try{
+   const sub=await service.subscribe({tab_id:'t',generation:1,wire,device_scale_factor},'terminal:room-viewer');
+   assert.equal(sub.device_scale_factor,1,'the shared desktop renders at its admitted density');
+   assert.equal(host.scales.get('t'),1);
+   assert.equal(calls.filter(call=>call.method==='Emulation.setDeviceMetricsOverride').length,0,'an observer cannot resize the source');
+  }finally{service.clear()}
+ }}finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=before}
+});

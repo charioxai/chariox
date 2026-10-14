@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
-import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
@@ -53,7 +53,7 @@ export class MirrorService {
   }
   async subscribe(command,scope) {
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
-    const tab=await this.host.target(command),scale=hostViewport().device_scale_factor;
+    const tab=await this.host.target(command),scale=this.host.viewport().device_scale_factor;
     if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     // MP-08/MP-10: target() reconciles the kernel-owned viewport. An
     // attached mirror is an observer and must never resize the shared page.

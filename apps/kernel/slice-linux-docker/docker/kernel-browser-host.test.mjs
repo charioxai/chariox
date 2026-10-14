@@ -1219,3 +1219,22 @@ test('MP-08 Browser display keeps the owned Computer desktop page at desktop den
     if (before === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = before;
   }
 });
+
+// MP-08/MP-10/MP-11: projected state and capture use one canonical desktop.
+test('MP-08 owned desktop state reports the viewport used by the actual controller',()=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+ const host=new KernelBrowserHost('/nonexistent',{chromium:{desktop:{binding(){}}},browserFactory:()=>null});
+ try{assert.deepEqual(host.tabState().viewport,host.viewport())}
+ finally{host.mirror.clear();if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=before}
+});
+
+// MP-08/MP-10: a mirror-only private renderer keeps its native density.
+test('MP-08 private mirrored controller viewport does not depend on video',()=>{
+ const mirror=process.env.CHARIOX_KERNEL_BROWSER_MIRROR,video=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+ process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='0';
+ const host=new KernelBrowserHost('/nonexistent',{chromium:{},browserFactory:()=>null});
+ try{
+  const viewport=host.viewport();assert.equal(viewport.device_scale_factor,2);
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';assert.deepEqual(host.viewport(),viewport);
+ }finally{host.mirror.clear();if(mirror===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=mirror;if(video===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=video}
+});
