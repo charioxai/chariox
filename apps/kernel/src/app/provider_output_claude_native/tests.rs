@@ -3611,6 +3611,28 @@ fn assert_recreated_replay_fits_worker(provider: &str) {
             attachments: &[],
         },
     );
+    // MP-08 / MP-10 / MP-11: #919 reconstructs staged inputs again at hook ACK.
+    // It must preserve #976's complete-worker-context fitting at that boundary.
+    let rebuilt = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .managed_base_context(
+            session.id(),
+            agent.id(),
+            context_file.to_str().unwrap(),
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "recreated-prompt",
+                origin_prompt_id: "normal-origin-prompt",
+                prompt: "",
+                hidden_system_context: &hidden,
+                context_handoff: &no_context_handoff,
+                attachments: &[],
+            },
+        )
+        .unwrap();
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &rebuilt)
+        .expect("hook reconstruction must fit the complete worker context too");
+    assert!(rebuilt.contains(&required));
+    assert!(rebuilt.contains(latest));
     let delivered = fs::read_to_string(&context_file).unwrap();
     fs::remove_dir_all(&root).unwrap();
     injected.expect("optional replay must fit after normal worker context is added");
