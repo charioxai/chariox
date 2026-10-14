@@ -589,7 +589,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
-      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id) { await stream.close(); this.displays.delete(id); }
+      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && stream.regionTarget?.kind !== 'browser_chrome') { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);

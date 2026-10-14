@@ -34,13 +34,17 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    if(lease.tab_id!==tab.tab_id||lease.document_id!==tab.document_id||!await lease.isCurrent())refuse();
    const scale=lease.device_scale_factor,r=lease.rect;
    if(scale!==window.scale)refuse();
+   // A hidden mirror can retain its document/geometry while another Tab paints
+   // in this SAME X window. Only the browser owner's native active-tab observer
+   // can admit that readback; focus-emulated visibility is not authority.
+   if(typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(tab,window))refuse();
    // Stay INSIDE the canonical clip; the codec's even dimensions never expose
    // adjacent pixels. Keep the offset for the existing mirror input resolver.
    const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.floor((r.x+r.width)*scale)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*scale)-top)/2);
    offset={x:left/scale-r.x,y:top/scale-r.y};
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
     rect:{left,top:window.content_top+top,width,height},contentHeight:window.bounds.height-window.content_top,
-    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await lease.isCurrent()};
+    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();
@@ -66,10 +70,12 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')},
    {timing:host.timing,encoder:new PortableEncoder()});
-  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset});
-  const close=stream.close.bind(stream);let closing;
-  stream.close=()=>closing??=(async()=>{host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
+  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,
+   regionCurrent:args.validateCurrent??lease.isCurrent});
+  const close=stream.close.bind(stream);let closing,offRetire;
+  stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
+  offRetire=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});
   host.armDisplayExpiry(stream);return result;
  }catch(error){if(stream)await stream.close();else{await source?.close();await lease.close();}throw error;}
 }
@@ -86,7 +92,7 @@ function inputStream(host,command,scope) {
 // The ordinary Rust actor ledger still admits every resulting input action.
 export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await stream.regionLease.isCurrent())refuse();
+ if(!await stream.regionCurrent())refuse();
  if(stream.regionTarget.kind==='region')return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
  const target=await host.arbiter.resolveDisplayInput(command,scope,{signal,stream});
@@ -95,7 +101,7 @@ export async function regionInputTarget(host,command,scope,signal) {
 }
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await stream.regionLease.isCurrent())refuse();
+ if(!await stream.regionCurrent())refuse();
  if(stream.regionTarget.kind==='browser_chrome') {
   if(typeof host.arbiter?.input!=='function')refuse();
   return host.arbiter.input({stream,command,scope,signal});
@@ -103,6 +109,8 @@ export async function regionInput(host,command,scope,signal) {
  const input=command.input;
  if(!['click','scroll'].includes(input?.kind)||!Number.isInteger(input.x)||!Number.isInteger(input.y)||input.x<0||input.y<0||input.x>=stream.css_width||input.y>=stream.css_height)refuse();
  const resolved=await stream.regionLease.resolveInput({...input,sequence:command.sequence,x:input.x+stream.regionOffset.x,y:input.y+stream.regionOffset.y},scope,{signal});
+ const guard=resolved.guard;
+ resolved.guard=async()=>{if(!await stream.regionCurrent())refuse();await guard?.();};
  if(host.dispatchRegionInput)return host.dispatchRegionInput(stream,resolved,command,signal);
  const tab=await host.displayTarget(command);
  if(tab.document_id!==stream.regionLease.document_id)refuse();

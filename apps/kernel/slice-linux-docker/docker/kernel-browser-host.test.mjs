@@ -1218,6 +1218,14 @@ test('Browser replies distinguish observation timeout from a retired subscriptio
   }
 }));
 
+test('MP-08/MP-11 native band lifetime survives closing its original page Tab',()=>using(async({host})=>{
+ const a=await host.request({op:'open',url:'about:blank'});await host.request({op:'open',url:'about:blank'});
+ let closed=0;
+ host.displays.set('window-band',{subscription_id:'window-band',tab_id:a.tab_id,expires:Date.now()+60_000,regionTarget:{kind:'browser_chrome'},invalidate(){},close:async()=>{closed++;}});
+ await host.request({op:'close',tab_id:a.tab_id,generation:a.generation});
+ assert.equal(closed,0,'only the owner window retirement closes the band');assert(host.displays.has('window-band'));
+}));
+
 // MP-08/MP-10/MP-11 step4: real credit/DisplayStream path, not empty-credit shortcut.
 test('MP-10 delivered native frames perform zero CDP calls after document admission',()=>using(async({host,sent})=>{
  const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
