@@ -65,7 +65,9 @@ async fn exercise_activation(heartbeat_ms: u64) {
     owner.host_machine_id = "activation-owner-machine".into();
     owner.relay_token = Some("owner".into());
     let mut worker = DaemonConfig::for_tests();
-    worker.daemon_id = "activation-worker".into();
+    // Real slice subjects retain Kernel projection; ordinary home subjects
+    // intentionally project to Machine and cannot confirm slice activation.
+    worker.daemon_id = "slice:activation-worker".into();
     worker.host_machine_id = "activation-worker-machine".into();
     worker.relay_token = Some("bootstrap".into());
     worker.relay_heartbeat_ms = heartbeat_ms.max(100);
