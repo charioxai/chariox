@@ -797,7 +797,11 @@ async fn run_daemon_relay_connector_inner(
         let connect_started = Instant::now();
         match timeout(
             RELAY_CONNECT_TIMEOUT,
-            connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+            tokio_tungstenite::connect_async_with_config(
+                chariox_relay::frame_transport::transport_url(&relay_url),
+                None,
+                true, // MP-08 / MP-10: immediate TCP delivery on ws and wss.
+            ),
         )
         .await
         {

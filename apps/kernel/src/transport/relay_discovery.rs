@@ -550,7 +550,11 @@ async fn query_relay_once_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         request_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        tokio_tungstenite::connect_async_with_config(
+                chariox_relay::frame_transport::transport_url(&relay_url),
+                None,
+                true, // MP-08 / MP-10: immediate TCP delivery on ws and wss.
+            ),
     )
     .await
     .map_err(|_| {

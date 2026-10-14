@@ -547,10 +547,11 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_current_peer_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [100, 101] {
+    let current_peer = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+    for version in [current_peer - 1, current_peer, current_peer + 1] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -590,7 +591,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version >= current_peer && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }

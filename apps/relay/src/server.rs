@@ -104,6 +104,8 @@ impl RelayServer {
                 _ = &mut shutdown => break,
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
+                    // MP-08 / MP-10: encrypted interactive frames must not wait on Nagle.
+                    stream.set_nodelay(true)?;
                     let registry = Arc::clone(&self.registry);
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
