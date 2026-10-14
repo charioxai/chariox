@@ -29,6 +29,11 @@ pub(super) fn execute_submit_command(
     prompt_id: &str,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch started",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
+    );
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
@@ -84,6 +89,12 @@ pub(super) fn execute_submit_command(
         });
     }
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch finished",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id,
+            "success": result.is_ok()}),
+    );
     let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })
@@ -288,6 +299,7 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
+        state.acknowledge_output_poll();
         let resolved_resume_state =
             completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
         runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
@@ -354,6 +366,13 @@ pub(super) fn execute_output_poll_command(
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
+    // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
+    let poll_started = std::time::Instant::now();
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll started",
+        serde_json::json!({"provider_run_id": run_id}),
+    );
     let (slot, mut state) = match runtime_registry.take_opencode_runtime(run_id) {
         Ok((slot, state)) => (slot, state),
         Err(_) => return Ok(None),
@@ -363,6 +382,14 @@ pub(super) fn execute_output_poll_command(
     }
     let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
     runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll finished",
+        serde_json::json!({"provider_run_id": run_id,
+            "elapsed_us": poll_started.elapsed().as_micros(),
+            "success": drain.is_ok(),
+            "chunks": drain.as_ref().ok().map(|batch| batch.chunks.len())}),
+    );
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {

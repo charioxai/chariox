@@ -534,6 +534,14 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
     ) {
+        self.append_prepared_history_entries(self.prepare_history_entries(session_id, entries));
+    }
+
+    pub(super) fn prepare_history_entries(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) -> Vec<(SessionHistoryEntry, crate::history::HistoryEventTurnContext)> {
         let entries = entries
             .into_iter()
             .map(|entry| {
@@ -543,7 +551,7 @@ impl KernelRuntimeOwnedState {
             .filter_map(bounded_history_entry)
             .collect::<Vec<_>>();
         if entries.is_empty() {
-            return;
+            return Vec::new();
         }
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
@@ -555,9 +563,26 @@ impl KernelRuntimeOwnedState {
                     "error": error.to_string(),
                 }),
             );
-            return;
+            return Vec::new();
         }
-        self.append_operational_history_entries(&entries);
+        let active_turns = self.active_turns.snapshot();
+        entries
+            .into_iter()
+            .map(|entry| {
+                let active_turn = entry
+                    .provider_run_id
+                    .as_deref()
+                    .and_then(|run_id| active_turns.get(run_id));
+                let context = self.operational_history_context_with_active_turn(
+                    &entry,
+                    None,
+                    None,
+                    None,
+                    active_turn,
+                );
+                (entry, context)
+            })
+            .collect()
     }
 
     pub(super) fn append_operational_history_entry(
@@ -714,35 +739,26 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    fn append_operational_history_entries(&self, entries: &[crate::history::SessionHistoryEntry]) {
-        if entries.is_empty() {
+    pub(super) fn append_prepared_history_entries(
+        &self,
+        prepared: Vec<(SessionHistoryEntry, crate::history::HistoryEventTurnContext)>,
+    ) {
+        if prepared.is_empty() {
             return;
         }
-        let scrubbed = entries
-            .iter()
-            .cloned()
-            .map(|entry| {
-                self.room_secret_observations
-                    .protect_transcript_entry(entry)
+        // MP-08 / MP-10 / MP-11: preserve the publication-time turn identity
+        // across the blocking handoff, and keep the normal Room protection.
+        let (entries, contexts): (Vec<_>, Vec<_>) = prepared
+            .into_iter()
+            .map(|(entry, context)| {
+                (
+                    self.room_secret_observations
+                        .protect_transcript_entry(entry),
+                    context,
+                )
             })
-            .collect::<Vec<_>>();
-        let entries = scrubbed.as_slice();
-        let active_turns = self.active_turns.snapshot();
-        let mut prepared = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let active_turn = entry
-                .provider_run_id
-                .as_deref()
-                .and_then(|provider_run_id| active_turns.get(provider_run_id));
-            let context = self.operational_history_context_with_active_turn(
-                entry,
-                None,
-                None,
-                None,
-                active_turn,
-            );
-            prepared.push((entry, context));
-        }
+            .unzip();
+        let prepared = entries.iter().zip(contexts).collect();
         let updates = {
             let _append_guard = self.transcript_history_append_guard();
             match self.operational_history_store.append_transcripts(prepared) {

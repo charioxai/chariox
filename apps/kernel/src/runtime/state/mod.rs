@@ -152,6 +152,7 @@ pub(crate) struct KernelRuntimeState {
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -411,7 +412,9 @@ pub(in crate::runtime) use provider_login_state::{
     ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
     PROVIDER_LOGIN_TIMEOUT_MS,
 };
+mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
+mod provider_output_pump_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
@@ -459,6 +462,7 @@ mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
+mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod workflow;
@@ -774,6 +778,7 @@ impl KernelRuntimeState {
             app_lock_wait_probe: None,
             app,
             provider_runtime_lanes,
+            provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
@@ -1068,22 +1073,22 @@ impl KernelRuntimeState {
 }
 
 #[derive(Debug, Default)]
-struct RuntimeChangeSignal {
+pub(crate) struct RuntimeChangeSignal {
     sequence: AtomicU64,
     notify: Notify,
 }
 
 impl RuntimeChangeSignal {
-    fn sequence(&self) -> u64 {
+    pub(crate) fn sequence(&self) -> u64 {
         self.sequence.load(Ordering::Acquire)
     }
 
-    fn record_change(&self) {
+    pub(crate) fn record_change(&self) {
         self.sequence.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
     }
 
-    async fn wait_for_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
         if self.sequence() != sequence {
             return;
         }

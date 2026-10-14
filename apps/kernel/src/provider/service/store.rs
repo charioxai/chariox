@@ -114,6 +114,12 @@ impl ProviderProcessServiceStore {
         self.read().native_interaction_bridge()
     }
 
+    pub(crate) fn output_ready_signal(
+        &self,
+    ) -> crate::provider::output_ready::ProviderOutputReadySignal {
+        self.read().output_ready_signal()
+    }
+
     pub(crate) fn run_actor_completion_signal(
         &self,
     ) -> crate::provider::ProviderRunActorCompletionSignal {
@@ -607,6 +613,14 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderOutputPollJob> {
         self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.write()
+            .drain_finished_structured_output_poll_jobs_for_run(run_id)
     }
 
     pub(crate) fn apply_structured_output_metadata(

@@ -146,27 +146,32 @@ pub(super) fn emit_authoritative_part_text(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    // A subscriber can join after a part already has text and receive only the
-    // next delta. Until a full part update or snapshot establishes the prefix,
-    // those deltas must stay buffered; treating their byte count as an offset
-    // skips the real prefix and duplicates the final suffix on reconciliation.
+    // MP-08 / MP-10: a live subscription established before a new prompt
+    // sees its empty part announcement from offset zero. Reconnected/late
+    // subscriptions still need a non-empty authoritative prefix.
     let Some(emitted) = state.emitted_text_by_part.get_mut(part_id) else {
-        // `message.part.updated` first announces a newly-created empty text
-        // part. That is metadata, not proof that streaming began at offset
-        // zero for this subscriber. Keep subsequent deltas buffered until a
-        // non-empty cumulative part or snapshot supplies the real prefix.
-        if text.is_empty() {
+        if text.is_empty() && !state.live_text_from_start {
             return;
         }
-        state.buffered_text_deltas.remove(part_id);
+        let buffered = state
+            .buffered_text_deltas
+            .remove(part_id)
+            .unwrap_or_default();
+        let text = if text.is_empty() {
+            buffered.concat()
+        } else {
+            text.to_string()
+        };
         state
             .emitted_text_by_part
-            .insert(part_id.to_string(), text.to_string());
-        chunks.push(OpenCodeOutputChunk {
-            kind,
-            merge_key: Some(part_id.to_string()),
-            bytes: text.as_bytes().to_vec(),
-        });
+            .insert(part_id.to_string(), text.clone());
+        if !text.is_empty() {
+            chunks.push(OpenCodeOutputChunk {
+                kind,
+                merge_key: Some(part_id.to_string()),
+                bytes: text.into_bytes(),
+            });
+        }
         return;
     };
 
@@ -206,6 +211,16 @@ fn emit_part_delta(
             .push(delta);
         return;
     };
+    // MP-08 / MP-10: a gap invalidates even an empty baseline established
+    // before the disconnect. Wait for its authoritative prefix again.
+    if !state.live_text_from_start && emitted.is_empty() {
+        state
+            .buffered_text_deltas
+            .entry(part_id)
+            .or_default()
+            .push(delta);
+        return;
+    }
     emitted.push_str(&delta);
     chunks.push(OpenCodeOutputChunk {
         kind,
