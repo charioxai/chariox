@@ -10,7 +10,7 @@ test("ENV P01 standalone TUI request and protocol gate", async () => {
   await controller.open("project")
   assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project", view:{knownDigest:null,proposals:null} } }])
   assert.equal(controller.isOpen(), true)
-  assert.deepEqual(controller.visibleLines(), ["not available"])
+  assert.deepEqual(controller.visibleLines(), ["Environment unavailable. Check the kernel connection and refresh.", "r · Refresh"])
   assert.throws(() => requireKernelFeatureProtocol(requests[0], 504), /505/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 505))
   controller.handleKey({ name: "escape" })
@@ -264,3 +264,7 @@ test("ENV-UX-02 TUI explains Environment and available editing",async()=>{
  await controller.open("project");assert(controller.visibleLines().includes("An Environment lists what this project needs on this machine."));assert(controller.visibleLines().includes("Edit requirements in Web; this terminal supports Check and proposal review."))
 })
 
+// MP-08 / MP-10 / MP-11: keep transport diagnostics out of the user's empty state.
+test("ENV-UX-01 missing Project TUI is a clear empty state",async()=>{
+ const controller=createProjectEnvironmentReadController({send:async()=>{throw new Error("local transport `project.get` failed: project `missing` was not found (code=local_transport_error retryable=true)")},render(){},pageSize:()=>100});await controller.open("missing");assert(controller.visibleLines().includes("No Environment for this project yet."));assert(!controller.visibleLines().some(line=>line.includes("local transport")))
+})

@@ -1,3 +1,4 @@
+import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatusRequest } from "@chariox/kernel-client/ipc-requests"
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
@@ -22,6 +23,7 @@ export function createProjectEnvironmentReadController(deps: {
   let generation = 0
   let lines: string[] = []
   let offset = 0
+  let requestedProjectId: string | null = null
   let current: ProjectEnvironment | null = null
   let proposalIndex = 0
   let diff: EnvironmentRevisionDiff | null = null
@@ -41,7 +43,7 @@ export function createProjectEnvironmentReadController(deps: {
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
       if (current?.local_project_id !== projectId) diff = null
-      open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
+      requestedProjectId = projectId; open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
       lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines({...current,observations:(current.observations??[]).map(o=>({...o,stale:true}))})] : ["Loading Environment…"]; deps.render()
       try {
         const environment = await readEnvironment(projectId)
@@ -53,7 +55,7 @@ export function createProjectEnvironmentReadController(deps: {
       } catch (error) {
         if (requestGeneration !== generation) return
         cache.forget(scope, projectId); current = null
-        lines = [error instanceof Error ? error.message : "Environment unavailable"]
+        lines = [environmentReadFailureMessage(error), "r · Refresh"]
       }
       if (requestGeneration === generation) refreshing = false
       deps.render()
@@ -187,7 +189,7 @@ export function createProjectEnvironmentReadController(deps: {
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }
-      if (event.name === "r" && current) { void controller.open(current.local_project_id); return true }
+      if (event.name === "r" && requestedProjectId) { void controller.open(requestedProjectId); return true }
       if (event.name === "a" || event.name === "x") { void controller.review(event.name === "a" ? "accept" : "exclude"); return true }
       if ((event.name === "n" || event.name === "p") && current && (current.proposals.length || (current.read_view?.proposal_count ?? 0)>0)) {
         if(refreshing)return true
