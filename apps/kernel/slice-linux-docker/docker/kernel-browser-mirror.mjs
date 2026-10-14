@@ -53,7 +53,9 @@ export class MirrorService {
   }
   async subscribe(command,scope) {
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
-    const tab=await this.host.target(command),scale=hostViewport().device_scale_factor;
+    // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
+    // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
+    const tab=await (command.wire===2&&this.host.displayTarget?this.host.displayTarget(command):this.host.target(command)),scale=hostViewport().device_scale_factor;
     if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     // MP-08/MP-10: target() reconciles the kernel-owned viewport. An
     // attached mirror is an observer and must never resize the shared page.

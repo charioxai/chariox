@@ -354,3 +354,11 @@ test('MP-10 canonical mirror geometry at 1920x1080',()=>{
  assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
  assert.equal(run.status,0,run.stdout+run.stderr);
 });
+
+// MP-08/MP-10 (owner A/B 2026-10-14, finding 8): a new Tab's v2 view subscribes without an all-tab reconcile.
+test('MP-08/MP-10 a v2 subscription reads its own Tab without an all-tab reconcile', async () => {
+ const {service,host}=fixture();let reconciles=0;const target=host.target;host.target=async(...args)=>{reconciles++;return target(...args)};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
+ assert.ok(sub.subscription_id);assert.equal(reconciles,0);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal(reconciles,1,'wire 1 keeps its reconcile');
+});
