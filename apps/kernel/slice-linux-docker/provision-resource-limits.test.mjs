@@ -158,7 +158,7 @@ test("the isolation probe runs on its own kernel and the slice kernel starts wit
   assert.match(probeStart, /CHARIOX_ACCEPT_REMOTE_LEASES=0/)
   assert.match(probeStart, /CHARIOX_CODEX_BIN="\$ROOT\/managed-provider-isolation-probe-wrapper\.sh"/)
   // Probe overrides come after the defaults so they win in env(1).
-  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n    "\$@" \\\n    python3 "\$ROOT\/runtime-process-owner\.py" run --record "\$PRIVATE_RUNTIME_ROOT\/kernel-owner\.json" -- "\$ROOT\/bin\/chariox-kernel"/)
+  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n\s+"\$@" \\\n\s+python3 "\$ROOT\/runtime-process-owner\.py" run --record "\$PRIVATE_RUNTIME_ROOT\/kernel-owner\.json" -- "\$ROOT\/bin\/chariox-kernel"/)
   // MP-11: the probe kernel and its descendants stop through their recorded launch generation.
   assert.match(source, /python3 "\$ROOT\/runtime-process-owner\.py" stop --record "\$PRIVATE_RUNTIME_ROOT\/kernel-owner\.json"/)
   assert.doesNotMatch(source, /\bpkill\b/)
