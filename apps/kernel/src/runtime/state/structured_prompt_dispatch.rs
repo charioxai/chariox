@@ -118,7 +118,7 @@ impl KernelRuntimeState {
         // Preparation can outlive a Room policy change. Protect every retained
         // input, including failed-request and skill context, at final admission.
         let (prompt_with_handoff, hidden_system_context, attachments) =
-            owned.room_secret_observations.scrub(
+            owned.room_secret_observations.scrub_prompt_inputs(
                 &dispatch.session_id,
                 (
                     prompt_with_handoff,

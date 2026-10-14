@@ -257,13 +257,22 @@ async fn final_handoff_envelope_protects_scheduled_hidden_context_during_brief()
 #[tokio::test]
 async fn final_handoff_envelope_protects_attachments_during_brief() {
     let fixture = PausedBrief::new(false, false).await;
-    let attachment = crate::session::PromptAttachment::new(
-        format!("https://example.com/{SECRET}"),
-        "text/plain",
-        Some(format!("attachment-marker-{SECRET}.txt")),
-    );
+    use base64::Engine as _;
+    let attachments = (1..=3)
+        .map(|offset| {
+            crate::session::PromptAttachment::new(
+                format!("https://example.com/{SECRET}"),
+                "text/plain",
+                Some(format!("attachment-marker-{SECRET}.txt")),
+            )
+            .with_contents_base64(
+                base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}{SECRET}!", "x".repeat(offset))),
+            )
+        })
+        .collect();
     fixture
-        .prepare_with_inputs(String::new(), vec![attachment])
+        .prepare_with_inputs(String::new(), attachments)
         .await;
     fixture
         .runtime
@@ -275,6 +284,7 @@ async fn final_handoff_envelope_protects_attachments_during_brief() {
     fixture.wait_for("final-provider-envelope").await;
     let envelope = fixture.provider_inputs();
     assert!(envelope.contains("attachment-marker"));
+    assert!(envelope.contains("[redacted]"));
     assert!(
         !envelope.contains(SECRET),
         "retained attachment leaked in the actual provider envelope"
@@ -717,4 +727,60 @@ async fn native_utility_protection_gate_runs_before_any_prompt_write() {
     );
     assert!(!fixture.root.path().join("brief-started").exists());
     assert!(!fixture.root.path().join("brief-utility-inputs").exists());
+}
+
+// MP-08 / MP-10 / MP-11: native dispatch and hook input use the same protection.
+#[tokio::test]
+async fn native_attachment_contents_are_protected_after_decoding() {
+    use crate::app::NativePromptHandoffPolicy;
+    use base64::Engine as _;
+    let fixture = PausedBrief::new(true, false).await;
+    for offset in 1..=3 {
+        let attachment = crate::session::PromptAttachment::new(
+            "https://example.com/native.txt",
+            "application/problem+json",
+            None,
+        )
+        .with_contents_base64(
+            base64::engine::general_purpose::STANDARD
+                .encode(format!("{}{SECRET}!", "x".repeat(offset))),
+        );
+        let mut dispatch = dispatch(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &fixture.attachment_id,
+            fixture.run.id(),
+            &fixture.prompt_id,
+            "native prompt",
+            None,
+            false,
+        );
+        dispatch.attachments = vec![attachment.clone()];
+        let (protected, _) = fixture
+            .runtime
+            .owned
+            .protect_native_dispatch(&dispatch, None)
+            .unwrap();
+        let (_, _, hook_attachments) = fixture
+            .runtime
+            .owned
+            .protect_inputs(
+                &fixture.session_id,
+                "native prompt".into(),
+                String::new(),
+                vec![attachment],
+            )
+            .unwrap();
+        for attachment in protected.attachments.iter().chain(&hook_attachments) {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(attachment.contents_base64().unwrap())
+                .unwrap();
+            let text = String::from_utf8(decoded).unwrap();
+            assert!(
+                !text.contains(SECRET),
+                "native inline attachment retained a protected value"
+            );
+            assert!(text.contains("[redacted]"));
+        }
+    }
 }
