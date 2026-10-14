@@ -256,3 +256,11 @@ for (const offset of [-600000,600000]) test(`review0634 TUI Save preserves check
   assert(controller.visibleLines().some(line=>line.includes("Node · Ready")),"Save discarded the kernel clock reference")
  }finally{controller?.close();Date.now=realNow}
 })
+
+// MP-08 / MP-10 / MP-11: users understand the terminal's editing boundary.
+test("ENV-UX-02 TUI explains Environment and available editing",async()=>{
+ const environment:any={schema_version:1,local_project_id:"project",lineage:{environment_id:"env",project_id:"p"},revision:0,content_digest:"d",project_requirements:[],folders:[],proposals:[],operations:[],observations:[],delivered_capabilities:{enabled_environment_operations:["get","save","check"],supported_schema:1}}
+ const controller=createProjectEnvironmentReadController({send:async()=>({ProjectEnvironment:{environment}}),render(){},pageSize:()=>100})
+ await controller.open("project");assert(controller.visibleLines().includes("An Environment lists what this project needs on this machine."));assert(controller.visibleLines().includes("Edit requirements in Web; this terminal supports Check and proposal review."))
+})
+
