@@ -41,6 +41,8 @@ export function scheduleHostRequest(request, browser) {
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+// MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
+const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
@@ -649,6 +651,7 @@ export class KernelBrowserHost {
         const at = timestamp();
         const result = await this.request(request.params, { signal });
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
+        if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll", "mirror_next"].includes(request.params?.op)) {
