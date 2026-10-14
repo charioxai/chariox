@@ -21,11 +21,11 @@ try{
   if(result.windows[0].windowTokens<=targetWindow)throw Error('Official source window is not larger');
   web=await webClients(r,remote);const baseline=await logs('before');
   // Begin normal web selection without awaiting compaction, then queue through the real TUI.
-  const selection=web[0].select('claude-p',target,{modelOnly:true});let compacting=false;
+  let selectionError;const selection=web[0].select('claude-p',target,{modelOnly:true}).catch(error=>{selectionError=error;});let compacting=false;
   for(let n=0;n<600;n++){const s=await r.tui.send('snapshot');if(JSON.stringify(s.agentPanes).includes('Compacting the Claude session')){compacting=true;break;}await sleep(100);}
   if(!compacting)throw Error('Visible source compaction was never observed');await r.capture('compacting');for(const c of web)await c.capture('compacting');
   const marker='CX04_QUEUED_'+Date.now();await r.tui.send('submit_prompt',{prompt:'Without tools recall our nine agreed audit records as JSON with exactly '+Object.keys(facts).join(', ')+'. End with '+marker+'.'});await r.capture('queued-once');
-  await selection;const turn=await r.turn('',marker,900000,false);const {scoreContextValidationRecall}=await import('./context-switch-validation-records.mjs');const score=scoreContextValidationRecall(turn.rows,marker,facts);
+  await selection;if(selectionError)throw selectionError;const turn=await r.turn('',marker,900000,false);const {scoreContextValidationRecall}=await import('./context-switch-validation-records.mjs');const score=scoreContextValidationRecall(turn.state.agentPanes[turn.state.session.focusedAgentId],marker,facts);
   if(score.score!==9||score.toolCount)throw Error('Queued no-tool recall failed');const state=await r.tui.send('snapshot'),rows=state.agentPanes[state.session.focusedAgentId];if(rows.filter(x=>x.role==='user'&&x.text?.includes(marker)).length!==1)throw Error('Queued task was duplicated');
   const after=await r.binding(),compactions=await logs('after');if(compactions.length!==baseline.length+1||!/compacted the session before/.test(compactions.at(-1).message))throw Error('Source compaction success was not logged exactly once');
   if(before.nativeId!==after.nativeId)throw Error('Successful source compaction changed native UUID');
@@ -35,7 +35,7 @@ try{
   for(const name of ['below-threshold','equal-window','upshift','provider-change','headless','no-live-run']){
    const provider=name==='headless'?'claude-headless':'claude-p';const facts=await workload(provider,name==='upshift'?target:source,1);const before=await logs(name+'-before');
    if(name==='no-live-run')await r.restart();
-   if(name==='provider-change')await select('codex','gpt-6-luna');else await select(provider,['equal-window','upshift'].includes(name)?source:target);
+   if(name==='provider-change')await select('codex','gpt-6-luna');else await select(provider,name==='equal-window'?'claude-sonnet-5-5':name==='upshift'?source:target);
    await probe(facts);const after=await logs(name+'-after');if(after.length!==before.length)throw Error('Unexpected structured precompaction: '+name);result.cells.push({cell:name,status:'PASS',precompactions:0});await r.record('result',result);
   }
  }
