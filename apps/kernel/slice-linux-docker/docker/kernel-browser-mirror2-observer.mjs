@@ -213,14 +213,16 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id); fragments.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
     // Each option of a multiple select carries its own selectedness (selectedIndex names only the first).
     const formNodes = new Map();
+    // The input type / select multiplicity each control was serialized with: only a change re-serializes it.
+    const controlShapes = new Map(), controlShape = node => node.localName === 'input' ? node.type : node.localName === 'select' ? node.multiple : undefined;
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
-    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
+    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [width, height] = layoutSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
@@ -527,7 +529,8 @@ export function installMirror2(sanitizeMirrorCss) {
         if (node.localName === 'img' && (names.has('src') || names.has('srcset'))) imageOp(node, id, ops);
         if (names.has('popover') || names.has('open')) { if (stateful(node)) dirty.state.add(node); else { stateNodes.delete(id); sentStates.delete(id); } }
         // A new input type, or a select gaining/losing `multiple` (its options become/stop being form controls), re-serializes.
-        if (node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) { dirty.replace.add(node); continue; }
+        // Pages re-set the same type on every render (github.com): that keeps the viewer's node (and its focus/caret).
+        if ((node.localName === 'input' && names.has('type') || node.localName === 'select' && names.has('multiple')) && controlShape(node) !== controlShapes.get(id)) { dirty.replace.add(node); continue; }
         const attrs = attributes(node, node.baseURI);
         for (const name of names) {
           if (name === 'href' || name === 'xlink:href') {

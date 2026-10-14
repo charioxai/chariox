@@ -87,6 +87,20 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   await assert.rejects(input(first.sequence, { kind: "click", node_id: linkId, x: 5, y: 5 }), /changed mirror input target/);
 }));
 
+// github.com re-sets its "Go to file" input's type (and name) to the same value on every render.
+test("MP-10: an input whose type is re-set to the same value keeps its node; a new type re-serializes", () => mirrored(
+  '<input id="q" type="text" name="q"><button id="b">b</button>', async ({ next, evaluate }) => {
+    const snapshot = await next(); assert.equal(snapshot.reset, true);
+    const children = packet => packet.ops.filter(op => op.op === "children").reduce((n, op) => n + op.nodes.length, 0);
+    for (let i = 0; i < 3; i++) {
+      await evaluate("q.setAttribute('type','text');q.setAttribute('name','q');q.setAttribute('aria-expanded',String(" + (i % 2 === 0) + "))");
+      const packet = await next(600);
+      assert.equal(children(packet), 0, "MP-10: the same input stays the viewer's node: " + JSON.stringify(packet.ops));
+    }
+    await evaluate("q.setAttribute('type','search')");
+    assert(children(await next(600)) > 0, "MP-10: a new input type still re-serializes the control");
+  }));
+
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
