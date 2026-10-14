@@ -13,6 +13,25 @@ import {
 } from "./waiting-room.js"
 import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
+test("MP-08/MP-10 cold inventory waits for the provider catalog before showing start values", () => {
+  const catalog = fallbackProviderCatalog({ source: "local_fallback" })
+  const state = createWaitingRoomState([], catalog, "codex", "default", "")
+  const rows = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "cloud",
+    relay: { configured: true, connected: true, daemon_id: "cold-kernel" }, kernels: [{
+    kernel_id: "cold-kernel", machine_id: "cold-machine",
+  }] })
+  for (const id of ["new", "launch-machine", "launch-kernel", "provider", "model"]) {
+    assert.match(rows.find(row => row.id === id)!.value, /^loading/)
+  }
+  const empty = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "cloud" })
+  assert.doesNotMatch(empty.find(row => row.id === "launch-machine")!.value, /^loading/)
+  const detached = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "cloud",
+    kernels: [{ kernel_id: "cold-kernel", machine_id: "cold-machine" }] })
+  assert.equal(detached.find(row => row.id === "launch-kernel")!.selectable, true, "detached directory selection must remain reachable")
+  const localEmpty = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "local" })
+  assert.doesNotMatch(localEmpty.find(row => row.id === "model")!.value, /^loading/, "completed local empty discovery must also settle")
+})
+
 test("waiting room cycles model and effort from provider catalog", () => {
   const catalog = {
     ...fallbackProviderCatalog(),

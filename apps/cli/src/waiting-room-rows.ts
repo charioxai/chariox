@@ -1,4 +1,4 @@
-import { catalogModelOptions, type ProviderCatalog } from "./provider-catalog.js"
+import { catalogModelOptions, providerCatalogIsLocalFallback, type ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import { DEFAULT_THEME_REGISTRY, themeLabel, type ThemeRegistry } from "./theme-registry.js"
 import { waitingRoomChoice } from "./waiting-room-choice.js"
@@ -40,6 +40,9 @@ export function waitingRoomRows(
 ) {
   const choice = waitingRoomChoice(state, sessions, catalog, remote)
   const inventoryLoading = waitingRoomInventoryPending(remote, waitingRoomSessions(sessions).length > 0)
+    || (providerCatalogIsLocalFallback(catalog)
+      && !catalog.unavailable_reason
+      && Boolean(remote.relay?.daemon_id))
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
   const visibleSessions = waitingRoomSessions(sessions)
@@ -68,6 +71,9 @@ export function waitingRoomRows(
     titleWidth,
   })
 
+  if (providerCatalogIsLocalFallback(catalog) && catalog.unavailable_reason) {
+    rows.push({ id: "catalog-error", title: "Catalog", value: "Lookup failed · Change Provider or Kernel to retry", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
+  }
   if (inventoryLoading && visibleSessions.length > 0) {
     rows.push({ id: "inventory-refreshing", title: "Inventory", value: "cached/refreshing", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
   }

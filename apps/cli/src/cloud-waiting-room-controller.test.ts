@@ -32,3 +32,70 @@ test("an absent profile resolving after attachment cannot clear the kernel direc
   const result = refresh(); connected = true; release(); await result
   assert.equal(writes, 0)
 })
+
+test("MP-08/MP-10 cold detached discovery waits for kernel information before ready", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let status = "", connected = false, hydrated = 0
+  const client = { profile: async () => ({ accountId: "account" }), directory: async () => [
+    { daemonId: "kernel", machineId: "machine", status: "ONLINE" },
+  ] } as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({ client, isKernelConnected: () => connected,
+    setMachines: () => {}, setKernels: () => {}, setStatus: value => { status = value }, reconcile: () => {},
+    hydrateKernel: async () => { hydrated++; await pending; connected = true },
+  })
+  const result = refresh()
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+  assert.equal(hydrated, 1)
+  assert.equal(status, "loading")
+  release(); await result
+  assert.notEqual(status, "error")
+})
+
+// MP-08/MP-10: exercise actual connection admission, not just directory guards.
+test("delayed automatic kernel A cannot replace a later fast user pivot B", async () => {
+  const { createWaitingRoomKernelConnectionController } = await import("./waiting-room-kernel-client.js")
+  const { createMutableLocalIpcClient } = await import("./mutable-local-ipc-client.js")
+  let release!: () => void
+  const delayed = new Promise<void>(resolve => { release = resolve })
+  const closed: string[] = [], admitted: string[] = []
+  const makeClient = (id: string) => ({ close: async () => { closed.push(id) } }) as unknown as import("./ipc.js").LocalIpcClient
+  const original = makeClient("original"), a = makeClient("a"), b = makeClient("b")
+  const client = createMutableLocalIpcClient(original)
+  let connected = false, inventoryStarted = false
+  const connection = createWaitingRoomKernelConnectionController({ client, clientId: "test",
+    cloudClient: { profile: async () => ({}), connect: async (id: string) => id === "auto-a" ? a : b } as unknown as CloudClient,
+    kernelConnected: () => connected, homeKernelId: () => null, homeMachineId: () => null, currentKernelId: () => null,
+    getInventory: async target => {
+      if (target === a) { inventoryStarted = true; await delayed }
+      return { kernelId: target === a ? "auto-a" : "user-b", machineId: "machine" } as import("./waiting-room-inventory-api.js").WaitingRoomInventory
+    }, invalidateInventory: () => {}, clearProjectSetup: () => {}, connected: id => { connected = true; admitted.push(id) },
+  })
+  const resultA = connection.connect("auto-a", "machine")
+  while (!inventoryStarted) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(await connection.connect("user-b", "machine"), true)
+  release()
+  assert.equal(await resultA, false)
+  assert.equal(client.currentClient(), b)
+  assert.deepEqual(admitted, ["user-b"])
+  assert.ok(closed.includes("a"))
+})
+
+// MP-08/MP-10: automatic hydration passes its selection lifetime to admission.
+test("automatic hydration activity expires when user selection supersedes it", async () => {
+  let generation = 0, attached = false, guard: (() => boolean) | undefined
+  let release!: () => void
+  const delayed = new Promise<void>(resolve => { release = resolve })
+  const client = { profile: async () => ({}), directory: async () => [{ daemonId: "auto-a", machineId: "machine", status: "ONLINE" }] } as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({ client, isKernelConnected: () => false,
+    setMachines: () => {}, setKernels: () => {}, setStatus: () => {}, reconcile: () => {},
+    captureActivity: () => { const captured = generation; return () => generation === captured && !attached },
+    hydrateKernel: async (_kernel, _machine, isActive) => { guard = isActive; await delayed },
+  })
+  const result = refresh()
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+  assert.equal(guard?.(), true)
+  generation++; assert.equal(guard?.(), false)
+  attached = true; assert.equal(guard?.(), false)
+  release(); await result
+})
