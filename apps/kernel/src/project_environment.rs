@@ -8,6 +8,7 @@ mod check;
 mod check_admission;
 mod check_assets;
 pub(crate) mod check_executable;
+mod check_files;
 mod check_gui_identity;
 mod check_health;
 pub(crate) mod check_inventory;
@@ -47,6 +48,8 @@ mod transfer;
 pub use aggregate::*;
 pub use aggregate_projection::*;
 pub(crate) use check::*;
+#[doc(hidden)]
+pub use check_files::run_files_measurement_worker;
 pub(crate) use check_start::*;
 pub(crate) use check_store::*;
 pub use detect::*;

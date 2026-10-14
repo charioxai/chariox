@@ -63,7 +63,7 @@ pub(super) fn check_assets(
                     f.requirements.push(selected);
                 }
             }
-            if super::manual_files::verify_check_files(&current, &mut draft, deadline).is_err() {
+            if super::check_files::measure(&ctx.config, &current, &mut draft, deadline).is_err() {
                 return outcome(
                     Missing,
                     "file_unavailable",

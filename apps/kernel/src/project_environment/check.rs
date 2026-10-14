@@ -61,7 +61,10 @@ pub(crate) fn check_requirement(
     let roots: Vec<PathBuf> = env
         .folders
         .iter()
-        .filter(|f| !f.local_workspace_binding.is_empty())
+        .filter(|f| {
+            !f.local_workspace_binding.is_empty()
+                && !matches!(&r.spec, RequirementSpec::Files { .. })
+        })
         .filter_map(|f| {
             PathBuf::from(&f.local_workspace_binding)
                 .canonicalize()
@@ -97,7 +100,8 @@ pub(crate) fn check_requirement(
             if !env.folders.iter().any(|f| {
                 &f.folder_id == folder_id
                     && !f.local_workspace_binding.is_empty()
-                    && std::fs::read_dir(&f.local_workspace_binding).is_ok()
+                    && (matches!(&r.spec, RequirementSpec::Files { .. })
+                        || std::fs::read_dir(&f.local_workspace_binding).is_ok())
             }) {
                 return outcome(
                     Missing,

@@ -345,15 +345,8 @@ fn configure_stream_deadlines(stream: &UnixStream) -> io::Result<()> {
     stream.set_write_timeout(Some(BROKER_IO_TIMEOUT))
 }
 
-#[cfg(target_os = "linux")]
-fn make_process_nondumpable() -> bool {
-    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn make_process_nondumpable() -> bool {
-    true
-}
+#[cfg(unix)]
+use crate::io::control_memory::make_process_nondumpable;
 
 #[cfg(unix)]
 fn set_close_on_exec(raw_fd: RawFd) -> io::Result<()> {

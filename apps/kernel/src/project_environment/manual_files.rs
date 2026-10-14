@@ -69,6 +69,14 @@ fn stream(
     let mut bytes = 0u64;
     loop {
         selection.check_budget()?;
+        #[cfg(test)]
+        if let Some(marker) = std::env::var_os("CHARIOX_FILES_CHECK_IO_STALL_MARKER") {
+            // MP-08 / MP-10 / MP-11: owned process supervision bounds an admitted I/O stall.
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
         let n = file
             .read(&mut buffer)
             .map_err(|_| environment_error("selected File read failed"))?;
