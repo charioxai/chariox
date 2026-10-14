@@ -333,6 +333,7 @@ CMD ["sleep", "infinity"]
 
 # MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-chrome-window.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-contention.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs \
@@ -368,6 +369,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-policy.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-popup-evidence.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs \
@@ -375,6 +377,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-shared-raster.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-tab-groups.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-tiles.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs \

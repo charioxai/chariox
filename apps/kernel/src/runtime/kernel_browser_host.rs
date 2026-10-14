@@ -672,6 +672,14 @@ impl KernelBrowserHost {
             .as_ref()
             .map(|action| Value::String(action.id.clone()))
             .unwrap_or(Value::Null);
+        // MP-08/MP-11: the controller groups agent Tabs in the native tab strip from
+        // the kernel's opener ledger (private seam, never a caller field).
+        if method == "host.browser" {
+            params["_tab_groups"] = model
+                .lock()
+                .map_err(|_| "MD-3: actor lock poisoned")?
+                .agent_tab_groups();
+        }
         let request_params = params.clone();
         let display = method == "host.browser"
             && params["op"] == "screenshot"

@@ -584,6 +584,9 @@ impl KernelBrowserActors {
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
     }
+    pub(crate) fn agent_tab_groups(&self) -> Value {
+        self.tab_activity.agent_groups()
+    }
     pub(crate) fn project_tabs(&self, state: &mut Value) {
         self.tab_activity.project(state);
     }

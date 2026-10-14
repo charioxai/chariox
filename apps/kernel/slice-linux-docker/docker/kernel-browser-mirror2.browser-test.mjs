@@ -87,6 +87,20 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   await assert.rejects(input(first.sequence, { kind: "click", node_id: linkId, x: 5, y: 5 }), /changed mirror input target/);
 }));
 
+// github.com re-sets its "Go to file" input's type (and name) to the same value on every render.
+test("MP-10: an input whose type is re-set to the same value keeps its node; a new type re-serializes", () => mirrored(
+  '<input id="q" type="text" name="q"><button id="b">b</button>', async ({ next, evaluate }) => {
+    const snapshot = await next(); assert.equal(snapshot.reset, true);
+    const children = packet => packet.ops.filter(op => op.op === "children").reduce((n, op) => n + op.nodes.length, 0);
+    for (let i = 0; i < 3; i++) {
+      await evaluate("q.setAttribute('type','text');q.setAttribute('name','q');q.setAttribute('aria-expanded',String(" + (i % 2 === 0) + "))");
+      const packet = await next(600);
+      assert.equal(children(packet), 0, "MP-10: the same input stays the viewer's node: " + JSON.stringify(packet.ops));
+    }
+    await evaluate("q.setAttribute('type','search')");
+    assert(children(await next(600)) > 0, "MP-10: a new input type still re-serializes the control");
+  }));
+
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
@@ -1181,3 +1195,15 @@ test('MP-11: a child opaque lease clips to the actual cross-origin frame viewpor
     assert.deepEqual(lease.rect,{x:0,y:40,width:100,height:40});
   },{'/child':{type:'text/html',body:'<style>body{margin:0}canvas{display:block;margin-top:40px;width:200px;height:100px}</style><canvas></canvas>'}}
 ));
+// MP-08/MP-10/MP-11 review #1001: repeated resets must not retain retired control ids.
+test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<input id="field"><select><option>one</option></select>',async({host,next,subscription_id,evaluate})=>{
+ // Observe the real isolated-world Map calls; every snapshot allocates fresh ids.
+ // Install before the subscription observer is created by its first credit.
+ const tab=[...host.tabs.values()][0];const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+ const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
+ const world=await host.browser.ensureFocusWorld(connection,sessionId,tab.target_id,frameTree.frame);
+ const instrument=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:`(()=>{const NativeMap=Map;globalThis.__shapeMaps=[];globalThis.Map=class extends NativeMap{set(k,v){if(typeof k==='string'&&/^n[0-9]+$/.test(k)&&(v==='text'||v===false)&&!__shapeMaps.includes(this))__shapeMaps.push(this);return super.set(k,v)}};return true})()`,returnByValue:true},sessionId);assert(!instrument.exceptionDetails);
+ for(let i=0;i<4;i++)await next(0,i>0);
+ const result=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:"__shapeMaps.filter(m=>[...m.values()].every(v=>v==='text'||v===false)).map(m=>m.size)",returnByValue:true},sessionId);
+ assert(!result.exceptionDetails);assert.deepEqual(result.result.value,[2],'only the current input and select ids remain');
+}));

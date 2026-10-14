@@ -9,12 +9,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
-import { hostErrorLabel } from './kernel-browser-error-label.mjs';
+import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
+import { blockedUrl } from "./kernel-browser-policy.mjs";
+import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
+import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
+import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
@@ -43,7 +47,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport())
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport, { browserBarVisible: false }) === true)
+    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -69,6 +73,9 @@ export class KernelBrowserHost {
     this.root = root;
     this.timing = displayTiming(root);
     this.chromium = chromium;
+    // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
+    this.chromeWindows = new ChromeWindows(this,{inventory:(display,pid,isCurrent)=>nativeWindowInventory({display,pid,isCurrent})});
+    this.arbiter = new InputArbiter(this, this.chromeWindows);
     this.browserFactory = browserFactory;
     this.browser = null;
     this.generation = 0;
@@ -174,10 +181,16 @@ export class KernelBrowserHost {
     this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
+    this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
     this.restoring = true;
     try {
       const connection = await this.browser.ensureConnection();
+      await this.lockdown(connection);
+      // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
+      // Attribution UI only: a browser without the component extension still works.
+      this.tabGroups = new ChromeTabGroups(connection);
+      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
@@ -196,6 +209,41 @@ export class KernelBrowserHost {
       await this.save();
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
+  }
+  async syncTabGroups(groups) {
+    const labels = new Map();
+    for (const { tab_id, label } of groups.slice(0, TAB_LIMIT)) {
+      const target = this.tabs.get(tab_id)?.target_id;
+      if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
+    }
+    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids })));
+  }
+  // MP-11: fail-closed second layer behind the kernel's managed policies: no
+  // downloads, and a Tab that still reaches a blocked scheme is closed unless it
+  // shows the policy's own refusal (Chrome's error document).
+  async lockdown(connection) {
+    if (this.chromium.policy === "unavailable" && !this.policyWarned) {
+      this.policyWarned = true;
+      process.stderr.write("MP-11: kernel browser managed policies unavailable (no private namespace: install the kernel browser's AppArmor profile); only the CDP lockdown applies\n");
+    }
+    await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
+    this.lockdownOff?.();
+    this.lockdownOff = connection.subscribe(message => {
+      // A page target change can move or replace the tabbed window: re-resolve a live binding.
+      if (["Target.targetCreated", "Target.targetDestroyed"].includes(message?.method) && this.chromeWindows.bound) void this.chromeWindows.resolve().catch(() => this.chromeWindows.retire('window_destroyed'));
+      const info = message?.params?.targetInfo;
+      if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
+      // The new tab page is the policy's home page (NewTabPageLocation).
+      if (blockedUrl(info.url) && !/^chrome:\/\/newtab\/?$/.test(info.url)) void this.closeBlocked(connection, info.targetId);
+    });
+  }
+  async closeBlocked(connection, targetId) {
+    try {
+      const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
+      try { if (/^chrome-error:/.test((await connection.send("DOM.getDocument", { depth: 0 }, sessionId)).root?.documentURL ?? "")) return; }
+      finally { await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {}); }
+    } catch {}
+    await connection.send("Target.closeTarget", { targetId }).catch(() => {});
   }
   // MP-08/MP-10 (BROWSER-UX-14): the keepalive is a popup window (no tab strip; Chrome never adds Tabs
   // to it), so the native tab strip shows only the person's Tabs, in their own tabbed window.
@@ -281,6 +329,7 @@ export class KernelBrowserHost {
   async stop() {
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
+    this.lockdownOff?.(); this.lockdownOff = null;
     await this.closeCompositors();
     this.sampleLanes.clear();
 
@@ -311,10 +360,12 @@ export class KernelBrowserHost {
   async reconcile() {
     const observation = ++this.observations;
     let state;
+    // MP-08/MP-10/MP-11 (BROWSER-UX-14): the kernel's Tabs keep their window's native tab
+    // strip and omnibox (the browser_chrome band); the Room bar's fullscreen policy is not applied.
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(this.viewport(), { browserBarVisible: false }); break; }
+      try { state = await this.browser.reconcile(this.viewport()); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -825,7 +876,10 @@ export class KernelBrowserHost {
       if (request.method === "host.browser") {
         if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
-        const result = await this.request(request.params, { signal });
+        // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
+        const { _tab_groups: groups, ...params } = request.params ?? {};
+        const result = await this.request(params, { signal });
+        if (Array.isArray(groups)) void this.syncTabGroups(groups).catch(() => {});
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
         // Structured controller observations scrub before compaction; metadata
@@ -867,7 +921,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : hostFailureMessage(error) } }; }
   }
 }
 

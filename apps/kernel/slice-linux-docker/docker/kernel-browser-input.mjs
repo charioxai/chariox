@@ -7,7 +7,7 @@ const viewport = { css_width: geometry.width, css_height: geometry.height };
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
 // MP-08/MP-10: X keysyms for owned-display viewer keys (printable ASCII maps 1:1).
-const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backspace: 0xff08, Delete: 0xffff,
+export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backspace: 0xff08, Delete: 0xffff,
   ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54, Home: 0xff50, End: 0xff57 };
 // MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
 // owned display (Selkies forwards every wheel event as X button notches).

@@ -484,3 +484,28 @@ test('MP-11: tile layout updates admit inert style/class and reject fetching CSS
  for(const [name,value]of [['onclick','alert(1)'],['src','https://example.com/x'],['style','background-image:url(https://example.com/x)']])assert.throws(()=>validateMirror2Packet(packet(name!,value!),known),/unsafe mirror/);
  const protectedKnown=new Map(known);protectedKnown.set('n3',{...record,kind:'mask'});assert.throws(()=>validateMirror2Packet(packet('class','moved'),protectedKnown),/unsafe mirror/);
 });
+
+// MP-08/MP-10/MP-11: host-safe causes retain terminal semantics after error sanitization.
+test('specific retired-subscription replies retire the viewer immediately',async()=>{
+ const f=flow(async c=>{if(c.op==='mirror_subscribe')return {subscription_id:'s'};if(c.op==='mirror_close')return {closed:true};throw Error('kernel_browser_failed: MD-2: host browser operation failed; refresh state or check host browser readiness (Error mirror_subscription_retired kernel-browser-mirror.mjs:31:4)')})
+ const mirror=await f.start()
+ try{await until(()=>f.failures.length>0,400);assert.equal(f.failures.length,1)}finally{await mirror.close()}
+})
+
+test('a refused input reports its reason without retiring paint or replaying the gesture',async()=>{
+ let send:any,inputs=0,sequence=0;const refusals:unknown[]=[],failures:unknown[]=[]
+ const error=Error('kernel_browser_failed: MD-2: browser operation failed: Error occluded_node')
+ const mirror=await attachBrowserMirror2({protocolVersion:517,request:async(r:any)=>{
+  const c=r.KernelBrowser.command
+  if(c.op==='mirror_subscribe')return {KernelBrowser:{result:{subscription_id:'s'}}}
+  if(c.op==='mirror_close')return {KernelBrowser:{result:{closed:true}}}
+  if(c.op==='mirror_input'){inputs++;throw error}
+  await new Promise(resolve=>setTimeout(resolve,10));return {KernelBrowser:{result:packet(++sequence,sequence===1)}}
+ }},{} as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:e=>failures.push(e),inputFailure:e=>refusals.push(e)},{credits:1,waitMs:0,renderer:(_c,s)=>{send=s;return {frame:{} as HTMLIFrameElement,ready:async()=>{},apply:async()=>{},close(){}}}})
+ try{
+  await until(()=>sequence>=1)
+  await assert.rejects(send({kind:'click',node_id:'n2',x:1,y:1},{sequence:1,document_id:'d'}),error)
+  const before=sequence;await until(()=>sequence>before)
+  assert.equal(inputs,1);assert.deepEqual(refusals,[error]);assert.deepEqual(failures,[])
+ }finally{await mirror.close()}
+})

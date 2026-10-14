@@ -663,7 +663,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 517')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
@@ -693,7 +693,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment') } as Mirror2Packet)
   }
-  const renderer = createRenderer(container, (action, epoch) => { activeAt = performance.now(); fill(); return request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) })
+  const renderer = createRenderer(container, async (action, epoch) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own
@@ -724,7 +724,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   // Stopping local credits and releasing the kernel subscription are separate: the latter happens once.
   let remoteClosed: Promise<void> | null = null
   const closeRemote = (): Promise<void> => remoteClosed ??= request({ op: 'mirror_close', subscription_id, generation: binding.generation }).then(() => {}, () => {})
-  const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror/.test(error.message)
+  const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror|MD-2: (?:browser operation failed: |host browser operation failed; refresh state or check host browser readiness \()[A-Za-z0-9_ .:-]*\bmirror_subscription_retired\b/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
     const reset = wantReset && !resetOutstanding, resend = !reset && wantResend && !resendOutstanding && applied > 0, generation = failGeneration

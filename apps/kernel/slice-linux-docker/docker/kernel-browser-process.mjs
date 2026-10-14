@@ -10,6 +10,7 @@ import * as macos from "./kernel-browser-macos.mjs";
 import { LinuxOwnedDesktop, desktopCommand } from './linux-owned-desktop.mjs';
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 import { fenceScreenshotPresentation } from './browser-capture-presentation.mjs';
+import { writePolicyLayer } from './kernel-browser-policy.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -37,6 +38,8 @@ export function launchArguments(profile, headless, display = false, nativeAccess
     // The host restores its own tabs; after an unclean stop Chromium's
     // "Restore pages?" bubble would cover the page in the owned window.
     "--hide-crash-restore-bubble", "--disable-background-networking",
+    // MP-08/MP-11: the kernel loads its tab-groups component extension over this pipe.
+    "--enable-unsafe-extension-debugging",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []),
@@ -120,7 +123,9 @@ export class HostChromium {
     }
     const args = launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
-    const command = this.desktop?.binding() ? desktopCommand(binary, args) : { binary, args };
+    this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
+    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
+    const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
