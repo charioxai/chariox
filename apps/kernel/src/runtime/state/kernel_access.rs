@@ -4,7 +4,7 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    Grant,
+    Grant, Refusal,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -51,6 +51,9 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
+        for grant in &revoked {
+            state.remember_ended(&grant.holder);
+        }
         let pending_keys = state
             .pending
             .iter()
@@ -140,6 +143,9 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
+        for (grant, _) in &removed {
+            state.remember_ended(&grant.holder);
+        }
         drop(state);
         for (grant, reason) in removed {
             self.cancel_access_prompt(&grant.summary, "extension");
@@ -180,6 +186,15 @@ impl KernelRuntimeState {
         grants
     }
 
+    /// True when this peer sits under a holder whose grant has ended.
+    pub(crate) fn access_ended_for(&self, peer: &ProcessIdentity) -> bool {
+        let Ok(chain) = process::ancestry(peer) else {
+            return false;
+        };
+        let state = self.owned.kernel_access.lock().expect("access state poisoned");
+        chain.iter().any(|ancestor| state.ended.contains(ancestor))
+    }
+
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
         self.sweep_kernel_access();
         self.owned
@@ -216,7 +231,7 @@ impl KernelRuntimeState {
             ));
         }
         let holder =
-            process::holder(&peer, request.holder_pid).map_err(|e| error(e.to_string()))?;
+            process::holder(&peer, request.holder_pid).map_err(|_| Refusal::NotCovered.error())?;
         let config = self
             .owned
             .config_projection

@@ -2854,6 +2854,16 @@ Workflow trigger and deployment direction:
   `chariox access revoke <id|--all>`, `/kernel access list`, and
   `/kernel access revoke <id|all>`.
 
+  EXT-UX-05: a Unix peer's refused request names its reason, in the error `code`
+  with one plain sentence as `message` (no PID, path or grant id; the
+  serialized error shape is unchanged): `kernel_access_human_only` (critical
+  approval, passkey, secret, authority or remote-kernel action: owner-only),
+  `kernel_access_not_covered` (the peer is not the approved holder or one of its
+  sub-processes, including a sibling that names the holder's PID),
+  `kernel_access_ended` (the grant expired or was revoked; the holder, or its
+  sub-process, asks again) and `kernel_access_already_granted` (a second access
+  request while covered).
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term.

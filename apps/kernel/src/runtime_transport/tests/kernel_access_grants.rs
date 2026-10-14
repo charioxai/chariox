@@ -339,7 +339,7 @@ fn kernel_access_descendant_child() {
         socket.send(Message::Text(frame(serde_json::json!({"GetSessionState": {"session_id": SESSION}})).to_string().into())).await.unwrap();
         let result = response(&mut socket, "request").await;
         if std::env::var_os("CHARIOX_ACCESS_TEST_KERNEL_CHILD").is_some() {
-            assert_eq!(result["error"]["code"], "kernel_access_denied", "kernel child inherited: {result}");
+            assert_eq!(result["error"]["code"], "kernel_access_not_covered", "kernel child inherited: {result}");
             socket.send(Message::Text(frame(serde_json::json!({"RequestKernelAccess":{"holder_pid":std::process::id()}})).to_string().into())).await.unwrap();
             assert!(response(&mut socket, "request").await["error"].is_object());
         } else { assert!(result["error"].is_null(), "{result}"); }
@@ -784,11 +784,18 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
     let get = serde_json::json!({"GetSessionState":{"session_id":SESSION}});
     assert_eq!(
         sibling.request(get.clone())["error"]["code"],
-        "kernel_access_denied"
+        "kernel_access_not_covered"
     );
     let forged_holder = sibling
         .request(serde_json::json!({"RequestKernelAccess":{"holder_pid":holder.child.id()}}));
-    assert!(forged_holder["error"].is_object(), "{forged_holder}");
+    assert_eq!(
+        forged_holder["error"]["code"], "kernel_access_not_covered",
+        "{forged_holder}"
+    );
+    assert_eq!(
+        forged_holder["error"]["message"],
+        crate::runtime::kernel_access::Refusal::NotCovered.message()
+    );
     let grant_id = grant(&mut kernel, &mut holder).await;
     assert!(holder.request(get.clone())["error"].is_null());
     let own_ref = holder.request(serde_json::json!({"ResolveSession":{"session_ref":"access-s"}}));
@@ -796,7 +803,7 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
     // A sibling presents no credential; knowing the public grant id changes nothing.
     assert_eq!(
         sibling.request(get)["error"]["code"],
-        "kernel_access_denied"
+        "kernel_access_not_covered"
     );
     holder.command("child");
     assert_eq!(holder.result()["descendant"], true);
@@ -805,9 +812,11 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
         serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":"critical-test","choice_id":"approve","passkey":PASSKEY}}),
         serde_json::json!({"ResolveKernelClientConnection":{"kernel_ref":"remote"}}),
     ] {
+        let refused = holder.request(request);
+        assert_eq!(refused["error"]["code"], "kernel_access_human_only", "{refused}");
         assert_eq!(
-            holder.request(request)["error"]["code"],
-            "kernel_access_denied"
+            refused["error"]["message"],
+            crate::runtime::kernel_access::Refusal::HumanOnly.message()
         );
     }
     for request in [
@@ -935,11 +944,22 @@ async fn kernel_access_grants_expire_revoke_on_pid_reuse_and_real_rotation() {
         }
         holder.command("next");
         assert_eq!(holder.result()["closed"], true, "{action}");
+        if action == "expire" {
+            // The approved holder itself returns: its access ended; it is not a stranger.
+            holder.command("reconnect");
+            assert_eq!(holder.result()["reconnected"], true);
+            let ended = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+            assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
+            assert_eq!(
+                ended["error"]["message"],
+                crate::runtime::kernel_access::Refusal::Ended.message()
+            );
+        }
         let mut reconnect = Client::start(&kernel.root);
         assert_eq!(
             reconnect.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))
                 ["error"]["code"],
-            "kernel_access_denied"
+            "kernel_access_not_covered"
         );
         let list = kernel
             .request(serde_json::json!({"ListKernelAccessGrants":{}}))
@@ -1117,7 +1137,7 @@ async fn unix_mutation_response_loss_retries_once_with_live_grant_and_refuses_re
     assert_eq!(holder.result()["reconnected"], true);
     assert_eq!(
         holder.cached_request(mutation.clone(), command_id)["error"]["code"],
-        "kernel_access_denied"
+        "kernel_access_ended"
     );
     // A new grant is a new authority scope, even with the same OS process and ID.
     let fresh_grant = grant(&mut kernel, &mut holder).await;

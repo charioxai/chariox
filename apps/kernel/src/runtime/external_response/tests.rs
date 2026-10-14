@@ -313,11 +313,15 @@ fn external_response_terminal_retains_owner_replies() {
 #[test]
 fn external_response_retains_only_exact_public_authority_errors() {
     let caller = command(KernelConnectionClass::ExternalAgent);
+    let reasons = crate::runtime::kernel_access::Refusal::ALL.map(|reason| reason.message());
     for message in [
         "grant revoked or expired",
         "sudo request refused",
         "sudo request expired; answer the popup in a Chariox terminal",
-    ] {
+    ]
+    .into_iter()
+    .chain(reasons)
+    {
         let error = finish_response(&caller, Err(crate::runtime::kernel_access::error(message)))
             .unwrap_err();
         assert!(error.to_string().contains(message));
