@@ -784,7 +784,7 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
   for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
     host.request=async()=>{throw error};
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
-    assert.match(rejected.error.message,/^MD-2: browser operation failed:/);
+    assert.match(rejected.error.message,/^MD-2: host browser operation failed; refresh state or check host browser readiness \(/);
     assert.notEqual(rejected.error.message,'MP-11: stale mirror input epoch');
     assert(!rejected.error.message.includes('page secret'));
   }

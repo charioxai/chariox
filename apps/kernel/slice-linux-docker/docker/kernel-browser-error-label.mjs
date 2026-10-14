@@ -46,6 +46,7 @@ export function hostErrorLabel(error) {
 // MP-08/MP-10/MP-11: shared public reply and log classifier. Exception messages,
 // CDP descriptions, arguments and private path prefixes never cross this boundary.
 // Keep kernel_browser_failed as the outer code; no serialized contract changes.
+// Existing Web clients match this sentence when retrying a read; append the cause.
 export function hostFailureMessage(error) {
- return 'MD-2: browser operation failed: '+hostErrorLabel(error).slice('host_error '.length);
+ return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+hostErrorLabel(error).slice('host_error '.length)+')';
 }

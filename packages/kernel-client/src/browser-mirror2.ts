@@ -724,7 +724,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   // Stopping local credits and releasing the kernel subscription are separate: the latter happens once.
   let remoteClosed: Promise<void> | null = null
   const closeRemote = (): Promise<void> => remoteClosed ??= request({ op: 'mirror_close', subscription_id, generation: binding.generation }).then(() => {}, () => {})
-  const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror|MD-2: browser operation failed: [A-Za-z0-9_ .:-]*\bmirror_subscription_retired\b/.test(error.message)
+  const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror|MD-2: (?:browser operation failed: |host browser operation failed; refresh state or check host browser readiness \()[A-Za-z0-9_ .:-]*\bmirror_subscription_retired\b/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
     const reset = wantReset && !resetOutstanding, resend = !reset && wantResend && !resendOutstanding && applied > 0, generation = failGeneration

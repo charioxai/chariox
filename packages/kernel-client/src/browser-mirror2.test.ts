@@ -487,7 +487,7 @@ test('MP-11: tile layout updates admit inert style/class and reject fetching CSS
 
 // MP-08/MP-10/MP-11: host-safe causes retain terminal semantics after error sanitization.
 test('specific retired-subscription replies retire the viewer immediately',async()=>{
- const f=flow(async c=>{if(c.op==='mirror_subscribe')return {subscription_id:'s'};if(c.op==='mirror_close')return {closed:true};throw Error('kernel_browser_failed: MD-2: browser operation failed: Error mirror_subscription_retired kernel-browser-mirror.mjs:31:4')})
+ const f=flow(async c=>{if(c.op==='mirror_subscribe')return {subscription_id:'s'};if(c.op==='mirror_close')return {closed:true};throw Error('kernel_browser_failed: MD-2: host browser operation failed; refresh state or check host browser readiness (Error mirror_subscription_retired kernel-browser-mirror.mjs:31:4)')})
  const mirror=await f.start()
  try{await until(()=>f.failures.length>0,400);assert.equal(f.failures.length,1)}finally{await mirror.close()}
 })
