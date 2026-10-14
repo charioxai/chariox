@@ -242,3 +242,12 @@ test('MP-11 CDP disconnect event retires native capture before source reuse',()=
  source.onCdp({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
  assert.equal(fenced,1);assert.equal(source.closed,true);
 });
+
+test('MP-11 a failed native spawn reclaims its private raster directory',async()=>{
+ const {mkdtemp,access}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');const path=await import('node:path');
+ const source=new LinuxCapture({});source.poolRoot=await mkdtemp(path.join(tmpdir(),'chariox-region-failed-'));
+ const root=source.poolRoot;
+ try{await source.close();await assert.rejects(access(root),{code:'ENOENT'});}
+ finally{const {rm}=await import('node:fs/promises');await rm(root,{recursive:true,force:true})}
+});

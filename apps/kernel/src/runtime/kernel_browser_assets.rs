@@ -55,6 +55,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-owned-display.mjs"),
     ),
     (
+        "kernel-browser-window-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-region.mjs"),
+    ),
+    (
+        "kernel-browser-native-readback.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-readback.mjs"),
+    ),
+    (
         "kernel-browser-native.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native.mjs"),
     ),

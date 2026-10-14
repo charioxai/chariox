@@ -32,7 +32,7 @@ int main(void){
     const int w=1280,h=800;const size_t size=(size_t)w*h*4;row_bytes=w*4;
     uint8_t *raw=malloc(size),*a=malloc(size),*b=malloc(size),*c=malloc(size);
     assert(raw&&a&&b&&c);memset(raw,255,size);
-    XImage image={.data=(char*)raw};struct Capture capture={.owner=42,.width=w,.height=h,.window_height=h,.image=&image,.previous=malloc(size)};
+    XImage image={.data=(char*)raw};struct Capture capture={.owner=42,.width=w,.height=h,.window_width=w,.window_height=h,.image=&image,.previous=malloc(size)};
     assert(capture.previous);int bounds[4];
     assert(cx_capture_read(&capture,a,bounds)==1);
     cx_capture_admit(&capture,a);
