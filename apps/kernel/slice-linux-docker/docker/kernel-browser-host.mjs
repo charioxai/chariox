@@ -269,8 +269,10 @@ export class KernelBrowserHost {
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
-    // Preserve already-adopted identities before accepting native/popup tabs.
-    discovered.sort((a, b) => Number(byTarget.has(b.target_id)) - Number(byTarget.has(a.target_id)));
+    // Preserve already-adopted identities before accepting native/popup tabs, in their existing order:
+    // Chrome lists targets most recently active first, and a Tab strip must not reorder (MP-08/MP-10).
+    const known = new Map([...byTarget.keys()].map((target, index) => [target, index]));
+    discovered.sort((a, b) => (known.get(a.target_id) ?? known.size) - (known.get(b.target_id) ?? known.size));
     for (const tab of discovered) {
       if (this.tabs.size >= TAB_LIMIT) {
         const connection = await this.browser.ensureConnection();

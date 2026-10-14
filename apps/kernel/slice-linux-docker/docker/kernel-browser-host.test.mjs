@@ -1130,3 +1130,15 @@ test('MP-08/MP-10 a cancelled read-only observation does not stop the browser', 
   assert.equal((await host.request({ op: 'state' })).tabs.length, 1);
   } finally { if (mirror === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = mirror; }
 }));
+
+// MP-08/MP-10 (live overflow drill): Chrome lists targets most-recently-active first, so the strip reordered
+// on every activation and a New tab could land before existing Tabs. Tabs keep their order; new ones append.
+test('MP-08/MP-10 Tabs keep their order and new Tabs are appended', () => using(async ({ host }) => {
+  const a = await host.request({ op: 'open', url: 'https://a.example/' });
+  const b = await host.request({ op: 'open', url: 'https://b.example/' });
+  const browser = host.browser, reconcile = browser.reconcile;
+  browser.reconcile = async (...args) => { const state = await reconcile(...args); return { ...state, tabs: [...state.tabs].reverse() }; };
+  const c = await host.request({ op: 'open', url: 'https://c.example/' });
+  const order = (await host.request({ op: 'state' })).tabs.map(tab => tab.tab_id);
+  assert.deepEqual(order, [a.tab_id, b.tab_id, c.tab_id]);
+}));
