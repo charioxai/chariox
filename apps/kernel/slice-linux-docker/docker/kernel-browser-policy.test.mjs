@@ -24,7 +24,13 @@ test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usab
   for (const url of ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai"]) assert(managedPolicy.URLAllowlist.includes(url));
   for (const url of ["chrome://*", "devtools://*", "chrome-extension://*", "file://*", "view-source:*"]) assert(managedPolicy.URLBlocklist.includes(url));
   assert.equal(managedPolicy.DownloadRestrictions, 3);
+  // No extension source but the kernel's own (a "*" blocklist would refuse even that).
+  assert.equal(managedPolicy.ExtensionInstallBlocklist, undefined);
+  assert.deepEqual(managedPolicy.ExtensionInstallSources, []); assert.equal(managedPolicy.BlockExternalExtensions, true);
+  for (const host of ["chromewebstore.google.com", "chrome.google.com/webstore"]) assert(managedPolicy.URLBlocklist.includes(host));
+  assert(managedPolicy.URLAllowlist.includes("chrome-extension://ecideajikgeiboaphimcgeahicjgcfea"));
   assert.equal(managedPolicy.IncognitoModeAvailability, 1);
+  assert.equal(managedPolicy.WebAppInstallByUserEnabled, false);
   assert.match(managedPolicy.DefaultSearchProviderSearchURL, /^https:\/\/duckduckgo\.com\//);
 });
 

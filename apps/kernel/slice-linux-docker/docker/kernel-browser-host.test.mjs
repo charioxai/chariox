@@ -1187,3 +1187,16 @@ test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () =>
   assert.deepEqual(closed(), ['settings', 'devtools', 'file']);
   assert(pages.size > 0);
 }));
+
+// MP-08/MP-11 (Miguel 19:54Z): the kernel's opener ledger names agent Tabs; the host groups them by target.
+test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay ungrouped', () => using(async ({ host }) => {
+  const a = await host.request({ op: 'open', url: 'https://example.com/' });
+  const b = await host.request({ op: 'open', url: 'https://example.org/' });
+  const synced = [];
+  host.tabGroups = { sync: async groups => synced.push(groups) };
+  const reply = await host.handle({ id: 1, method: 'host.browser', params: { op: 'state', _tab_groups: [{ tab_id: b.tab_id, label: 'Mara' }, { tab_id: 'gone', label: 'Ghost' }] } });
+  assert.equal(reply.ok, true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
+  assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
+}));

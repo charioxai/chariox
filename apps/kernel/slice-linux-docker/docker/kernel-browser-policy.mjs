@@ -3,6 +3,7 @@
 // a system-wide policy directory (a person's own Chrome must not inherit them).
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 
 // The native tab strip/omnibox is shown to the person (BROWSER-UX-14): its
 // internal pages, developer tools, extensions, files, downloads, password
@@ -13,20 +14,27 @@ import path from "node:path";
 // fail-closed target layer.
 export const managedPolicy = Object.freeze({
   // Chrome draws the omnibox dropdown and tab search as chrome://*.top-chrome pages;
-  // PDFs open in its built-in viewer component extension.
-  URLAllowlist: ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai"],
-  URLBlocklist: ["chrome://*", "chrome-untrusted://*", "devtools://*", "chrome-extension://*", "file://*", "view-source:*"],
+  // PDFs open in its built-in viewer component extension; the kernel's own
+  // tab-groups extension runs as one.
+  URLAllowlist: ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai", `chrome-extension://${TAB_GROUPS_EXTENSION_ID}`],
+  URLBlocklist: ["chrome://*", "chrome-untrusted://*", "devtools://*", "chrome-extension://*", "file://*", "view-source:*", "chromewebstore.google.com", "chrome.google.com/webstore"],
   DownloadRestrictions: 3,
   PasswordManagerEnabled: false,
   AutofillAddressEnabled: false,
   AutofillCreditCardEnabled: false,
   BrowserSignin: 0,
   SyncDisabled: true,
-  ExtensionInstallBlocklist: ["*"],
+  // No extension can be installed (no source, no external, no Web Store) other than the
+  // kernel's own, loaded over its CDP pipe. ExtensionInstallBlocklist "*" is not used:
+  // Chrome then refuses that load even for an allow-listed id.
+  ExtensionInstallSources: [],
+  BlockExternalExtensions: true,
   IncognitoModeAvailability: 1,
   BrowserGuestModeEnabled: false,
   BrowserAddPersonEnabled: false,
   PrintingEnabled: false,
+  // A web app install would add launchers on the kernel's machine.
+  WebAppInstallByUserEnabled: false,
   TaskManagerEndProcessEnabled: false,
   DefaultBrowserSettingEnabled: false,
   CommandLineFlagSecurityWarningsEnabled: false,
