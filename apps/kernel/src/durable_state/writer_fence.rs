@@ -86,7 +86,7 @@ mod tests {
             // Deterministic held writer, with a timeout so an assertion failure
             // cannot leave this test's owner waiting forever during Drop.
             let _ = blocked.recv_timeout(Duration::from_secs(5));
-            run_durable_writer(connection, receiver, observed, Duration::ZERO);
+            run_durable_writer(connection, receiver, observed);
         });
         store.writer = Arc::new(DurableStateWriter {
             sender: Mutex::new(Some(sender)),
