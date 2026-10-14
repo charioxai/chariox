@@ -86,7 +86,10 @@ retry may manufacture PASS.
 1. M0, both caret runners and foreign/same-process cover fences. Verify current
    selection independently. Focus/pointer/window takeover after the Python
    precheck must cause zero native warps. Returned focus cannot revive cleanup.
-   Require all runner-owned windows closed within their bounded deadlines.
+   Require all runner-owned windows closed within their bounded deadlines. The
+   TextEdit runner ends its own instance only with no takeover, no real input
+   since launch and no other window; otherwise it leaves the instance open and
+   fails with `owner intervention required`.
 2. M1, paired identity, lease, Stop/revoke, stale epochs and strict in-flight
    cancellation. Only the agent's own Action, running at revoke and ending
    `cancelled`/`controller_cancellation` in the owner's ledger while the agent is

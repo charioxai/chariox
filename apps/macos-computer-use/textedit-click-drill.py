@@ -73,8 +73,30 @@ def started_since(identity, launched):
     return time.mktime((int(year), months.index(month) + 1, int(day), hour, minute, second, 0, 0, -1)) >= int(launched)
 
 
-def terminate_owned(pid, identity, window):
-    # Only the runner's own unedited TextEdit instance, identified by start time and path.
+def hid_idle_seconds():
+    output = subprocess.run(['ioreg', '-c', 'IOHIDSystem', '-r'], capture_output=True, text=True, timeout=3).stdout
+    match = re.search(r'"HIDIdleTime" = (\d+)', output)
+    if not match:
+        raise RuntimeError('HID idle time unavailable')
+    return int(match[1]) / 1e9
+
+
+def real_input_since(launched):
+    # The helper and pointer warps post no hardware events, so any keyboard or pointer
+    # activity after launch resets the HID idle clock.
+    return hid_idle_seconds() + 0.5 < time.time() - launched
+
+
+def terminate_owned(pid, identity, window, launched, lease):
+    # Without Accessibility the document cannot be read, so ownership is proven by public
+    # facts only: no takeover, no real input since launch, and no window but ours.
+    left = f'owner intervention required: TextEdit pid {pid} window {window} left open, not signalled: '
+    if lease and lease.retired:
+        raise RuntimeError(left + 'pointer lease retired')
+    if real_input_since(launched):
+        raise RuntimeError(left + 'real input since launch; its document may be edited')
+    if {w['windowID'] for w in drill.desktop()['windows'] if w['pid'] == pid} != {window}:
+        raise RuntimeError(left + 'the instance shows another window or document')
     if process_identity(pid) != identity:
         raise RuntimeError('owned TextEdit identity changed; not signalled')
     os.kill(pid, signal.SIGTERM)
@@ -115,6 +137,7 @@ def run():
     scope = None
     pid = None
     identity = None
+    launched = None
     saved = None
     warped = None
     lease = None
@@ -212,9 +235,9 @@ def run():
             except Exception:
                 pass
         if scope:
-            # Ending the runner's own unedited instance is not a desktop mutation.
+            # Ending the runner's own provably untouched instance is not a desktop mutation.
             try:
-                terminate_owned(pid, identity, int(scope[4]))
+                terminate_owned(pid, identity, int(scope[4]), launched, lease)
             except Exception as error:
                 code = 1
                 verdict = f'FAIL: cleanup incomplete: {error}; {verdict}'

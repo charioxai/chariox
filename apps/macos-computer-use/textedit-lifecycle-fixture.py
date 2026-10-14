@@ -40,6 +40,8 @@ class TextEditLifecycleCase(unittest.TestCase):
         self.reference_failure = None
         self.reference_error = False
         self.kills = []
+        self.human_input = False
+        self.extra_window_at = None
         self.run_id = 0
 
     def tearDown(self):
@@ -79,6 +81,9 @@ class TextEditLifecycleCase(unittest.TestCase):
             # The helper saw takeover, but desktop facts are already restored.
             if self.reference_error: raise RuntimeError('helper-launch-identity-mismatch')
             return 'refused: target (not-frontmost)'
+        if label == self.extra_window_at:
+            # A user opens another document in the runner's instance.
+            self.state['windows'] = [*self.state['windows'], {**self.window, 'windowID': 8}]
         if '--capture' in arguments:
             return 'frame 2000x2000 window=7'
         if '--click-at-pointer' in arguments: point = self.state['pointer']
@@ -102,6 +107,7 @@ class TextEditLifecycleCase(unittest.TestCase):
              patch.object(textedit, 'run_reference', return_value={'probes': self.probes}), \
              patch.object(textedit, 'process_identity', return_value=time.strftime('%a %b %d %H:%M:%S %Y ', time.localtime(time.time() + 60)) + textedit.TEXTEDIT), \
              patch.object(textedit.os, 'kill', side_effect=self.kill), patch.object(textedit.time, 'sleep'), \
+             patch.object(textedit, 'real_input_since', side_effect=lambda launched: self.human_input), \
              patch.object(Path, 'home', return_value=self.root), \
              patch.object(textedit.time, 'strftime', return_value=f'run-{self.run_id}'):
             code = textedit.run()

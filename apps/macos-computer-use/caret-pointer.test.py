@@ -107,6 +107,7 @@ class CaretPointerTests(unittest.TestCase):
                 with patch.object(Path, 'home', return_value=self.root), patch.object(textedit, 'reference', side_effect=reference), \
                      patch.object(textedit, 'process_identity', return_value=time.strftime('%a %b %d %H:%M:%S %Y ', time.localtime(time.time() + 60)) + textedit.TEXTEDIT), \
                      patch.object(textedit.os, 'kill', side_effect=kill), patch.object(textedit.time, 'sleep'), \
+                     patch.object(textedit, 'real_input_since', return_value=False), \
                      patch.object(textedit.time, 'strftime', return_value=f'takeover-{self.run_id}'):
                     textedit.run()
 

@@ -23,7 +23,8 @@ class TextEditReferenceTests(lifecycle.TextEditLifecycleCase):
                     warps = {'line5-before-r-pointer': [{'x': 20.0, 'y': 30.0}],
                              'reference-after': [{'x': 20.0, 'y': 30.0}, {'x': 40.0, 'y': 30.0}]}
                     self.assertEqual(self.warps, warps.get(label, []))
-                    self.assertEqual(self.kills, [42], 'only the runner-owned instance ends')
+                    self.assertEqual(self.kills, [], 'a reported takeover makes closure unprovable; never signalled')
+                    self.assertIn('owner intervention required', verdict)
                     self.assertEqual(self.state['frontmostPID'], 42)
 
 
