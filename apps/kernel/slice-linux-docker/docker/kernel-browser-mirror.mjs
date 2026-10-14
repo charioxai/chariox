@@ -22,8 +22,8 @@ const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991
 export class MirrorService {
   constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
   invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){stream.policy=null;stream.resources.clear();continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
-  clear() {for(const stream of this.streams.values())stream.deflate?.close();this.streams.clear();}
-  drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2)this.v2.dispose(stream);}
+  clear() {for(const id of [...this.streams.keys()])this.drop(id);}
+  drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2){stream.releaseRender?.().catch(()=>{});this.v2.dispose(stream);}else stream?.deflate?.close();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.drop(id);}
   require(id,scope,generation) {
@@ -59,7 +59,15 @@ export class MirrorService {
     // attached mirror is an observer and must never resize the shared page.
     this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
-    if(command.wire===2){this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null}));return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
+    if(command.wire===2){
+      // MP-08/MP-10: like an attached video view, a live DOM view keeps its
+      // hidden RenderWidget awake. No OS activation or shared-page resize.
+      const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
+      await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
+      const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
+      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender}));}
+      catch(error){await releaseRender().catch(()=>{});throw error;}
+      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
   }

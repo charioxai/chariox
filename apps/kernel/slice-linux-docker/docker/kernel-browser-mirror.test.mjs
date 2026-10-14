@@ -354,3 +354,12 @@ test('MP-10 canonical mirror geometry at 1920x1080',()=>{
  assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
  assert.equal(run.status,0,run.stdout+run.stderr);
 });
+
+test('MP-08/MP-10/MP-11: a v2 view retains the existing render lease until close or clear',async()=>{
+ const {service,host}=fixture();let active=0,released=0;
+ host.browser.inputCapture={async hold(){active++;let closed=false;return async()=>{if(!closed){closed=true;active--;released++}}}};
+ const first=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'terminal:one');assert.equal(active,1);
+ service.drop(first.subscription_id);await Promise.resolve();assert.equal(active,0);assert.equal(released,1);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'terminal:two');assert.equal(active,1);
+ service.clear();await Promise.resolve();assert.equal(active,0);assert.equal(released,2);
+});
