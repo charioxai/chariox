@@ -19,6 +19,7 @@ const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
     ("opus", "Claude Opus (latest)"),
     ("fable", "Claude Fable (latest)"),
     ("claude-haiku-4-5", "Claude Haiku 4.5"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5"),
     ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
     ("claude-sonnet-5", "Claude Sonnet 5"),
     ("claude-opus-4-7", "Claude Opus 4.7"),
@@ -206,6 +207,31 @@ fn claude_model(id: &str, name: &str) -> OpenCodeProviderModel {
 #[cfg(test)]
 mod tests {
     use super::claude_provider_catalog;
+
+    // MP-08 / MP-10 / MP-11: a model that executes through the official CLI
+    // must also be selectable by both web and TUI through the shared catalog.
+    #[test]
+    fn catalog_offers_validated_haiku_5_5_in_both_claude_modes() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-model-catalog");
+        let config = root.path().join("model-cache.json");
+        std::fs::write(&config, "{}").unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_CONFIG", &config);
+        let catalog = claude_provider_catalog();
+        std::env::remove_var("CHARIOX_CLAUDE_CONFIG");
+        for provider in ["claude-p", "claude-headless"] {
+            let endpoint = catalog
+                .all
+                .iter()
+                .find(|entry| entry.id == provider)
+                .unwrap();
+            let model = endpoint
+                .models
+                .get("claude-haiku-5-5")
+                .expect("real Claude Haiku 5.5 must remain available after a model switch");
+            assert_eq!(model.name, "Claude Haiku 5.5");
+        }
+    }
 
     #[test]
     fn catalog_includes_current_claude_models() {
