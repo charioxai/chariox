@@ -861,6 +861,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("local_transport_error", error, false)
         }
+        // MP-08 / MP-10 / MP-11: absent Projects need setup, not transport retries.
+        DaemonError::LocalTransport {
+            operation: "project.get",
+            ..
+        } => kernel_error("local_transport_error", error, false),
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
