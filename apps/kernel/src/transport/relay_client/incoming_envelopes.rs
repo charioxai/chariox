@@ -409,8 +409,9 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
     config: &crate::config::DaemonConfig,
 ) -> Result<RelayReconnectDecision, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
-        // The connector reauthenticates token changes on the existing socket.
-        // A peer task can finish with a token snapshot from before that refresh.
+        // MP-08/MP-10/MP-11: heartbeat registration reauthenticates this socket
+        // in-band. A peer task may retain a pre-renewal snapshot for its whole
+        // transfer; closing here would destroy requests and subscription routes.
         RelayConfigContinuity::Continue | RelayConfigContinuity::Reauthenticate => {
             Ok(RelayReconnectDecision::Unchanged)
         }
@@ -476,34 +477,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn peer_response_after_token_refresh_keeps_the_relay_socket() {
-        for in_flight in [false, true] {
+    fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
+        // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
+        // captured before renewal. Neither idle nor busy clients may be closed.
+        for active_requests in 0..=2 {
             let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
-            let reconnect_gate = RelayReconnectGate::default();
-            if in_flight {
-                assert!(reconnect_gate.begin_daemon_request());
+            let gate = RelayReconnectGate::default();
+            for _ in 0..active_requests {
+                assert!(gate.begin_daemon_request());
             }
             let mut config = crate::config::DaemonConfig::for_tests();
-            config.relay_url = Some("wss://relay.example.test".to_string());
-            config.relay_token = Some("refreshed-token".to_string());
+            config.relay_url = Some("wss://relay.example.test".into());
+            config.relay_token = Some("renewed-token".into());
             assert_eq!(
                 enqueue_dynamic_relay_reconnect_if_changed(
                     &outgoing_tx,
-                    &reconnect_gate,
+                    &gate,
                     "wss://relay.example.test",
-                    "previous-token",
+                    "old-token",
                     &config,
                 )
                 .unwrap(),
-                RelayReconnectDecision::Unchanged
+                RelayReconnectDecision::Unchanged,
+                "token renewal must use the existing heartbeat reauthentication path",
             );
-            if in_flight {
-                assert_eq!(
-                    reconnect_gate.finish_daemon_request(&outgoing_tx).unwrap(),
-                    None
-                );
+            for _ in 0..active_requests {
+                assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
             }
-            assert!(priority_rx.try_recv().is_err());
+            assert!(
+                priority_rx.try_recv().is_err(),
+                "renewal must not queue Close"
+            );
+            assert!(
+                gate.begin_daemon_request(),
+                "new requests must remain admitted"
+            );
+            assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
         }
     }
 
@@ -605,9 +614,9 @@ mod tests {
 
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url or token missing changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url or token missing changed"),
         );
         assert_eq!(
             reconnect_gate
@@ -619,7 +628,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("last request should queue reconnect"),
-            Some("relay token changed")
+            Some("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -634,9 +643,9 @@ mod tests {
         assert!(reconnect_gate.begin_daemon_request());
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url or token missing changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url or token missing changed"),
         );
 
         send_outgoing_envelope(
@@ -652,7 +661,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("deferred reconnect should enqueue"),
-            Some("relay token changed")
+            Some("relay url or token missing changed")
         );
         assert!(!reconnect_gate.begin_daemon_request());
         assert!(matches!(
