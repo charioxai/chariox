@@ -312,6 +312,10 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
+      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
+      // A row patch cannot establish the initial snapshot. Publishing its
+      // sessions would also mistake them for cached display before cold load.
+      if (!activeInventory) return
       if (!rowsBaselinePending && patch.inventoryVersion === inventoryVersion) {
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
@@ -320,8 +324,7 @@ export function createWaitingRoomInventoryRefreshController(
       rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
-      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
-      if (activeInventory) {
+      {
         const sessions = mergeWaitingRoomSessionRows(
           currentInventoryVersion === null ? [] : activeInventory.sessions,
           patch.sessions.map((session) => ({
@@ -352,19 +355,6 @@ export function createWaitingRoomInventoryRefreshController(
         options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
         if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
           options.setProjects?.(nextInventory.projects)
-        }
-      } else {
-        options.setAvailableSessions(mergeWaitingRoomSessionRows(
-          currentInventoryVersion === null ? [] : options.getAvailableSessions(),
-          patch.sessions,
-          patch.removedSessionIds,
-        ))
-        if (patch.projects) {
-          options.setProjects?.(mergeWaitingRoomProjectRows(
-            currentInventoryVersion === null ? [] : options.getProjects?.() ?? [],
-            patch.projects,
-            patch.removedProjectIds ?? [],
-          ))
         }
       }
       options.reconcileWaitingRoom(options.getWaitingRoomState())
