@@ -12,5 +12,6 @@ pub mod package;
 pub(crate) mod portable_path;
 pub(crate) mod scm;
 pub(crate) mod transfer;
+pub mod vaulted_accounts;
 
 pub(crate) const MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION: u32 = 1;

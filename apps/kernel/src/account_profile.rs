@@ -59,24 +59,12 @@ thread_local! {
     };
 }
 
-/// Provider accounts belong to the person operating the home kernel. Local
-/// clients identify that person as `local`, while the owner's Cloud clients
-/// use the configured Cloud user id. Only that configured id aliases the host
-/// owner; collaborators retain independent account namespaces.
-pub(crate) fn provider_account_authority_owner_user_id(
-    config: &crate::config::DaemonConfig,
-    runtime_owner_user_id: &str,
-) -> String {
-    if config
-        .cloud_relay
-        .as_ref()
-        .is_some_and(|profile| profile.user_id == runtime_owner_user_id)
-    {
-        crate::session::DEFAULT_LOCAL_USER_ID.to_string()
-    } else {
-        runtime_owner_user_id.to_string()
-    }
-}
+#[path = "account_profile/authority.rs"]
+mod lease_authority;
+pub(crate) use lease_authority::{
+    provider_account_authority_owner_user_id, provider_account_execution_owner_user_id,
+    require_agent_account_authenticated,
+};
 
 /// The provider a new agent gets when none was chosen (`default` is only a
 /// placeholder, not a provider): the owner's signed-in default account
@@ -1202,7 +1190,20 @@ impl ProviderAccountProfileRegistry {
         model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        let profile = self.get(owner_user_id, provider, profile_id)?;
+        let mut profile = self.get(owner_user_id, provider, profile_id)?;
+        if profile.provider == "claude" && profile.auth_state == ProviderAccountAuthState::Unknown {
+            // MP-08 / MP-10 / MP-11: a fresh/imported account has no native
+            // auth observation yet. Verify its selected scope before rejecting
+            // prompt or utility admission; /provider status must not be required.
+            // Confirmed logout/expiry/error observations still require recovery.
+            crate::local::provider_requests::observe_provider_auth_status(
+                self,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            profile = self.get(owner_user_id, provider, &profile.profile_id)?;
+        }
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check.
@@ -1595,6 +1596,39 @@ impl ProviderAccountProfileRegistry {
         Ok(credentials
             .as_deref()
             .is_some_and(claude_credentials_are_portable))
+    }
+
+    /// MP-08/MP-10/MP-11: a token observation does not establish a native macOS login.
+    pub(crate) fn has_claude_keychain_credentials(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let locator = {
+            let document = self.read_document()?;
+            resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?
+                .locator
+                .clone()
+        };
+        let ProviderAccountLocator::Claude {
+            claude_config_dir,
+            ambient_default,
+            ..
+        } = locator
+        else {
+            return Ok(false);
+        };
+        let mut files = Vec::new();
+        collect_claude_keychain_credentials_for_scope(
+            &claude_config_dir,
+            ambient_default.unwrap_or(false),
+            &mut files,
+        )?;
+        let available = materialization_has_file(&files, ".credentials.json");
+        for file in &mut files {
+            zeroize::Zeroize::zeroize(&mut file.contents_base64);
+        }
+        Ok(available)
     }
 
     pub fn create_managed(
@@ -2492,6 +2526,45 @@ impl ProviderAccountProfileRegistry {
         })
     }
 
+    /// MP-08 / MP-10 / MP-11: the file-free replica of an authenticated Claude
+    /// account whose launch credential is a Vault setup token, and the time
+    /// that token was last validated.
+    pub(crate) fn export_managed_context_vaulted_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<(ProviderAccountMaterialization, Option<u64>), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+        if provider != "claude"
+            || stored.public.auth_state != ProviderAccountAuthState::Authenticated
+        {
+            return Err(registry_error(
+                "export managed account profile",
+                format!(
+                    "{provider} account profile `{profile_id}` has no transferable credentials"
+                ),
+            ));
+        }
+        Ok((
+            ProviderAccountMaterialization {
+                profile: ProviderAccountReplicaMetadata {
+                    owner_user_id: stored.public.owner_user_id.clone(),
+                    provider: stored.public.provider.clone(),
+                    profile_id: stored.public.profile_id.clone(),
+                    label: stored.public.label.clone(),
+                    origin: stored.public.origin,
+                    is_default: stored.public.is_default,
+                },
+                files: Vec::new(),
+                generated_at_ms: crate::session::unix_epoch_ms(),
+            },
+            stored.public.last_validated_at_ms,
+        ))
+    }
+
     pub(crate) fn materialize_replica(
         &self,
         owner_user_id: &str,
@@ -2834,20 +2907,75 @@ impl ProviderAccountProfileRegistry {
         package_sha256: &str,
         materialization: &ProviderAccountMaterialization,
     ) -> Result<ManagedContextProviderAccountReceipt, DaemonError> {
-        let materialization_sha256 = provider_account_materialization_sha256(materialization)?;
-        let mut target_materialization = materialization.clone();
-        if materialization.profile.is_default {
-            target_materialization.profile.profile_id = self
-                .get(owner_user_id, &materialization.profile.provider, "default")?
-                .profile_id;
+        self.materialize_managed_context_replica_with(
+            owner_user_id,
+            context_id,
+            package_sha256,
+            materialization,
+            false,
+        )
+    }
+
+    /// MP-08 / MP-10 / MP-11: a Claude account whose only credential is a Vault
+    /// setup token arrives without files; its token arrives in the sealed Vault.
+    /// The replica keeps the source's observation of that same token.
+    pub(crate) fn materialize_managed_context_vaulted_replica(
+        &self,
+        owner_user_id: &str,
+        context_id: &str,
+        package_sha256: &str,
+        materialization: &ProviderAccountMaterialization,
+        last_validated_at_ms: Option<u64>,
+    ) -> Result<ManagedContextProviderAccountReceipt, DaemonError> {
+        if crate::provider::canonical_provider_family(&materialization.profile.provider)
+            != Some("claude")
+            || !materialization.files.is_empty()
+        {
+            return Err(registry_error(
+                "materialize managed account profile",
+                "only a file-free Claude account can use a Vault credential",
+            ));
         }
+        let receipt = self.materialize_managed_context_replica_with(
+            owner_user_id,
+            context_id,
+            package_sha256,
+            materialization,
+            true,
+        )?;
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(
+            &document,
+            owner_user_id,
+            &receipt.provider,
+            &receipt.profile_id,
+        )?;
+        let profile = &mut document.profiles[index].public;
+        profile.auth_state = ProviderAccountAuthState::Authenticated;
+        profile.last_validated_at_ms = last_validated_at_ms;
+        self.persist_locked(&document)?;
+        Ok(receipt)
+    }
+
+    fn materialize_managed_context_replica_with(
+        &self,
+        owner_user_id: &str,
+        context_id: &str,
+        package_sha256: &str,
+        materialization: &ProviderAccountMaterialization,
+        vaulted: bool,
+    ) -> Result<ManagedContextProviderAccountReceipt, DaemonError> {
+        let materialization_sha256 = provider_account_materialization_sha256(materialization)?;
+        // MP-05/MP-08: keep the source profile id the launch plan names. A source
+        // default becomes the target default; rollback restores the previous one.
         let (profile, _) = self.materialize_replica_internal(
             owner_user_id,
-            &target_materialization,
+            materialization,
             Some(ManagedContextReplicaIntent {
                 context_id,
                 package_sha256,
                 materialization_sha256: &materialization_sha256,
+                vaulted,
             }),
             false,
         )?;
@@ -2891,7 +3019,7 @@ impl ProviderAccountProfileRegistry {
                 "MP-08 / MP-10: provider homes transfer credentials only",
             ));
         }
-        if managed_context.is_some() {
+        if managed_context.is_some_and(|intent| !intent.vaulted) {
             validate_managed_context_materialization_shape(provider, materialization)?;
         }
         let managed_root = self
@@ -2993,6 +3121,19 @@ impl ProviderAccountProfileRegistry {
                 return Ok((stored.public.clone(), None));
             }
         }
+        // MP-05/MP-08: a transferred default takes over the target's empty default
+        // slot under its own id, so the plan, Web and session keep naming it.
+        let default_slot = (managed_context.is_some()
+            && existing_profile.is_none()
+            && materialization.profile.is_default)
+            .then(|| {
+                document.profiles.iter().position(|stored| {
+                    stored.public.owner_user_id == owner_user_id
+                        && stored.public.provider == provider
+                        && managed_context_default_can_be_replaced(stored, materialization)
+                })
+            })
+            .flatten();
         let replace_existing_replica = match existing_profile {
             Some(stored)
                 if managed_context.is_some()
@@ -3159,6 +3300,7 @@ impl ProviderAccountProfileRegistry {
 
         let replaced_profile = managed_context.and_then(|_| {
             existing_profile
+                .or_else(|| default_slot.map(|index| &document.profiles[index]))
                 .filter(|stored| !stored.materialized_replica)
                 .map(|stored| ReplacedProviderAccountProfile {
                     public: stored.public.clone(),
@@ -3166,20 +3308,21 @@ impl ProviderAccountProfileRegistry {
                     label_source: stored.label_source,
                 })
         });
-        let previous_default_profile_id = if materialization.profile.is_default {
-            document
-                .profiles
-                .iter()
-                .find(|stored| {
-                    stored.public.owner_user_id == owner_user_id
-                        && stored.public.provider == provider
-                        && stored.public.profile_id != profile_id
-                        && stored.public.is_default
-                })
-                .map(|stored| stored.public.profile_id.clone())
-        } else {
-            None
-        };
+        let previous_default_profile_id =
+            if materialization.profile.is_default && default_slot.is_none() {
+                document
+                    .profiles
+                    .iter()
+                    .find(|stored| {
+                        stored.public.owner_user_id == owner_user_id
+                            && stored.public.provider == provider
+                            && stored.public.profile_id != profile_id
+                            && stored.public.is_default
+                    })
+                    .map(|stored| stored.public.profile_id.clone())
+            } else {
+                None
+            };
         if let Some(previous_default_profile_id) = &previous_default_profile_id {
             if let Some(previous_default) = document.profiles.iter_mut().find(|stored| {
                 stored.public.owner_user_id == owner_user_id
@@ -3219,6 +3362,27 @@ impl ProviderAccountProfileRegistry {
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
             existing.public.clone()
+        } else if let Some(index) = default_slot {
+            let public = new_public_profile(
+                owner_user_id,
+                provider,
+                profile_id,
+                &materialization.profile.label,
+                materialization.profile.origin,
+                materialization.profile.is_default,
+            );
+            document.profiles[index] = StoredProviderAccountProfile {
+                public: public.clone(),
+                locator,
+                label_source: Some(ProviderAccountLabelSource::Explicit),
+                materialized_replica: true,
+                pending_native_validation,
+                legacy_unpinned_replica: false,
+                replica_previous_default_profile_id: None,
+                replica_root_identity,
+                managed_context_replica: managed_context_binding,
+            };
+            public
         } else {
             let public = new_public_profile(
                 owner_user_id,
@@ -3447,6 +3611,7 @@ struct ManagedContextReplicaIntent<'a> {
     context_id: &'a str,
     package_sha256: &'a str,
     materialization_sha256: &'a str,
+    vaulted: bool,
 }
 
 impl ManagedContextReplicaBinding {
@@ -7721,7 +7886,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_context_replica_is_idempotent_and_restores_the_target_default() {
+    fn managed_context_default_keeps_its_identity_and_restores_the_target_default() {
         crate::test_support::isolated_env_test!();
         // Exercise the home-directory fallback independently of the host profile.
         std::env::remove_var("CODEX_HOME");
@@ -7763,6 +7928,16 @@ mod tests {
                 &materialization,
             )
             .unwrap();
+        // MP-05/MP-08: the launch plan, account validation and session all name
+        // the source profile id, so the transferred default keeps it.
+        assert_eq!(receipt.profile_id, source_profile.profile_id);
+        assert_eq!(
+            target
+                .get("owner-a", "codex", "default")
+                .unwrap()
+                .profile_id,
+            source_profile.profile_id
+        );
         let imported_environment = target
             .resolve_environment("owner-a", "codex", "default")
             .unwrap();
@@ -7821,7 +7996,7 @@ mod tests {
             .unwrap();
         let restored = target.get("owner-a", "codex", "default").unwrap();
         assert_eq!(restored.profile_id, target_default_profile_id);
-        assert_eq!(restored.profile_id, receipt.profile_id);
+        assert!(target.get("owner-a", "codex", &receipt.profile_id).is_err());
         let restored_environment = target
             .resolve_environment("owner-a", "codex", "default")
             .unwrap();
@@ -8024,6 +8199,7 @@ mod tests {
             context_id: "context-publication-crash",
             package_sha256: &codex_package_sha,
             materialization_sha256: &codex_sha,
+            vaulted: false,
         };
         let codex_root = managed_base
             .join("codex")
@@ -8059,6 +8235,7 @@ mod tests {
             context_id: "context-publication-crash",
             package_sha256: &opencode_package_sha,
             materialization_sha256: &opencode_sha,
+            vaulted: false,
         };
         let opencode_root = managed_base
             .join("opencode")

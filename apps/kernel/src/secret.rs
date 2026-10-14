@@ -20,23 +20,24 @@ use crate::error::DaemonError;
 mod http_boundary;
 use http_boundary::{decode_http_response, http_error, HttpSecretBoundary};
 mod vault;
-pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
-    clear_all_chariox_encrypted_vault_unlocks, export_transferred_vault_snapshot,
-    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
-    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
-    sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
-    validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
+    clear_all_chariox_encrypted_vault_unlocks, export_selected_vault_snapshot,
+    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
+    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
+    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, sync_chariox_encrypted_vault,
+    unlock_chariox_encrypted_vault, validate_installed_transferred_vault,
+    validate_transferred_vault_snapshot_for_export, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultPasskeyVerifier,
+    VaultUnlockLease,
 };
 #[cfg(test)]
 pub(crate) use vault::{
     create_chariox_encrypted_vault_for_test, expire_chariox_encrypted_vault_for_test,
     fail_next_vault_dir_sync_for_test,
 };
+pub(crate) use vault::{remove_installed_transferred_vault, remove_transferred_vault_for_context};
 
 #[cfg(test)]
 pub(crate) fn set_chariox_encrypted_vault_secret_for_test(
@@ -55,6 +56,22 @@ pub(crate) fn get_chariox_encrypted_vault_secret_for_test(
     key: &str,
 ) -> Result<String, DaemonError> {
     vault::CharioxEncryptedCredentialVaultStore::new(path.into()).get_secret(service, key)
+}
+
+/// MP-11: preflight the exact selected Vault service/key without exposing a value.
+pub(crate) fn check_selected_vault_item(
+    config: &UserCredentialVaultConfig,
+    service: &str,
+    key: &str,
+) -> Result<(), DaemonError> {
+    let value = Zeroizing::new(vault_store_for_config(config)?.get_secret(service, key)?);
+    if value.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "Vault item preflight",
+            message: "selected Vault item is empty".into(),
+        });
+    }
+    Ok(())
 }
 
 type HmacSha256 = Hmac<Sha256>;

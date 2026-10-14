@@ -329,6 +329,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     };
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vaulted: None,
     };
     assert!(!format!("{export:?}").contains("provider-package-secret"));
     let exported = export_managed_context_package(export).expect("export provider account package");
@@ -347,6 +348,8 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     let provider_target = ManagedContextProviderAccountImportTarget {
         registry: target_registry.clone(),
         owner_user_id: "owner-a".to_string(),
+        credential_vault: Default::default(),
+        target_kernel_id: fixture.binding.target_kernel_id.clone(),
     };
     let request = || ManagedContextPackageApplicationRequest {
         transfer_id: "ctx_provider_account".to_string(),
@@ -369,7 +372,9 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         panic!("selected provider account became None")
     };
     assert_eq!(accounts.len(), 1);
-    assert_eq!(accounts[0].profile_id, target_default_profile.profile_id);
+    // MP-05/MP-08: the source id survives; the empty target default slot is reused.
+    assert_eq!(accounts[0].profile_id, source_profile.profile_id);
+    assert_ne!(accounts[0].profile_id, target_default_profile.profile_id);
     assert_eq!(
         target_registry
             .list("owner-a", Some("codex"))
@@ -444,6 +449,7 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vaulted: None,
     };
     let package_path = export.package_path.clone();
     let error = export_managed_context_package(export)
@@ -538,6 +544,8 @@ esac
     export.git_credentials = ManagedContextPackageGitCredentials::Selected { materializations };
     assert!(!format!("{export:?}").contains("github-package-secret"));
     let exported = export_managed_context_package(export).expect("export Git credential package");
+    // MP-08: schema 4 keeps its Git component contract after the schema-5 bump.
+    let exported = rewrite_package_schema(exported, 4, false, false);
     assert!(exported.git_credentials_sha256.is_some());
     let target = ManagedContextGitCredentialImportTarget {
         command_context: target_context,
@@ -633,8 +641,10 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     let target_binding = ManagedContextProviderAccountImportTarget {
         registry: target.clone(),
         owner_user_id: "owner-a".to_string(),
+        credential_vault: Default::default(),
+        target_kernel_id: fixture.binding.target_kernel_id.clone(),
     };
-    rollback_imported_provider_accounts(Some(&target_binding), &imported)
+    rollback_imported_provider_accounts(Some(&target_binding), &imported, "unused", false)
         .expect_err("one conflicting receipt must report rollback failure");
     assert!(target
         .get("owner-a", "codex", &receipts[0].profile_id)
@@ -998,4 +1008,266 @@ impl Drop for FixtureProviderHomes {
             }
         }
     }
+}
+
+#[test]
+fn mp08_vault_setup_token_claude_account_reaches_only_the_target_vault() {
+    crate::test_support::isolated_env_test!();
+    let _lock = crate::env_lock::lock();
+    let mut fixture = PackageFixture::new("vaulted-claude");
+    let _provider_homes = FixtureProviderHomes::new(&fixture.root.join("target-home"));
+    let source_private = crate::transport::relay_crypto::generate_private_key_base64();
+    let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+    let thumbprint = |private: &str| {
+        crate::runtime::terminal_pairings::public_key_thumbprint(
+            &crate::transport::relay_crypto::public_key_from_private_key_base64(private)
+                .expect("public key"),
+        )
+    };
+    let target_public =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+            .expect("target public key");
+    fixture.binding.source_key_thumbprint = thumbprint(&source_private);
+    fixture.binding.target_key_thumbprint = thumbprint(&target_private);
+    let vault_config = |name: &str| crate::config::UserCredentialVaultConfig {
+        backend: crate::config::CredentialVaultBackend::CharioxEncrypted,
+        path: fixture.root.join(name).display().to_string(),
+        ..Default::default()
+    };
+
+    // Source kernel: an authenticated Claude account whose only credential is
+    // a Vault setup token, next to an unrelated Vault secret.
+    std::env::set_var("CHARIOX_HOME", fixture.root.join("source-home"));
+    let mut source = crate::config::DaemonConfig::for_tests();
+    source.daemon_id = fixture.binding.source_kernel_id.clone();
+    source.relay_private_key = source_private.clone();
+    source.user_config.credential_vault = vault_config("source-vault.json");
+    crate::secret::unlock_chariox_encrypted_vault(
+        &source.user_config.credential_vault.path,
+        "source-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("unlock source Vault");
+    crate::secret::set_chariox_encrypted_vault_secret_for_test(
+        &source.user_config.credential_vault.path,
+        source.user_config.credential_vault.service_name(),
+        "unrelated-source-secret",
+        "unrelated-canary",
+    )
+    .expect("store unrelated source secret");
+    let source_registry =
+        ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+            .expect("open source account registry");
+    let source_profile = source_registry
+        .create_managed("owner-a", "claude", "Setup token")
+        .expect("create source Claude account");
+    source_registry
+        .update_observation(
+            "owner-a",
+            "claude",
+            &source_profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("observe source Claude account");
+    crate::provider::store_provider_account_credential(
+        &source,
+        "owner-a",
+        "claude",
+        &source_profile.profile_id,
+        "sk-ant-oat01-vaulted-canary",
+        false,
+    )
+    .expect("store setup token");
+    source_registry
+        .export_managed_context_materialization("owner-a", "claude", &source_profile.profile_id)
+        .expect_err("a setup token is not a portable login");
+    let (materialization, credential) = super::super::vaulted_accounts::export_vaulted_account(
+        &source,
+        &source_registry,
+        "owner-a",
+        "claude",
+        &source_profile.profile_id,
+    )
+    .expect("export vaulted Claude account");
+    assert!(materialization.files.is_empty());
+    let vaulted = super::super::vaulted_accounts::seal_vaulted_accounts(
+        &source,
+        vec![credential],
+        false,
+        &fixture.binding.plan.context_id,
+        &fixture.binding.target_kernel_id,
+        &target_public,
+    )
+    .expect("seal setup token")
+    .expect("vaulted component");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.plan.development = ManagedContextDevelopmentSelection::Empty;
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.plan.provider_accounts = ManagedContextProviderAccountSelection::Selected {
+        accounts: vec![ManagedContextProviderAccount {
+            provider: "claude".to_string(),
+            account_profile: source_profile.profile_id.clone(),
+        }],
+    };
+    export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
+        materializations: vec![materialization],
+        vaulted: Some(Box::new(vaulted)),
+    };
+    let exported = export_managed_context_package(export).expect("export vaulted package");
+    let bytes = fs::read(&exported.package_path).unwrap();
+    let start = PACKAGE_MAGIC.len() + 4;
+    let length = u32::from_be_bytes(bytes[PACKAGE_MAGIC.len()..start].try_into().unwrap()) as usize;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&bytes[start..start + length]).unwrap();
+    assert_eq!(
+        manifest["schemaVersion"], 5,
+        "MP-08 Vault objects require schema 5"
+    );
+    let legacy = rewrite_package_schema(exported.clone(), 4, false, false);
+    let failure = extract_managed_context_package(fixture.import_request(&legacy));
+    let Err(failure) = failure else {
+        panic!("legacy Vault object must be rejected");
+    };
+    assert!(failure
+        .to_string()
+        .contains("cannot carry vaulted provider accounts"));
+    // Restore schema 5 before proving target installation, replay and rollback.
+    let current = rewrite_package_schema(legacy, 5, false, false);
+    let exported = current;
+    let package = fs::read(&exported.package_path).expect("read package");
+    for canary in ["vaulted-canary", "unrelated-canary", "source-passphrase"] {
+        assert!(!package
+            .windows(canary.len())
+            .any(|window| window == canary.as_bytes()));
+    }
+
+    // Target kernel: its own registries and Vault path.
+    std::env::set_var("CHARIOX_HOME", fixture.root.join("target-home/.chariox"));
+    let target_registry =
+        ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+            .expect("open target account registry");
+    let target_vault = vault_config("target-vault.json");
+    let provider_target = ManagedContextProviderAccountImportTarget {
+        registry: target_registry.clone(),
+        owner_user_id: "owner-a".to_string(),
+        credential_vault: target_vault.clone(),
+        target_kernel_id: fixture.binding.target_kernel_id.clone(),
+    };
+    let request = || ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_vaulted_claude".to_string(),
+        package_path: exported.package_path.clone(),
+        expected_package_sha256: exported.package_sha256.clone(),
+        expected_binding: ManagedContextPackageBinding {
+            plan: exported.plan.clone(),
+            ..fixture.binding.clone()
+        },
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: target_private.clone(),
+        project_environment_target: None,
+        provider_account_target: Some(provider_target.clone()),
+        git_credential_target: None,
+    };
+    let receipt = apply_managed_context_package(request()).expect("apply vaulted package");
+    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    else {
+        panic!("selected provider account became None")
+    };
+    let imported = target_registry
+        .get("owner-a", "claude", &accounts[0].profile_id)
+        .expect("imported Claude account");
+    assert_eq!(
+        imported.auth_state,
+        crate::account_profile::ProviderAccountAuthState::Authenticated
+    );
+    let mut target = crate::config::DaemonConfig::for_tests();
+    target.user_config.credential_vault = target_vault.clone();
+    let launch_token = |target: &crate::config::DaemonConfig| {
+        crate::provider::resolve_provider_account_credentials(
+            target,
+            "owner-a",
+            "claude",
+            &accounts[0].profile_id,
+        )
+        .expect("resolve target launch credential")
+        .remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        .map(|value| value.to_string())
+    };
+    assert_eq!(
+        launch_token(&target).as_deref(),
+        Some("sk-ant-oat01-vaulted-canary")
+    );
+    crate::secret::get_chariox_encrypted_vault_secret_for_test(
+        &target_vault.path,
+        target_vault.service_name(),
+        "unrelated-source-secret",
+    )
+    .expect_err("unselected source Vault items stay on the source");
+
+    // A kernel restart reopens the Vault from its target-sealed envelope.
+    crate::secret::clear_all_chariox_encrypted_vault_unlocks().expect("clear unlocks");
+    crate::secret::clear_vault_secret_process_cache().expect("clear Vault cache");
+    assert!(crate::secret::restore_transferred_vault_unlock(
+        &target_vault.path,
+        &fixture.binding.target_kernel_id,
+        &target_private,
+    )
+    .expect("restore target Vault"));
+    assert_eq!(
+        launch_token(&target).as_deref(),
+        Some("sk-ant-oat01-vaulted-canary")
+    );
+
+    let replay = apply_managed_context_package(request()).expect("replay vaulted package");
+    assert_eq!(replay.provider_accounts, receipt.provider_accounts);
+    assert!(launch_token(&target).is_some());
+
+    rollback_managed_context_package_application(
+        &receipt,
+        &target_private,
+        Some(&provider_target),
+        None,
+    )
+    .expect("roll back vaulted package");
+    assert!(crate::credential::load_user_credentials()
+        .expect("target credentials")
+        .is_empty());
+    assert!(!Path::new(&target_vault.path).exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn mp08_schema_five_provider_account_wire_snapshot_is_versioned() {
+    assert_eq!(PACKAGE_SCHEMA_VERSION, 5);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 515);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        112
+    );
+    let component = ProviderAccountComponent::Vaulted {
+        materializations: Vec::new(),
+        vaulted: Box::new(super::super::vaulted_accounts::VaultedProviderAccounts {
+            credentials: vec![super::super::vaulted_accounts::VaultedProviderCredential {
+                provider: "claude".into(),
+                profile_id: "profile".into(),
+                credential_id: "credential".into(),
+                vault_service: "provider".into(),
+                vault_key: "setup-token".into(),
+                last_validated_at_ms: None,
+            }],
+            vault: None,
+        }),
+    };
+    let snapshot = serde_json::json!({"schemaVersion": PACKAGE_SCHEMA_VERSION,
+        "localProtocol": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        "relayPeerProtocol": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        "component": serde_json::to_value(component).unwrap()});
+    let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
+    assert_eq!(
+        format!("{digest:x}"),
+        "25f852573fcbff89af6215d027f1bd651743a13e401afc0e30b59ef48df47afe"
+    );
 }

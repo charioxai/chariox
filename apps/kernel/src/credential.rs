@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,14 @@ impl CharioxCredentialRegistry {
         credential: UserCredentialConfig,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
         validate_credential_registration(&credential)?;
-        ensure_private_dir(&self.root, "credential.upsert")?;
+        let _lock = self.lock_mutations()?;
+        self.write_registration(credential)
+    }
+
+    fn write_registration(
+        &self,
+        credential: UserCredentialConfig,
+    ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
         let path = self.path_for(&credential.id)?;
         let payload =
             serde_yaml::to_string(&credential).map_err(|error| DaemonError::LocalTransport {
@@ -77,6 +84,7 @@ impl CharioxCredentialRegistry {
     }
 
     pub fn remove(&self, id: &str) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
+        let _lock = self.lock_mutations()?;
         let path = self
             .find_path(id)?
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -86,6 +94,83 @@ impl CharioxCredentialRegistry {
         let credential = Self::read_yaml(&path)?;
         fs::remove_file(&path).map_err(io_error("credential.remove"))?;
         Ok((credential, path))
+    }
+
+    /// MP-11: publish a complete registration without replacing another writer.
+    pub(crate) fn insert_if_absent(
+        &self,
+        credential: UserCredentialConfig,
+    ) -> Result<bool, DaemonError> {
+        validate_credential_registration(&credential)?;
+        let _lock = self.lock_mutations()?;
+        let path = self.path_for(&credential.id)?;
+        if self.get(&credential.id)?.is_some() {
+            return Ok(false);
+        }
+        let staging = self
+            .root
+            .join(format!(".publish-{:016x}.tmp", rand::random::<u64>()));
+        let payload =
+            serde_yaml::to_string(&credential).map_err(|_| DaemonError::LocalTransport {
+                operation: "credential.insert",
+                message: "failed to serialize registration".into(),
+            })?;
+        atomic_write_private(&staging, payload.as_bytes(), "credential.insert")?;
+        // A hard link publishes the already flushed file atomically and cannot clobber.
+        let result = match fs::hard_link(&staging, &path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(io_error("credential.insert")(error)),
+        };
+        fs::remove_file(&staging).map_err(io_error("credential.insert"))?;
+        if result.as_ref().is_ok_and(|inserted| *inserted) {
+            #[cfg(unix)]
+            File::open(&self.root)
+                .and_then(|directory| directory.sync_all())
+                .map_err(io_error("credential.insert"))?;
+        }
+        result
+    }
+
+    /// MP-11: a registration replaced after the caller's snapshot stays intact.
+    pub(crate) fn remove_if_matches(
+        &self,
+        expected: &UserCredentialConfig,
+    ) -> Result<bool, DaemonError> {
+        let _lock = self.lock_mutations()?;
+        if self.get(&expected.id)?.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        fs::remove_file(self.path_for(&expected.id)?).map_err(io_error("credential.remove"))?;
+        Ok(true)
+    }
+
+    fn lock_mutations(&self) -> Result<File, DaemonError> {
+        ensure_private_dir(&self.root, "credential.lock")?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+        }
+        let file = options
+            .open(self.root.join(".mutation.lock"))
+            .map_err(io_error("credential.lock"))?;
+        if !file
+            .metadata()
+            .map_err(io_error("credential.lock"))?
+            .is_file()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "credential.lock",
+                message: "registration lock must be a regular file".into(),
+            });
+        }
+        fs2::FileExt::lock_exclusive(&file).map_err(io_error("credential.lock"))?;
+        Ok(file)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<UserCredentialConfig>, DaemonError> {
