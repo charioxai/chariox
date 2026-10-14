@@ -46,7 +46,9 @@ fn provider_harness(executable: &str) -> Option<KernelAccessProviderHarness> {
         }
     }
     if crate::provider::resolve_claude_executable()
-        .is_ok_and(|path| same_executable(executable, &path))
+        .is_ok_and(|path| {
+            same_executable(executable, &path) || same_claude_installation(executable, &path)
+        })
     {
         return Some(KernelAccessProviderHarness::Claude);
     }
@@ -56,6 +58,40 @@ fn provider_harness(executable: &str) -> Option<KernelAccessProviderHarness> {
         return Some(KernelAccessProviderHarness::Opencode);
     }
     None
+}
+
+// MP-08 / MP-10 / MP-11: a native updater can move the configured symlink
+// while an older official process is still running. Attribute only existing
+// version files in that same configured installation, never arbitrary paths
+// with a Claude-looking basename. OS ancestry and human approval still admit
+// the holder; attribution does not confer authority.
+fn same_claude_installation(executable: &str, configured: &Path) -> bool {
+    let Ok(configured) = std::fs::canonicalize(configured) else {
+        return false;
+    };
+    let Some(versions) = configured.parent() else {
+        return false;
+    };
+    let candidate = Path::new(executable);
+    versions.file_name().and_then(|s| s.to_str()) == Some("versions")
+        && versions
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|s| s.to_str()) == Some("claude")
+        && native_claude_version(&configured)
+        && native_claude_version(candidate)
+        && candidate.parent() == Some(versions)
+        && std::fs::canonicalize(candidate).is_ok_and(|path| path == candidate)
+}
+
+fn native_claude_version(path: &Path) -> bool {
+    path.file_name().and_then(|s| s.to_str()).is_some_and(|name| {
+        let parts: Vec<_> = name.split('.').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 fn codex_native_candidates(launcher: &Path) -> Vec<PathBuf> {
@@ -223,6 +259,58 @@ mod launcher_tests {
                 "direct native harness identity must be selected"
             );
         }
+    }
+
+    #[test]
+    fn default_holder_keeps_running_claude_after_native_update() {
+        crate::test_support::isolated_env_test!();
+        let install = Install::new();
+        let previous = install.native("share/claude/versions/2.1.292");
+        let current = install.native("share/claude/versions/2.1.296");
+        let launcher = install.0.join("bin/claude");
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&current, &launcher).unwrap();
+        let status = Command::new("node")
+            .args(["-e", SPAWN])
+            .arg(&previous)
+            .args(["-c", "\"$@\"; exit $?", "provider"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", PROBE, "--ignored", "--nocapture"])
+            .env("CHARIOX_CLAUDE_BIN", &launcher)
+            .env("KA_EXPECT_EXECUTABLE", &previous)
+            .env("KA_EXPECT_HARNESS", "claude")
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "a native update must keep the running provider as holder"
+        );
+    }
+
+    #[test]
+    fn claude_version_attribution_stays_inside_configured_installation() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let install = Install::new();
+        let current = install.native("share/claude/versions/2.1.296");
+        let previous = install.native("share/claude/versions/2.1.292");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &current);
+        assert_eq!(
+            provider_harness(previous.to_str().unwrap()),
+            Some(KernelAccessProviderHarness::Claude)
+        );
+        for relative in [
+            "other/claude/versions/2.1.292",
+            "share/claude/versions/bash",
+            "share/claude/versions/2.1.292.extra",
+        ] {
+            let unrelated = install.native(relative);
+            assert_eq!(provider_harness(unrelated.to_str().unwrap()), None);
+        }
+        let outside = install.native("other/2.1.290");
+        std::os::unix::fs::symlink(&outside, install.0.join("share/claude/versions/2.1.290"))
+            .unwrap();
+        assert_eq!(provider_harness(outside.to_str().unwrap()), None);
     }
 
     #[test]
