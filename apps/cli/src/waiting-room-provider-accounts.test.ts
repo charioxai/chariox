@@ -219,3 +219,13 @@ test("exhausted selected account exposes reset and a usable alternative", () => 
   assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
   assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
 })
+
+// MP-08 / MP-10 / MP-11: a replica or retained alias is outside home inventory.
+test("explicit accounts outside the home inventory defer authentication to the kernel", () => {
+  const local = account("codex", "local", true)
+  local.auth_state = "not_configured"
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "replica-id", { kind: "local" }), null)
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "retained-home-label"), null)
+  assert.match(selectedProviderAccountStartBlockReason([local], "codex", "local") ?? "", /needs sign-in/)
+  assert.match(selectedProviderAccountStartBlockReason([], "codex", "default") ?? "", /needs sign-in/)
+})

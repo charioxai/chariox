@@ -97,6 +97,9 @@ export function selectedProviderAccountStartBlockReason(
   if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
+  // MP-08 / MP-10 / MP-11: replicas and retained home aliases may be outside
+  // this inventory. The kernel resolves their namespace and authentication.
+  if (!profile && profileId && profileId !== "default") return null
   if (profile?.auth_state === "authenticated") {
     if (providerAccountCapacity(profile, Date.now(), model).state !== "exhausted") return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)

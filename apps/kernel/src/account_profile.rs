@@ -4208,11 +4208,21 @@ fn find_stored_profile<'a>(
                 && profile.public.is_default
         })
     } else {
-        document.profiles.iter().find(|profile| {
-            profile.public.owner_user_id == owner_user_id
-                && profile.public.provider == provider
-                && profile.public.profile_id == profile_id
-        })
+        let in_namespace = |profile: &&StoredProviderAccountProfile| {
+            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+        };
+        document
+            .profiles
+            .iter()
+            .filter(in_namespace)
+            .find(|profile| profile.public.profile_id == profile_id)
+            .or_else(|| {
+                document
+                    .profiles
+                    .iter()
+                    .filter(in_namespace)
+                    .find(|profile| profile.public.label == profile_id)
+            })
     }
 }
 
