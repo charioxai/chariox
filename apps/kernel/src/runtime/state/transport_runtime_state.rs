@@ -85,9 +85,9 @@ impl KernelRuntimeState {
             }
         }
         self.reap_structured_prompt_jobs_and_dispatch();
-        for provider_run_id in self.take_ready_provider_output_run_ids(now_ms) {
-            self.pump_ready_provider_output_run(&provider_run_id).await;
-        }
+        // MP-08 / MP-10: only the independent output scheduler consumes ready
+        // run IDs. A serial maintenance pass must not strand ready siblings
+        // behind one run's history acknowledgement or provider lane.
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());

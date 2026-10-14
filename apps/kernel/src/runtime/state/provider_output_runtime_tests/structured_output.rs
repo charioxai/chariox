@@ -1573,3 +1573,128 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
     );
     let _ = app.pty_mut().remove_process(run.id());
 }
+
+#[tokio::test]
+async fn panes_stream_maintenance_cannot_strand_a_ready_sibling() {
+    // MP-08 / MP-10: A waits for its lane while B has one finished poll and
+    // emits nothing else. Maintenance must leave both signals to the scheduler.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-maintenance-sibling");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "opencode",
+        ))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "sibling-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run_ids = Vec::new();
+    for (id, agent) in [("a-blocked", first_agent), ("b-ready", second_agent)] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "opencode-go/gpt-6-luna",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "panes-stream-sibling-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://127.0.0.1:1".into()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run.clone());
+        spawn_inert_pty_for_run(&mut app, id);
+        app.structured_output_record_store()
+            .mark_poll_enqueued(id, None);
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                id.into(),
+                Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                    chunks: vec![crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some(id.into()),
+                        bytes: id.as_bytes().to_vec(),
+                    }],
+                    ..Default::default()
+                })),
+            );
+        run_ids.push(id.to_string());
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let cleanups = run_ids
+        .iter()
+        .map(|id| InertPtyCleanup {
+            app: app.clone(),
+            provider_run_id: id.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Keep GC outside this scheduler test and explicitly block only A.
+    runtime
+        .owned
+        .next_provider_process_gc_at_ms
+        .store(u64::MAX, std::sync::atomic::Ordering::Release);
+    let held = runtime.provider_runtime_lanes.acquire("a-blocked").await;
+    let acquire = runtime
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests("a-blocked");
+    let maintenance_runtime = runtime.clone();
+    let mut maintenance =
+        tokio::spawn(async move { maintenance_runtime.pump_transport_runtime().await });
+    // On the base, maintenance claims the ready set and blocks on A. With
+    // sole ownership, maintenance finishes without touching either signal.
+    let maintenance_finished = tokio::select! {
+        _ = acquire.notified() => false,
+        result = &mut maintenance => { result.unwrap(); true },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("maintenance did not reach readiness seam"),
+    };
+    let pump_runtime = runtime.clone();
+    let pump = tokio::spawn(async move { pump_runtime.run_provider_output_pump().await });
+    let delivered = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        loop {
+            if let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+                .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                .await
+            {
+                if records.iter().any(|record| record.bytes == b"b-ready") {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    pump.abort();
+    let _ = pump.await;
+    if !maintenance_finished {
+        maintenance.abort();
+        let _ = maintenance.await;
+    }
+    drop(held);
+    drop(cleanups);
+    assert!(
+        delivered.is_ok(),
+        "MP-08 / MP-10 maintenance stranded B behind blocked A without another provider event"
+    );
+}
