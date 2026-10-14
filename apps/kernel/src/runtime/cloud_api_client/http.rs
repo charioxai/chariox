@@ -402,7 +402,13 @@ pub(super) fn cloud_status_error(status: u16, body: String) -> DaemonError {
     let message = if body.is_empty() {
         format!("cloud relay request failed with {status}")
     } else if let Some(code) = cloud_api_error_code(&body) {
-        format!("cloud relay request failed with {status}: cloud_api_code={code}")
+        // A client-error denial names its Cloud reason, so a refused grant says which check refused it.
+        match cloud_api_error_message(&body).filter(|_| (400..500).contains(&status)) {
+            Some(reason) => {
+                format!("cloud relay request failed with {status}: cloud_api_code={code}: {reason}")
+            }
+            None => format!("cloud relay request failed with {status}: cloud_api_code={code}"),
+        }
     } else {
         format!("cloud relay request failed with {status}")
     };
@@ -422,6 +428,20 @@ fn cloud_api_error_code(body: &str) -> Option<String> {
                 .and_then(|code| code.as_str())
                 .map(str::to_string)
         })
+}
+
+/// Cloud's public error text, printable ASCII only and bounded.
+fn cloud_api_error_message(body: &str) -> Option<String> {
+    let payload = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let reason: String = payload
+        .get("error")?
+        .get("message")?
+        .as_str()?
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(120)
+        .collect();
+    (!reason.trim().is_empty()).then_some(reason)
 }
 
 pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
@@ -516,6 +536,46 @@ mod tests {
             Some("session_invalid".to_string())
         );
         assert_eq!(cloud_api_error_code(r#"{"error":{}}"#), None);
+    }
+
+    #[test]
+    fn cloud_status_error_names_the_client_error_reason_without_changing_the_code() {
+        let denied = cloud_status_error(
+            403,
+            r#"{"error":{"code":"authorization_denied","message":"Kernel target is not fresh and online"}}"#
+                .to_string(),
+        );
+        let DaemonError::LocalTransport { message, .. } = &denied else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 403: cloud_api_code=authorization_denied: Kernel target is not fresh and online"
+        );
+        assert_eq!(cloud_error_code(&denied), Some("authorization_denied"));
+        assert!(!cloud_error_is_retryable(&denied));
+        // Server errors and control characters never add text.
+        let DaemonError::LocalTransport { message, .. } = cloud_status_error(
+            500,
+            r#"{"error":{"code":"internal_error","message":"database exploded"}}"#.to_string(),
+        ) else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 500: cloud_api_code=internal_error"
+        );
+        let DaemonError::LocalTransport { message, .. } = cloud_status_error(
+            400,
+            "{\"error\":{\"code\":\"invalid_request\",\"message\":\"bad\\u0007\\nvalue\"}}"
+                .to_string(),
+        ) else {
+            panic!("transport error")
+        };
+        assert_eq!(
+            message,
+            "cloud relay request failed with 400: cloud_api_code=invalid_request: badvalue"
+        );
     }
 
     #[test]
