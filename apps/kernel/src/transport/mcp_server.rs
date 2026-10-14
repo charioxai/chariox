@@ -1,3 +1,4 @@
+mod tool_errors;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -244,7 +245,11 @@ async fn handle_proxy_json_rpc_request(
         .await
     {
         Ok(response) => Ok(json_response(StatusCode::OK, response)),
-        Err(error) => Ok(json_rpc_error_response(id, -32000, &error.to_string())),
+        Err(error) => Ok(json_rpc_error_response(
+            id,
+            -32000,
+            &tool_errors::message(&error),
+        )),
     }
 }
 
@@ -457,21 +462,11 @@ async fn handle_json_rpc_value(
                 Err(error) => Ok(json_rpc_error_response(
                     id,
                     -32000,
-                    &tool_error_message(&error),
+                    &tool_errors::message(&error),
                 )),
             }
         }
         _ => Ok(json_rpc_error_response(id, -32601, "method not found")),
-    }
-}
-
-/// MP-08/MP-11: a typed user-domain refusal keeps its code for the provider.
-fn tool_error_message(error: &crate::error::DaemonError) -> String {
-    match error {
-        crate::error::DaemonError::UserDomainRefused { reason } => {
-            format!("{error}: {}", reason.code())
-        }
-        _ => error.to_string(),
     }
 }
 
@@ -504,9 +499,16 @@ fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
             "mimeType": mime_type,
         }))
     });
+    // MP-08/MP-10: native providers may save large results, then read them
+    // with a per-line limit. Keep later snapshot nodes readable in that path.
+    let text_payload = if payload.get("snapshot").is_some_and(Value::is_object) {
+        serde_json::to_string_pretty(&payload).expect("JSON value serialization")
+    } else {
+        payload.to_string()
+    };
     let text = serde_json::json!({
         "type": "text",
-        "text": payload.to_string(),
+        "text": text_payload,
     });
     let content = match image {
         Some(image) => vec![image, text],

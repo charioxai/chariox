@@ -25,6 +25,7 @@ mod external_provider_session;
 mod history;
 mod kernel_access;
 mod kernel_browser;
+mod kernel_computer;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -66,6 +67,7 @@ pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
+pub use kernel_computer::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -267,6 +269,15 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
+/// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
+/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to that contract.
+/// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
+/// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+/// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 462 adds user-requested capability grant causes, absolute grant

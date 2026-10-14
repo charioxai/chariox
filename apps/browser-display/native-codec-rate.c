@@ -17,15 +17,20 @@ int cx_codec_rate(void *,int);
 void cx_codec_repair_bounds(void *,const uint8_t *,const uint8_t *,unsigned,int,int,int,int,int *);
 void *cx_openh264_open(int,int,int,int,int,double *);
 int cx_openh264_rate(void *,int);
-static int expected,expected_max_qp,opens,retunes;
+static int expected,expected_rows=1,expected_max_qp,opens,retunes;
+static struct {void *encoder;int height;} opened[128];
+static int expected_row_rate(int height) {return expected_rows==1?expected:(int)((double)expected*expected_rows*height/800/1000)*1000;}
 void *audited_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model) {
     printf("MP-08/MP-10 open bitrate=%d expected=%d\n",bitrate,expected);fflush(stdout);
-    assert(bitrate==expected&&max_qp==expected_max_qp);opens++;
-    return cx_openh264_open(width,height,bitrate,threads,max_qp,model);
+    assert(bitrate==expected_row_rate(height)&&max_qp==expected_max_qp);
+    void *encoder=cx_openh264_open(width,height,bitrate,threads,max_qp,model);
+    assert(opens<128);opened[opens].encoder=encoder;opened[opens++].height=height;
+    return encoder;
 }
 int audited_openh264_rate(void *encoder,int bitrate) {
     printf("MP-08/MP-10 retune bitrate=%d expected=%d\n",bitrate,expected);fflush(stdout);
-    assert(bitrate==expected);retunes++;
+    int index=opens-1;while(index>=0&&opened[index].encoder!=encoder)index--;
+    assert(index>=0&&bitrate==expected_row_rate(opened[index].height));retunes++;
     return cx_openh264_rate(encoder,bitrate);
 }
 static void clipped_white_is_exact(void) {
@@ -57,7 +62,7 @@ static void full_page_change_fits_vbv(void) {
     }
     for (int i=0;i<width*height*4;i++) dark[i]=i%4==3?255:255-light[i];
     for (int rows=1;rows<=8;rows+=7) {
-        struct RowResult result[8];expected=rate/rows;expected_max_qp=0;
+        struct RowResult result[8];expected_rows=rows;expected=rate/rows;expected_max_qp=0;
         void *codec=cx_codec_open(width,height,rate,rows,0);assert(codec&&cx_codec_openh264(codec));
         int n=cx_codec_encode(codec,light,255,NULL,0,result);assert(n==rows);
         const unsigned char *frames[]={dark,light,dark};
@@ -80,7 +85,7 @@ static void full_page_change_fits_vbv(void) {
 static void reset_restarts_without_reopening(void) {
     const int width=1280,height=800;unsigned char *pixels=malloc(width*height*4);
     for (int rows=1;rows<=8;rows+=7) {
-        struct RowResult result[8];expected=8000000/rows;expected_max_qp=0;
+        struct RowResult result[8];expected_rows=rows;expected=8000000/rows;expected_max_qp=0;
         void *codec=cx_codec_open(width,height,8000000,rows,0);assert(codec);
         for (int f=0;f<3;f++) {
             memset(pixels,f*90,width*height*4);
@@ -106,7 +111,7 @@ static void noisy_recovery_key_fits(void) {
         noise^=noise<<13;noise^=noise>>17;noise^=noise<<5;
         pixels[n*4]=noise;pixels[n*4+1]=noise>>8;pixels[n*4+2]=noise>>16;pixels[n*4+3]=255;
     }
-    expected=8000000;expected_max_qp=0;
+    expected_rows=1;expected=8000000;expected_max_qp=0;
     void *codec=cx_codec_open(width,height,expected,1,0);assert(codec);
     const char *output=getenv("CHARIOX_NATIVE_CODEC_PACKET_DIR");FILE *stream=NULL;
     if(output) {char name[4096];assert(snprintf(name,sizeof(name),"%s/noise-%d.h264",output,width)<sizeof(name));stream=fopen(name,"wb");assert(stream);}
@@ -145,7 +150,7 @@ int main(int argc,char **argv) {
     const int width=1280,height=800;unsigned char *pixels=malloc(width*height*4);
     memset(pixels,255,width*height*4);
     for(int rows=1;rows<=8;rows+=7) {
-        struct RowResult result[8];expected=8000000/rows;
+        struct RowResult result[8];expected_rows=rows;expected=8000000/rows;
         void *codec=cx_codec_open(width,height,8000000,rows,0);assert(codec&&cx_codec_openh264(codec));
         assert(cx_codec_encode(codec,pixels,255,NULL,0,result)==rows);
         if (rows==1) {
@@ -162,7 +167,7 @@ int main(int argc,char **argv) {
     /* A reduced unprotected stream has no native reconstruction certificate.
      * The OpenH264 decoder must not reject its negotiated 1280x720 geometry. */
     free(pixels);pixels=malloc(1920*1080*4);memset(pixels,255,1920*1080*4);
-    expected=8000000;void *scaled=cx_codec_open(1920,1080,8000000,1,1);assert(scaled);
+    expected_rows=1;expected=8000000;void *scaled=cx_codec_open(1920,1080,8000000,1,1);assert(scaled);
     for(int n=0;n<3;n++) {
         struct RowResult result[8];pixels[n*4]=0;
         assert(cx_codec_encode(scaled,pixels,n?0:255,NULL,0,result)==1);

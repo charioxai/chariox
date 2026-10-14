@@ -14,7 +14,15 @@ impl KernelRuntimeState {
                 self.owned.kernel_browser_host.revoke_agent(&id);
                 continue;
             };
-            if agent.remote_execution().is_some()
+            // Remote agents use their Room route; only an explicit typed
+            // leased desktop grant keeps a HOME grant (MP-08/MP-11).
+            let leased_desktop = self
+                .owned
+                .leased_computer_grants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id);
+            if (agent.remote_execution().is_some() && !leased_desktop)
                 || session.status() == crate::session::SessionStatus::Ended
                 || self.provider_account_authority_owner_user_id(agent.owner_user_id()) != owner
             {

@@ -62,14 +62,14 @@ export function createAgentPaneTranscriptInteractionController(
     const target = currentEntries.find((entry) => entry.id === entryId)
     const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
     if (loadTarget && deps.loadHistoryBlobContent) {
-      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
+      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, loadTarget.blobId, true) as TranscriptEntry[]
       commitAndRefocus(deps, agentId, currentEntries, loadingEntries)
       void deps.loadHistoryBlobContent(loadTarget.agentId, loadTarget.blobId)
         .then((content) => {
           const latestEntries = deps.currentAgentPaneEntries(agentId)
           const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
-            entryId,
+            loadTarget.blobId,
             content,
             deps.collapsedTurnIdsForAgent(agentId),
           ) as TranscriptEntry[]
@@ -79,7 +79,7 @@ export function createAgentPaneTranscriptInteractionController(
           const latestEntries = deps.currentAgentPaneEntries(agentId)
           const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
-            entryId,
+            loadTarget.blobId,
             false,
             deps.formatError?.(error) ?? String(error),
           ) as TranscriptEntry[]

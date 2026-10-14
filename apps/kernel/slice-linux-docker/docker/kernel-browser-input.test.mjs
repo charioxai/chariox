@@ -285,3 +285,25 @@ test('MP-08/MP-11: a mirror click without a guard still fences navigation during
   await assert.rejects(inputHostTab(browser, tab, { kind: 'mirror' }, { resolveMirror: async () => ({ input: { kind: 'click', x: 10, y: 20 } }) }), { code: 'stale_document_reference' });
   assert.equal(sent.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
 });
+
+test('MP-08/MP-10 protocol498 Ctrl+A is a chord with paired releases and no inserted a',async()=>{
+ const {browser,sent}=fixture(false);
+ await inputHostTab(browser,tab,{kind:'key',key:'a',modifiers:2},{nativeKey:()=>{throw Error('modifiers require fenced CDP')}});
+ const events=sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>x.params);
+ assert.equal(events.length,2);assert.equal(events[0].modifiers,2);assert.equal(events[1].modifiers,2);
+ assert.equal(events[0].windowsVirtualKeyCode,65);assert.equal(events[0].code,'KeyA');assert.equal(events[0].text,undefined);
+});
+test('MP-11 protocol498 modifier chords cannot copy or paste protected fields',async()=>{
+ for(const key of ['a','c','v','x','ArrowLeft'])for(const modifiers of [2,4,10]){
+  const {browser,sent}=fixture(true);
+  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key,modifiers}),{code:'user_domain_sensitive_requires_focus'});
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
+ }
+});
+test('MP-11 protocol498 malformed modifiers are refused before input',async()=>{
+ for(const modifiers of [-1,16,NaN,null,1.5,'2']){
+  const {browser,sent}=fixture(false);
+  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'a',modifiers}),/modifiers/);
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
+ }
+});

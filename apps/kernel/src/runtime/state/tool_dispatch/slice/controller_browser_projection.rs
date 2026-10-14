@@ -434,11 +434,29 @@ pub(super) fn controller_browser_permission_tool_result(
 }
 
 pub(super) fn controller_browser_document_text(snapshot: &RoomBrowserStructuredSnapshot) -> String {
+    // Script, style and template contents are page code, not document text.
+    let code = snapshot
+        .dom_nodes
+        .iter()
+        .filter(|node| {
+            ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]
+                .iter()
+                .any(|tag| node.node_name.eq_ignore_ascii_case(tag))
+        })
+        .map(|node| node.element_ref.as_str())
+        .collect::<BTreeSet<_>>();
     let mut text = String::new();
     let mut seen = BTreeSet::new();
     for candidate in snapshot
         .dom_nodes
         .iter()
+        .filter(|node| {
+            !code.contains(node.element_ref.as_str())
+                && !node
+                    .parent_ref
+                    .as_deref()
+                    .is_some_and(|parent| code.contains(parent))
+        })
         .map(|node| node.text.as_str())
         .chain(
             snapshot

@@ -4,6 +4,23 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// MP-08/MP-11 local500: human grants only the leased worker's observed desktop.
+    GrantLeasedComputer {
+        agent_id: String,
+        target: KernelDesktopTarget,
+    },
+    RevokeLeasedComputer {
+        agent_id: String,
+    },
+    Computer {
+        command: KernelComputerCommand,
+    },
+    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
+    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
+    GrantRoomComputer {
+        #[serde(deserialize_with = "Option::deserialize")]
+        agent_id: Option<String>,
+    },
     ListGrants,
     SubscribeGrants {
         after: u64,
@@ -143,6 +160,13 @@ pub enum KernelBrowserInput {
     },
     Key {
         key: String,
+        /// MP-08/MP-11 protocol498: bounded CDP modifier bitset.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_key_modifiers",
+            skip_serializing_if = "key_modifiers_empty"
+        )]
+        modifiers: u8,
     },
     Scroll {
         x: u32,
@@ -225,4 +249,17 @@ pub enum KernelBrowserMirrorAction {
     Coordinate {
         input: KernelBrowserInput,
     },
+}
+
+fn key_modifiers_empty(value: &u8) -> bool {
+    *value == 0
+}
+fn deserialize_key_modifiers<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u8, D::Error> {
+    let value = u8::deserialize(deserializer)?;
+    if value > 15 {
+        return Err(serde::de::Error::custom("invalid key modifiers"));
+    }
+    Ok(value)
 }

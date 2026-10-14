@@ -76,7 +76,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
     const target = currentEntries.find((entry) => entry.id === entryId)
     const loadTarget = resolveSessionHistoryBlobLoadTarget(target, collapsed)
     if (loadTarget && deps.loadHistoryBlobContent) {
-      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, entryId, true) as TranscriptEntry[]
+      const loadingEntries = markSessionHistoryBlobLoading(currentEntries, loadTarget.blobId, true) as TranscriptEntry[]
       deps.setEntries(loadingEntries)
       deps.persistVisibleTranscriptEntries(loadingEntries)
       deps.reconcileMountedTranscript(currentEntries, loadingEntries)
@@ -86,7 +86,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
           const latestEntries = compactTranscriptDisplayEntries(deps.entries())
           const nextEntries = replaceSessionHistoryBlobPlaceholder(
             latestEntries,
-            entryId,
+            loadTarget.blobId,
             content,
             deps.collapsedTurnIdsForAgent(agentId),
           ) as TranscriptEntry[]
@@ -100,7 +100,7 @@ export function createTranscriptStateController(deps: TranscriptStateControllerD
           const latestEntries = compactTranscriptDisplayEntries(deps.entries())
           const nextEntries = markSessionHistoryBlobLoading(
             latestEntries,
-            entryId,
+            loadTarget.blobId,
             false,
             deps.formatError?.(error) ?? String(error),
           ) as TranscriptEntry[]

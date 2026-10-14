@@ -14,9 +14,14 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
   let chrome;
   try {
     const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
-    for (const match of dockerfile.matchAll(/^COPY(?: --chown=\S+)? ((?!-).+) \/opt\/chariox-slice\/(\S*)$/gm)) {
-      for (const source of match[1].split(/\s+/)) {
-        const destination = path.join(root, match[2], match[2].endsWith('/') || !match[2] ? path.basename(source) : '');
+    // Source COPY declarations only: --from build-stage binaries have no
+    // checkout path and are outside this module-closure regression.
+    for (const match of dockerfile.matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/(\S*))$/gm)) {
+      const sources = match[1].split(/\s+/);
+      const directory = match[2].endsWith('/');
+      assert.ok(directory || sources.length === 1, 'Docker COPY destination');
+      for (const source of sources) {
+        const destination = path.join(root, match[3], directory ? path.basename(source) : '');
         await mkdir(path.dirname(destination), { recursive: true });
         await copyFile(path.join(repo, source), destination);
       }

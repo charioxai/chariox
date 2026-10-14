@@ -86,15 +86,19 @@ def begin(expected_window, value, connection=None):
             if owned_connection: connection.close()
         desktop = pyatspi.Registry.getDesktop(0)
         pending = [desktop.getChildAtIndex(i) for i in range(desktop.childCount)]
+        if desktop.childCount > 64: raise ValueError('Vault fill field unavailable')
         candidates = []
         visited = 0
+        complete = True
         while pending and visited < 8192:
             node = pending.pop(); visited += 1
             if not node or node.get_process_id() != pid: continue
             state = node.getState()
             if state.contains(pyatspi.STATE_FOCUSED) and state.contains(pyatspi.STATE_EDITABLE): candidates.append(node)
-            pending.extend(node.getChildAtIndex(i) for i in range(min(node.childCount, 8192-visited)))
-        if len(candidates) != 1: return None
+            count = node.childCount
+            if count > 8192-visited: complete = False
+            pending.extend(node.getChildAtIndex(i) for i in range(min(count, 8192-visited)))
+        if not complete or pending or len(candidates) != 1: raise ValueError('Vault fill field unavailable')
         node = candidates[0]
         target = {**identity(node), 'window': expected_window, 'pending': True,
                   'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
@@ -106,35 +110,46 @@ def begin(expected_window, value, connection=None):
             selected = abs(end - start)
         update(lambda targets: [t for t in targets if (t['pid'],t['path']) != (target['pid'],target['path'])] + [target])
         return node, target, (text.characterCount, offset, selected)
-    except Exception: return None  # Native best effort: no desktop blackout.
+    except Exception: raise ValueError('Vault fill field unavailable') from None
+
+
+def bind_delivery(node, target):
+    """MP-11: a deadline or a partial value is not input-delivery evidence."""
+    import pyatspi
+    insertion = target.get('insertion')
+    if insertion is None: return False
+    if node.queryText().characterCount != target['length']: return False
+    if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
+        # Dots cannot establish same-length selected replacement. Keep it
+        # pending until a reveal can verify the insertion fingerprint.
+        if target['length'] == target['initial_length']: return False
+    else:
+        value = field_value(node)
+        offset, length = insertion['offset'], insertion['length']
+        if len(value) != target['length'] or hashlib.sha256(value[offset:offset+length].encode()).hexdigest() != insertion['hash']: return False
+        target['value_hash'] = hashlib.sha256(value.encode()).hexdigest()
+        del target['insertion']
+    target['pending'] = False
+    del target['initial_length']
+    update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
+    return True
 
 
 def finish(record, inserted):
     if record is None: return
     node, target, (initial_length, offset, selected) = record
     try:
-        # Physical XTEST input is delivered asynchronously to GTK. Account for
-        # the existing contents and replaced selection, rather than input length.
-        expected = initial_length - selected + len(inserted)
-        for _ in range(20):
-            if node.queryText().characterCount == expected: break
-            time.sleep(.025)
-        import pyatspi
-        target['length'] = node.queryText().characterCount
-        if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
-            # GTK exposes dots, not the resulting password. Bind the delivered
-            # insertion at its original caret, including max-length truncation.
-            length = target['length'] - initial_length + selected
-            if not 0 < length <= len(inserted):
-                update(lambda targets: [t for t in targets if t['registration'] != target['registration']])
-                return
-            target['value_hash'] = None
-            target['insertion'] = {'offset': offset, 'length': length,
-                                   'hash': hashlib.sha256(inserted[:length].encode()).hexdigest()}
-        else:
-            target['value_hash'] = hashlib.sha256(field_value(node).encode()).hexdigest()
-        target['pending'] = False
+        target['length'] = initial_length - selected + len(inserted)
+        target['initial_length'] = initial_length
+        target['value_hash'] = None
+        target['insertion'] = {'offset': offset, 'length': len(inserted),
+                               'hash': hashlib.sha256(inserted.encode()).hexdigest()}
         update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
+        # XTEST sync acknowledges the X server, not the application. Retain
+        # pending coverage on timeout; captures can bind later full delivery.
+        for _ in range(20):
+            if bind_delivery(node, target): return
+            time.sleep(.025)
     except Exception: pass
 
 
@@ -142,7 +157,7 @@ def matches(node, target):
     import pyatspi
     try:
         if identity(node) != {key:target[key] for key in ('pid','started','path')}: return False
-        if target.get('pending'): return True
+        if target.get('pending') and not bind_delivery(node, target): return True
         if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
             return node.queryText().characterCount == target['length'] and target['length'] > 0
         value = field_value(node)
@@ -157,7 +172,7 @@ def matches(node, target):
             del target['insertion']
             update(lambda targets: [target if item['registration'] == target['registration'] else item for item in targets])
         return hashlib.sha256(value.encode()).hexdigest() == target['value_hash']
-    except Exception: return False
+    except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
 def regions():
@@ -166,9 +181,9 @@ def regions():
     if not targets: return []
     import pyatspi
     try:
-        from Xlib import X, display
+        from Xlib import X, display, error
     except ModuleNotFoundError:
-        from selkies.Xlib import X, display
+        from selkies.Xlib import X, display, error
     connection = open_display(display)
     desktop = pyatspi.Registry.getDesktop(0)
     retained, boxes = [], []
@@ -176,17 +191,29 @@ def regions():
         for target in targets:
             try:
                 window = connection.create_resource_object('window', target['window'])
+                owner = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
+                if owner is None or len(owner.value) != 1: raise ValueError('Vault fill field unavailable')
+                if int(owner.value[0]) != target['pid']: continue  # Reused XID retires the old field.
                 if window.get_attributes().map_state != X.IsViewable:
                     retained.append(target); continue
                 app = next((desktop.getChildAtIndex(i) for i in range(desktop.childCount)
                             if desktop.getChildAtIndex(i).get_process_id() == target['pid']), None)
+                if app is None: raise ValueError('Vault fill field unavailable')
                 pending = [app]; node = None; visited = 0
+                incomplete = False
                 while pending and visited < 8192:
                     item = pending.pop(); visited += 1
-                    if not item: continue
+                    if not item:
+                        incomplete = True; continue
                     if item.path == target['path']: node = item; break
-                    pending.extend(item.getChildAtIndex(i) for i in range(min(item.childCount,8192-visited)))
-                if node is None or not matches(node, target): continue
+                    count = item.childCount
+                    limit = min(count,8192-visited)
+                    incomplete |= limit < count
+                    pending.extend(item.getChildAtIndex(i) for i in range(limit))
+                if node is None:
+                    if pending or incomplete: raise ValueError('Vault fill field unavailable')
+                    continue
+                if not matches(node, target): continue
                 retained.append(target)
                 if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT: continue
                 if not node.getState().contains(pyatspi.STATE_SHOWING): continue
@@ -208,7 +235,8 @@ def regions():
                 left, top = max(0,x-pad), max(0,y-pad)
                 right, bottom = min(screen.width_in_pixels,x+w+pad), min(screen.height_in_pixels,y+h+pad)
                 if right > left and bottom > top: boxes.append([left,top,right-left,bottom-top])
-            except Exception: continue  # Native best effort, never a window mask.
+            except error.BadWindow: continue  # A destroyed window retires its exact field.
+            except Exception: raise ValueError('Vault fill field unavailable') from None
     finally: connection.close()
     if retained != targets:
         removed = {t['registration'] for t in targets if t not in retained}

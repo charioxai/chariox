@@ -88,6 +88,13 @@ response_policies! {
     ],
     Withhold => [
         SessionInviteCreated,
+        // MP-11: prototype user App views carry App frontends and channel data.
+        UserAppViewOpened,
+        UserAppViewsListed,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewCallResult,
+        UserAppViewsChanged,
         DebugBundleExported,
         McpServerInstalled,
         McpServerUpdated,
@@ -157,6 +164,11 @@ response_policies! {
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
         CloudRelayLoggedOut,
+        // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
+        KernelBrowser,
+        VisibleRegionCaptured,
+        Notes,
+        UserDomainInteractionAnswered,
         KernelSudoRequested,
         KernelSudoExtended,
         KernelAccessGranted,

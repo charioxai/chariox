@@ -17,10 +17,12 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:geometry.width,height:geometry.height,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
-  const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(_tab,clip){const scale=hostViewport().device_scale_factor,width=(clip?.width??geometry.width)*scale,height=(clip?.height??geometry.height)*scale;return {data_base64:encodePng(width,height,Buffer.alloc(width*height*4,100)),protected_regions:[]};}};
+  const host={generation:1,scales:new Map(),viewport:()=>hostViewport(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(_tab,clip){const scale=hostViewport().device_scale_factor,width=(clip?.width??geometry.width)*scale,height=(clip?.height??geometry.height)*scale;return {data_base64:encodePng(width,height,Buffer.alloc(width*height*4,100)),protected_regions:[]};}};
   return {host,state,calls,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
@@ -312,6 +314,14 @@ test('MP-11: plain key refuses a display fallback without painted DOM focus',asy
  service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('MP-11: observer unavailable');return evaluate(world,expression);};
  const packet=await service.next(next(s.subscription_id),'a');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
+});
+test('MP-11 mirror attaches to another canonical geometry without overriding it',async()=>{
+ const {execFileSync}=await import('node:child_process');
+ const script=`import {MirrorService} from ${JSON.stringify(new URL('./kernel-browser-mirror.mjs',import.meta.url).href)};
+ const calls=[];const host={generation:1,scales:new Map(),viewport:()=>({device_scale_factor:1}),async target(){return {tab_id:'t',target_id:'x',document_id:'d'}},browser:{async resolvePageTarget(){return {connection:{send:async method=>{calls.push(method);return {}}},sessionId:'s'}}}};
+ try{await new MirrorService(host).subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');console.log('subscribed:'+calls.join())}catch(error){console.log('refused:'+calls.join())}`;
+ const output=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}}).toString().trim();
+ assert.equal(output,'subscribed:','an observer sends no device metrics override');
 });
 
 // MP-08/MP-10/MP-11: a viewer cannot resize a kernel-owned native browser.

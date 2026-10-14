@@ -53,7 +53,7 @@ test('MP-08/MP-10 native exact preparation bypasses Node pixel workers and retai
  let held=0,prepared;const raw={width:1280,height:800,retain(){held++},release(){held--},nativeExact:async request=>{prepared=request;return {native_exact:true,data_base64:'exact',width:1280,height:800}},[displayMaskRegions]:[]};
  Object.defineProperty(raw,'pixels',{get(){throw Error('MP-10: Node pixels')}});
  const sample={raw,signature:'serial-1',motion:true};
- const refiner=new NativeRefiner(async()=>sample,{now:()=>100,pixels:{run(){throw Error('MP-10: Node render')},close:async()=>{}},prepareTiles:true});
+ const refiner=new NativeRefiner(async()=>sample,{now:()=>200,pixels:{run(){throw Error('MP-10: Node render')},close:async()=>{}},prepareTiles:true});
  try{refiner.request({native:true,sample,source:{},document:'d',policy:{},epoch:0,serial:1,encoder:'e',repairLimit:192000},0,()=>true);await refiner.active;assert.equal(refiner.failure,undefined);assert.equal(held,0);assert.equal(refiner.latest.native_exact,true);assert.equal(refiner.latest.data_base64,'exact');assert.equal(prepared.encoder,'e');assert.equal(prepared.repair_only,true,'refinement prepares only the viewport tiles; opaque fallback keeps its full PNG path');}finally{await refiner.close()}
 });
 test('MP-08/MP-10 native exact frames retain ordinary sequencing and byte pacing without Node decode',async()=>{
@@ -88,6 +88,25 @@ test('MP-11 batches are bounded, lone notifications flush, urgent wheel keeps or
  bridge.commit('e',65);await new Promise(r=>setImmediate(r));assert.equal(writes.length,2);
  bridge.delivered('e',66);bridge.notify({wheel:[1,2,0,1]},true);assert.deepEqual(writes[2].trim().split('\n').map(s=>JSON.parse(s)),[{delivered:'e',revision:66},{wheel:[1,2,0,1]}]);
  bridge.delivered('e',67);bridge.close();await new Promise(r=>setImmediate(r));assert.equal(writes.length,3);assert.equal(bridge.notifications.length,0);
+});
+test('MP-10 #933 review 7 a full native queue refuses one request softly and keeps the worker',async()=>{
+ const writes=[],child={stdin:{write(line){writes.push(JSON.parse(line));}}};
+ const bridge=new NativeWorkerControl(child,()=>{});
+ const busy=bridge.request('encode',{serial:1}),id=writes[0].encode.id;
+ bridge.validate({reply:id,length:13});bridge.receive({reply:id},Buffer.from('{"busy":true}'));
+ await assert.rejects(busy,error=>error.busy===true);
+ assert.equal(bridge.closed,undefined,'the worker stays open');
+ const next=bridge.request('encode',{serial:2}),second=writes[1].encode.id;
+ bridge.receive({reply:second},Buffer.from('{}'));assert.deepEqual(await next,{});
+ // A refusal replies before input dispatch and keeps the worker.
+ const failing=bridge.request('exact',{serial:3});bridge.receive({reply:writes[2].exact.id},Buffer.from('{"error":"x"}'));
+ await assert.rejects(failing,/refused/);assert.equal(bridge.closed,undefined);
+});
+test('MP-10 #933 review 7 a busy native exact repair is retried, not a sticky refiner failure',async()=>{
+ const raw={width:1280,height:800,retain(){},release(){},nativeExact:async()=>{throw Object.assign(Error('MD-DISPLAY: native worker busy'),{busy:true})},[displayMaskRegions]:[]};
+ const sample={raw,signature:'serial-1',motion:true};
+ const refiner=new NativeRefiner(async()=>sample,{now:()=>100,pixels:{run(){throw Error('unused')},close:async()=>{}},prepareTiles:true});
+ try{refiner.request({native:true,sample,source:{},document:'d',policy:{},epoch:0,serial:1,encoder:'e',repairLimit:192000},0,()=>true);await refiner.active;assert.equal(refiner.failure,undefined);}finally{await refiner.close()}
 });
 test('MP-08/MP-10: Retina whole-frame motion encodes at the reduced geometry; stripes and masks stay native',async()=>{
  const encoder=new PortableEncoder(),requests=[];

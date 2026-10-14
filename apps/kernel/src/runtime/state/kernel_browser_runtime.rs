@@ -86,7 +86,10 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::ListGrants
+        KernelBrowserCommand::GrantLeasedComputer { .. }
+            | KernelBrowserCommand::RevokeLeasedComputer { .. }
+            | KernelBrowserCommand::GrantRoomComputer { .. }
+            | KernelBrowserCommand::ListGrants
             | KernelBrowserCommand::SubscribeGrants { .. }
             | KernelBrowserCommand::RevokeGrants { .. }
             | KernelBrowserCommand::MirrorSubscribe { .. }
@@ -101,6 +104,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayTakeover { .. }
             | KernelBrowserCommand::DisplayRelease { .. }
             | KernelBrowserCommand::DisplayActors
+            | KernelBrowserCommand::Computer { .. }
     ) {
         return Err(host_error(
             "MD-DISPLAY: terminal display adapter required".into(),
@@ -137,6 +141,9 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if let KernelBrowserCommand::Computer { command } = command {
+            return self.kernel_computer_terminal_request(caller, command).await;
+        }
         if matches!(
             &command,
             KernelBrowserCommand::MirrorSubscribe { .. }
@@ -204,10 +211,25 @@ impl KernelRuntimeState {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
                 self.refresh_user_domain_grants();
                 match &command {
-                    KernelBrowserCommand::ListGrants
+                    KernelBrowserCommand::GrantLeasedComputer { agent_id, target } => {
+                        return self.grant_leased_computer(&user, agent_id, target.clone()).await;
+                    }
+                    KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
+                        self.revoke_leased_computer(&user, agent_id).await?;
+                        let kernel = self.owned.config_projection.snapshot().daemon_id;
+                        return self.room_computer_grant_snapshot(&user, &kernel);
+                    }
+                    KernelBrowserCommand::GrantRoomComputer { .. }
+                    | KernelBrowserCommand::ListGrants
                     | KernelBrowserCommand::RevokeGrants { .. }
                     | KernelBrowserCommand::SubscribeGrants { .. } => {
+                        if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
+                            self.set_room_computer_access(&user, agent_id.as_deref(), true)?;
+                        }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
+                            self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
+                            self.owned.kernel_browser_host.revoke_grants(&user, agent_id.as_deref());
+                            self.revoke_user_leased_computer(&user, agent_id.as_deref()).await?;
                             self.owned
                                 .kernel_browser_host
                                 .revoke_grants(&user, agent_id.as_deref());
@@ -231,10 +253,7 @@ impl KernelRuntimeState {
                             }
                         }
                         let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return Ok(self
-                            .owned
-                            .kernel_browser_host
-                            .grant_snapshot(&user, &kernel));
+                        return self.room_computer_grant_snapshot(&user, &kernel);
                     }
                     _ => {}
                 }
@@ -351,6 +370,9 @@ impl KernelRuntimeState {
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
+        // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
+        let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. })
+            .then(std::time::Instant::now);
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
         let admission =
@@ -424,6 +446,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(at) = input_at {
+            crate::transport::kernel_browser_display::timing("input_admission", at);
+        }
         self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await
     }
@@ -481,7 +506,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools.extend(self.notes_tool_specs(run, &agent));
         tools
@@ -492,6 +517,12 @@ impl KernelRuntimeState {
         name: &str,
         arguments: serde_json::Value,
     ) -> Option<Result<RuntimeToolResult, DaemonError>> {
+        if let Some(result) = self
+            .try_kernel_computer_tool(token, name, arguments.clone())
+            .await
+        {
+            return Some(result);
+        }
         if Self::is_note_tool(name) {
             return Some(Box::pin(self.notes_tool(token, name, arguments)).await);
         }

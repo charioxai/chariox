@@ -20,6 +20,7 @@ const features: Record<string, FeatureMinimum> = {
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
+  CaptureVisibleRegion: { feature: "Visible region capture", minimum: requests.visibleRegionCaptureMinimumProtocolVersion },
   KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
@@ -53,7 +54,11 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
   const name = Object.keys(envelope)[0]!
   const payload = record(envelope[name])
   let feature = Object.hasOwn(features, name) ? features[name] : undefined
-  if (requests.isGuardedKernelControl(request)) {
+  if (name === "KernelBrowser" && record(payload?.command)?.op === "computer") {
+    feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && ["grant_leased_computer", "revoke_leased_computer"].includes(String(record(payload?.command)?.op))) {
+    feature = { feature: "MP-08 leased Computer grant", minimum: requests.leasedComputerMinimumProtocolVersion }
+  } else if (requests.isGuardedKernelControl(request)) {
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }

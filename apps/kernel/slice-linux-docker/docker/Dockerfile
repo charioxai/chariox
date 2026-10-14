@@ -118,6 +118,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libwayland-server0 \
     libxkbcommon0 \
     lsof \
+    mousepad \
     novnc \
     openbox \
     pkg-config \
@@ -127,8 +128,10 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     python3 \
     python3-cairo \
     python3-gi \
-    python3-pyatspi \
     python3-venv \
+    python3-pil \
+    python3-pyatspi \
+    python3-xlib \
     screen \
     scrot \
     socat \
@@ -143,12 +146,14 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     x11-xserver-utils \
     xclip \
     xdotool \
+    xfce4-terminal \
     xterm \
     xvfb \
     xserver-xorg-core \
     xserver-xorg-video-dummy \
     xcvt \
     zstd \
+  && update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper \
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
@@ -225,6 +230,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs /opt/chariox-slice/browser-controller-image.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs /opt/chariox-slice/browser-protection-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs /opt/chariox-slice/kernel-browser-pixels.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs /opt/chariox-slice/kernel-browser-geometry.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs /opt/chariox-slice/kernel-browser-timing.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-upload-store.py /opt/chariox-slice/browser-upload-store.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-lifecycle.py /opt/chariox-slice/browser-lifecycle.py
@@ -249,10 +256,15 @@ COPY apps/kernel/slice-linux-docker/docker/canonical-display.py /opt/chariox-sli
 COPY apps/kernel/slice-linux-docker/docker/canonical_vnc.py /opt/chariox-slice/canonical_vnc.py
 COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/chariox-slice/browser-controller-display.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
+# MP-08 / MP-11: shared native Computer adapter and typed-refusal assets.
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs apps/kernel/slice-linux-docker/docker/native-computer.mjs apps/kernel/slice-linux-docker/docker/native-computer.py apps/kernel/slice-linux-docker/docker/native-accessibility.mjs apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs apps/kernel/slice-linux-docker/docker/native-accessibility.py apps/kernel/slice-linux-docker/docker/browser-desktop-protection.py apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs apps/kernel/slice-linux-docker/docker/linux-desktop-session.py apps/kernel/slice-linux-docker/docker/x11-text-keyboard.py apps/kernel/slice-linux-docker/docker/x11-keymap-fence.py /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-clipboard.py apps/kernel/slice-linux-docker/docker/native-x11.py /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-fill-targets.py /opt/chariox-slice/native-fill-targets.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py apps/kernel/slice-linux-docker/docker/room-native-protection.py /opt/chariox-slice/
+# MP-11: import the installed native helpers (not the bind-mounted source) so a missing sibling fails the build.
+RUN cd / && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c 'import importlib.util as u,sys; [(s:=u.spec_from_file_location(n.replace("-","_"),"/opt/chariox-slice/"+n+".py")).loader.exec_module(u.module_from_spec(s)) for n in sys.argv[1:]]' native-x11 native-clipboard native-accessibility slice-keyboard room-native-protection native-computer
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs /opt/chariox-slice/browser-observation-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh

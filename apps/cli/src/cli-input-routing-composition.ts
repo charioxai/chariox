@@ -1,3 +1,4 @@
+import { createComputerCommandController } from "./computer-command-controller.js"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { cloudShellClient } from "./cloud-shell-client.js"
 import { StdinParser } from "@opentui/core"
@@ -242,6 +243,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         : {}),
     }
   }
+  const computerCommands = createComputerCommandController({client: deps.client, appendNotice: deps.appendNotice})
   const accessCommands = createAccessCommandController({
     client: deps.client,
     appendNotice: deps.appendNotice,
@@ -251,6 +253,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
+    getPromptText: () => deps.promptTextController.currentText(),
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
     recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
@@ -341,6 +344,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
   handleSharedShellCommand = async (rawCommand) => {
     const access = parseSlashCommand(rawCommand)
+    if (access?.kind === "computer") {
+      await computerCommands.handle(access.args)
+      return true
+    }
     if (access?.kind === "access") {
       await accessCommands.handle(access.args)
       return true

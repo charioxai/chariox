@@ -3,9 +3,13 @@ import type { KernelBrowserMirrorAction } from "./browser-mirror-types.js"
 export type KernelBrowserInput =
   | { kind: "click"; x: number; y: number }
   | { kind: "text"; text: string }
-  | { kind: "key"; key: string }
+  | { kind: "key"; key: string; modifiers?: number }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
 export type KernelBrowserCommand =
+  | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
+  | { op: "revoke_leased_computer"; agent_id: string }
+  | { op: "grant_room_computer"; agent_id: string | null }
+  | { op: "computer"; command: KernelComputerCommand }
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
@@ -36,6 +40,7 @@ export type UserDomainWindowAccess = {
   reachable_by_focused_agent: boolean
 }
 export type UserDomainResource =
+  | { kind: "desktop"; surface_id: string }
   | { kind: "browser_tab"; tab_id: string }
   | { kind: "app_view"; view_id: string }
   | { kind: "note"; note_id: string }
@@ -47,6 +52,7 @@ export type UserDomainGrant = {
   prompt_id?: string | null; delegated_by_agent_id?: string | null; expires_at_ms?: number | null
 }
 export type UserDomainGrantEvent = {
+  room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
   event: "user_domain_grants_changed"; cursor: number; grants: UserDomainGrant[];
   notice: { agent_id: string; resource: UserDomainResource; at_ms: number } | null
 }
@@ -63,3 +69,26 @@ export type KernelBrowserResult = {
   kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;
   reachable_by_focused_agent?: boolean
 } | KernelBrowserFrame | UserDomainGrantEvent
+
+// MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.
+export type KernelDesktopTarget = { surface_id: string; generation: string }
+export type KernelComputerInput =
+  | { kind: "text" | "composition"; text: string }
+  | { kind: "keycode"; keycode: number; state: "down" | "up" }
+  | { kind: "key"; key: string }
+  | { kind: "hold"; key: string; duration_ms: number }
+  | { kind: "pointer_hold"; x: number; y: number; button: number; duration_ms: number }
+  | { kind: "click"; x: number; y: number; button: number }
+  | { kind: "move"; x: number; y: number }
+  | { kind: "drag"; x: number; y: number; to_x: number; to_y: number; button: number }
+  | { kind: "scroll"; x: number; y: number; steps: number }
+  | { kind: "clipboard_write"; text: string }
+export type KernelComputerCommand =
+  | { op: "installed_applications"; target: KernelDesktopTarget }
+  | { op: "launch_application"; target: KernelDesktopTarget; application_id: string }
+  | { op: "display_subscribe"; target: KernelDesktopTarget; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
+  | { op: "start" | "state" | "actors" }
+  | { op: "snapshot" | "screenshot" | "clipboard_read" | "takeover" | "release"; target: KernelDesktopTarget }
+  | { op: "ocr"; target: KernelDesktopTarget; query: string | null }
+  | { op: "input"; target: KernelDesktopTarget; input: KernelComputerInput }
+  | { op: "target_action"; target: KernelDesktopTarget; tree_revision: number; target_id: string; action: string }

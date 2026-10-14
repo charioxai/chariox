@@ -63,7 +63,12 @@ extern "C" {
         height: *mut i32,
     ) -> *mut u8;
 
-    pub(super) fn cx_capture_open(owner: libc::c_ulong, width: i32, height: i32) -> *mut c_void;
+    pub(super) fn cx_capture_open_mode(
+        owner: libc::c_ulong,
+        width: i32,
+        height: i32,
+        automatic: i32,
+    ) -> *mut c_void;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
@@ -89,6 +94,7 @@ extern "C" {
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_read(c: *mut c_void, out: *mut u8, bounds: *mut i32) -> i32;
+    pub(super) fn cx_codec_row_y(height: i32, count: i32, index: i32) -> i32;
     pub(super) fn cx_codec_open(
         width: i32,
         height: i32,

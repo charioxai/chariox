@@ -47,3 +47,20 @@ export function displayTiming(root) {
   timing.flush=flush;
   return timing;
 }
+
+// MP-08/MP-10/MP-11: private scheduler attribution; never serialize a request,
+// identifier, key, coordinate or payload into the diagnostic log.
+export function timedHostRequests(host, scheduleRequest) {
+  const queued = new WeakMap();
+  return {
+    scheduleRequest(request) {
+      if (['host.browser','host.computer'].includes(request.method) && request.params?.op === 'input') queued.set(request, timestamp());
+      return scheduleRequest(request);
+    },
+    handleRequest(request, options) {
+      const started = queued.get(request);
+      if (started !== undefined) { queued.delete(request); host.timing('host_input_queue', started); }
+      return host.handle(request, options);
+    },
+  };
+}

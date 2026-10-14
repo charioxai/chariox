@@ -4,6 +4,8 @@
 use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
+// MP-11: the admission floor moves with relay peer bumps; test around it.
+const FLOOR: u32 = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
 
 #[test]
 fn mp08_mp10_mp11_browser_artifact_current_peer_encrypted_lease_admission() {
@@ -72,7 +74,7 @@ async fn check() {
     home_config.relay_url = Some(format!("ws://{addr}"));
     home_config.relay_token = Some("peer-version-fixture".into());
     home_config.relay_request_timeout_ms = 2_000;
-    let version = Arc::new(AtomicU32::new(70));
+    let version = Arc::new(AtomicU32::new(FLOOR - 1));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (stop_worker, mut stopped) = watch::channel(false);
     let target = {

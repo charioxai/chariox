@@ -69,7 +69,7 @@ async function setup(dpr, run) {
     const ref=async selector=>{const {root}=await connection.send('DOM.getDocument',{},sessionId);const {nodeId}=await connection.send('DOM.querySelector',{nodeId:root.nodeId,selector},sessionId);return `backend:${(await connection.send('DOM.describeNode',{nodeId},sessionId)).node.backendNodeId}`;};
     const policy={unknown:false,values:[value],targets:[]};
     const fill=async(selector)=>{const node_ref=await ref(selector);const result=await browser.performAction({target_id:targetId,document_id:documentId,node_ref,action:{kind:'fill',text:value,expected_document_url:url}});policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref,value_hash:hash(value)});return result;};
-    const collect=async()=> (await measureBrowserProtection(browser,policy)).pages[0].regions;
+    const collect=async()=> (await measureBrowserProtection(browser,policy)).pages.find(page=>page.target_id===targetId)?.regions??[];
     const capture=async label=>{let masks=[];const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId)).data,dpr,null,regions=>{masks=regions.map(([x,y,width,height])=>({x,y,width,height}))});if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`fill-dpr${dpr}-${label}.png`),Buffer.from(data,'base64'));const decoded=decodePng(data,dpr);decoded.video=await videoPixels(data,dpr,label,false,masks);return decoded;};
     await run({browser,connection,sessionId,targetId,documentId,evaluate,ref,policy,fill,collect,capture,url,dpr});
   } finally {
@@ -82,6 +82,32 @@ async function setup(dpr, run) {
   }
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: unproved normalized fill completion retains coverage`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,evaluate,collect,capture})=>{
+   const nodeRef=await ref('#plain');
+   const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef,browserGeneration:browser.browserGeneration},'alpha\nbeta',1);
+   browser.fillTargets.set('pending',target);
+   await evaluate(`document.querySelector('#plain').value='alpha\\nbeta'`);
+   const send=connection.send.bind(connection);
+   connection.send=async(method,...args)=>{if(method==='Runtime.callFunctionOn')throw Error('completion read unavailable');return send(method,...args);};
+   try{await assert.rejects(regions.finishBrowserFill(connection,target),/completion read unavailable/);}
+   finally{connection.send=send;}
+   assert((await collect()).length>0,'completion failure must not retire a normalized field');
+   const image=await capture('normalized-completion-unproved');
+   const offset=(90*dpr*image.width+100*dpr)*4;
+   assert.deepEqual([...image.pixels.subarray(offset,offset+3)],[0,0,0]);
+   assert.equal(browser.fillTargets.size,1);
+ }));
+ for(const [field,text,actual]of [['plain','alpha\nbeta','alphabeta'],['area','alpha\r\nbeta','alpha\nbeta']])
+ test(`MP-08/MP-11 DPR${dpr}: normalized ${field} Vault fill stays masked`,()=>setup(dpr,async({browser,targetId,documentId,ref,policy,evaluate,collect,capture,url})=>{
+   const node_ref=await ref('#'+field);
+   await browser.performAction({target_id:targetId,document_id:documentId,node_ref,action:{kind:'fill',text,expected_document_url:url}});
+   assert.equal((await evaluate(`document.querySelector('#${field}').value`)).result.value,actual);
+   assert((await collect()).length>0,'actual normalized fill must remain registered');
+   const image=await capture('normalized-'+field);
+   const [x,y]=field==='plain'?[100,90]:[100,240];
+   assert.deepEqual([...image.pixels.subarray(((y*dpr)*image.width+x*dpr)*4,((y*dpr)*image.width+x*dpr)*4+3)],[0,0,0]);
+   assert.equal(browser.fillTargets.size,1);
+ }));
  test(`MP-08/MP-11 DPR${dpr}: visible page presents and fences the actual capture`,()=>setup(dpr,async({browser,policy,fill,capture})=>{
    await fill('#plain');
    const before=await regions.measurePresented(browser,policy);
@@ -164,7 +190,7 @@ for(const dpr of [1,2]) {
        assert.equal(result.status,0,'MP-11 actual compiled kernel boundary replay succeeds');
        assert.match(result.stdout,/1 passed/);wire=JSON.parse(await readFile(`${fixture}.wire.json`,'utf8'));
      }
-     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+     const bundle=path.join(root,'client.js'),built=spawnSync('bun',['build',process.env.CHARIOX_MIRROR_CLIENT_SOURCE??fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
      const code=await readFile(bundle,'utf8'),target=(await connection.send('Target.createTarget',{url})).targetId;
      try {
        const {sessionId:client}=await browser.resolvePageTarget(target);
@@ -294,7 +320,7 @@ for(const dpr of [1,2]) {
      const artifact=async()=>{await browser.reconcile(viewport,{browserBarVisible:false});return browser.captureArtifact(request)};
      const released=[];
      for(const [surface,run] of [['video',next],['artifact',artifact]]) {
-       try {await run();released.push(surface);}catch(error){assert.match(error.message,/unavailable/);}
+       try {await run();released.push(surface);}catch(error){assert.match(error.message,/unavailable|^MP-11: fill capture must retry$/);}
      }
      assert.deepEqual(released,[],'MP-11 neither production surface may release unproved paint coverage');
      assert.equal(stream.sequence,0);assert.equal(encoded,0,'MP-11 refusal occurs before encoding');
@@ -461,7 +487,7 @@ for(const dpr of [1,2]) {
    assert.equal((await collect()).length,1,'MP-11 background metadata on an existing screencast keeps the paused fill covered');
    await capture('pending-fill');
    await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
-   regions.finishBrowserFill?.(connection,target);
+   await regions.finishBrowserFill?.(connection,target);
    assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
    const frame=await capture('completed-fill');const i=((90*dpr)*frame.width+100*dpr)*4;
    assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
@@ -588,7 +614,7 @@ for(const dpr of [1,2]) {
      const bundleRoot=await mkdtemp(path.join(tmpdir(),'protxform-mirror-client-'));
      try {
        const bundle=path.join(bundleRoot,'client.js');
-       const built=spawnSync('bun',['build',fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});
+       const built=spawnSync('bun',['build',process.env.CHARIOX_MIRROR_CLIENT_SOURCE??fileURLToPath(new URL('../../../../packages/kernel-client/src/browser-mirror.ts',import.meta.url)),'--target=browser',`--outfile=${bundle}`],{encoding:'utf8'});
        assert.equal(built.status,0,built.stderr);
        const code=await readFile(bundle,'utf8');
        const clientTarget=(await connection.send('Target.createTarget',{url})).targetId;
@@ -638,6 +664,22 @@ for(const dpr of [1,2]) {
    await fill('#area');await fill('#editor');assert.equal((await collect()).length,2,'textarea and contenteditable are fill targets');
    await evaluate("document.querySelector('#area').remove();document.querySelector('#editor').remove()");assert.deepEqual(await collect(),[]);
    await connection.send('Page.navigate',{url:'about:blank'},sessionId);assert.deepEqual(await collect(),[],'navigation retires targets');assert.equal(browser.fillTargets.size,0,'MP-11 retired targets leave the tracking registry');
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
+   const send=connection.send.bind(connection);let intercepted=false;
+   connection.send=async(method,params,session)=>{
+     if(!intercepted&&method==='Runtime.callFunctionOn'&&params.functionDeclaration?.includes('expectedDocumentUrl')){
+       intercepted=true;
+       assert.equal((await collect()).length,1,'MP-11 pending plain fill is covered, never retired');
+     }
+     return send(method,params,session);
+   };
+   await fill('#plain');assert(intercepted);assert.equal((await collect()).length,1,'completed fill remains tracked');
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: registering a target without a Vault fill never masks it`,()=>setup(dpr,async({evaluate,ref,policy,targetId,documentId,collect})=>{
+   const node_ref=await ref('#plain');policy.targets.push({kind:'browser',target_id:targetId,document_id:documentId,node_ref});
+   await evaluate("document.querySelector('#plain').value="+JSON.stringify(value));
+   assert.deepEqual(await collect(),[],'user-authored matching field is not a Vault fill');
  }));
  test(`MP-08/MP-11 DPR${dpr}: Vault fill in cross-origin renderer masks its own field`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,policy,collect,capture,url,evaluate})=>{
    const child=(await connection.send('Target.getTargets')).targetInfos.find(t=>t.type==='iframe');assert(child);

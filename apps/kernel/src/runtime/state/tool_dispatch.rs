@@ -161,6 +161,7 @@ impl KernelRuntimeState {
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = self.kernel_browser_tool_specs(&provider_runs);
+        specs.extend(self.kernel_computer_tool_specs(&provider_runs));
         if matches!(provider_runs.as_slice(), [run]
             if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
         {
@@ -812,6 +813,8 @@ fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> 
             PASTE_SECRET_TO_SLICE_TOOL
                 | SLICE_SCREEN_STATUS_TOOL
                 | SLICE_OCR_TOOL
+                | SLICE_ACCESSIBILITY_TOOL
+                | SLICE_TARGET_ACTION_TOOL
                 | SLICE_FIND_TEXT_TOOL
                 | SLICE_BROWSER_STATUS_TOOL
                 | SLICE_BROWSER_TAB_TOOL

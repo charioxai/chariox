@@ -20,6 +20,10 @@ struct Config {
     width: i32,
     height: i32,
     pool: PathBuf,
+    /// MP-08/MP-11: read the kernel-owned desktop root instead of an owned
+    /// browser window; the kernel masks every frame before encode.
+    #[serde(default)]
+    desktop: bool,
 }
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -173,6 +177,9 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
+    let owner = if config.desktop { 0 } else { config.pid };
+    // MP-08/MP-10: the existing owned-desktop environment presents the root.
+    let automatic = i32::from(std::env::var("CHARIOX_OWNED_VIRTUAL_DISPLAY").as_deref() == Ok("1"));
     super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
@@ -181,7 +188,8 @@ pub(super) fn run() -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(50));
         }
-        capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+        capture =
+            Capture(unsafe { ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic) });
         if !capture.0.is_null() {
             break;
         }
@@ -208,7 +216,8 @@ pub(super) fn run() -> Result<(), String> {
     // during x264; capture damage queues while that thread holds the sessions.
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
     let mut pending_rows = 0u8;
-    let (codec_tx, codec_rx) = std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease)>(4);
+    let (codec_tx, codec_rx) =
+        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64)>(4);
     let codec_sessions = sessions.clone();
     std::thread::spawn(move || {
         let lock = || {
@@ -216,7 +225,8 @@ pub(super) fn run() -> Result<(), String> {
                 .lock()
                 .map_err(|_| "MP-11: native sessions poisoned".to_string())
         };
-        while let Ok((q, lease)) = codec_rx.recv() {
+        while let Ok((q, lease, queued)) = codec_rx.recv() {
+            let started = epoch();
             // x264 runs between two short critical sections.
             let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
                 let outcome = Sessions::run_encode(&job, lease.pixels());
@@ -227,7 +237,16 @@ pub(super) fn run() -> Result<(), String> {
                 }
             });
             // Encoder failures stay fatal for the worker, as on the capture thread.
-            if result.and_then(|value| reply(q.id, value)).is_err() {
+            if result
+                .and_then(|mut value| {
+                    // MP-08/MP-10/MP-11: private numeric queue timing only.
+                    if let Some(spans) = value["timings"].as_array_mut() {
+                        spans.push(json!(["native_codec_queue", queued, started]));
+                    }
+                    reply(q.id, value)
+                })
+                .is_err()
+            {
                 std::process::exit(2);
             }
         }
@@ -438,9 +457,15 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
-                    codec_tx
-                        .try_send((q, slot.codec_lease()))
-                        .map_err(|_| "MP-11: native codec queue unavailable")?;
+                    // MP-10 (#933 review 7): a full codec queue refuses this
+                    // encode softly (Node skips one sample); never fatal.
+                    match codec_tx.try_send((q, slot.codec_lease(), epoch())) {
+                        Ok(()) => {}
+                        Err(std::sync::mpsc::TrySendError::Full((q, _, _))) => {
+                            reply(q.id, json!({"busy": true}))?
+                        }
+                        Err(_) => return Err("MP-11: native codec queue unavailable".into()),
+                    }
                 }
                 Command::Exact { exact: q } => {
                     let id = q.id;
@@ -457,7 +482,7 @@ pub(super) fn run() -> Result<(), String> {
                             |reason: String| json!({"shift_refused": true, "reason": reason});
                         match locked()?.shift(q, slot) {
                             Ok(job) => {
-                                if exact.submit_job(id, job).is_err() {
+                                if !matches!(exact.submit_job(id, job), Ok(true)) {
                                     reply(id, refused("MP-10: native exact queue busy".into()))?;
                                 }
                             }
@@ -472,8 +497,8 @@ pub(super) fn run() -> Result<(), String> {
                                 |_| json!({"error":"MP-11: exact preparation failed"}),
                             );
                             reply(id, value)?;
-                        } else {
-                            exact.submit(id, plan)?;
+                        } else if !exact.submit(id, plan)? {
+                            reply(id, json!({"busy": true}))?;
                         }
                     }
                 }

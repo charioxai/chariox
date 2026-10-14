@@ -73,6 +73,9 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         )
         .await?;
         discovery_config.relay_token = Some(token.token);
+    } else {
+        discovery_config =
+            relay_discovery::ordinary_hosted_discovery_config(discovery_config).await?;
     }
 
     let machine_ref =
@@ -716,7 +719,11 @@ impl DaemonApp {
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
-            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
+            let destroyed = self.agents.destroy_agent(agent.id(), &mut sessions);
+            drop(sessions);
+            if destroyed.is_ok() {
+                self.forget_room_computer_access(agent.id());
+            }
         }
         remote_setup
     }

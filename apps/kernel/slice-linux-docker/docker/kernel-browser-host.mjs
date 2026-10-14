@@ -1,4 +1,6 @@
-import {displayGeometry as geometry,displayDeviceMetrics,hostViewport} from './kernel-browser-geometry.mjs';
+import { DesktopDisplay } from './kernel-desktop-display.mjs';
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -6,16 +8,18 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { displayTiming, timestamp } from './kernel-browser-timing.mjs';
+import { displayTiming, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
+import { NativeAccessibility } from './native-accessibility.mjs';
+import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureProtectionFence, captureProtectedDisplay, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
@@ -35,8 +39,8 @@ export function scheduleHostRequest(request, browser) {
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
-    request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && Number.isInteger(request.params.wait_ms) ||
+    ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
+    typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     request.params?.op === 'state' && browser?.canReconcileConcurrently?.(hostViewport(), { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -78,11 +82,23 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
+    // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
+    if (this.chromium.desktop) this.chromium.desktop.browser = () => this.browser;
+    this.desktopDisplay = new DesktopDisplay(this);
+    this.onNativeInput = () => this.desktopDisplay.wake();
+    this.nativeAccessibility = new NativeAccessibility({binding:()=>this.chromium.desktop?.binding()});
+    this.nativeComputer = new NativeComputer({ placement: 'host',
+      timing: this.timing,
+      binding: () => this.chromium.desktop?.binding(),
+      wakeCapture: event => this.onNativeInput?.(event),
+    });
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    await this.desktopDisplay.retireSource();
+    this.nativeAccessibility.clear();
     this.mirror.invalidate();
     await this.closeCompositors();
     for (const stream of this.displays.values()) stream.invalidate();
@@ -114,8 +130,15 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
-    await this.closeCompositors();this.foreground.reset();
+    await this.desktopDisplay.close();
+    await this.closeCompositors();
+    this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
+
+    // MP-11: retire helpers on the old display before Chromium recovery can
+    // replace it. A failed key release still requires owned desktop teardown.
+    try { await this.nativeComputer.close(); }
+    finally { await this.chromium.stop(); this.nativeAccessibility.clear(); }
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
@@ -137,6 +160,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     // MP-08/MP-10: relaunch at the device scale of the last display viewer.
     const connection = await this.chromium.start();
+    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
@@ -165,9 +189,22 @@ export class KernelBrowserHost {
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
   }
+  // MP-08/MP-10/MP-11: native page density applies to the private display
+  // only; the owned Computer desktop stays at its 1x X11 density.
+  viewport() { return hostViewport(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' && !this.chromium.desktop); }
+  // MP-08/MP-11: on the owned Computer desktop the Browser window is the
+  // visible one, and an emulated density leaves it unbindable (withheld):
+  // drop a tab's viewer emulation with its last Browser viewer or mirror.
+  async releaseTabScale(tabId) {
+    if(!this.chromium.desktop||!this.scales.has(tabId))return;
+    if([...this.displays.values()].some(s=>s.tab_id===tabId&&s.source_kind!=='desktop')||[...this.mirror.streams.values()].some(s=>s.tab_id===tabId))return;
+    this.scales.delete(tabId);
+    const tab=this.tabs.get(tabId);if(!tab)return;
+    try{const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);await connection.send('Emulation.clearDeviceMetricsOverride',{},sessionId);}catch{}
+  }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
-      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close();
+      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close().catch(()=>{});
     }
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
@@ -180,6 +217,10 @@ export class KernelBrowserHost {
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
+    // MP-11: a refused attestation (animated page, caret) costs a lease and two
+    // protected captures. Retry it per document/policy after a doubling backoff.
+    const refusals=entry?.document===tab.document_id&&entry.policy===this.protection?entry.refusals??0:0;
+    if(refusals&&performance.now()<entry.retryAt)return null;
     // MP-08/MP-10: a CDP fallback after a refused native start retries native
     // with backoff (nativeRetryDelayMs) for the same document.
     const retry=this.nativeRetryAt?.get(tab.tab_id),retryNative=entry&&!(entry.source instanceof LinuxCapture)&&retry?.document===tab.document_id&&performance.now()>=retry.at;
@@ -198,7 +239,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.child?.pid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
@@ -207,14 +248,22 @@ export class KernelBrowserHost {
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
-      entry={source,document:tab.document_id,ready:source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>null)};this.compositors.set(tab.tab_id,entry);
+      const created={source,document:tab.document_id,policy};
+      created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
+      entry=created;this.compositors.set(tab.tab_id,entry);
     }
     return await entry.ready;
   }
   async stop() {
+    await this.desktopDisplay.close();
     await this.closeCompositors();
     this.sampleLanes.clear();
+
+    this.nativeAccessibility.clear();
     this.popupEvidence.clear();
+    // A dead X server can make release fail; retirement still destroys the
+    // owned desktop before acknowledging stop.
+    await this.nativeComputer.close().catch(() => {});
     await this.chromium.stop(this.browser?.connection);
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
@@ -240,7 +289,7 @@ export class KernelBrowserHost {
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(hostViewport(), { browserBarVisible: false }); break; }
+      try { state = await this.browser.reconcile(this.viewport(), { browserBarVisible: false }); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -248,6 +297,15 @@ export class KernelBrowserHost {
     }
     if (observation < this.observed) return this.tabState();
     this.observed = observation;
+    // Native address-bar navigation turns the initial blank target into a user
+    // tab. Replace the reserve without taking focus before adopting that tab.
+    const keepalive = state.tabs.find(tab => tab.target_id === this.keepaliveTarget);
+    if (keepalive && keepalive.url !== "about:blank") {
+      const connection = await this.browser.ensureConnection();
+      this.keepaliveTarget = (await connection.send("Target.createTarget", {
+        url: "about:blank", background: true,
+      })).targetId;
+    }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
@@ -316,11 +374,11 @@ export class KernelBrowserHost {
   }
   async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? hostViewport().device_scale_factor;
+    const scale = this.scales.get(tab.tab_id) ?? this.viewport().device_scale_factor;
     const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
     await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
-      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]})
+      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]},{ record: reason => this.timing('region_frame_masked ' + reason, timestamp()) })
       : {async afterCapture(){return [];}} : null;
     const data = await captureProtectedPage(this.browser, tab, this.protection.values,
       this.protection.targets.filter(target => target.kind === "browser"), async () => {
@@ -363,9 +421,9 @@ export class KernelBrowserHost {
       }).catch(() => {}).finally(() => { stream.capturing = false; });
     };
     stream.off = connection.subscribe(message => {
-      if(regionProtectionChanged(message,sessionId)){
-        stream.regionEpoch=(stream.regionEpoch??0)+1;
-        stream.latest=null;captureProtected();return;
+      if(regionProtectionChanged(message,sessionId,stream.latest?.[displayMaskRegions]?.length!==0)){
+        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=null;}
+        captureProtected();return;
       }
       if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
       const data = message.params?.data;
@@ -396,8 +454,9 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => {
       if (this.displays.get(stream.subscription_id) !== stream) return;
+      if(stream.source_kind==='desktop'){void this.desktopDisplay.remove(stream).catch(()=>{});return;}
       this.displays.delete(stream.subscription_id);
-      void stream.close().then(() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))return this.closeCompositors(stream.tab_id)}).catch(() => {});
+      void stream.close().then(async() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);}}).catch(() => {});
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
@@ -435,7 +494,7 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
-    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
+    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { if(stream.source_kind==='desktop')await this.desktopDisplay.remove(stream);else {await stream.close();this.displays.delete(id);} }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
@@ -443,7 +502,8 @@ export class KernelBrowserHost {
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
-      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id))await this.closeCompositors(stream.tab_id); return { generation: this.generation, unsubscribed: true }; }
+      if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
+      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);} return { generation: this.generation, unsubscribed: true }; }
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
@@ -476,7 +536,7 @@ export class KernelBrowserHost {
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
       // MP-08/MP-10/MP-11: observation never changes the native page density.
-      const scale = hostViewport().device_scale_factor;
+      const scale = this.viewport().device_scale_factor;
       this.scales.set(tab.tab_id, scale);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
@@ -505,6 +565,12 @@ export class KernelBrowserHost {
     if (command.op === "navigate") {
       // MP-08/MP-11: an agent's navigation is its input to the App Tab too.
       if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
+      // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
+      // Retire native claims before physical focus can show a different page.
+      if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
+        this.foreground.reset();await this.closeCompositors();
+        await this.browser.manageTab({...binding,action:'activate'},{signal});
+      }
       await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
       return this.observe(await this.reconcile(), null, scope);
     }
@@ -590,6 +656,7 @@ export class KernelBrowserHost {
       if (request.method === "host.revoke_subscriptions") {
         const ids = new Set(request.params.subscription_ids ?? []);
         const owners = new Set(request.params.subscription_owners ?? []);
+        for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
         return { id: request.id, ok: true, result: { revoked: true } };
       }
@@ -615,7 +682,55 @@ export class KernelBrowserHost {
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }
+      if (request.method === "host.computer") {
+        const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
+        if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
+        const nativeParams={...request.params,observed_by:observer};
+        if (request.params.op === 'display_subscribe') {
+          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
+          return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
+        }
+        if (['installed_applications','launch_application'].includes(request.params.op)) {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale installed application surface');
+          if(request.params.op==='installed_applications')return {id:request.id,ok:true,result:{surface_id:binding.surface_id,generation:binding.generation,...await this.chromium.desktop.installedApplications({signal})}};
+          const launched=await this.chromium.desktop.launchApplication(request.params.application_id,{signal,observe:()=>this.nativeAccessibility.snapshot(observer,this.protection,{signal})});
+          this.onNativeInput();
+          return {id:request.id,ok:true,result:launched};
+        }
+        if (request.params.op === 'snapshot') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native snapshot surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.snapshot(observer,this.protection,{signal})};
+        }
+        if (request.params.op === 'target_action') {
+          const binding=this.chromium.desktop?.binding();
+          if(!binding || request.params.surface_id!==binding.surface_id || request.params.generation!==binding.generation)throw new Error('MP-11: stale native target surface');
+          return {id:request.id,ok:true,result:await this.nativeAccessibility.action(observer,request.params,this.protection,{signal})};
+        }
+        if (request.params.op === 'start') {
+          if(!this.chromium.desktop || this.chromium.environment?.CHARIOX_KERNEL_BROWSER_HEADLESS==='1')throw new Error('MP-08: owned Computer desktop requires headed Linux');
+          await this.start({ signal });
+          return { id: request.id, ok: true, result: await this.nativeComputer.request({op:'state'}, this.protection, {signal}) };
+        }
+        const at=timestamp();
+        const result=await this.nativeComputer.request(nativeParams, this.protection, {signal});
+        // Fixed labels only: operation and input kind, never input values.
+        if(request.params.op==='input')this.timing('computer_input '+(/^[a-z_]{1,16}$/.test(request.params.input?.kind)?request.params.input.kind:'other'),at);
+        return { id: request.id, ok: true, result };
+      }
+      if (request.method === 'host.computer.retire') {
+        await this.desktopDisplay.retire(request.params.observer);
+        await this.nativeComputer.retire(request.params.observer);
+        this.nativeAccessibility.retire(request.params.observer);
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
+      if (request.method === "host.computer.reset") {
+        await this.nativeComputer.reset();
+        return { id: request.id, ok: true, result: { released: true } };
+      }
       if (request.method === "host.browser") {
+        if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         const result = await this.request(request.params, { signal });
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
@@ -651,8 +766,7 @@ export class KernelBrowserHost {
       this.timing(hostErrorLabel(error),timestamp());
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
-      if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id) await this.stop();
-      if (["browser_unavailable"].includes(error?.code)) {
+      if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id) await this.stop();      if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
@@ -665,5 +779,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer({ scheduleRequest: request => scheduleHostRequest(request, host.browser), handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser))).run().finally(() => host.stop());
 }

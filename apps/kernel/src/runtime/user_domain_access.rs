@@ -78,6 +78,18 @@ pub(crate) struct UserDomainAccess {
 }
 
 impl UserDomainAccess {
+    /// MP-08/MP-11: a human-selected desktop grant never changes focus.
+    pub(crate) fn grant_desktop(&mut self, user: &str, agent: &str, surface: &str) {
+        let grant = self
+            .grants
+            .entry((user.into(), agent.into()))
+            // Like focus, a live human act: it retires through idle or revoke.
+            .or_insert_with(|| Grant::new(GrantCause::Focus, None));
+        grant.resources.insert(UserDomainResource::Desktop {
+            surface_id: surface.into(),
+        });
+        self.changed(user);
+    }
     pub(crate) fn focus(&mut self, user: &str, agent: Option<&str>) {
         if self.focused(user) == agent
             && agent.is_none_or(|agent| {
@@ -478,7 +490,7 @@ impl UserDomainAccess {
     pub(crate) fn cursor(&self, user: &str) -> u64 {
         self.cursors.get(user).copied().unwrap_or(0)
     }
-    fn changed(&mut self, user: &str) {
+    pub(crate) fn changed(&mut self, user: &str) {
         *self.cursors.entry(user.into()).or_default() += 1;
     }
     pub(crate) fn snapshot(

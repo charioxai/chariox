@@ -10,6 +10,28 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap, fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf,
 };
+fn row_y(height: i32, count: i32, index: i32) -> i32 {
+    // MP-08/MP-10/MP-11: share the native encoder's macroblock-aligned edges.
+    unsafe { ffi::cx_codec_row_y(height, count, index) }
+}
+/// MP-08/MP-11: codec rows (the C layout) whose set of intersecting masks
+/// differs between two mask lists.
+pub(super) fn protection_rows(h: i32, rows: i32, old: &[Rect], new: &[Rect]) -> u32 {
+    (0..rows).fold(0, |changed, r| {
+        let (top, bottom) = (row_y(h, rows, r), row_y(h, rows, r + 1));
+        let within = |list: &[Rect]| {
+            list.iter()
+                .filter(|m| m.top < bottom && m.bottom > top)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        if within(old) != within(new) {
+            changed | 1 << r
+        } else {
+            changed
+        }
+    })
+}
 fn stripe_default() -> bool {
     true
 }
@@ -144,11 +166,8 @@ fn clips(
     let mut output = Vec::new();
     for y in ((bounds[1] / block * block)..bounds[3]).step_by(block as usize) {
         let height = block.min(h - y);
-        let touches = (0..8).any(|r| {
-            rows & (1 << r) != 0
-                && y < 2 * ((h / 2 * (r + 1)) / 8)
-                && y + height > 2 * ((h / 2 * r) / 8)
-        });
+        let touches = (0..8)
+            .any(|r| rows & (1 << r) != 0 && y < row_y(h, 8, r + 1) && y + height > row_y(h, 8, r));
         if !touches {
             continue;
         }
@@ -211,7 +230,7 @@ impl Sessions {
     /// Codec row bands touched by a readback's damage bounds.
     pub fn damage_rows(h: i32, bounds: [i32; 4]) -> u8 {
         (0..8).fold(0, |rows, r| {
-            if bounds[1] < 2 * ((h / 2 * (r + 1)) / 8) && bounds[3] > 2 * ((h / 2 * r) / 8) {
+            if bounds[1] < row_y(h, 8, r + 1) && bounds[3] > row_y(h, 8, r) {
                 rows | 1 << r
             } else {
                 rows
@@ -294,10 +313,22 @@ impl Sessions {
                 })?
         };
         let sessions = &mut self.sessions;
-        if sessions.get(&q.encoder).is_some_and(|s| {
-            s.regions != regions || s.stripes != q.stripes || s.reduced != q.reduced
-        }) {
+        if sessions
+            .get(&q.encoder)
+            .is_some_and(|s| s.stripes != q.stripes || s.reduced != q.reduced)
+        {
             sessions.remove(&q.encoder);
+        }
+        // MP-08/MP-11 (#933 review 6): moved masks (a protected field scrolls)
+        // keep the session; only codec rows whose protection changed reopen
+        // (fresh IDR at the protected quantizer bound). Pixels are masked
+        // before conversion either way.
+        if let Some(s) = sessions
+            .get_mut(&q.encoder)
+            .filter(|s| s.regions != regions)
+        {
+            resets |= protection_rows(h, if q.stripes { 8 } else { 1 }, &s.regions, &regions);
+            s.regions = regions.clone();
         }
         // MP-08/MP-10: a rate change retunes the live x264 rows (no IDR);
         // hardware rows cannot and reopen.
@@ -682,5 +713,94 @@ impl Sessions {
             revision,
             started,
         })
+    }
+}
+#[cfg(test)]
+mod protection_tests {
+    use super::*;
+    fn encode(regions: Value, stripes: bool) -> Encode {
+        serde_json::from_value(json!({"id":1,"encoder":"motion","serial":1,"bitrate":8000000,"reset":false,"regions":regions,"stripes":stripes})).unwrap()
+    }
+    fn begin(sessions: &mut Sessions, regions: Value, stripes: bool) -> u32 {
+        let job = sessions.begin_encode(&encode(regions, stripes)).unwrap();
+        // Return the codec as finish_encode does after x264.
+        sessions.sessions.get_mut("motion").unwrap().codec = Some(job.codec);
+        job.resets
+    }
+    #[test]
+    fn mp11_aligned_stripe_boundary_keeps_damage_and_protection_in_the_encoded_row() {
+        // This field starts at the first real codec boundary (96), where
+        // the old 100-pixel damage bands incorrectly selected row zero.
+        let field = Rect {
+            left: 10,
+            top: 96,
+            right: 20,
+            bottom: 98,
+        };
+        assert_eq!(protection_rows(800, 8, &[], &[field]), 1 << 1);
+        assert_eq!(Sessions::damage_rows(800, [10, 96, 20, 98]), 1 << 1);
+        assert_eq!(
+            protection_rows(
+                1600,
+                8,
+                &[],
+                &[Rect {
+                    top: 192,
+                    bottom: 194,
+                    ..field
+                }]
+            ),
+            1 << 1
+        );
+    }
+    // MP-08/MP-11 (#933 review 6): moving masks re-key only affected rows.
+    #[test]
+    fn mp11_moved_masks_keep_the_session_and_reset_only_rows_whose_protection_changed() {
+        let mut s = Sessions::new(1280, 800, std::env::temp_dir());
+        let first = json!([{"x":10,"y":20,"width":100,"height":28}]);
+        assert_eq!(
+            begin(&mut s, first.clone(), true),
+            255,
+            "a new session keys every row"
+        );
+        assert_eq!(begin(&mut s, first, true), 0);
+        // Same aligned row band (row 0 is 0..96 at 800): only row 0 re-keys.
+        assert_eq!(
+            begin(
+                &mut s,
+                json!([{"x":10,"y":60,"width":100,"height":28}]),
+                true
+            ),
+            1
+        );
+        // Moved to row 5 (496..592): its old and new rows re-key.
+        assert_eq!(
+            begin(
+                &mut s,
+                json!([{"x":10,"y":520,"width":100,"height":20}]),
+                true
+            ),
+            1 | 1 << 5
+        );
+        assert_eq!(
+            begin(&mut s, json!([]), true),
+            1 << 5,
+            "clearing a mask re-keys its row only"
+        );
+        assert_eq!(
+            s.sessions.len(),
+            1,
+            "the session and its references survive"
+        );
+        // Whole-frame motion has one row: any protection change re-keys it.
+        assert_eq!(
+            begin(&mut s, json!([]), false),
+            255,
+            "a stripe/whole switch reopens"
+        );
+        assert_eq!(
+            begin(&mut s, json!([{"x":0,"y":700,"width":4,"height":4}]), false),
+            1
+        );
     }
 }

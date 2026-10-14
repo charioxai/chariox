@@ -133,7 +133,6 @@ managed comparison remain coordinator gates. No non-security exact-blob review
 is required by this correction. Focused and real-provider results are recorded
 in the lane handoff after completion; no MP item is closed by this inventory.
 
-
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

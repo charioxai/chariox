@@ -23,7 +23,10 @@ _memcmp.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t];_memcmp.resty
 
 def row_geometry(height):
     if type(height) is not int or height<16 or height%2:raise ValueError('stripe height')
-    edges=[2*((height//2*i)//8) for i in range(9)]
+    # MP-08/MP-10/MP-11: match native macroblock-aligned internal edges.
+    # OpenH264 otherwise pads each cropped row with black.
+    block=16 if height>=128 else 2
+    edges=[block*((height*i//8)//block) for i in range(8)]+[height]
     return [(edges[i],edges[i+1]-edges[i]) for i in range(8)]
 
 class BgrConverter:

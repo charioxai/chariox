@@ -1,19 +1,20 @@
-//! MD-DISPLAY-04: bounded capture admission briefly yields to source input.
+//! MP-08/MP-10/MP-11: serialize each display subscription, briefly yield to input.
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex, Weak,
 };
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub(crate) struct DisplayGate {
-    capture: Arc<Semaphore>,
+    captures: Mutex<BTreeMap<String, Weak<Semaphore>>>,
     input: AtomicUsize,
     changed: Notify,
 }
 impl Default for DisplayGate {
     fn default() -> Self {
         Self {
-            capture: Arc::new(Semaphore::new(1)),
+            captures: Mutex::new(BTreeMap::new()),
             input: AtomicUsize::new(0),
             changed: Notify::new(),
         }
@@ -24,11 +25,26 @@ impl DisplayGate {
         self.input.fetch_add(1, Ordering::AcqRel);
         InputAdmission(self.clone())
     }
-    pub(crate) async fn capture(&self) -> Result<OwnedSemaphorePermit, String> {
+    pub(crate) async fn capture(&self, subscription: &str) -> Result<OwnedSemaphorePermit, String> {
         let at = std::time::Instant::now();
-        let permit = self
-            .capture
-            .clone()
+        // Producer readiness can park a credit for 100 ms. Independent Browser
+        // and Computer subscriptions must not hold each other's delivery slot.
+        // Admission, policy barriers and protected source binding remain below.
+        let capture = {
+            let mut captures = self
+                .captures
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            captures.retain(|_, slot| slot.strong_count() > 0);
+            if let Some(slot) = captures.get(subscription).and_then(Weak::upgrade) {
+                slot
+            } else {
+                let slot = Arc::new(Semaphore::new(1));
+                captures.insert(subscription.into(), Arc::downgrade(&slot));
+                slot
+            }
+        };
+        let permit = capture
             .acquire_owned()
             .await
             .map_err(|_| "MD-DISPLAY: capture gate closed")?;
@@ -57,12 +73,43 @@ impl Drop for InputAdmission {
 mod tests {
     use super::*;
     use std::time::Duration;
+    // MP-08/MP-10/MP-11: idle Browser credits must not park Computer delivery.
+    // MP-11: completed/cancelled subscriptions cannot grow a durable slot map.
+    #[tokio::test]
+    async fn mp11_capture_slots_retire_without_losing_a_live_subscription() {
+        let gate = Arc::new(DisplayGate::default());
+        let live = gate.capture("live").await.unwrap();
+        for n in 0..100 {
+            drop(gate.capture(&format!("retired-{n}")).await.unwrap());
+        }
+        assert_eq!(gate.captures.lock().unwrap().len(), 2);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), gate.capture("live"))
+                .await
+                .is_err()
+        );
+        drop(live);
+        drop(gate.capture("next").await.unwrap());
+        assert_eq!(gate.captures.lock().unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn mp10_independent_subscriptions_do_not_share_parked_capture_credit() {
+        let gate = Arc::new(DisplayGate::default());
+        let browser = gate.capture("browser").await.unwrap();
+        let computer = tokio::time::timeout(Duration::from_millis(30), gate.capture("computer"))
+            .await
+            .expect("idle Browser credit blocked independent Computer capture")
+            .unwrap();
+        drop(computer);
+        drop(browser);
+    }
     #[tokio::test]
     async fn md_display_continuous_input_cannot_starve_independent_capture() {
         let gate = Arc::new(DisplayGate::default());
         let first = gate.input();
         let second = gate.input();
-        let admitted = tokio::time::timeout(Duration::from_millis(30), gate.capture()).await;
+        let admitted =
+            tokio::time::timeout(Duration::from_millis(30), gate.capture("browser")).await;
         drop(first);
         drop(second);
         let permit = admitted
@@ -73,32 +120,38 @@ mod tests {
     #[tokio::test]
     async fn md_display_input_is_independent_of_the_serial_capture_slot() {
         let gate = Arc::new(DisplayGate::default());
-        let first = gate.capture().await.unwrap();
+        let first = gate.capture("browser").await.unwrap();
         let input = gate.input();
         assert_eq!(gate.input.load(Ordering::Acquire), 1);
         assert!(
-            tokio::time::timeout(Duration::from_millis(5), gate.capture())
+            tokio::time::timeout(Duration::from_millis(5), gate.capture("browser"))
                 .await
                 .is_err()
         );
         drop(input);
         drop(first);
-        assert!(gate.capture().await.is_ok());
+        assert!(gate.capture("browser").await.is_ok());
     }
     #[tokio::test]
     async fn md_display_cancelling_a_waiting_credit_retains_input_and_capture_ownership() {
         let gate = Arc::new(DisplayGate::default());
-        let first = gate.capture().await.unwrap();
+        let first = gate.capture("browser").await.unwrap();
         let input = gate.input();
         assert!(
-            tokio::time::timeout(Duration::from_millis(5), gate.capture())
+            tokio::time::timeout(Duration::from_millis(5), gate.capture("browser"))
                 .await
                 .is_err()
         );
-        assert_eq!(gate.capture.available_permits(), 0);
+        assert_eq!(
+            gate.captures.lock().unwrap()["browser"]
+                .upgrade()
+                .unwrap()
+                .available_permits(),
+            0
+        );
         assert_eq!(gate.input.load(Ordering::Acquire), 1);
         drop(first);
         drop(input);
-        assert!(gate.capture().await.is_ok());
+        assert!(gate.capture("browser").await.is_ok());
     }
 }
