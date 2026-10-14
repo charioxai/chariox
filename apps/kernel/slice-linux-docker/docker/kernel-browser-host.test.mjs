@@ -1099,3 +1099,15 @@ test('MP-08/MP-10 the keepalive is a popup window outside the native tab strip',
   assert.deepEqual(targetInfos.map(t => t.targetId).sort(), [fixture.popups[0], host.tabs.get(opened.tab_id).target_id].sort(), 'the launch tab is closed');
   assert.ok(!opened.tabs.some(tab => tab.target_id === fixture.popups[0]));
 }));
+
+// MP-08/MP-10: opt-in timing names Tab lifecycle ops with fixed labels (New tab / typed URL attribution).
+test('MP-08/MP-10 opt-in timing labels Tab lifecycle ops', () => using(async ({ host }, root) => {
+  const before = process.env.CHARIOX_BROWSER_DISPLAY_TIMING; process.env.CHARIOX_BROWSER_DISPLAY_TIMING = '1';
+  try {
+    const opened = (await host.handle({ id: 1, method: 'host.browser', params: { op: 'open', url: 'about:blank' } })).result;
+    await host.handle({ id: 2, method: 'host.browser', params: { op: 'state', tab_id: opened.tab_id, generation: opened.generation } });
+    host.timing.flush();
+    const stages = (await readFile(path.join(root, 'display-timing.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).stage);
+    assert.ok(stages.includes('host_op open')); assert.ok(stages.includes('host_op state tab'));
+  } finally { if (before === undefined) delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING; else process.env.CHARIOX_BROWSER_DISPLAY_TIMING = before; }
+}));
