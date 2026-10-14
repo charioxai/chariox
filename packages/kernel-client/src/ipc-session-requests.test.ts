@@ -13,7 +13,7 @@ import {
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("project session selection and lifecycle requests match the current protocol", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 509)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 520)
   assert.deepEqual(
     createSessionRequest(
       "workspace-1",

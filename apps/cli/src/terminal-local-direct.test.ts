@@ -20,7 +20,7 @@ type Fixture = { client: LocalIpcClient; origins: string[]; grants: number; admi
 
 // Mirrors the kernel and relay seams: the direct session closes on any frame
 // that is not a client request, and the relay refuses an expired bearer.
-async function fixture(t: TestContext, token: (thumbprint: string) => string, protocolVersion = 502): Promise<Fixture> {
+async function fixture(t: TestContext, token: (thumbprint: string) => string, protocolVersion = 520): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "chariox-terminal-direct-"))
   const previous = process.env.CHARIOX_HOME
   process.env.CHARIOX_HOME = root

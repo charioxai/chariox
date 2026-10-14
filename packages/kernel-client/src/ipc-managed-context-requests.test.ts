@@ -51,8 +51,8 @@ test("managed context transfer requests use the shared local daemon shape", () =
 })
 
 test("MP-08 MP-11 owner-managed admission is interactive and carries inventory selection only", () => {
-  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION, 509)
-  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION, 117)
+  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION, 520)
+  assert.equal(OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION, 128)
   const ownerManaged = {
     target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
     contextSelection: {

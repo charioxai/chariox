@@ -25,7 +25,7 @@ export class LocalIpcClient extends KernelClient {
     // MP-08/MP-11: id-addressed, fresh same-machine discovery gates attempts
     // only. Never use an alias to select a local kernel across realms/relays.
     return Boolean(target.daemon_id && !target.daemon_id.startsWith("slice:")
-      && loadLocalKernelPresences().some(p => p.kernelId === target.daemon_id && (p.protocolVersion ?? 0) >= 502))
+      && loadLocalKernelPresences().some(p => p.kernelId === target.daemon_id && (p.protocolVersion ?? 0) >= 520))
   }
 
   protected override onControlConnectionChanged(): void {

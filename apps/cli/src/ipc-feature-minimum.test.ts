@@ -210,7 +210,7 @@ test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", 
   assert.deepEqual(await client.send(request), { PromptCancelled: {} })
   assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request])
   // Numeric 491 and later advertisements never bypass a missing capability.
-  for (const version of [491, 502]) {
+  for (const version of [491, 520]) {
     await client.close()
     writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "k",
       machine_id: "m", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(),

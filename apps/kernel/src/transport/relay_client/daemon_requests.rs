@@ -550,7 +550,7 @@ enum ParsedRelayClientMessage {
     LocalTerminalRenew(LocalBrowserRenewRequest),
 }
 
-/// MP-08/MP-11 protocol 473: terminal admission uses the shared service and
+/// MP-08/MP-11 protocol 520: terminal admission uses the shared service and
 /// paired Origin, with an explicitly short lease rather than a short token.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -563,7 +563,7 @@ struct LocalTerminalRenewEnvelope {
     local_terminal_renew: LocalBrowserRenewRequest,
 }
 
-/// Protocol 464: encrypted renewal handle and one-use sequence, relay only.
+/// Protocol 520: encrypted renewal handle and one-use sequence, relay only.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalBrowserRenewRequest {
@@ -577,7 +577,7 @@ struct LocalBrowserRenewEnvelope {
     local_browser_renew: LocalBrowserRenewRequest,
 }
 
-/// Protocol 464: `{"local_browser_connect":{}}`, encrypted with the browser key
+/// Protocol 520: `{"local_browser_connect":{}}`, encrypted with the browser key
 /// bound into the caller's relay identity.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

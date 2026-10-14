@@ -84,7 +84,7 @@ test("MP-08/MP-11 waiting-room resolution accepts the bound Cloud token", async 
 })
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 509)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 520)
   const requests: unknown[] = []
   const client = fakeClient(async (request) => {
     requests.push(request)

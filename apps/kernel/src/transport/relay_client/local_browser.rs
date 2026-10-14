@@ -367,7 +367,7 @@ fn unavailable(message: &str) -> RelayError {
     relay_error("local_browser_unavailable", message, false)
 }
 
-// MP-08/MP-11 protocol 473: an explicit terminal lease is short even when
+// MP-08/MP-11 protocol 520: an explicit terminal lease is short even when
 // the CLI's bound relay identity is long-lived. Every extension re-enters the
 // authenticated relay dispatcher; the direct session cannot renew itself.
 fn client_identity_deadline(

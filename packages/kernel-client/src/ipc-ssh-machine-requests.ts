@@ -1,5 +1,5 @@
-// MP-07 / MP-08 / MP-11: owner-managed SSH installation, allocated C5 protocol 509.
-export const sshMachineMinimumProtocolVersion = 509
+// MP-07 / MP-08 / MP-11: owner-managed SSH installation, allocated C5 protocol 520.
+export const sshMachineMinimumProtocolVersion = 520
 export type SshMachineOptions = { install_id?: string; port?: number; release?: string }
 export function addSshMachineRequest(host: string, options: SshMachineOptions = {}) {
   return { AddSshMachine: { host, ...options } }

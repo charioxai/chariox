@@ -70,10 +70,10 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
 
-test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 509", () => {
+test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", () => {
   const request = { StartManagedContextTransfer: { interactive: true, ownerManaged: {} } }
-  assert.throws(() => requireKernelFeatureProtocol(request, 508), /Owner context copy needs protocol ≥509/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 509))
+  assert.throws(() => requireKernelFeatureProtocol(request, 519), /Owner context copy needs protocol ≥520/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
 // MP-08 / MP-10: VERSION(P01).
@@ -109,7 +109,7 @@ test("MP-08 / MP-11 automation injection requires a confirmed kernel generation"
 test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before transport", () => {
   for (const request of [addSshMachineRequest("linux-lan"), removeSshMachineRequest("owned-install")]) {
     for (const version of [491, sshMachineMinimumProtocolVersion - 1]) {
-      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥509.*update the kernel/)
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥520.*update the kernel/)
     }
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
   }

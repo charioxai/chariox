@@ -260,11 +260,6 @@ pub use workspace::*;
 /// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// Version 451 grants the whole local kernel and routes access popups without sessions.
-/// Version 456 (an unreleased branch number) added the same-machine browser
-/// carrier: relay-minted `local_browser_connect` grants and the loopback
-/// `/v1/browser` handshake.
-/// Version 464 adds relay-renewed `local_browser_renew` leases and the
-/// 30-second relay identity ceiling for local browser grants and renewals.
 /// Version 470 adds structured OS requester identity to access decisions.
 /// Version 472 advertises identity-preserving terminal relay renewal with
 /// explicit capability negotiation and recoverable target-offline handshakes.
@@ -279,9 +274,12 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-/// Version 473 adds short bound-client terminal direct leases with paired Origin.
-/// Version 502 combines exact prompt cancellation with same-machine direct admission.
-/// Version 509 adds owner-managed SSH machine add/remove, credential-free
-/// owner-managed context admission and destination receipts on top of 491,
-/// paired with coordinator-allocated relay peer 117 (MP-08/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 509;
+/// Version 520 (landing 2026-10-14, relay peer 128) adds the same-machine direct
+/// carriers (relay-minted `local_browser_connect` grants, relay-renewed
+/// `local_browser_renew` leases with a 30-second relay identity ceiling, the
+/// loopback `/v1/browser` handshake and short bound-client terminal direct
+/// leases with paired Origin), and owner-managed SSH machine add/remove,
+/// credential-free owner-managed context admission and destination receipts.
+/// Branch-only numbers 456/464/473/502/509 were never released
+/// (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
