@@ -268,10 +268,10 @@ fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
 // local, remote and provider input. Legacy keys still omit the zero mask.
 #[test]
 fn kernel_browser_protocol_498_bounded_modifiers() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 507);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 525);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        115
+        133
     );
     let input = Input::Key {
         key: "a".into(),

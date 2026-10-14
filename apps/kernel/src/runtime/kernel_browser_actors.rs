@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 /// MP-08/MP-11: a human actor's Desktop ownership lasts while one of its
 /// desktop video subscriptions is live; the host display lease is 60 s.
 pub(crate) const DESKTOP_VIEWER_LEASE: Duration = Duration::from_secs(60);
+pub(crate) const DISPLAY_RESUME_GRACE: Duration = Duration::from_secs(5);
 
 mod tabs;
 use tabs::BrowserTabActivity;
@@ -496,6 +497,39 @@ impl KernelBrowserActors {
         if let Some((_, expiry)) = self.desktop_viewers.get_mut(subscription) {
             *expiry = now;
         }
+    }
+    /// MP-08/MP-11: retain this actor's ownership during the bounded display gap.
+    pub(crate) fn suspend_desktop_viewer(
+        &mut self,
+        actor: &str,
+        subscription: &str,
+        now: Instant,
+    ) -> Result<(), String> {
+        if let Some((owner, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            if owner != actor {
+                return Err("MP-11: foreign desktop viewer".into());
+            }
+            *expiry = (*expiry).min(now + DISPLAY_RESUME_GRACE);
+        }
+        Ok(())
+    }
+    /// Fresh protected host admission has already returned the replacement ID.
+    /// Moving its lease must not create a moment with no live owner lease.
+    pub(crate) fn resume_desktop_viewer(
+        &mut self,
+        actor: &str,
+        old: &str,
+        new: &str,
+        now: Instant,
+    ) -> Result<(), String> {
+        if let Some((owner, expiry)) = self.desktop_viewers.get(old) {
+            if owner != actor || *expiry <= now {
+                return Err("MP-11: stale or foreign desktop viewer".into());
+            }
+        }
+        self.desktop_viewers.remove(old);
+        self.desktop_viewer(actor, new, now);
+        Ok(())
     }
     /// MP-08/MP-11 (option b, 2026-10-09): relay clients have no gone
     /// notification. When a human actor's last desktop video subscription

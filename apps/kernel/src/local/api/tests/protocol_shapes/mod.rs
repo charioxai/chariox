@@ -19,6 +19,7 @@ mod computer_hold;
 mod core;
 mod credential_enrollment;
 mod disposable_worker;
+mod display_resumption;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;

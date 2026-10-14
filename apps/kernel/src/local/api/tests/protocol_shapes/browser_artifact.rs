@@ -91,7 +91,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_82_shape_hashes() {
 // MP-08/MP-10/MP-11: the integration contract contains Apps access, Browser
 // artifact, Computer hold and public provider-run shapes together; unreleased per-lane numbers fold.
 #[test]
-fn mp08_mp10_mp11_apps_browser_computer_union_517_125_is_hashed() {
+fn mp08_mp10_mp11_apps_browser_computer_union_current_is_hashed() {
     use sha2::{Digest, Sha256};
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -115,6 +115,6 @@ fn mp08_mp10_mp11_apps_browser_computer_union_517_125_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "dcc1e4f74160c23a5ba4a1e869134b482d08a6f4ee985dbd8230f5d35de827cf"
+        "da2f1f98bca92f38ae9ab4b044e5b5ac57e758c386c915dd7363cd7a0d6f4e44"
     );
 }

@@ -51,6 +51,14 @@ pub(crate) enum KernelBrowserDisplayRequest {
         subscription_id: String,
         generation: u64,
     },
+    Suspend {
+        subscription_id: String,
+        generation: u64,
+    },
+    Resume {
+        subscription_id: String,
+        generation: u64,
+    },
 }
 
 /// MP-08/MP-10: a kernel push-pump credit. `reset` retires the stream's
@@ -99,6 +107,8 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayCapture { .. }
             | KernelBrowserCommand::DisplaySubscribe { .. }
             | KernelBrowserCommand::DisplayNext { .. }
+            | KernelBrowserCommand::DisplaySuspend { .. }
+            | KernelBrowserCommand::DisplayResume { .. }
             | KernelBrowserCommand::DisplayAck { .. }
             | KernelBrowserCommand::DisplayInput { .. }
             | KernelBrowserCommand::DisplayTakeover { .. }
@@ -179,6 +189,20 @@ impl KernelRuntimeState {
                 generation,
                 after_sequence,
                 push: None,
+            },
+            KernelBrowserCommand::DisplaySuspend {
+                subscription_id,
+                generation,
+            } => KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            },
+            KernelBrowserCommand::DisplayResume {
+                subscription_id,
+                generation,
+            } => KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
             },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
@@ -405,6 +429,18 @@ impl KernelRuntimeState {
                 generation,
             } => {
                 serde_json::json!({"op":"display_attach","subscription_id":subscription_id,"generation":generation})
+            }
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => {
+                serde_json::json!({"op":"display_suspend","subscription_id":subscription_id,"generation":generation})
+            }
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => {
+                serde_json::json!({"op":"display_resume","subscription_id":subscription_id,"generation":generation})
             }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
@@ -847,5 +883,13 @@ mod document_tests {
         assert_eq!(params["focused_agent"], true);
         assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
+    }
+    #[test]
+    fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {
+        for op in ["display_suspend", "display_resume"] {
+            assert!(browser_tool_params(serde_json::json!({"command":{
+                "op":op,"subscription_id":"human-display","generation":7
+            }})).is_err());
+        }
     }
 }

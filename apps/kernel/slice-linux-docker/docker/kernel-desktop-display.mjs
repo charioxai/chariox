@@ -48,16 +48,18 @@ export class DesktopDisplay {
     const id=command.display_subscription_id??command.subscription_id,stream=this.host.displays.get(id),binding=this.host.chromium.desktop?.binding();
     if(!stream||stream.source_kind!=='desktop'||stream.observed_by!==scope||command.generation!==this.host.generation||binding?.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation||stream.expires<Date.now())throw new UserDomainRefusal('not_granted');
     if(command.op==='unsubscribe'){await this.remove(stream);return {generation:this.host.generation,unsubscribed:true};}
+    if(stream.suspended)throw new UserDomainRefusal('stale_reference');
+    stream.lastCreditAt=Date.now();
     stream.expires=Date.now()+60000;this.host.armDisplayExpiry(stream);
     if(command.op==='display_attach')return {generation:this.host.generation,attached:true};
     if(command.op!=='screenshot'||!stream.acceptsCredit(command.after_sequence))throw new UserDomainRefusal('stale_reference');
     const policy=this.host.protection,source=await this.ensureSource();
-    const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(id)===stream&&this.host.chromium.desktop?.binding()===binding;
+    const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding;
     if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
     const valid=()=>!signal?.aborted&&lifetimeValid();
     // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
     // briefly for the next frame (the kernel pump paces the stream).
-    if(command.push?.reset)stream.invalidate();
+    if(command.push?.reset)stream.resetForDelivery();
     stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
     await stream.producer.waitReady(command.push?100:20,signal);
     if(!valid())throw new UserDomainRefusal('not_granted');

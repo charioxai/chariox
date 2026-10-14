@@ -104,6 +104,7 @@ export class MotionEncoder {
   if(this.failure)throw this.failure;
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
+ get independentFrameReady(){const frame=this.frames[0];return Boolean(frame?.force_lossless||frame?.encoded?.key||frame?.encoded?.stripes?.length===8&&frame.encoded.stripes.every(row=>row.key));}
  retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
  invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  invalidate(reoffer=true){this.revision++;this.key=true;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}

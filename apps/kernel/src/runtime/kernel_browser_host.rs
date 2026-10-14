@@ -719,6 +719,27 @@ impl KernelBrowserHost {
             if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }
+            // MP-08/MP-10/MP-11: update the existing desktop owner lease only
+            // after protected host admission succeeds; Browser streams have
+            // no desktop owner lease. Never retire ownership between IDs.
+            if method == "host.browser" {
+                if let (Some(actor), Some(old)) = (
+                    request_params["observed_by"].as_str(),
+                    request_params["subscription_id"].as_str(),
+                ) {
+                    let now = std::time::Instant::now();
+                    if request_params["op"] == "display_suspend" {
+                        ledger.suspend_desktop_viewer(actor, old, now)?;
+                    } else if request_params["op"] == "display_resume"
+                        && payload["source"]["kind"] == "desktop"
+                    {
+                        let new = payload["subscription_id"]
+                            .as_str()
+                            .ok_or("MP-11: invalid resumed desktop binding")?;
+                        ledger.resume_desktop_viewer(actor, old, new, now)?;
+                    }
+                }
+            }
             if request_params["op"] == "open" {
                 if let Some(tab) = payload["tab_id"].as_str() {
                     ledger.opened_tab(browser_actor(admission, &request_params), tab);

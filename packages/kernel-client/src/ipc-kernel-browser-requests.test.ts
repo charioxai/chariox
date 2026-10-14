@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, kernelDisplayResumeMinimumProtocolVersion, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
@@ -28,4 +28,14 @@ test("MP-08/MP-11: grant requests and cross-kernel badge retain protocol 443", (
 test("MP-08 agent tab projection retains protocol 486", () => {
   assert.equal(kernelBrowserAgentTabsMinimumProtocolVersion, 486)
   assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelBrowserAgentTabsMinimumProtocolVersion)
+})
+
+test("MP-08/MP-10/MP-11 shared display resumption pins allocated protocol 525", () => {
+  assert.equal(kernelDisplayResumeMinimumProtocolVersion, 525)
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelDisplayResumeMinimumProtocolVersion)
+  for (const op of ["display_suspend", "display_resume"] as const) {
+    assert.deepEqual(kernelBrowserRequest({ op, subscription_id: "prior-delivery", generation: 7 }), {
+      KernelBrowser: { command: { op, subscription_id: "prior-delivery", generation: 7 } },
+    })
+  }
 })

@@ -120,6 +120,34 @@ fn desktop_model() -> KernelBrowserActors {
     model
 }
 #[test]
+fn mp08_mp11_display_resume_transfers_the_owner_lease_without_retake() {
+    let mut model = desktop_model();
+    let actor = EnvironmentActor::new("terminal:owner", EnvironmentActorKind::Human, "Human");
+    let now = std::time::Instant::now();
+    model.desktop_viewer("terminal:owner", "old", now);
+    model.takeover_desktop(actor, "s", "g").unwrap();
+    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
+    assert!(model.resume_desktop_viewer("terminal:forged", "old", "stolen", now).is_err());
+    model.resume_desktop_viewer("terminal:owner", "old", "fresh", now + std::time::Duration::from_millis(700)).unwrap();
+    model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(6));
+    assert!(model.desktop_owner_is("terminal:owner"));
+    model.end_desktop_viewer("fresh", now + std::time::Duration::from_secs(7));
+    model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(7));
+    assert!(!model.desktop_owner_is("terminal:owner"));
+}
+#[test]
+fn mp11_display_suspend_cannot_extend_grace_or_keep_a_stale_owner() {
+    let mut model = desktop_model();
+    let actor = EnvironmentActor::new("terminal:owner", EnvironmentActorKind::Human, "Human");
+    let now = std::time::Instant::now();
+    model.desktop_viewer("terminal:owner", "old", now);
+    model.takeover_desktop(actor, "s", "g").unwrap();
+    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
+    model.suspend_desktop_viewer("terminal:owner", "old", now + std::time::Duration::from_secs(4)).unwrap();
+    model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(5));
+    assert!(!model.desktop_owner_is("terminal:owner"));
+}
+#[test]
 fn mp11_disconnect_without_release_retires_desktop_ownership_at_viewer_lease_expiry() {
     use crate::runtime::kernel_browser_actors::DESKTOP_VIEWER_LEASE;
     let mut model = desktop_model();

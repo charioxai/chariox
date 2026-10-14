@@ -8,8 +8,10 @@ export const kernelBrowserMinimumProtocolVersion = 443
 export const userDomainAccessMinimumProtocolVersion = 443
 // MP-08 / MP-11: typed HOME -> leased desktop grants are allocated 500.
 export const leasedComputerMinimumProtocolVersion = 500
-// MP-08/MP-11: agent tab provenance (#950 486) reaches this line only at 507.
+// MP-08/MP-11: retain the integrated agent-tab provenance floor.
 export const kernelBrowserAgentTabsMinimumProtocolVersion = 486
+// MP-08/MP-10/MP-11: allocated shared producer resumption.
+export const kernelDisplayResumeMinimumProtocolVersion = 525
 
 export function kernelBrowserRequest(command: KernelBrowserCommand): KernelBrowserRequest {
   return { KernelBrowser: { command } }

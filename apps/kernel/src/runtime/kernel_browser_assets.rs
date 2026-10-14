@@ -243,6 +243,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display.mjs"),
     ),
     (
+        "kernel-display-resumption.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-display-resumption.mjs"),
+    ),
+    (
         "kernel-browser-encoder.py",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-encoder.py"),
     ),

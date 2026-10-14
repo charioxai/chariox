@@ -3855,6 +3855,38 @@ their existing path. A Cloud client must expose the native source and use this
 shared presenter before the desktop feature is user-visible.
 
 
+### MP-08 / MP-10 / MP-11: shared display resumption (local525 / peer133)
+
+`KernelBrowser` commands `display_suspend` and `display_resume` carry only
+`subscription_id` and numeric `generation`. They address the existing shared
+Browser/Desktop display producer, including region producers using that stream.
+They are human terminal operations; provider MCP cannot invoke them. A prior ID
+is a resume hint, never an admission credential. Resume repeats current terminal
+admission, caller ownership, controller generation, protected source/document
+binding and protection policy checks. Revocation, source replacement or a changed
+policy refuses resumption and retires the retained producer.
+
+Suspension keeps the encoder and a bounded independently decodable protected
+frame in the shared motion queue for at most five seconds. Repeated suspension
+cannot extend that grace. An unannounced transport loss can resume only within
+five seconds of the last admitted display request. Resume replaces the delivery
+ID, resets its sequence and fences old outstanding credits; encrypted relay
+delivery uses fresh packet nonces and a new delivery registration. Old packets,
+opening grants and input gestures are never replayed. Explicit unsubscribe,
+terminal retirement and expiry retain their permanent cleanup behavior.
+
+The shared presenter keeps the painted canvas on transient teardown and exposes
+a bounded resume hint to its application adapter. A replacement passes that hint
+through `display_resume` before registering the fresh delivery. Only adapters
+using this behavior require local525. Older adapters retain their existing
+minimum versions. Desktop ownership moves atomically from the old viewer lease
+to the new one after admission; suspension bounds that lease to the same grace.
+It does not take control anew or change session membership, attachments or history.
+
+Snapshot/hash: `mp08_mp10_mp11_display_resumption_525_133_snapshot_hash`.
+Shared producer/presenter lifetime tests supplement the required hosted live
+network-change drill; they do not establish its one-second repaint gate.
+
 ### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
 
 The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",

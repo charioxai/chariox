@@ -25,6 +25,7 @@ import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
+import { DisplaySessions } from './kernel-display-resumption.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
@@ -71,6 +72,7 @@ export class KernelBrowserHost {
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.streams = new Map();
     this.displays = new Map();
+    this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
@@ -454,11 +456,33 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => {
       if (this.displays.get(stream.subscription_id) !== stream) return;
-      if(stream.source_kind==='desktop'){void this.desktopDisplay.remove(stream).catch(()=>{});return;}
-      this.displays.delete(stream.subscription_id);
-      void stream.close().then(async() => {if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);}}).catch(() => {});
+      void this.removeDisplay(stream).catch(()=>{});
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
+  }
+  async removeDisplay(stream) {
+    if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
+    this.displays.delete(stream.subscription_id);await stream.close();
+    if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){
+      await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);
+    }
+  }
+  async displayResumeBinding(stream,signal) {
+    assertNotCancelled(signal);
+    if(stream.source_kind==='desktop'){
+      const binding=this.chromium.desktop?.binding();
+      if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference');
+      return binding;
+    }
+    const tab=await this.displayTarget({tab_id:stream.tab_id,generation:this.generation});
+    assertNotCancelled(signal);
+    if(tab.document_id!==stream.document_id)throw new UserDomainRefusal('stale_reference');
+    const viewport=this.viewport();
+    const source=this.compositors.get(tab.tab_id)?.source;
+    if(source?.closed||source?.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+    const key=JSON.stringify([tab.target_id,tab.document_id,viewport.width,viewport.height,viewport.device_scale_factor,source?.regionRevision]);
+    if(stream.resumeSourceIdentity?.key!==key||stream.resumeSourceIdentity?.source!==source)stream.resumeSourceIdentity={key,source};
+    return stream.resumeSourceIdentity;
   }
   async removeStream(id) {
     const stream = this.streams.get(id);
@@ -488,13 +512,20 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
-    for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { if(stream.source_kind==='desktop')await this.desktopDisplay.remove(stream);else {await stream.close();this.displays.delete(id);} }
+    for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
+    if(['display_suspend','display_resume'].includes(command.op)){
+      if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
+      const binding=stream=>this.displayResumeBinding(stream,signal);
+      return command.op==='display_resume'
+        ?this.displaySessions.resume(command.subscription_id,scope,command.generation,binding)
+        :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
+    }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
@@ -503,7 +534,9 @@ export class KernelBrowserHost {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
       if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
-      if (command.op === "unsubscribe") { await stream.close(); this.displays.delete(command.subscription_id); if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);} return { generation: this.generation, unsubscribed: true }; }
+      if (command.op === "unsubscribe") { await this.removeDisplay(stream); return { generation: this.generation, unsubscribed: true }; }
+      if(stream.suspended)throw new UserDomainRefusal('stale_reference');
+      stream.lastCreditAt=Date.now();
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };

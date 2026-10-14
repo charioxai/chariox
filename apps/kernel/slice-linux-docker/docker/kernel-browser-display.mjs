@@ -238,10 +238,16 @@ export class DisplayStream {
     return [this.shiftBytes,this.shiftArea];
   }
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
+  resetForDelivery() {
+    const prepared=this.resumed&&this.producer?.independentFrameReady;
+    this.resumed=false;if(!prepared)this.invalidate();
+  }
   invalidate() { this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     const codec={};
-    try{return await this.buildFrame(source,documentId,afterSequence,validate,currentBinding,codec)}
+    const epoch=this.deliveryEpoch??0;
+    const active=()=>!this.suspended&&(this.deliveryEpoch??0)===epoch;
+    try{return await this.buildFrame(source,documentId,afterSequence,async()=>active()&&await validate(),()=>active()&&currentBinding(),codec)}
     // MP-11: a taken or fresh codec packet advanced the reference chain that
     // the client never receives; the next video frame must be independent.
     catch(error){if(source.encoded||codec.used)this.invalidate();this.discardSource(source);throw error}

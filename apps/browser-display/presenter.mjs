@@ -6,6 +6,8 @@ import {WorkerVideoDecoder} from './decoder-worker.mjs';
 export const minimumProtocolVersion = 466;
 export const desktopMinimumProtocolVersion = 474;
 export const pushProtocolVersion = 491;
+// MP-08/MP-10/MP-11: this optional shared resumption path requires 525.
+export const resumeProtocolVersion = 525;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -200,10 +202,25 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // subscription; older kernels and other transports keep credits.
   const pushMode = options.push !== false && transport.kernelProtocolVersion >= pushProtocolVersion && typeof transport.subscribeDisplay === 'function';
   const offer={codecs:options.stripes===false?codecs.filter(c=>c!=='chariox-stripes-v1'):codecs,bitrate:options.bitrate??2_000_000,device_scale_factor:options.deviceScaleFactor??1};
-  const subscribed=await request(options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...offer});
+  const targetKey=JSON.stringify([options.desktop?tab.surface_id:tab.tab_id,tab.generation]);
+  const hint=options.resumeHint;
+  const resume=transport.kernelProtocolVersion>=resumeProtocolVersion&&hint?.targetKey===targetKey&&
+    hint.desktop===Boolean(options.desktop)&&hint.device_scale_factor===offer.device_scale_factor&&hint.expiresAt>performance.now();
+  let subscribed;
+  try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
+    :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...offer});}
+  catch(error){options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
   const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
+  options.onResumeHint?.(null);
+  const releaseDisplay=async preserveFrame=>{
+    const suspend=preserveFrame&&transport.kernelProtocolVersion>=resumeProtocolVersion&&typeof options.onResumeHint==='function';
+    options.onResumeHint?.(suspend?{subscription_id:binding.subscription_id,generation:binding.generation,
+      targetKey,desktop:Boolean(options.desktop),device_scale_factor:offer.device_scale_factor,expiresAt:performance.now()+5000}:null);
+    try{await request({op:suspend?'display_suspend':'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation});}
+    finally{await transport.unsubscribeDisplay?.(binding);}
+  };
   if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
     await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
     throw Error('MP-11: invalid desktop subscription binding');
@@ -252,10 +269,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   try { await transport.subscribeDisplay?.(binding); }
   catch (error) {
     off(); presenter.close({preserveFrame:true});
-    await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }).catch(() => {});
+    await releaseDisplay(true).catch(() => {});
     throw error;
   }
-  if (pushMode) { off(); return pushDisplay(presenter, transport, request, binding, actorCommand, options); }
+  if (pushMode) { off(); return pushDisplay(presenter, transport, request, binding, actorCommand, {...options,releaseDisplay}); }
   const next = async () => {
     if (stopped || creditOutstanding || running || active.size) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
     creditOutstanding = true;
@@ -338,7 +355,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
       // MP-11: detach first; parked credits cannot hold teardown for their window timeout.
       running = false; stopped = true; pending?.reject(new Error('MD-DISPLAY: closed')); pending = null; off(); presenter.close(options);
       for (const arrive of arrivals.splice(0)) arrive(closedItem);
-      await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation });
+      await releaseDisplay(options?.preserveFrame);
       await stop().catch(() => {});
     },
   };
@@ -444,6 +461,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close(options) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); await chain.catch(() => {}); presenter.close(options); await transport.unsubscribeDisplay?.(binding); await request({ op: 'unsubscribe', subscription_id: binding.subscription_id, generation: binding.generation }); },
+    async close(closeOptions) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); await chain.catch(() => {}); presenter.close(closeOptions); await options.releaseDisplay(closeOptions?.preserveFrame); },
   };
 }
