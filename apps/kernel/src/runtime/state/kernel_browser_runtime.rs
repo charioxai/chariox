@@ -434,8 +434,27 @@ impl KernelRuntimeState {
         request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
         generation: Option<u64>,
     ) -> Result<serde_json::Value, DaemonError> {
-        let user = self.provider_account_authority_owner_user_id(&user);
         let mut params = request.params();
+        if matches!(
+            request,
+            crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
+        ) {
+            // MP-08/MP-11: the controller retains calls for opening targets until
+            // their owner binding is published. Room drains remain unfiltered.
+            let instances = self.app_control().user_views();
+            let targets: Vec<String> = instances
+                .browser_views(&user)
+                .iter()
+                .filter(|view| {
+                    view.browser
+                        .as_ref()
+                        .is_some_and(|b| Some(b.generation) == generation)
+                })
+                .filter_map(|view| instances.browser_target(&user, &view.view_id))
+                .collect();
+            params["target_ids"] = serde_json::json!(targets);
+        }
+        let user = self.provider_account_authority_owner_user_id(&user);
         if let Some(generation) = generation {
             params["_host_generation"] = generation.into();
         }

@@ -467,8 +467,8 @@ export class AppTabs {
 
   // Keep the existing RPC and batch shape. Enqueue wakes an outstanding drain;
   // the bounded timeout still projects closed targets and maintains windows.
-  async waitForCalls() {
-    if (this.calls.length || !this.apps.size) return;
+  async waitForCalls(eligible) {
+    if (this.calls.some(eligible) || !this.apps.size) return;
     await new Promise((resolve) => {
       const wake = () => {
         clearTimeout(timer);
@@ -480,14 +480,19 @@ export class AppTabs {
     });
   }
 
-  async takeCalls() {
+  async takeCalls(params = {}) {
+    // MP-08/MP-11: only drain targets whose kernel binding was published.
+    // An existing owner's idle drain may wake while another Open is in flight.
+    const targets = params.target_ids == null ? null : new Set(params.target_ids);
+    const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
-    await this.waitForCalls();
+    await this.waitForCalls(eligible);
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
-    const calls = this.calls.filter((call) => current.has(call.target_id)
+    const currentCalls = this.calls.filter((call) => current.has(call.target_id)
       && (call.document_id == null || current.get(call.target_id) == null || call.document_id === current.get(call.target_id)));
-    this.calls = [];
+    const calls = currentCalls.filter(eligible);
+    this.calls = currentCalls.filter(call => !eligible(call));
     // Keep App windows fullscreen (someone may press Esc), so the panel beside
     // each page covers exactly the desktop the page leaves free.
     this.maintainFullscreen();
