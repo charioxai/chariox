@@ -435,13 +435,10 @@ pub(crate) fn complete_workflow_prompt_from_runtime(
     prompt: &PromptQueueItem,
     provider_run_id: Option<&str>,
 ) -> Result<(), DaemonError> {
-    if workflow_prompt_run_is_archived_terminal(app, session_id, prompt)? {
-        return Ok(());
-    }
     WorkflowProgression::on_prompt_completed(app, session_id, prompt, provider_run_id)
 }
 
-fn workflow_prompt_run_is_archived_terminal(
+pub(crate) fn workflow_prompt_run_is_archived_terminal(
     app: &DaemonApp,
     session_id: &str,
     prompt: &PromptQueueItem,
@@ -1615,7 +1612,93 @@ mod tests {
             &prompt,
             None,
         ));
+
+        // Publication archival can precede provider settlement while its
+        // dispatch claim still holds the shared worktree.
+        let claim_id = format!(
+            "workflow-node:{}:{}:{}",
+            session.id(),
+            workflow_run.id(),
+            node_run_id
+        );
+        app.acquire_workflow_node_workspace_claim(
+            session.id(),
+            &claim_id,
+            agent.id(),
+            workflow_run.id(),
+            &node_run_id,
+        )
+        .expect("archived workflow dispatch claim should remain held");
+        let successor = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_model("default")
+                    .with_worktree(worktree.path().to_string_lossy().into_owned()),
+            )
+            .expect("successor agent should share the worktree");
+        let successor_workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("blocked-successor".to_string()))
+            .expect("successor workflow should be created");
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(
+                session.id(),
+                successor_workflow.id(),
+                false,
+            )
+            .expect("successor should preserve its provider context");
+        let successor_node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), successor_workflow.id(), successor.id())
+            .expect("successor node should be created");
+        let successor_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                successor_workflow.id(),
+                successor_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("successor endpoint should be created");
+        let (successor_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session.id(),
+                successor_workflow.id(),
+                successor_endpoint.id(),
+                Some("continue on the shared worktree".to_string()),
+            )
+            .expect("successor workflow should be scheduled");
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .unwrap()
+                .workflow_run(successor_run.id())
+                .unwrap()
+                .node_runs()[0]
+                .status(),
+            crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+        );
         complete_workflow_prompt_from_runtime(&mut app, session.id(), &prompt, None)
             .expect("late provider completion must accept an already archived terminal run");
+        assert!(
+            !app.prompt_workspace_claims.contains(&claim_id),
+            "archived provider completion must release its retained dispatch claim"
+        );
+        let successor_status = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .workflow_run(successor_run.id())
+            .unwrap()
+            .node_runs()[0]
+            .status();
+        assert!(
+            matches!(
+                successor_status,
+                crate::session::WorkflowNodeRunStatus::Ready
+                    | crate::session::WorkflowNodeRunStatus::Running
+            ),
+            "settlement must retry the blocked successor, got {successor_status:?}"
+        );
     }
 }
