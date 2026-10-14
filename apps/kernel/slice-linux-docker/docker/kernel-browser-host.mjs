@@ -14,6 +14,7 @@ import { HostChromium } from "./kernel-browser-process.mjs";
 import { blockedUrl } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
+import { nativeWindowInventory } from "./kernel-browser-native-windows.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
@@ -68,7 +69,7 @@ export class KernelBrowserHost {
     this.timing = displayTiming(root);
     this.chromium = chromium;
     // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
-    this.chromeWindows = new ChromeWindows(this);
+    this.chromeWindows = new ChromeWindows(this, { inventory: (display, pid, isCurrent) => nativeWindowInventory({ display, pid, isCurrent }) });
     this.arbiter = new InputArbiter(this, this.chromeWindows);
     this.browserFactory = browserFactory;
     this.browser = null;
@@ -180,8 +181,15 @@ export class KernelBrowserHost {
         await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
       }
       await this.save();
+      await this.rebindWindows();
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
+  }
+  // MP-08/MP-10/MP-11 (§2b): the native window binding is (re)resolved on the host's
+  // mutation lane after the window set can change, never on a viewer request.
+  async rebindWindows() {
+    if (!this.chromium.display) return;
+    try { await this.chromeWindows.resolve(); } catch { this.chromeWindows.retire('window_changed'); }
   }
   async syncTabGroups(groups) {
     const labels = new Map();
@@ -202,8 +210,6 @@ export class KernelBrowserHost {
     await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
-      // A page target change can move or replace the tabbed window: re-resolve a live binding.
-      if (["Target.targetCreated", "Target.targetDestroyed"].includes(message?.method) && this.chromeWindows.bound) void this.chromeWindows.resolve().catch(() => this.chromeWindows.retire('window_destroyed'));
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
       // The new tab page is the policy's home page (NewTabPageLocation).
@@ -524,7 +530,7 @@ export class KernelBrowserHost {
       return this.observe(this.tabState(), tab, scope);
     }
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
-    if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
+    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
@@ -600,7 +606,9 @@ export class KernelBrowserHost {
       }
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
-      return this.reconcile();
+      const state = await this.reconcile();
+      await this.rebindWindows();
+      return state;
     }
     if (command.op === "navigate") {
       // MP-08/MP-11: an agent's navigation is its input to the App Tab too.
