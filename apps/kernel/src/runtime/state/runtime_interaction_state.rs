@@ -3,23 +3,6 @@ use tokio::sync::oneshot;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(in crate::runtime) fn runtime_interaction_admission_waits(
-        &self,
-        session_id: &str,
-        interaction_id: &str,
-        error: &DaemonError,
-    ) -> Result<bool, DaemonError> {
-        Ok(
-            super::runtime_interaction_owned_state::interaction_waits(error)
-                && !self
-                    .owned
-                    .session_snapshot(session_id)?
-                    .active_interactions()
-                    .iter()
-                    .any(|pending| pending.id() == interaction_id),
-        )
-    }
-
     pub(crate) fn update_forwarded_provider_login_interaction(
         &self,
         session_id: &str,
