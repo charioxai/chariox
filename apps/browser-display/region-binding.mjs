@@ -6,7 +6,7 @@ export function regionBindingCurrent(binding) {
   typeof document_id==='string'&&document_id.length>0&&document_id.length<=256&&
   Number.isSafeInteger(sequence)&&sequence>0&&[1,2].includes(scale)&&
   Number.isSafeInteger(css_width)&&Number.isSafeInteger(css_height)&&
-  css_width>=2&&css_width<=1280&&css_height>=2&&css_height<=800&&
+  css_width>=1&&css_width<=1280&&css_height>=1&&css_height<=800&&
   (css_width*scale)%2===0&&(css_height*scale)%2===0;
 }
 export function displayGeometryMatches(binding,frame) {

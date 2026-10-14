@@ -39,3 +39,8 @@ test('MP-08/MP-11 a region request cannot silently open a whole-page display',as
  await assert.rejects(attachBrowserDisplay(canvas(),transport,{tab_id:'t',generation:2},{codec:'avc1.420033',target:{kind:'browser_chrome',window_generation:4}}),/region negotiation/);
  assert.deepEqual(ops.map(c=>c.op),['display_subscribe','unsubscribe']);
 });
+test('MP-08/MP-11 a two-device-pixel crop is valid at native DPR2',()=>{
+ const binding={...lease,css_width:1,css_height:1};
+ const presenter=new BrowserDisplayPresenter(canvas(),binding);
+ try{assert.equal(presenter.validate({...binding,sequence:1,width:2,height:2},0),true)}finally{presenter.close()}
+});
