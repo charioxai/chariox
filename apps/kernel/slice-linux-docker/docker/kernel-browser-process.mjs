@@ -78,7 +78,10 @@ export class HostChromium {
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
     const binary=await executable(environment);
-    if(process.platform==='linux'&&environment.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'&&environment.CHARIOX_KERNEL_BROWSER_HEADLESS!=='1'){
+    const headedRenderer = environment.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || environment.CHARIOX_KERNEL_BROWSER_MIRROR === '1';
+    // MP-08/MP-10/MP-11: the private headed browser belongs to the kernel,
+    // independently of whether a video encoder/transport is enabled.
+    if(process.platform==='linux'&&headedRenderer&&environment.CHARIOX_KERNEL_BROWSER_HEADLESS!=='1'){
       // MP-11: the kernel reclaims this transient root even after supervisor SIGKILL.
       this.display=new OwnedDisplay(environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT || this.root);
       try{environment={...environment,...await this.display.start()};}catch{this.display=null;}

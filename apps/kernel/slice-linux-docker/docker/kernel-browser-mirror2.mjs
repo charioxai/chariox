@@ -9,7 +9,7 @@ import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-m
 import { assertCurrentDocument, assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
-import { losslessRegion } from './kernel-browser-display.mjs';
+import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 

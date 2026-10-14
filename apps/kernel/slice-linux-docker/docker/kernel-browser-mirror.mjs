@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: bounded, caller/document/policy-bound mirroring service.
 import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
-import { losslessRegion } from './kernel-browser-display.mjs';
+import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
 import { mirrorInitialStyles } from './kernel-browser-mirror-styles.mjs';

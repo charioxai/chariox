@@ -19,13 +19,8 @@ import { captureProtectionFence, captureProtectedDisplay, regionProtectionChange
 import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
-import {LinuxCapture,selectNativeCapture} from './kernel-browser-native.mjs';
 import { WindowForeground } from './kernel-browser-foreground.mjs';
-import { CompositorSource } from './kernel-browser-compositor.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
-import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
-import { DisplayStream } from "./kernel-browser-display.mjs";
-import { displayCredit, displayPushCredit } from './kernel-browser-display-credit.mjs';
 
 // Private display operations may overlap input; lifecycle still settles all
 // owned work before closing. Public admission/Vault barriers stay in Rust.
@@ -178,6 +173,9 @@ export class KernelBrowserHost {
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
+    // MP-08/MP-10/MP-11: mirror capture/input never loads the video backend.
+    const {LinuxCapture,selectNativeCapture} = await import('./kernel-browser-native.mjs');
+    const {CompositorSource} = await import('./kernel-browser-compositor.mjs');
     const scope=stream.codec==='png'?'png_codec':this.protection.unknown?'protection_policy':
       [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
     if(scope){this.nativeScope(scope);return null;}
@@ -449,6 +447,7 @@ export class KernelBrowserHost {
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
       if (command.op === "display_attach") return { attached: true, generation: this.generation };
+      const {displayCredit, displayPushCredit} = await import('./kernel-browser-display-credit.mjs');
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
@@ -485,6 +484,8 @@ export class KernelBrowserHost {
       this.scales.set(tab.tab_id, scale);
       const id = `host-display-${randomUUID()}`;
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
+      const {DisplayStream} = await import('./kernel-browser-display.mjs');
+      const {BrowserEncoder} = await import('./kernel-browser-webcodecs.mjs');
       const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);

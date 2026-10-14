@@ -28,3 +28,20 @@ test("MP-08/MP-10/MP-11 embedded host imports all controller dependencies outsid
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("MP-08/MP-10/MP-11 mirror host imports without the optional video transport", async () => {
+  const inventory = await readFile(source, "utf8");
+  const assets = [...inventory.matchAll(/"([^"/]+\.(?:mjs|py))",\s*include_bytes!\("([^"]+)"\)/g)];
+  const video = new Set(["kernel-browser-display.mjs", "kernel-browser-display-credit.mjs",
+    "kernel-browser-webcodecs.mjs", "kernel-browser-native.mjs", "kernel-browser-compositor.mjs"]);
+  const directory = await mkdtemp(path.join(tmpdir(), "chariox-mirror-only-"));
+  try {
+    for (const [, name, relative] of assets) {
+      if (!video.has(name)) await writeFile(path.join(directory, name), await readFile(path.resolve(path.dirname(source), relative)));
+    }
+    await exec(process.execPath, ["--input-type=module", "-e", "await import(process.argv[1])",
+      path.join(directory, "kernel-browser-host.mjs")], { cwd: directory,
+      env: {...process.env, CHARIOX_KERNEL_BROWSER_MIRROR: "1", CHARIOX_KERNEL_BROWSER_DISPLAY: "0"} });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

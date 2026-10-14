@@ -176,14 +176,7 @@ export class PortableEncoder {
   }
 }
 
-// MP-08/MP-10/MP-11: one exact raster extraction path for display refinement
-// and DOM fallback. Pixels must already have crossed the protection barrier.
-export function losslessRegion(frame,x,y,width,height) {
-  if(![x,y,width,height].every(Number.isSafeInteger)||x<0||y<0||width<1||height<1||x+width>frame.width||y+height>frame.height)throw Error('MP-11: invalid lossless raster region');
-  const pixels=Buffer.alloc(width*height*4);
-  for(let row=0;row<height;row++)frame.pixels.copy(pixels,row*width*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+width)*4);
-  return {x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)};
-}
+export { losslessRegion } from './kernel-browser-pixels.mjs';
 
 export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
 
