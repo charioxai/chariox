@@ -195,7 +195,7 @@ pub(super) fn probe_claude_models(
             "",
             "--strict-mcp-config",
             "--mcp-config",
-            "{}",
+            "{\"mcpServers\":{}}",
         ],
         Some(input),
         Duration::from_secs(10),
