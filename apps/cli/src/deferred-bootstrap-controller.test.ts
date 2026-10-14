@@ -108,6 +108,19 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
   assert.deepEqual(harness.prependCalls, [])
 })
 
+test("deferred bootstrap controller applies the attach-time launch once it settles, for the attached session only", async () => {
+  const locked = { sessionId: "session-1", providerRun: null, statusLine: "Chariox vault locked. Run /credential vault manage." }
+  const harness = bootstrapHarness({ attachmentSessionId: "session-1", deferred: { attachedProviderRun: Promise.resolve(locked) } })
+  harness.controller.apply()
+  await flushPromises()
+  assert.deepEqual(harness.attachedProviderRuns, [{ run: null, statusLine: locked.statusLine }])
+
+  const switched = bootstrapHarness({ attachmentSessionId: "session-2", deferred: { attachedProviderRun: Promise.resolve(locked) } })
+  switched.controller.apply()
+  await flushPromises()
+  assert.deepEqual(switched.attachedProviderRuns, [])
+})
+
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
@@ -120,6 +133,7 @@ function bootstrapHarness(options: {
     currentTranscriptEntryCount: options.currentTranscriptEntryCount ?? 0,
     entryCounter: options.entryCounter ?? 0,
     providerCatalog: null as ProviderCatalog | null,
+    attachedProviderRuns: [] as Array<{ run: string | null; statusLine: string | null }>,
     providerCommandCatalogs: null as ProviderCommandCatalogs | null,
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
@@ -135,6 +149,9 @@ function bootstrapHarness(options: {
   }
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
+    applyAttachedProviderRun: (run, statusLine) => {
+      harness.attachedProviderRuns.push({ run: run?.id ?? null, statusLine })
+    },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
