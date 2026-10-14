@@ -1,7 +1,8 @@
 import { type IncomingMessage, type ServerResponse } from "node:http"
 import { Readable, Transform } from "node:stream"
+import { StringDecoder } from "node:string_decoder"
 
-import { redactHiddenInstructions } from "./hidden-instructions.js"
+import { redactHiddenInstructions, redactHiddenInstructionsFromJson } from "./hidden-instructions.js"
 
 type OpenCodeEventProxyState = {
   providerSessionId: string | null
@@ -36,6 +37,7 @@ export async function proxyOpenCodeEventsForNativeTui(
   }
 
   let carry = ""
+  const decoder = new StringDecoder("utf8")
   let refreshCounter = 0
   let refreshInFlight = false
   const refreshFromProviderSession = async () => {
@@ -63,13 +65,13 @@ export async function proxyOpenCodeEventsForNativeTui(
   response.once("close", () => clearInterval(refreshTimer))
   try {
     for await (const chunk of Readable.fromWeb(upstream.body as never)) {
-      carry += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+      carry += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
       while (true) {
         const separator = findSseFrameSeparator(carry)
         if (!separator) break
         const frame = carry.slice(0, separator.index)
         const delimiter = carry.slice(separator.index, separator.index + separator.length)
-        const redactedFrame = redactHiddenInstructions(frame)
+        const redactedFrame = redactSseFrame(frame)
         response.write(redactedFrame)
         response.write(delimiter)
         const sessionId = sessionIdNeedingNativeRefresh(frame)
@@ -87,7 +89,7 @@ export async function proxyOpenCodeEventsForNativeTui(
       }
     }
     if (carry) {
-      response.write(redactHiddenInstructions(carry))
+      response.write(redactSseFrame(carry + decoder.end()))
     }
   } finally {
     clearInterval(refreshTimer)
@@ -110,25 +112,44 @@ export function requestHeadersForFetch(request: IncomingMessage): Headers {
 
 export function createSseHiddenInstructionRedactor(): Transform {
   let carry = ""
+  const decoder = new StringDecoder("utf8")
   return new Transform({
     transform(chunk, _encoding, callback) {
-      carry += chunk.toString("utf8")
+      carry += decoder.write(chunk)
       while (true) {
         const separator = findSseFrameSeparator(carry)
         if (!separator) break
         const frame = carry.slice(0, separator.index)
         const delimiter = carry.slice(separator.index, separator.index + separator.length)
-        this.push(redactHiddenInstructions(frame))
+        this.push(redactSseFrame(frame))
         this.push(delimiter)
         carry = carry.slice(separator.index + separator.length)
       }
       callback()
     },
     flush(callback) {
-      this.push(redactHiddenInstructions(carry))
+      this.push(redactSseFrame(carry + decoder.end()))
       callback()
     },
   })
+}
+
+// MP-08 / MP-10 / MP-11: redact values, then encode them. Applying a prompt
+// suffix regex to serialized JSON can remove its closing structure and stop
+// the official native client's event reader after a real source-file read.
+function redactSseFrame(frame: string): string {
+  const payload = sseDataPayload(frame)
+  if (!payload) return frame
+  let redacted: unknown
+  try { redacted = redactHiddenInstructionsFromJson(JSON.parse(payload)) }
+  catch { return ": invalid upstream event omitted" }
+  let emitted = false
+  return frame.split(/\r?\n/).flatMap(line => {
+    if (!line.startsWith("data:")) return [line]
+    if (emitted) return []
+    emitted = true
+    return [`data: ${JSON.stringify(redacted)}`]
+  }).join(frame.includes("\r\n") ? "\r\n" : "\n")
 }
 
 export function createHiddenInstructionRedactor(): Transform {
@@ -223,10 +244,9 @@ async function emitNativeTranscriptRefresh(options: {
     })
     return options.counter
   }
-  const text = redactHiddenInstructions(await refresh.text())
   let messages: unknown
   try {
-    messages = JSON.parse(text)
+    messages = redactHiddenInstructionsFromJson(await refresh.json())
   } catch (error) {
     options.debug("native_refresh_parse_failed", {
       sessionId: options.sessionId,

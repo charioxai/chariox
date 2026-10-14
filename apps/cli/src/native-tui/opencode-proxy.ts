@@ -271,10 +271,15 @@ async function proxyToOpenCode(
     response.end()
     return
   }
+  const contentType = upstream.headers.get("content-type") ?? ""
+  if (redactForNativeTui && contentType.includes("application/json")) {
+    response.end(JSON.stringify(redactHiddenInstructionsFromJson(await upstream.json())))
+    return
+  }
   await new Promise<void>((resolve, reject) => {
     const stream = Readable.fromWeb(upstream.body as never)
     const readable = redactForNativeTui
-      ? stream.pipe(target.pathname === "/event"
+      ? stream.pipe(contentType.includes("text/event-stream")
         ? createSseHiddenInstructionRedactor()
         : createHiddenInstructionRedactor())
       : stream
