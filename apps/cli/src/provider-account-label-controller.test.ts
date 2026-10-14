@@ -56,10 +56,10 @@ test("MP-08/MP-10/MP-11 retained home aliases display the canonical public accou
   controller.dispose()
 })
 
-test("MP-08/MP-10/MP-11 definitive registration refusal has a reason; transport failures stay unchecked", async () => {
+test("MP-08/MP-10/MP-11 legacy namespace refusal stays unchecked instead of denying an available replica", async () => {
   const inventory: ProviderAccountProfile[] = []
   const controller = createProviderAccountLabelController({ profiles: () => inventory, kernelId: () => "home", readProfile: async () => { throw new Error("account profile `missing` is not registered for codex") } })
   controller.label("codex", "missing"); await settle()
-  assert.equal(controller.label("codex", "missing"), "Account unavailable · not registered for your account")
+  assert.equal(controller.label("codex", "missing"), "Account status not checked · profile lookup failed")
   controller.dispose()
 })

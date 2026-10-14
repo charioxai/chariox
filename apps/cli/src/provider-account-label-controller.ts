@@ -39,13 +39,16 @@ export function createProviderAccountLabelController(deps: {
         observations.set(key, observation)
         const admittedGeneration = generation
         const admittedObservation = observation
+        // A lookup refusal can come from an older kernel's home-only namespace,
+        // or before a managed replica is materialized. It is not proof that the
+        // account cannot run. Definitive auth/capacity comes from profile data.
         void deps.readProfile(family, reference).then(profile => {
           if (profile.provider !== family) {
             throw new Error("account observation does not match the selected profile")
           }
           return providerAccountDisplayLabel(profile)
         }).catch(error => error instanceof Error && /account profile .* is not registered for/i.test(error.message)
-          ? "Account unavailable · not registered for your account"
+          ? "Account status not checked · profile lookup failed"
           : "Account status not checked · refresh needed").then(label => {
           if (disposed || generation !== admittedGeneration || observations.get(key) !== admittedObservation) return
           admittedObservation.label = label
