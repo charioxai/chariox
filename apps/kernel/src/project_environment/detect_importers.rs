@@ -264,16 +264,11 @@ impl Importer {
             },
         );
     }
-    pub fn import(&mut self, file: &EvidenceFile) {
+    pub fn import_references(&mut self, file: &EvidenceFile) {
         let name = std::path::Path::new(&file.path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        for gui in ["Canva", "Notion", "ChatGPT"] {
-            if contains_word(&name.to_ascii_lowercase(), &gui.to_ascii_lowercase()) {
-                self.software(file, gui, None, None, true)
-            }
-        }
         let Some(text) = &file.text else { return };
         if !file.protected {
             for gui in ["Canva", "Notion", "ChatGPT"] {
@@ -290,6 +285,30 @@ impl Importer {
             && [".example", ".sample", ".template"]
                 .iter()
                 .any(|s| name.ends_with(s));
+        if is_example || credential_configuration_name(name) {
+            return;
+        }
+        for (n, line) in text.lines().enumerate() {
+            for key in super::index::referenced_names(line) {
+                self.secret(file, &key, Some(n as u32 + 1))
+            }
+        }
+    }
+    pub fn import(&mut self, file: &EvidenceFile) {
+        let name = std::path::Path::new(&file.path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        for gui in ["Canva", "Notion", "ChatGPT"] {
+            if contains_word(&name.to_ascii_lowercase(), &gui.to_ascii_lowercase()) {
+                self.software(file, gui, None, None, true)
+            }
+        }
+        let Some(text) = &file.text else { return };
+        let is_example = name.starts_with(".env")
+            && [".example", ".sample", ".template"]
+                .iter()
+                .any(|s| name.ends_with(s));
         for (n, line) in text.lines().enumerate() {
             if is_example {
                 if let Some((key, _)) = line
@@ -299,11 +318,6 @@ impl Importer {
                     .split_once('=')
                 {
                     self.secret(file, key.trim(), Some(n as u32 + 1))
-                }
-            }
-            if !is_example && !credential_configuration_name(name) {
-                for key in super::index::referenced_names(line) {
-                    self.secret(file, &key, Some(n as u32 + 1))
                 }
             }
         }

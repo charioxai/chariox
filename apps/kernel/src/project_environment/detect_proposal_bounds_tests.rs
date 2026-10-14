@@ -123,3 +123,26 @@ fn review931_7_model_hints_and_reuse_cannot_escape_the_proposal_budget() {
         "cached bounded hints survive an unchanged Detect"
     );
 }
+
+#[test]
+fn review2148_declared_second_folder_runtimes_survive_reference_saturation() {
+    let noisy = TestWorktree::new("envp03-declared-before-references");
+    let declared = TestWorktree::new("envp03-second-folder-manifests");
+    write(&noisy, "package.json", "{}");
+    let path = format!("{}/source.ts", (0..5).map(|i| format!("{i}{}", "x".repeat(180))).collect::<Vec<_>>().join("/"));
+    let source = (0..64).flat_map(|i| (0..128).map(move |_| format!("process.env.ENV_NAME_{i};\n"))).collect::<String>();
+    write(&noisy, &path, &source);
+    write(&declared, "Cargo.toml", "[package]\nname='worker'\nversion='1.0.0'\nrust-version='1.71'\n");
+    write(&declared, ".nvmrc", "22.22.1\n");
+    let mut second = folder(&declared);
+    second.folder_id = "zz-declared".into();
+    let detection = detect_environment(&[folder(&noisy), second], "environment").unwrap();
+    for (identity, version) in [("rust", ">=1.71"), ("node", "22.22.1")] {
+        assert!(detection.proposals.iter().any(|p| {
+            matches!(&p.requirement.scope, RequirementScope::Folder { folder_id } if folder_id == "zz-declared")
+                && matches!(&p.requirement.spec, RequirementSpec::Software { identity: name, version_constraint: Some(found), .. } if name == identity && found == version)
+        }), "declared {identity} cannot be displaced by first-folder reference provenance");
+    }
+    assert!(detection.skips.iter().any(|r| r.reason_code == "proposal_byte_limit"));
+    assert!(serde_json::to_vec(&detection.proposals).unwrap().len() <= 2 * 1024 * 1024);
+}
