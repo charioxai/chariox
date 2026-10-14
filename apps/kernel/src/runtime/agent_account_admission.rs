@@ -17,22 +17,36 @@ pub(crate) fn resolve_spawn_account(
     if reference.is_empty() {
         return Ok(());
     }
-    let owner = crate::account_profile::provider_account_authority_owner_user_id(
+    let owner = crate::account_profile::provider_account_authority_owner_for_profile(
         config,
+        profiles,
         &request.owner_user_id,
-    );
-    let available = profiles.list(&owner, Some(family))?;
-    let selected = profiles
-        .find(&owner, family, reference)?
-        .or_else(|| available.iter().find(|p| p.label == reference).cloned());
-    if let Some(selected) = selected {
-        request.account_profile = Some(selected.profile_id);
+        family,
+        reference,
+    )?;
+    if let Some(selected) = profiles.find(&owner, family, reference)? {
+        // Defaults are home aliases. A stable ID may instead name a worker
+        // replica, so retain the home reference when pinning would change its
+        // authority. Launch records the resolved ID and namespace together.
+        let pinned_owner = crate::account_profile::provider_account_authority_owner_for_profile(
+            config,
+            profiles,
+            &request.owner_user_id,
+            family,
+            &selected.profile_id,
+        )?;
+        request.account_profile = Some(if reference == "default" || pinned_owner != owner {
+            reference.to_string()
+        } else {
+            selected.profile_id
+        });
         return Ok(());
     }
     // A not-yet-configured default remains a normal login/selection path.
     if reference == "default" {
         return Ok(());
     }
+    let available = profiles.list(&owner, Some(family))?;
     let choices = available
         .iter()
         .map(|p| format!("{} ({})", p.label, p.profile_id))
