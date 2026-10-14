@@ -434,11 +434,6 @@ export class KernelBrowserHost {
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
-  async removeDisplay(id) {
-    const stream=this.displays.get(id);
-    if(!stream)return;
-    this.displays.delete(id);await stream.close();
-  }
   async removeStream(id) {
     const stream = this.streams.get(id);
     if (!stream) return;

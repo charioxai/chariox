@@ -292,7 +292,8 @@ pub use api::{
     PasskeyPromptKind,
 };
 pub use api::{
-    KernelBrowserCommand, KernelBrowserInput, KernelBrowserMirrorAction, KernelBrowserRequest,
+    KernelBrowserCommand, KernelBrowserDisplayTarget, KernelBrowserInput,
+    KernelBrowserMirrorAction, KernelBrowserRequest,
 };
 pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
