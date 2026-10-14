@@ -44,7 +44,9 @@ fn local_scope(app: &mut crate::app::DaemonApp, scope: &SocketScope) -> Result<(
         }
     }
     let agent = app.agents().get_agent(&scope.agent_id)?;
-    if agent.session_id() != scope.session_id { return Err(error("native agent left the session")); }
+    if agent.session_id() != scope.session_id {
+        return Err(error("native agent left the session"));
+    }
     let run = app
         .providers()
         .get_run_for_agent(&scope.session_id, &scope.agent_id)
@@ -65,6 +67,10 @@ fn validate_owning_run(
         || run.state() != ProviderRunState::Running
         || run.client_interface() != ProviderClientInterface::NativeTui
         || run.structured_endpoint() != Some(scope.endpoint.as_str())
+        || run
+            .working_directory()
+            .map(|path| path.to_string_lossy().into_owned())
+            != scope.working_directory
     {
         return Err(error("native owning run or endpoint changed; reattach"));
     }
@@ -138,6 +144,9 @@ impl CommandRouter {
                     provider_run_id: request.provider_run_id.clone(),
                     leased_agent_id: None,
                     endpoint: run.structured_endpoint().unwrap_or_default().into(),
+                    working_directory: run
+                        .working_directory()
+                        .map(|path| path.to_string_lossy().into_owned()),
                 };
                 local_scope(&mut app, &scope)?;
                 (Some(scope), None)
@@ -192,6 +201,9 @@ impl CommandRouter {
                 provider_run_id,
                 leased_agent_id: Some(leased_agent_id),
                 endpoint: run.structured_endpoint().unwrap_or_default().into(),
+                working_directory: run
+                    .working_directory()
+                    .map(|path| path.to_string_lossy().into_owned()),
             };
             local_scope(&mut app, &scope)?;
             scope
@@ -249,6 +261,7 @@ mod tests {
             provider_run_id: "run".into(),
             leased_agent_id: None,
             endpoint: "ws://127.0.0.1:1234".into(),
+            working_directory: None,
         };
         assert!(validate_owning_run(&run, &scope).is_err());
         run.mark_running();

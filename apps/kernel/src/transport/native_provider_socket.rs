@@ -29,6 +29,7 @@ pub(crate) struct SocketScope {
     pub provider_run_id: String,
     pub leased_agent_id: Option<String>,
     pub endpoint: String,
+    pub working_directory: Option<String>,
 }
 
 struct Connection {
@@ -91,6 +92,71 @@ pub(crate) fn validate_frame(frame: &str) -> Result<(), DaemonError> {
     ) {
         return Err(error(
             "native method must use the owning kernel prompt/control path",
+        ));
+    }
+    Ok(())
+}
+
+// Native folder trust is the sole provider-local write admitted here.
+// It cannot edit model, sandbox, credentials, features or another project.
+fn validate_scoped_frame(frame: &str, scope: &SocketScope) -> Result<(), DaemonError> {
+    if validate_frame(frame).is_ok() {
+        return Ok(());
+    }
+    if frame.len() > FRAME_BYTES {
+        return Err(error("native frame exceeds 256 KiB"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(frame).map_err(|_| error("native frame must be JSON"))?;
+    let params = value
+        .get("params")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| error("native trust update requires parameters"))?;
+    let directory = scope
+        .working_directory
+        .as_deref()
+        .filter(|path| std::path::Path::new(path).is_absolute())
+        .ok_or_else(|| error("native trust update requires the owning workspace"))?;
+    let key = format!(
+        "projects.{}.trust_level",
+        serde_json::to_string(directory)
+            .map_err(|_| error("native workspace cannot be encoded"))?
+    );
+    let edits = params
+        .get("edits")
+        .and_then(serde_json::Value::as_array)
+        .filter(|edits| edits.len() == 1)
+        .ok_or_else(|| error("native trust update requires one scoped edit"))?;
+    let edit = edits[0]
+        .as_object()
+        .ok_or_else(|| error("invalid native trust edit"))?;
+    if value.get("method").and_then(serde_json::Value::as_str) != Some("config/batchWrite")
+        || params.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "edits" | "filePath" | "expectedVersion" | "reloadUserConfig"
+            )
+        })
+        || params.get("filePath").is_some_and(|path| !path.is_null())
+        || params
+            .get("expectedVersion")
+            .is_some_and(|version| !version.is_null() && !version.is_string())
+        || params
+            .get("reloadUserConfig")
+            .is_some_and(|reload| !reload.is_boolean())
+        || edit.len() != 3
+        || edit.get("keyPath").and_then(serde_json::Value::as_str) != Some(key.as_str())
+        || edit
+            .get("mergeStrategy")
+            .and_then(serde_json::Value::as_str)
+            != Some("replace")
+        || !matches!(
+            edit.get("value").and_then(serde_json::Value::as_str),
+            Some("trusted" | "untrusted")
+        )
+    {
+        return Err(error(
+            "native config writes are limited to the owning workspace trust",
         ));
     }
     Ok(())
@@ -214,7 +280,7 @@ impl NativeProviderSockets {
                 for frame in frames {
                     // Optional native features may receive an RPC refusal without
                     // tearing down the display connection or forwarding a turn.
-                    if validate_frame(&frame).is_ok() {
+                    if validate_scoped_frame(&frame, &scope).is_ok() {
                         admitted.push(frame);
                     } else {
                         let value: serde_json::Value = serde_json::from_str(&frame)
@@ -313,6 +379,46 @@ mod tests {
         assert!(validate_endpoint("ws://127.0.0.1:1234").is_ok());
     }
 
+    #[test]
+    fn mp08_native_folder_trust_is_only_for_the_owning_workspace() {
+        let scope = SocketScope {
+            session_id: "room".into(),
+            agent_id: "agent".into(),
+            attachment_id: "attachment".into(),
+            provider_run_id: "run".into(),
+            leased_agent_id: None,
+            endpoint: "ws://127.0.0.1:1234".into(),
+            working_directory: Some("/workspace/repo".into()),
+        };
+        let frame = serde_json::json!({"id":1,"method":"config/batchWrite","params":{
+            "edits":[{"keyPath":"projects.\"/workspace/repo\".trust_level","value":"trusted","mergeStrategy":"replace"}],
+            "filePath":null,"expectedVersion":null,"reloadUserConfig":true
+        }});
+        assert!(validate_scoped_frame(&frame.to_string(), &scope).is_ok());
+        for (field, value) in [
+            (
+                "keyPath",
+                serde_json::json!("projects.\"/workspace/other\".trust_level"),
+            ),
+            ("keyPath", serde_json::json!("sandbox_mode")),
+            ("value", serde_json::json!("danger-full-access")),
+            ("mergeStrategy", serde_json::json!("upsert")),
+        ] {
+            let mut bad = frame.clone();
+            bad["params"]["edits"][0][field] = value;
+            assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
+        }
+        let mut bad = frame.clone();
+        bad["params"]["filePath"] = serde_json::json!("/workspace/config.toml");
+        assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
+        let mut bad = frame.clone();
+        bad["params"]["edits"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"keyPath":"model","value":"other","mergeStrategy":"replace"}));
+        assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
+    }
+
     #[tokio::test]
     async fn mp08_native_socket_fences_attachment_and_passive_run_revocation() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -343,6 +449,7 @@ mod tests {
             provider_run_id: "run".into(),
             leased_agent_id: Some("lease-agent".into()),
             endpoint: format!("ws://{address}"),
+            working_directory: Some("/workspace/repo".into()),
         };
         let allowed = Arc::new(AtomicBool::new(true));
         let guard = {

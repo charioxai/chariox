@@ -284,6 +284,10 @@ tool execution, login mutation and provider approval replies still use the
 normal kernel-owned prompt and RuntimeInteraction paths. Unsupported methods
 are rejected. Old clients/workers require an actionable 526/134 update and
 reattach, never an SSH tunnel or a caller-selected provider endpoint.
+Native folder trust may persist one `config/batchWrite` replacement of
+`projects."<owning working directory>".trust_level` (`trusted`/`untrusted`)
+in the provider-managed default config. Other config paths and edits stay
+rejected; prompt, tool and approval authority uses the existing kernel paths.
 
 
 MP-08 / MP-10 / MP-11: local protocol 491 fences `CancelActivePrompt` with
