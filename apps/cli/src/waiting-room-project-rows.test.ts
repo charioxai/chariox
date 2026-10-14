@@ -88,7 +88,7 @@ function projectSummary(): WaitingRoomProjectSummary {
 
 // MP-08 / MP-10 / MP-11: each project has an owning-kernel line.
 test("ENV-UX-03 TUI shows human kernel below each project",()=>{
- const project=projectSummary();const rows=waitingRoomProjectRows({focus:"project-entry",projectIndex:0},[project],[],{inventoryLoading:false,loadingText:"loading",titleWidth:24,kernelLabel:"Laptop kernel"} as any)
+ const project=projectSummary();const rows=waitingRoomProjectRows({focus:"project-entry",projectIndex:0},[project],[],{inventoryLoading:false,loadingText:"loading",titleWidth:24,kernelLabel:"Laptop kernel"})
  const index=rows.findIndex(r=>r.id===`project-entry:${project.id}`)
  assert.equal(rows[index+1]?.title,"Kernel: Laptop kernel");assert.equal(rows[index+1]?.value,"");assert.equal(rows[index+1]?.selectable,false)
 })

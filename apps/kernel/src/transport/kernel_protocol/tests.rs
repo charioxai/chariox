@@ -816,3 +816,25 @@ fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
         other => panic!("unexpected event: {other:?}"),
     }
 }
+
+// MP-08 / MP-10 / MP-11: a missing Project is a permanent lookup miss.
+#[test]
+fn env_ux01_project_lookup_absence_is_not_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.get",
+        message: "project was not found".into(),
+    };
+    let mapped = super::map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+}
+
+// MP-08 / MP-10 / MP-11: only definitive Project misses lose retryability.
+#[test]
+fn env_ux01_unrelated_transport_failures_remain_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.environment.get",
+        message: "connection interrupted".into(),
+    };
+    assert!(super::map_kernel_error(&error).retryable);
+}
