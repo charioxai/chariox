@@ -46,7 +46,10 @@ impl KernelRuntimeState {
             Ok(mut snapshot) => {
                 snapshot.metadata.last_event_id = self.session_projection_change_sequence();
                 Box::new(
-                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
+                    (!previous_snapshot_for_compare
+                        .as_ref()
+                        .is_some_and(|previous| same_snapshot_data(previous, &snapshot)))
+                    .then_some(snapshot),
                 )
             }
             Err(DaemonError::SessionNotFound { .. })
@@ -74,4 +77,15 @@ impl KernelRuntimeState {
         }
         result
     }
+}
+
+fn same_snapshot_data(a: &SessionSnapshotProjection, b: &SessionSnapshotProjection) -> bool {
+    // MP-08 / MP-10: generation time and the global wake cursor are not
+    // session data. Preserve version/data changes while avoiding full-snapshot
+    // traffic and DOM work on every reconciliation of an unchanged session.
+    a.metadata.projection_version == b.metadata.projection_version
+        && a.room_workflows == b.room_workflows
+        && a.session == b.session
+        && a.provider_run == b.provider_run
+        && a.agent_activity == b.agent_activity
 }
