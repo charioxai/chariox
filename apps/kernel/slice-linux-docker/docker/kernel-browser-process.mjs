@@ -95,8 +95,10 @@ export class HostChromium {
     const args = launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.scale);
     // MP-11: on Linux the kernel's managed policies apply through a private namespace.
-    // macOS has no such per-process policy path; its CDP layer still fails closed.
-    const launch = process.platform === "linux" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
+    // Without it (macOS; Linux whose AppArmor refuses the namespace) only the host's CDP
+    // fail-closed layer applies, and the lockdown is reported unavailable.
+    this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
+    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
     const child = spawn(launch.command, launch.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });

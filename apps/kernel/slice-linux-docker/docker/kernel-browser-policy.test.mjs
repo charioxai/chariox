@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { blockedUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
-import { policyLaunch } from "./kernel-browser-linux.mjs";
+import { policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
 
 test("MP-11 the policy layer carries every compiled Chromium policy root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-policy-"));
@@ -41,6 +41,15 @@ test("MP-11 Chromium runs in a private namespace with the caller's own uid", () 
   assert.deepEqual(launch.args.slice(-7), ["/k/policy-etc", "1000", "1000", "/opt/chromium/chrome", "--disable-setuid-sandbox", "--remote-debugging-pipe", "about:blank"]);
   assert.match(launch.args[6], /lowerdir=\$layer:\/etc" \/etc; exec \/usr\/bin\/unshare --user --map-user="\$uid"/);
   assert.throws(() => policyLaunch("/k", "/c", [], 0, 0), /invalid browser user/);
+});
+
+// Real host, stock Ubuntu 24.04 (2026-10-14, 168.119.96.126): AppArmor lets the user namespace
+// be created but refuses its id map, so the namespaced launch never started Chromium.
+test("MP-11 a refused private namespace is detected before launch", () => {
+  const calls = [];
+  assert.equal(policyNamespaceAvailable((command, args) => { calls.push([command, ...args]); return { status: 1 }; }), false);
+  assert.equal(policyNamespaceAvailable(() => ({ status: 0 })), true);
+  assert.deepEqual(calls, [["/usr/bin/unshare", "--user", "--map-root-user", "--mount", "--", "/bin/true"]]);
 });
 
 test("MP-11 blocked schemes", () => {

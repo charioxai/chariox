@@ -192,6 +192,10 @@ export class KernelBrowserHost {
   // downloads, and a Tab that still reaches a blocked scheme is closed unless it
   // shows the policy's own refusal (Chrome's error document).
   async lockdown(connection) {
+    if (this.chromium.policy === "unavailable" && !this.policyWarned) {
+      this.policyWarned = true;
+      process.stderr.write("MP-11: kernel browser managed policies unavailable (no private namespace: install the kernel browser's AppArmor profile); only the CDP lockdown applies\n");
+    }
     await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
