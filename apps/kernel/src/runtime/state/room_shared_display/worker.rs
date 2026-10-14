@@ -50,12 +50,17 @@ impl KernelRuntimeState {
             return Err(error());
         }
         {
-            let leases = self
+            let mut leases = self
                 .owned
                 .room_display_leases
                 .worker
                 .lock()
                 .map_err(|_| error())?;
+            leases.retain(|_, lease| {
+                lease
+                    .try_lock()
+                    .map_or(true, |lease| lease.used.elapsed() < Duration::from_secs(60))
+            });
             if leases.contains_key(lease_id) || leases.len() >= 32 {
                 return Err(error());
             }
