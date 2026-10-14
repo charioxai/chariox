@@ -125,7 +125,7 @@ impl LocalBrowserDirect {
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.
-        tokio::spawn(admission::run_when_bound(Arc::clone(&direct), bound_rx));
+        tokio::spawn(admission::run_when_bound(Arc::downgrade(&direct), bound_rx));
         direct
     }
 

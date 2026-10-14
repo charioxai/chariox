@@ -70,17 +70,25 @@ struct KernelProof<'a> {
     challenge: &'a str,
 }
 
+// MP-08/MP-11: hold the service weakly until a listener binds. It owns the
+// sender, so a strong reference would keep the router (and its durable-state
+// fence) alive after the kernel drops the service without a shutdown signal.
 pub(super) async fn run_when_bound(
-    direct: Arc<LocalBrowserDirect>,
+    direct: std::sync::Weak<LocalBrowserDirect>,
     mut bound: mpsc::UnboundedReceiver<(TcpListener, LocalBrowserEndpoint)>,
 ) {
-    let mut shutdown = direct.shutdown.clone();
+    let Some(mut shutdown) = direct.upgrade().map(|direct| direct.shutdown.clone()) else {
+        return;
+    };
     let (listener, endpoint) = tokio::select! {
         _ = shutdown.changed() => return,
         bound = bound.recv() => match bound {
             Some(bound) => bound,
             None => return,
         },
+    };
+    let Some(direct) = direct.upgrade() else {
+        return;
     };
     tokio::join!(
         run_listener(Arc::clone(&direct), listener, endpoint),

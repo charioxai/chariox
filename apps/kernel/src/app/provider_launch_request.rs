@@ -467,7 +467,9 @@ mod tests {
                 "test.launch",
             )
             .expect_err("fresh exhausted usage should block the launch");
-        assert!(blocked.to_string().contains("usage allowance and credits are exhausted"));
+        assert!(blocked
+            .to_string()
+            .contains("usage allowance and credits are exhausted"));
         let _ = std::fs::remove_dir_all(root);
     }
 

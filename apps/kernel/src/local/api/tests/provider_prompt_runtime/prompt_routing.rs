@@ -658,7 +658,10 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         .expect_err("a fresh exhausted account must block a new prompt");
     let message = error.to_string();
     assert!(message.contains("Exhausted Codex account"), "{message}");
-    assert!(message.contains("usage allowance and credits are exhausted"), "{message}");
+    assert!(
+        message.contains("usage allowance and credits are exhausted"),
+        "{message}"
+    );
     assert!(message.contains("refresh"), "{message}");
     assert!(
         !message.contains(&exhausted_account.profile_id),
