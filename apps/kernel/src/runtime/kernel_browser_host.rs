@@ -627,6 +627,9 @@ impl KernelBrowserHost {
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")
+            // MP-08/MP-10: a navigation waits for the page's load; mirror credits and
+            // state reads keep flowing meanwhile (mutations stay serial on the lane).
+            || (method == "host.browser" && params["op"] == "navigate")
         {
             let signal = cancellation
                 .clone()
