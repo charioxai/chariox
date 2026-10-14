@@ -50,7 +50,7 @@ export const APP_PERMISSIONS_POLICY = [
 
 // Installed before any App script runs. The binding carries only JSON strings;
 // the kernel binds every call to this tab's installation, never to page data.
-const bridgeSource = (controlKey, initialTask) => `(() => {
+const bridgeSource = (controlKey, initialTask, ownerTask) => `(() => {
   "use strict";
   // WebRTC is outside CSP and request interception; remove it before App code.
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
@@ -60,7 +60,7 @@ const bridgeSource = (controlKey, initialTask) => `(() => {
   const call = globalThis.${BINDING};
   if (typeof call !== "function") return;
   delete globalThis.${BINDING};
-  const tasks = (${installAppActorTasks.toString()})(${JSON.stringify(controlKey)}, ${JSON.stringify(initialTask)});
+  const tasks = (${installAppActorTasks.toString()})(${JSON.stringify(controlKey)}, ${JSON.stringify(initialTask)}, ${JSON.stringify(ownerTask)});
   const resolveKey = ${JSON.stringify(controlKey)};
   const pending = new Map(), NativePromise = Promise;
   const setPending = Map.prototype.set.bind(pending), getPending = Map.prototype.get.bind(pending), deletePending = Map.prototype.delete.bind(pending);
@@ -152,7 +152,7 @@ export class AppTabs {
     if (!entry) return () => {};
     const [sessionId, app] = entry;
     const actor = agent ? { kind: "agent", id: agent } : undefined;
-    const task = [...app.actors].find(([name, retained]) => name !== app.initialTask && retained?.id === actor?.id)?.[0] ?? randomUUID();
+    const task = !agent ? app.ownerTask : [...app.actors].find(([, retained]) => retained?.id === agent)?.[0] ?? randomUUID();
     app.actors.set(task, actor);
     if (agent) app.agentObserved = true;
     if (navigation) app.initialActor = actor;
@@ -202,7 +202,7 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), controlKey: randomUUID(), initialTask: randomUUID(), actors: new Map(), traces: new Map() });
+    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), controlKey: randomUUID(), initialTask: randomUUID(), ownerTask: randomUUID(), actors: new Map(), traces: new Map() });
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -211,10 +211,11 @@ export class AppTabs {
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
       const opened = this.apps.get(sessionId);
       opened.actors.set(opened.initialTask, undefined);
+      opened.actors.set(opened.ownerTask, undefined);
       await connection.send("Debugger.enable", {}, sessionId);
       await connection.send("Debugger.setAsyncCallStackDepth", { maxDepth: 64 }, sessionId);
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
-      await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: bridgeSource(opened.controlKey, opened.initialTask) }, sessionId);
+      await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: bridgeSource(opened.controlKey, opened.initialTask, opened.ownerTask) }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
     } catch (error) {
       this.apps.delete(sessionId);

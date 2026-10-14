@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: native Chromium task ancestry survives timers and async/await.
 export const APP_BRIDGE_URL = 'chariox-internal-app-bridge';
-export function installAppActorTasks(controlKey, initialTask) {
+export function installAppActorTasks(controlKey, initialTask, ownerTask) {
   const createTask = console.createTask.bind(console), trace = console.trace.bind(console), apply = Reflect.apply;
   const NativeMap = Map, NativeWeakMap = WeakMap;
   const mapGet = Map.prototype.get, mapSet = Map.prototype.set, mapInstance = Function.prototype[Symbol.hasInstance];
@@ -10,7 +10,7 @@ export function installAppActorTasks(controlKey, initialTask) {
   const events = new NativeWeakMap(), listeners = new NativeWeakMap(), properties = new NativeWeakMap();
   const rootInputs = new Set(['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup',
     'keydown', 'keyup', 'beforeinput', 'input', 'change', 'wheel', 'submit', 'reset', 'drop', 'contextmenu']);
-  let input = initialTask, dispatching = false, agentSeen = false, executing = null;
+  let input = ownerTask, dispatching = false, agentSeen = false, executing = null;
   const origin = () => executing ?? (agentSeen ? initialTask + ':unclassified' : initialTask);
   const scoped = (name, task, callback) => apply(task.run, task, [() => {
     const previous = executing; executing = name;
@@ -22,7 +22,8 @@ export function installAppActorTasks(controlKey, initialTask) {
   };
   Object.defineProperty(globalThis, '__charioxAppInput', { value(key, name, active, agent) {
     if (key !== controlKey) return;
-    input = name; dispatching = active; agentSeen ||= agent;
+    // Between dispatched inputs, trusted events in the window are the owner's own.
+    input = active ? name : ownerTask; dispatching = active; if (active) agentSeen ||= agent;
   } });
   const run = (event, callback, receiver) => {
     if (!dispatching && (!apply(setHas, rootInputs, [event.type]) || !event.isTrusted)) return apply(callback, receiver, [event]);
