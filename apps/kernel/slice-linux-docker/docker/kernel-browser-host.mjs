@@ -417,6 +417,13 @@ export class KernelBrowserHost {
     stream.timer = setTimeout(() => { void this.removeStream(id); }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
+  async removeDisplay(id) {
+    const stream = this.displays.get(id);
+    if (!stream) return;
+    this.displays.delete(id); clearTimeout(stream.timer);
+    await stream.close();
+    if (![...this.displays.values()].some(other => other.tab_id === stream.tab_id)) await this.closeCompositors(stream.tab_id);
+  }
   armDisplayExpiry(stream) {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => {

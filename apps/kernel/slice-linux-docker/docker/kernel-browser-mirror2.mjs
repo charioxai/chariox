@@ -13,6 +13,7 @@ import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
+import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // A packet still unacknowledged this long after it was issued, while a later credit names an older
@@ -148,7 +149,7 @@ export function dedupeMirrorSheets(packet, sent) {
 const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(String(stream.id))})`;
 
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
   parentWorld(stream) { return stream.world; }
   async world(tab, stream) {
     const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
@@ -176,6 +177,7 @@ export class Mirror2 {
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   dispose(stream) {
+    this.regions.retireStream(stream);
     stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);
     const drop = `globalThis.__charioxMirror2?.drop(${JSON.stringify(String(stream.id))})`;
     for (const world of [stream.world, ...[...stream.frames.values()].map(entry => entry.child)]) if (world) world.connection.send('Runtime.evaluate', { expression: drop, contextId: world.contextId, returnByValue: true }, world.sessionId).catch(() => {});
@@ -405,6 +407,7 @@ export class Mirror2 {
     if (reset) { stream.introduced = new Map(); stream.identity = new Map(); }
     for (const record of [...(packet.nodes ?? []), ...(packet.ops ?? []).flatMap(op => op.op === 'children' ? op.nodes : [])]) if (!stream.introduced.has(record.id)) stream.introduced.set(record.id, sequence);
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr' && TARGET_ATTRIBUTES.has(op.name)).map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.identity.set(id, sequence);
+    this.regions.record(stream, packet);
     if (reset) stream.sheetRefs = new Set();
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
@@ -604,6 +607,16 @@ export class Mirror2 {
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
   // roots, unattached frames and tainted media as viewport screenshot crops, which
   // a transformed or filtered region cannot use (labelled video fallback).
+  async regionBoxes(stream, tab, signal) {
+    assertNotCancelled(signal);
+    const world = stream.world;
+    if (!world || world.connection !== this.host.browser.connection || !world.connection.isOpen()) throw new Error('MP-11: region document unavailable');
+    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    await this.protectTargets(world, tab, this.host.protection);
+    const boxes = [...(await this.evaluate(world, `${world.ref}.regionBoxes()`)).filter(b => !stream.frames.has(b.id)), ...await this.frames.regionBoxes(stream, world, tab, this.host.protection)];
+    await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
+    assertNotCancelled(signal); return boxes;
+  }
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
