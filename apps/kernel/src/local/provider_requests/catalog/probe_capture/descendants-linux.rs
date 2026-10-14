@@ -35,38 +35,6 @@ impl Descendant {
         Ok(())
     }
 }
-// MP-08 / MP-10 / MP-11: wait for the already-signaled, pinned descendants
-// to release their descriptors before checking for genuinely escaped writers.
-// One shared grace period bounds the whole set rather than each descendant.
-pub(super) fn wait_for_exit(owned: &[Descendant]) -> io::Result<()> {
-    let mut fds = owned
-        .iter()
-        .filter(|child| child.alive())
-        .map(|child| libc::pollfd {
-            fd: child.fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect::<Vec<_>>();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-    while !fds.is_empty() {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let timeout = remaining.as_millis().max(1) as i32;
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
-        if result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        fds.retain(|fd| fd.revents & (libc::POLLIN | libc::POLLHUP) == 0);
-    }
-    Ok(())
-}
 fn children(pid: u32) -> io::Result<Vec<u32>> {
     let mut result = Vec::new();
     let tasks = match std::fs::read_dir(format!("/proc/{pid}/task")) {
