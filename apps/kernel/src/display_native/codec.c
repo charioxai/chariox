@@ -21,6 +21,11 @@ static double cpu_ms(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME
 #include <pthread.h>
 #include <dlfcn.h>
 
+/* MP-08/MP-10/MP-11: Bookworm's FFmpeg 5 keeps the earlier profile name. */
+#ifndef AV_PROFILE_H264_CONSTRAINED_BASELINE
+#define AV_PROFILE_H264_CONSTRAINED_BASELINE FF_PROFILE_H264_CONSTRAINED_BASELINE
+#endif
+
 /* MP-08/MP-10 (owner 2026-10-09, as Selkies): codec libraries are loaded at
  * runtime, never linked into the kernel. OpenH264 is the default encoder;
  * x264 is an optional component (CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER=
