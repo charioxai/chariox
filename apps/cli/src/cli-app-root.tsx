@@ -106,6 +106,7 @@ import {
 } from "./provider-catalog.js"
 import {
   getProviderAuthStatus,
+  getProviderAccountProfile,
   getProviderCatalog,
   getProviderLoginStatus,
   getProviderRun,
@@ -805,6 +806,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     transcriptEntryProjectionController, transcriptRenderDeferralController, isAttached,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     maxAgentsPerScreen, responseVisibleAgents, focusedAgentId, providerRunState,
+    getProviderAccountProfile: (provider, reference) => getProviderAccountProfile(client, provider, reference),
     currentProviderSelection, providerAccountsState, agentActivityLabels, streamingAgentId, agentBusyLatch,
     agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
     workingAnimationFrame, activeInteractionForAgent,

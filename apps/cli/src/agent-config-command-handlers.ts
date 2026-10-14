@@ -191,10 +191,10 @@ async function agentAccountDisplayValue(
   agent: AgentInstance,
 ): Promise<string> {
   const profileId = agent.account_profile?.trim() || "default"
-  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account status not checked"
   const profiles = await deps.listProviderAccountProfiles(agent.provider)
   const profile = selectedProviderAccount(profiles, agent.provider, profileId)
-  return profile ? providerAccountDisplayLabel(profile, agent.model) : "Account unavailable"
+  return profile ? providerAccountDisplayLabel(profile, agent.model) : "Account status not checked"
 }
 
 async function updateAgentAccountProfile(

@@ -21,6 +21,7 @@ import {
   type ProviderAccountCredentialRequestContext,
   cancelProviderLoginRequest,
   listProviderAccountProfilesRequest,
+  getProviderAccountProfileRequest,
   createProviderAccountProfileRequest,
   linkProviderAccountProfileRequest,
   importNativeProviderAccountProfileRequest,
@@ -305,6 +306,12 @@ export async function logoutProvider(
 export async function listProviderAccountProfiles(client: LocalIpcClient, provider?: string | null): Promise<ProviderAccountProfile[]> {
   const response = await client.send<Record<string, unknown>>(listProviderAccountProfilesRequest(provider))
   return expectVariant<{ profiles: ProviderAccountProfile[] }>(response, "ProviderAccountProfilesListed").profiles
+}
+
+// MP-08/MP-10/MP-11: this read resolves the same exact account namespace as launch.
+export async function getProviderAccountProfile(client: LocalIpcClient, provider: string, accountProfile: string): Promise<ProviderAccountProfile> {
+  const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
+  return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile
 }
 
 export async function createProviderAccountProfile(client: LocalIpcClient, provider: string, label: string): Promise<ProviderAccountProfile> {

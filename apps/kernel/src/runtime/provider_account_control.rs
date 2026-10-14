@@ -10,7 +10,15 @@ pub(crate) async fn execute_provider_account_request(
     owner_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let owner_user_id = match &request {
+        LocalDaemonRequest::GetProviderAccountProfile(request) => runtime_state
+            .provider_account_owner_for_profile_read(
+                owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            )?,
+        _ => runtime_state.provider_account_authority_owner_user_id(owner_user_id),
+    };
     let invalidates_catalog = !matches!(
         request,
         LocalDaemonRequest::ListProviderAccountProfiles(_)

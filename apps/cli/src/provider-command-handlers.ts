@@ -530,7 +530,7 @@ async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, handoff
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {
-  return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
+  return accountLabel === "Account status not checked" ? provider : `${provider}/${accountLabel}`
 }
 
 /// Extracts a `--method <name>` enrollment selection from the token stream,
@@ -614,13 +614,13 @@ async function providerAccountPublicLabel(
   provider: string,
   accountProfile: string | null | undefined,
 ): Promise<string> {
-  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account status not checked"
   const profile = selectedProviderAccount(
     await deps.listProviderAccountProfiles(provider),
     provider,
     accountProfile ?? undefined,
   )
-  return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
+  return profile ? providerAccountDisplayLabel(profile) : "Account status not checked"
 }
 
 async function handleProviderProcessesCommand(
