@@ -402,6 +402,11 @@ fn provider_account_usage_block(
     usage: &ProviderAccountUsageSnapshot,
     now_ms: u64,
 ) -> Option<ProviderAccountUsageBlock> {
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+    // OpenCode owns service fallback (Go may draw Zen credits); its own refusal is the run error.
+    if provider == "opencode" {
+        return None;
+    }
     let usage = usage.clone().reconciled_freshness(now_ms);
     if !matches!(
         usage.availability,
@@ -417,10 +422,6 @@ fn provider_account_usage_block(
                 .resets_at_ms
                 .is_none_or(|resets_at_ms| resets_at_ms > now_ms)
     };
-    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
-    let selected_opencode_service = (provider == "opencode")
-        .then(|| model.and_then(opencode_service_from_model))
-        .flatten();
     let relevant_meters = usage.meters.iter().filter(|meter| {
         if provider == "codex" && meter.meter_id.starts_with("rolling/") {
             if let Some(model) = model
@@ -440,14 +441,7 @@ fn provider_account_usage_block(
                 }
             }
         }
-        if provider != "opencode" {
-            return true;
-        }
-        let meter_service = meter
-            .service_id
-            .as_deref()
-            .or_else(|| meter.meter_id.starts_with("go/").then_some("opencode-go"));
-        selected_opencode_service.is_some_and(|service| meter_service == Some(service))
+        true
     });
     let exhausted = relevant_meters
         .filter(is_currently_exhausted)
@@ -505,19 +499,6 @@ fn provider_account_usage_block(
 
 fn usage_meter_is_fresh(meter: &ProviderAccountUsageMeter, now_ms: u64) -> bool {
     now_ms.saturating_sub(meter.observed_at_ms) <= PROVIDER_USAGE_STALE_AFTER_MS
-}
-
-fn opencode_service_from_model(model: &str) -> Option<&str> {
-    let model = model.trim();
-    if model.is_empty() || model == "default" {
-        return None;
-    }
-    let Some((service, model_id)) = model.split_once('/') else {
-        // OpenCode's runtime parser treats an unqualified model as a Zen
-        // model. Capacity admission must resolve it the same way.
-        return Some("opencode");
-    };
-    (!service.is_empty() && !model_id.is_empty()).then_some(service)
 }
 
 /// Read-side projection so list/get responses report honest freshness for
@@ -6091,56 +6072,68 @@ mod tests {
             now_ms,
             Some(now_ms + 60_000),
         );
-        exhausted.service_id = Some("opencode-go".to_string());
+        let credits = capacity_meter(
+            "Credits",
+            ProviderAccountUsageMeterKind::CreditBalance,
+            ProviderAccountUsageMeterState::Exhausted,
+            now_ms,
+            None,
+        );
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![exhausted.clone()],
+                vec![exhausted.clone(), credits.clone()],
                 now_ms,
             ),
             now_ms,
         )
         .is_some());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![ProviderAccountUsageMeter {
-                    resets_at_ms: Some(now_ms),
-                    ..exhausted.clone()
-                }],
+                vec![
+                    ProviderAccountUsageMeter {
+                        resets_at_ms: Some(now_ms),
+                        ..exhausted.clone()
+                    },
+                    credits.clone()
+                ],
                 now_ms,
             ),
             now_ms,
         )
         .is_none());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![ProviderAccountUsageMeter {
-                    observed_at_ms: now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
-                    ..exhausted.clone()
-                }],
+                vec![
+                    ProviderAccountUsageMeter {
+                        observed_at_ms: now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
+                        ..exhausted.clone()
+                    },
+                    credits.clone()
+                ],
                 now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
             ),
             now_ms,
         )
         .is_none());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Stale,
-                vec![exhausted],
+                vec![exhausted, credits],
                 now_ms,
             ),
             now_ms,
@@ -6149,52 +6142,14 @@ mod tests {
     }
 
     #[test]
-    fn usage_admission_does_not_refresh_one_service_from_another_service_observation() {
+    fn opencode_usage_is_reported_but_never_gates_admission() {
+        // OpenCode owns service fallback (Go may draw Zen credits); its own refusal surfaces as the run error.
         let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let stale_zen = ProviderAccountUsageMeter {
-            service_id: Some("opencode".to_string()),
+        let exhausted = |service: &str, kind| ProviderAccountUsageMeter {
+            service_id: Some(service.to_string()),
             ..capacity_meter(
-                "Zen credits",
-                ProviderAccountUsageMeterKind::CreditBalance,
-                ProviderAccountUsageMeterState::Exhausted,
-                now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1,
-                None,
-            )
-        };
-        let fresh_go = ProviderAccountUsageMeter {
-            service_id: Some("opencode-go".to_string()),
-            ..capacity_meter(
-                "Go monthly",
-                ProviderAccountUsageMeterKind::RollingLimit,
-                ProviderAccountUsageMeterState::Healthy,
-                now_ms,
-                Some(now_ms + 60_000),
-            )
-        };
-        let mixed = capacity_snapshot(
-            "opencode",
-            ProviderAccountUsageAvailability::Available,
-            vec![stale_zen, fresh_go],
-            now_ms,
-        );
-
-        assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode/deepseek-v4-pro"),
-            &mixed,
-            now_ms,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn opencode_usage_admission_is_scoped_to_the_selected_service() {
-        let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let go_exhausted = ProviderAccountUsageMeter {
-            service_id: Some("opencode-go".to_string()),
-            ..capacity_meter(
-                "Monthly",
-                ProviderAccountUsageMeterKind::RollingLimit,
+                "Exhausted",
+                kind,
                 ProviderAccountUsageMeterState::Exhausted,
                 now_ms,
                 Some(now_ms + 60_000),
@@ -6203,48 +6158,23 @@ mod tests {
         let usage = capacity_snapshot(
             "opencode",
             ProviderAccountUsageAvailability::Available,
-            vec![go_exhausted],
+            vec![
+                exhausted("opencode-go", ProviderAccountUsageMeterKind::RollingLimit),
+                exhausted("opencode", ProviderAccountUsageMeterKind::CreditBalance),
+            ],
             now_ms,
         );
-
-        assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
-            &usage,
-            now_ms,
-        )
-        .is_some());
-        assert!(
-            provider_account_usage_block("opencode", Some("opencode/gpt-5.2"), &usage, now_ms,)
-                .is_none()
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("gpt-5.2"), &usage, now_ms,).is_none()
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("openai/gpt-5.2"), &usage, now_ms,)
-                .is_none()
-        );
-
-        let zen_usage = capacity_snapshot(
-            "opencode",
-            ProviderAccountUsageAvailability::Available,
-            vec![ProviderAccountUsageMeter {
-                service_id: Some("opencode".to_string()),
-                ..capacity_meter(
-                    "Credits",
-                    ProviderAccountUsageMeterKind::CreditBalance,
-                    ProviderAccountUsageMeterState::Exhausted,
-                    now_ms,
-                    None,
-                )
-            }],
-            now_ms,
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("gpt-5.2"), &zen_usage, now_ms,)
-                .is_some()
-        );
+        for model in [
+            "opencode-go/glm-5.3-flash",
+            "opencode/deepseek-v4-flash",
+            "gpt-5.2",
+            "openai/gpt-5.2",
+        ] {
+            assert!(
+                provider_account_usage_block("opencode", Some(model), &usage, now_ms).is_none(),
+                "{model}"
+            );
+        }
     }
 
     #[test]

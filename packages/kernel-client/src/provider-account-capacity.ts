@@ -80,6 +80,11 @@ export function providerAccountCapacity(
   return { state: "ready", detail: "usage available" }
 }
 
+/** Pre-admission gate. OpenCode owns service fallback (Go may draw Zen credits), so only its own refusal stops a run. */
+export function providerAccountAdmissionBlocked(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): boolean {
+  return profile.provider !== "opencode" && providerAccountCapacity(profile, nowMs, model).state === "exhausted"
+}
+
 export function providerAccountCapacityLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string {
   const serviceId = profile.provider === "opencode" ? openCodeServiceFromModel(model) : null
   const serviceLabel = serviceId ? openCodeServiceLabel(profile, serviceId) : null
