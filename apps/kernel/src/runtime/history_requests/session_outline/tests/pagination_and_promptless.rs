@@ -808,3 +808,63 @@ fn agent_outline_groups_large_blob_metadata_sets() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+#[test]
+fn agent_outline_keeps_steering_visible_after_streamed_output_overflow() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        prompt_id: Some("prompt-1".into()),
+        turn_id: Some("prompt-1".into()),
+        provider_run_id: Some("run-1".into()),
+        ..Default::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        1,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "research"),
+        context.clone(),
+    );
+    let mut steering_context = context.clone();
+    steering_context.turn_id = Some("native-turn-uuid".into());
+    let steering = HistoryEvent::operational(
+        2,
+        HistoryEventKind::UserPrompt,
+        Some(crate::history::HistoryEventRole::User),
+        Some("focus on recovery".into()),
+        std::collections::BTreeMap::from([(
+            "merge_key".into(),
+            serde_json::Value::String(crate::history::steering_prompt_merge_key("queued-1")),
+        )]),
+        steering_context,
+    );
+    let mut events = vec![prompt.clone(), steering];
+    for sequence in 3..83 {
+        events.push(HistoryEvent::operational(
+            sequence,
+            HistoryEventKind::ProviderOutput,
+            Some(crate::history::HistoryEventRole::Assistant),
+            Some("streamed fragment".into()),
+            std::collections::BTreeMap::from([(
+                "merge_key".into(),
+                serde_json::Value::String(format!("message-{}", sequence)),
+            )]),
+            context.clone(),
+        ));
+    }
+    let turn = outline_turn_from_events(&prompt, events, false).expect("outline turn");
+    assert!(
+        turn.entries
+            .iter()
+            .any(|entry| entry.entry.merge_key.as_deref() == Some("steering-prompt:queued-1")),
+        "user steering must stay visible in the outline after assistant stream overflow"
+    );
+    assert!(turn.entries.len() <= projection::MAX_OUTLINE_INLINE_ENTRIES_PER_TURN);
+    assert!(turn
+        .entries
+        .windows(2)
+        .all(|entries| entries[0].entry_index < entries[1].entry_index));
+    assert!(turn
+        .blobs
+        .iter()
+        .any(|blob| blob.kind == SessionHistoryEntryKind::ProviderOutput));
+}
