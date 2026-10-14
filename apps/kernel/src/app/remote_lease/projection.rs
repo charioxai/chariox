@@ -1312,6 +1312,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             // MP-08 / MP-10 / MP-11: a definitive worker outcome wins the
             // cancel race; legacy omitted outcomes retain home intent above.
+            if !intentionally_cancelled {
+                // Snapshot readers use the shared stores without the app mutex.
+                // Publish the worker's receipt before clearing the active prompt,
+                // so an Ended run cannot appear idle with its previous completion.
+                self.record_projected_prompt_settlement(
+                    session_id,
+                    agent_id,
+                    &active_prompt,
+                    &projected_provider_run_id,
+                    projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+                    projected_termination.clone(),
+                    settlement_status,
+                );
+            }
             let completed = if intentionally_cancelled {
                 crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
                     self.app,
@@ -1324,15 +1338,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app
                     .prompt_owner_complete_active_prompt_only(session_id, agent_id)?
             };
-            self.record_projected_prompt_settlement(
-                session_id,
-                agent_id,
-                &completed,
-                &projected_provider_run_id,
-                projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
-                projected_termination.clone(),
-                settlement_status,
-            );
+            if intentionally_cancelled {
+                self.record_projected_prompt_settlement(
+                    session_id,
+                    agent_id,
+                    &completed,
+                    &projected_provider_run_id,
+                    projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+                    projected_termination.clone(),
+                    settlement_status,
+                );
+            }
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
