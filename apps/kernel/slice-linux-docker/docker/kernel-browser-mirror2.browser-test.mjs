@@ -1168,3 +1168,16 @@ test("MP-10: delayed same-origin child image becomes deliverable without a paren
   let delivered=false;for(let i=0;i<5;i++){const p=await next(800);assert(!p.reset);if(p.resources.some(r=>Buffer.from(r.data_base64,'base64').toString().includes('#6543ab'))){delivered=true;break;}}
   assert(delivered,'MP-10: the idle parent observer admits the completed child image');
  },{'/idle-child':{type:'text/html',body:'<!doctype html><style>.lazy{background-image:url(/slow-child.svg)}</style><p>idle</p>'},'/slow-child.svg':{type:'image/svg+xml',body:svg('#6543ab'),delay_ms:1200}}));
+
+// MP-08/MP-10/MP-11 review #1001: repeated resets must not retain retired control ids.
+test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<input id="field"><select><option>one</option></select>',async({host,next,subscription_id,evaluate})=>{
+ // Observe the real isolated-world Map calls; every snapshot allocates fresh ids.
+ // Install before the subscription observer is created by its first credit.
+ const tab=[...host.tabs.values()][0];const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+ const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
+ const world=await host.browser.ensureFocusWorld(connection,sessionId,tab.target_id,frameTree.frame);
+ const instrument=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:`(()=>{const NativeMap=Map;globalThis.__shapeMaps=[];globalThis.Map=class extends NativeMap{set(k,v){if(typeof k==='string'&&/^n[0-9]+$/.test(k)&&(v==='text'||v===false)&&!__shapeMaps.includes(this))__shapeMaps.push(this);return super.set(k,v)}};return true})()`,returnByValue:true},sessionId);assert(!instrument.exceptionDetails);
+ for(let i=0;i<4;i++)await next(0,i>0);
+ const result=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:"__shapeMaps.filter(m=>[...m.values()].every(v=>v==='text'||v===false)).map(m=>m.size)",returnByValue:true},sessionId);
+ assert(!result.exceptionDetails);assert.deepEqual(result.result.value,[2],'only the current input and select ids remain');
+}));
