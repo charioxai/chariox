@@ -30,7 +30,8 @@ use crate::runtime::workspace_commit_message_utility::workspace_commit_message_u
 const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 // Project discovery can need the same bounded budget as setup/validation.
 // Lightweight metadata discovery and ordinary utilities retain their limit.
-const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
+const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration =
+    super::project_environment_setup_budget::STAGE_TIMEOUT;
 
 fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
     match policy {

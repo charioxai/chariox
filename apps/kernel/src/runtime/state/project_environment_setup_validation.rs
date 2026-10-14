@@ -7,7 +7,8 @@ use super::project_environment_setup_storage::{
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
 
-pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration =
+    crate::runtime::project_environment_setup_budget::STAGE_TIMEOUT;
 // Cold toolchain setup may need the full stage budget. Each command still
 // shares the earlier overall deadline, so a sequence cannot extend it.
 pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = VALIDATION_TOTAL_TIMEOUT.as_millis() as u64;

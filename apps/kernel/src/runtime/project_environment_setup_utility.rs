@@ -151,6 +151,13 @@ cannot be computed with the read-only provider tools (for example, when OpenCode
 use bash), set that input's sha256 to `sha256:kernel`; the target kernel computes and verifies the\n\
 exact digest from its materialized worktree before declaring readiness. Never put file contents, credentials, tokens,\n\
 private keys, or other secrets in the definition or its input attestations.\n\n\
+The kernel permits {stage_budget_seconds} seconds for setup and a separate {stage_budget_seconds} seconds\n\
+TOTAL for validation, shared across all validation commands, not per command. A longer shell\n\
+timeout cannot extend either stage. Put dependency installation in setup_steps, not validation.\n\
+Choose ordinary project checks and a real bounded project build that fit together in the\n\
+validation budget on this worker. Do not require a cold full-workspace or release build merely\n\
+because CI runs one. Preserve explicitly requested and user-authored checks; never replace\n\
+required tool or build coverage with success placeholders.\n\n\
 Do not run project checks in this discovery turn; the kernel independently applies and reruns the\n\
 returned setup and validation commands on this same worker.\n\n\
 Request:\n{input_json}\n\n\
@@ -158,6 +165,7 @@ Return JSON only. Return the exact definition used or discovered; do not claim r
 command output, or add prose.\n\n\
 JSON Schema:\n{schema}",
         input_json = input_json,
+        stage_budget_seconds = super::project_environment_setup_budget::STAGE_TIMEOUT.as_secs(),
         schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| "{}".to_string()),
     )
 }

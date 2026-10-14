@@ -106,6 +106,7 @@ pub(crate) mod native_provider_account_discovery;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;
+pub(crate) mod project_environment_setup_budget;
 pub(crate) mod project_environment_setup_utility;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;

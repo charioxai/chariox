@@ -36,6 +36,12 @@ and every check from a user-authored definition. Correct invalid checks in an au
 generated definition using project evidence, preserving their intended tool and build coverage.
 Never replace checks with success placeholders; the kernel reruns the corrected commands.
 
+Honor the caller's total setup and validation stage budgets. Longer shell timeouts cannot extend
+them. Put dependency installation in setup steps, then choose ordinary tool checks and a real
+bounded project build that fit together in the validation budget on this worker. A CI-only cold
+full-workspace or release build is not automatically an ordinary readiness requirement. Preserve
+explicitly requested and user-authored checks.
+
 Project evidence discovery is read-only and the provider capability is enforced as read-only.
 For recipe discovery, use provider-native read-only file inspection, including shell reads only
 where the provider's enforced read-only sandbox permits them. Do not execute setup scripts,

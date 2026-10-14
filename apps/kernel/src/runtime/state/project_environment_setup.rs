@@ -2423,7 +2423,17 @@ impl KernelRuntimeState {
                             stderr_bytes,
                         });
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "project.environment_setup.validation",
+                            "project validation command could not complete",
+                            serde_json::json!({
+                                "command_index": command_index,
+                                "timed_out": error.contains("timed out") || error.contains("deadline"),
+                                "cancelled": error.contains("cancelled"),
+                                "cleanup_incomplete": error.contains("cleanup"),
+                            }),
+                        );
                         results.push(ProjectEnvironmentCommandResult {
                             command_digest: command_digest(&command),
                             exit_code: -1,
