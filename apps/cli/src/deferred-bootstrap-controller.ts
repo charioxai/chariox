@@ -1,5 +1,6 @@
 import type {
   BootstrapDeferredState,
+  RuntimeProviderRun,
   SessionHistoryCursorState,
   TranscriptEntry,
 } from "./cli-types.js"
@@ -11,6 +12,7 @@ import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entr
 
 export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
+  applyAttachedProviderRun?: (providerRun: RuntimeProviderRun | null, statusLine: string | null) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
   currentTranscriptEntryCount: () => number
@@ -103,6 +105,10 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       deps.setTerminalCommandCatalog(catalog)
     }).catch((error) => {
       warn("failed to hydrate terminal command catalog after bootstrap", error)
+    })
+
+    void deferred.attachedProviderRun?.then((result) => {
+      if (deps.currentAttachmentSessionId() === result.sessionId) deps.applyAttachedProviderRun?.(result.providerRun, result.statusLine)
     })
 
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {
