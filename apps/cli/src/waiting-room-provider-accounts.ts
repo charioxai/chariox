@@ -97,6 +97,9 @@ export function selectedProviderAccountStartBlockReason(
   if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
+  if (!profile) {
+    return `${profileId ?? "default"} is not available on this kernel. Sign in on this machine, or copy login from the machine that owns the account.`
+  }
   if (profile?.auth_state === "authenticated") {
     if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)

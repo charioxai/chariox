@@ -231,3 +231,11 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
     assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
   }
 })
+
+// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
+test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+  for (const mode of ["claude", "claude-p", "claude-headless"]) {
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
+      /not available on this kernel.*[Cc]opy login/)
+  }
+})

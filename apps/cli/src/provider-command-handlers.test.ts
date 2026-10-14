@@ -762,3 +762,27 @@ test("MP-08/MP-10/MP-11 Claude reauth opens OAuth without logging out", async ()
   }, {kind: "provider", raw: "/provider reauth claude", value: "reauth claude"})
   assert.deepEqual(calls, ["oauth:default:true"])
 })
+
+// MP-08 / MP-10 / MP-11: waiting-room actions carry stable IDs, not aliases.
+for (const provider of ["claude", "claude-p", "claude-headless"]) {
+  test(`MP-08 / MP-10 / MP-11 ${provider} refresh accepts the waiting-room profile ID`, async () => {
+    const profile = {
+      owner_user_id: "local", provider: "claude", profile_id: "claude-1-opaque", label: "miguel",
+      origin: "chariox_created" as const, is_default: true, auth_state: "authenticated" as const,
+      usage: {provider: "claude", profile_id: "claude-1-opaque", availability: "unavailable" as const, source: "test"},
+    }
+    const calls: string[] = [], errors: string[] = []
+    const deps: ProviderCommandHandlerDeps = {
+      currentProviderId: () => provider, appendNotice: () => {},
+      flashFooter: (message, tone) => {if (tone === "error") errors.push(message)},
+      listProviderAccountProfiles: async () => [profile],
+      refreshProviderAccountProfile: async (_provider, id) => {calls.push(id);return profile},
+    }
+    assert.equal(await resolveProviderAccountAlias(deps, provider, profile.profile_id), profile.profile_id)
+    await handleProviderSlashCommand(deps, {kind: "provider",
+      raw: `/provider accounts refresh ${provider} ${profile.profile_id}`,
+      value: `accounts refresh ${provider} ${profile.profile_id}`})
+    assert.deepEqual(calls, [profile.profile_id])
+    assert.deepEqual(errors, [])
+  })
+}
