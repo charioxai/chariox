@@ -192,6 +192,23 @@ impl KernelRuntimeState {
             ProviderHistoryAppends::enqueue(self.owned.clone(), entries, lease);
         }
     }
+    pub(crate) async fn flush_session_provider_history(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let runs = self
+            .owned
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session_id)
+            .collect::<Vec<_>>();
+        futures_util::future::try_join_all(
+            runs.iter().map(|run| self.flush_provider_history(run.id())),
+        )
+        .await?;
+        Ok(())
+    }
     pub(super) async fn flush_provider_history(&self, run_id: &str) -> Result<(), DaemonError> {
         self.provider_history_appends.flush_run(run_id).await
     }

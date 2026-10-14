@@ -166,6 +166,7 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
                 ..Default::default()
             })),
         );
+    let history_store = app.history_store();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
 
@@ -205,7 +206,37 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
             started.elapsed().as_millis()
         },
     );
+    // MP-08 / MP-10: an attaching client must not read history before an
+    // already-published asynchronous write becomes durable.
+    let history_runtime = runtime.clone();
+    let history_session = session.id().to_string();
+    let history_agent = agent.id().to_string();
+    let reading = tokio::spawn(async move {
+        crate::runtime::history_executor::execute_history_request(
+            history_store,
+            history_runtime.owned.operational_history_store.clone(),
+            &history_runtime,
+            &history_runtime.owned.config_projection,
+            crate::local::LocalDaemonRequest::GetSessionHistoryOutline(
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: history_session,
+                    agent_ids: Some(vec![history_agent]),
+                    latest_prompt_count: Some(4),
+                    cursor: None,
+                    include_prefetched_content: true,
+                },
+            ),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let read_waited = !reading.is_finished();
     holder.join().unwrap();
+    reading.await.unwrap().unwrap();
+    assert!(
+        read_waited,
+        "MP-08 / MP-10: initial history raced a published pending write"
+    );
     drop(cleanup);
     assert!(output
         .unwrap()

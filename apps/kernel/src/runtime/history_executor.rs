@@ -30,6 +30,12 @@ pub(crate) async fn execute_history_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
+            // MP-08 / MP-10: new attachments are registered before this read.
+            // Fence earlier asynchronous publication; subsequent live rows are
+            // already buffered for that attachment with their reserved sequence.
+            runtime_state
+                .flush_session_provider_history(&request.session_id)
+                .await?;
             let started = Instant::now();
             let session_id = request.session_id.clone();
             let requested_agent_count = request.agent_ids.as_ref().map_or(0, Vec::len);
@@ -80,6 +86,9 @@ pub(crate) async fn execute_history_request(
             response
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
+            runtime_state
+                .flush_session_provider_history(&request.session_id)
+                .await?;
             let agent_import =
                 agent_external_import(runtime_state, &request.session_id, &request.agent_id)
                     .await?;
@@ -91,6 +100,9 @@ pub(crate) async fn execute_history_request(
             .await
         }
         LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
+            runtime_state
+                .flush_session_provider_history(&request.session_id)
+                .await?;
             let agent_import =
                 agent_external_import(runtime_state, &request.session_id, &request.agent_id)
                     .await?;
