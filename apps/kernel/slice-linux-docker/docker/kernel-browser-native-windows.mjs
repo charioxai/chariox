@@ -12,7 +12,7 @@ export async function nativeWindowInventory({display,pid,isCurrent}){
    const refuse=()=>reject(Error('MP-11: native window inventory unavailable'));
    timer=setTimeout(refuse,5000);child.once('error',refuse);child.stdin.once('error',refuse);
    child.stdout.on('data',data=>{bytes+=data;if(bytes.length>32768)refuse()});
-   child.once('exit',code=>{try{if(code!==0||bytes.length>32768)throw Error();resolve(JSON.parse(bytes))}catch{refuse()}});
+   child.once('close',code=>{try{if(code!==0||bytes.length>32768)throw Error();resolve(JSON.parse(bytes))}catch{refuse()}});
    child.stdin.end(JSON.stringify({pid}));
   });
   if(!current()||!Array.isArray(rows)||rows.length>32||rows.some(r=>!r||
