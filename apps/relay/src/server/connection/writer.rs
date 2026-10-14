@@ -54,33 +54,19 @@ impl Transfer {
     }
 }
 
-// Only correlation-addressed requests/responses may overtake a bulk envelope.
-// Subscription events and lifecycle messages retain their original order.
+// MP-08/MP-10: bounded correlation-addressed replies can overtake a catalog
+// already being streamed. Every existing receiver admits ordinary JSON while
+// assembling a transfer; no transfer IDs interleave and no payload is inspected.
+// The next ordered chunk receipt accounts for these bytes too.
+const INLINE_RESPONSE_BYTES: usize = 1024 * 1024;
 fn independent_small(message: &Message) -> bool {
-    if message.len() > CHUNK_BYTES {
-        return false;
-    }
+    if message.len() > INLINE_RESPONSE_BYTES { return false; }
     match message {
         Message::Ping(_) | Message::Pong(_) | Message::Close(_) => true,
         Message::Text(text) => serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("kind")
-                    .and_then(|kind| kind.as_str())
-                    .map(str::to_string)
-            })
-            .is_some_and(|kind| {
-                matches!(
-                    kind.as_str(),
-                    "client_connected"
-                        | "client_response"
-                        | "client_metadata_response"
-                        | "daemon_request"
-                        | "daemon_peer_response"
-                        | "daemon_incoming_peer_request"
-                )
-            }),
+            .ok().and_then(|value| value.get("kind").and_then(|kind| kind.as_str()).map(str::to_string))
+            .is_some_and(|kind| matches!(kind.as_str(), "client_response" | "client_metadata_response" | "daemon_peer_response")
+                || message.len() <= CHUNK_BYTES && matches!(kind.as_str(), "client_connected" | "daemon_request" | "daemon_incoming_peer_request")),
         _ => false,
     }
 }
@@ -177,7 +163,7 @@ pub(super) async fn run_writer<S>(
             earlier_request |= request;
             control(message)
                 || active.as_ref().is_some_and(|transfer| {
-                    transfer.small_sent - transfer.small_acked + message.len() <= CHUNK_BYTES
+                    transfer.small_sent - transfer.small_acked + message.len() <= INLINE_RESPONSE_BYTES
                         && independent_small(message)
                         && ordered
                 })

@@ -5,11 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v1";
 pub const CHUNK_BYTES: usize = 16 * 1024;
-// MP-08/MP-10: the opaque transport window must cover a realistic WAN's
-// bandwidth-delay product. 64KiB made native provider catalogs hold the
-// response lane past interactive clients' deadlines. Chunk size, ordered
-// receipts, maximum message size and accepted wire frames stay identical.
-pub const WINDOW_BYTES: usize = 256 * 1024;
+pub const WINDOW_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
