@@ -276,3 +276,112 @@ fn review983_trusted_git_metadata_is_bounded_and_sanitized() {
         "optional Git must not delay both review operations by four seconds"
     );
 }
+
+// MP-08 / MP-10 / MP-11: Detect -> proposal acceptance/Save -> actual named
+// interpreter Check, preserving provenance and supported Python specifiers.
+#[test]
+fn review0634_python_manifest_constraints_reach_save_and_check() {
+    let installed = check_inventory::version("python3", &[])
+        .unwrap()
+        .expect("installed Python 3");
+    let parts: Vec<_> = installed.split('.').collect();
+    let minor = format!("{}.{}", parts[0], parts[1]);
+    for (constraint, expected) in [
+        (">=3.10,<4".to_owned(), EnvironmentObservationStatus::Ready),
+        (
+            ">=3.10,<3.11".to_owned(),
+            EnvironmentObservationStatus::Conflict,
+        ),
+        (format!("=={minor}.*"), EnvironmentObservationStatus::Ready),
+        ("==2.7.*".to_owned(), EnvironmentObservationStatus::Conflict),
+        (
+            "~=3.12".to_owned(),
+            EnvironmentObservationStatus::NeedsYourInput,
+        ),
+        (
+            "!=3.12".to_owned(),
+            EnvironmentObservationStatus::NeedsYourInput,
+        ),
+    ] {
+        let root = crate::test_support::TestWorktree::new("review0634-python");
+        std::fs::write(
+            root.path().join("pyproject.toml"),
+            format!("[project]\nname='project'\nrequires-python='{constraint}'\n"),
+        )
+        .unwrap();
+        let store = ProjectEnvironmentStore::new(root.path());
+        let project = RuntimeProject::new(
+            "python",
+            "owner",
+            root.path().to_str().unwrap(),
+            "Python",
+            RuntimeProjectKind::Named,
+        );
+        let mut current = store.snapshot(&project).unwrap();
+        current.proposals = detect_environment(&current.folders, &current.lineage.environment_id)
+            .unwrap()
+            .proposals;
+        let proposal=current.proposals.iter().find(|p|matches!(&p.requirement.spec,RequirementSpec::Software{identity,..} if identity=="python")).unwrap().clone();
+        let saved = save(
+            &store,
+            &current,
+            environment_draft(&current),
+            vec![proposal.proposal_id],
+        );
+        let requirement = saved
+            .folders
+            .iter()
+            .flat_map(|f| &f.requirements)
+            .find(|r| r.requirement_id == proposal.requirement.requirement_id)
+            .unwrap();
+        let target = EnvironmentTargetBinding {
+            machine_id: "machine".into(),
+            target_instance_generation: "boot".into(),
+            slice_ref: None,
+        };
+        let observation = check::check_requirement(
+            &context(root.path()),
+            &saved,
+            requirement,
+            &target,
+            "check",
+            &mut std::collections::BTreeMap::new(),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert_eq!(
+            observation.status, expected,
+            "Python {installed}, constraint {constraint}: {}",
+            observation.reason_code
+        );
+    }
+}
+#[test]
+fn review0634_python_specifiers_keep_unsupported_or_malformed_cases_unproven() {
+    for (version, constraint, expected) in [
+        ("3.12.8", ">=3.10,<4", Some(true)),
+        ("3.9.9", ">=3.10,<4", Some(false)),
+        ("4.0.0", ">=3.10,<4", Some(false)),
+        ("3.12.8", "==3.12.*", Some(true)),
+        ("3.13.0", "==3.12.*", Some(false)),
+        ("3.12.8", "==3.12", Some(false)),
+        ("3.12.0", "==3.12", Some(true)),
+        ("3.12.8", "~=3.12", None),
+        ("3.12.8", "!=3.12.8", None),
+        ("3.12.8", ">=3.10,,<4", None),
+        ("3.12.8", ">=3.10,", None),
+    ] {
+        assert_eq!(
+            check_inventory::satisfies(version, constraint),
+            expected,
+            "{constraint}"
+        );
+    }
+    assert_eq!(
+        check_inventory::constraints_overlap(Some(">=3.10,<4"), Some("==3.12.*")),
+        Some(true)
+    );
+    assert_eq!(
+        check_inventory::constraints_overlap(Some(">=3.10,<3.12"), Some("==3.12.*")),
+        Some(false)
+    );
+}

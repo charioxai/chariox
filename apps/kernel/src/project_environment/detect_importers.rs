@@ -720,7 +720,7 @@ fn version_token(value: &str) -> bool {
         && value.bytes().any(|b| b.is_ascii_digit())
         && value
             .bytes()
-            .all(|b| b.is_ascii_digit() || b"v.xX*<>=~^| ,-+".contains(&b))
+            .all(|b| b.is_ascii_digit() || b"v.xX*<>=!~^| ,-+".contains(&b))
 }
 fn unique_line(text: &str, key: &str) -> Option<u32> {
     let mut matches = text.lines().enumerate().filter(|(_, line)| {

@@ -106,6 +106,9 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
             }
             m.is_file().then_some(p)
         })
+        // MP-08 / MP-10 / MP-11: Linux distributions commonly expose only
+        // python3. Preserve an explicit python choice, then probe that alias.
+        .or_else(|| (name == "python").then(|| executable("python3")).flatten())
 }
 pub(super) fn remaining(deadline: Instant, cap: Duration) -> Result<Duration, &'static str> {
     let left = deadline.saturating_duration_since(Instant::now()).min(cap);
@@ -190,9 +193,17 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
         }
         return Some(accepted);
     }
+    // Python conjunctions use commas and exact equality uses two equals.
+    // Empty clauses and unsupported operators remain unproven.
+    if constraint.split(',').any(|clause| clause.trim().is_empty()) {
+        return None;
+    }
     let mut accepted = true;
-    for token in constraint.split_whitespace() {
-        let op = [">=", "<=", ">", "<", "^", "~", "="]
+    for token in constraint
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|token| !token.is_empty())
+    {
+        let op = [">=", "<=", "==", ">", "<", "^", "~", "="]
             .into_iter()
             .find(|p| token.starts_with(p))
             .unwrap_or("");
@@ -219,7 +230,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
                 ">=" => actual >= lower,
                 ">" => actual >= upper,
                 "<=" => actual < upper,
-                "" | "=" | "~" | "^" => actual >= lower && actual < upper,
+                "" | "=" | "==" | "~" | "^" => actual >= lower && actual < upper,
                 _ => return None,
             };
             continue;
@@ -241,6 +252,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
                 let i = e.iter().position(|n| *n != 0).unwrap_or(e.len() - 1);
                 !cmp.is_lt() && v.get(..=i) == e.get(..=i)
             }
+            "==" => cmp.is_eq(),
             "" | "=" => v.starts_with(&e),
             _ => return None,
         };
@@ -261,7 +273,8 @@ pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bo
     for token in [a, b]
         .into_iter()
         .flat_map(|c| c.split("||"))
-        .flat_map(str::split_whitespace)
+        .flat_map(|clause| clause.split(|c: char| c.is_whitespace() || c == ','))
+        .filter(|token| !token.is_empty())
     {
         if token == "*" {
             continue;
