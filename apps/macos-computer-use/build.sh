@@ -17,12 +17,9 @@ mkdir -p "$build/modules"
 arch=$(uname -m)
 flags=(-j2 -parse-as-library -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules")
 swiftc "${flags[@]}" Policy.swift Signing.swift Coordinates.swift PointerInput.swift WindowFence.swift PointerInputTests.swift Pairing.swift Tests.swift -o "$build/policy-tests"
-# Unprivileged TextEdit drill reference: AppKit on its own main thread, never in the helper.
-swiftc -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules" TextEditReference.swift -o "$build/textedit-reference"
-"$build/textedit-reference" --self-test
 "$build/policy-tests"
 # Unprivileged TextEdit drill reference: AppKit on its own main thread, never in the helper.
-swiftc -target "$arch-apple-macosx14.0" -module-cache-path "$build/modules" TextEditReference.swift -o "$build/textedit-reference"
+swiftc "${flags[@]}" TextEditReference.swift -o "$build/textedit-reference"
 "$build/textedit-reference" --self-test
 # Apple Silicon must execute signed policy tests even for an unsigned release.
 bundle_flags=("${flags[@]}")

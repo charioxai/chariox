@@ -185,16 +185,21 @@ func selfTest() throws {
     print("PASS TextEdit reference recovers synthetic probes at scale 1 and 2")
 }
 
-let arguments = Array(CommandLine.arguments.dropFirst())
-do {
-    if arguments == ["--self-test"] { try selfTest(); exit(0) }
-    let numbers = arguments.dropFirst().compactMap(Double.init)
-    guard arguments.count == 5, numbers.count == 4,
-          let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: arguments[0]) as CFURL, nil),
-          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Fit(reason: "usage: CAPTURE.png X Y WIDTH HEIGHT") }
-    let result = try reference(capture: image, bounds: CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]))
-    print(String(data: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
-} catch {
-    fputs("refused: \((error as? Fit)?.reason ?? "unexpected-error")\n", stderr)
-    exit(1)
+// Synchronous main: every AppKit call above runs on the main thread.
+@main struct TextEditReference {
+    static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        do {
+            if arguments == ["--self-test"] { try selfTest(); return }
+            let numbers = arguments.dropFirst().compactMap(Double.init)
+            guard arguments.count == 5, numbers.count == 4,
+                  let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: arguments[0]) as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Fit(reason: "usage: CAPTURE.png X Y WIDTH HEIGHT") }
+            let result = try reference(capture: image, bounds: CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]))
+            print(String(data: try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
+        } catch {
+            fputs("refused: \((error as? Fit)?.reason ?? "unexpected-error")\n", stderr)
+            exit(1)
+        }
+    }
 }
