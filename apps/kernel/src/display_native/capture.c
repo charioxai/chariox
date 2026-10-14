@@ -86,7 +86,7 @@ static int redirect_window(struct Capture *c,int mode) {
 /* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
  * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
 static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
-static struct Capture *capture_open(unsigned long owner, int width, int height,
+static struct Capture *capture_open(unsigned long owner, Window selected, int width, int height,
     int window_width, int window_height, int left, int top) {
     if(owner<=1||width<1||width>2560||height<1||height>1600)return NULL;
     if(window_height&&(window_width<1||window_width>2560||window_height<1||window_height>2400||
@@ -101,6 +101,7 @@ static struct Capture *capture_open(unsigned long owner, int width, int height,
     char seen[256]="";
     if (!XQueryTree(c->display,DefaultRootWindow(c->display),&root,&parent,&children,&count)) {open_refused("x_tree");goto fail;}
     for (unsigned i=0;i<count;i++) {
+        if(selected&&children[i]!=selected)continue;
         unsigned w,h;
         if (window_pid(c->display,children[i])!=owner || !dimensions(c->display,children[i],&w,&h)) continue;
         if (owned++<8) {size_t n=strlen(seen);snprintf(seen+n,sizeof(seen)-n,"%s%ux%u",n?",":"",w,h);}
@@ -142,7 +143,7 @@ fail:
     cx_capture_close(c); return NULL;
 }
 struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
-    return capture_open(owner,width,height,0,0,0,0);
+    return capture_open(owner,0,width,height,0,0,0,0);
 }
 /* MP-08/MP-10/MP-11: kernel-resolved owned-window crop. The exact window
  * dimensions, crop and PID remain private worker state, never client authority.
@@ -150,7 +151,34 @@ struct Capture *cx_capture_open(unsigned long owner, int width, int height) {
 struct Capture *cx_capture_open_region(unsigned long owner, int window_width,
     int window_height, int left, int top, int width, int height) {
     if(!window_height)return NULL;
-    return capture_open(owner,width,height,window_width,window_height,left,top);
+    return capture_open(owner,0,width,height,window_width,window_height,left,top);
+}
+/* MP-08/MP-10/MP-11: private kernel-resolved XID, still checked against
+ * the exact process/window/crop. No client may supply this selection. */
+struct Capture *cx_capture_open_selected_region(unsigned long owner,Window selected,
+    int window_width,int window_height,int left,int top,int width,int height){
+    if(selected<=1||selected>0xffffffffUL||!window_height)return NULL;
+    return capture_open(owner,selected,width,height,window_width,window_height,left,top);
+}
+/* Numeric-only inventory on the kernel-owned private X server. Never names
+ * a desktop/root surface, title, URL, pixels or credentials. */
+int cx_capture_inventory(unsigned long owner,int64_t *out,int limit){
+    if(owner<=1||limit<1||limit>32)return -1;
+    Display *d=XOpenDisplay(NULL);if(!d)return -1;
+    Window root,parent,*children=NULL,focus;unsigned count=0;int found=0,revert;
+    XGetInputFocus(d,&focus,&revert);
+    if(!XQueryTree(d,DefaultRootWindow(d),&root,&parent,&children,&count)){XCloseDisplay(d);return -1;}
+    for(unsigned i=0;i<count;i++){
+        if(window_pid(d,children[i])!=owner)continue;
+        XWindowAttributes a;Window transient=0;int x,y;
+        if(!XGetWindowAttributes(d,children[i],&a)||a.width<1||a.height<1)continue;
+        if(found==limit){found=-1;break;}
+        Window child; if(!XTranslateCoordinates(d,children[i],root,0,0,&x,&y,&child)){found=-1;break;}
+        XGetTransientForHint(d,children[i],&transient);
+        int64_t *v=out+found++*9;v[0]=children[i];v[1]=a.width;v[2]=a.height;v[3]=x;v[4]=y;
+        v[5]=a.map_state==IsViewable;v[6]=a.override_redirect;v[7]=transient;v[8]=focus==children[i];
+    }
+    if(children)XFree(children);XCloseDisplay(d);return found;
 }
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }

@@ -17,6 +17,9 @@ pub fn probe_codec() -> Result<(), String> {
     }
     Ok(())
 }
+pub fn inventory() -> Result<(), String> {
+    worker::inventory()
+}
 pub fn run() -> Result<(), String> {
     worker::run()
 }

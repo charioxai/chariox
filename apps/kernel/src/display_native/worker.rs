@@ -27,6 +27,8 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WindowRegion {
+    #[serde(default)]
+    id: Option<u32>,
     width: i32,
     height: i32,
     left: i32,
@@ -40,7 +42,8 @@ impl Config {
         match &self.window_region {
             None => [(1280, 800), (2560, 1600), (1920, 1080)].contains(&(self.width, self.height)),
             Some(window) => {
-                (2..=2560).contains(&self.width)
+                window.id.is_none_or(|id| id > 1)
+                    && (2..=2560).contains(&self.width)
                     && (2..=1600).contains(&self.height)
                     && self.width % 2 == 0
                     && self.height % 2 == 0
@@ -66,6 +69,8 @@ mod region_tests {
             .unwrap()
             .valid());
         for (key, value) in [
+            ("id", 0),
+            ("id", 1),
             ("left", -1),
             ("top", 801),
             ("width", 1279),
@@ -306,6 +311,16 @@ pub(super) fn run() -> Result<(), String> {
         }
         capture = Capture(unsafe {
             match &config.window_region {
+                Some(window) if window.id.is_some() => ffi::cx_capture_open_selected_region(
+                    config.pid as libc::c_ulong,
+                    window.id.unwrap() as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
                 Some(window) => ffi::cx_capture_open_region(
                     config.pid as libc::c_ulong,
                     window.width,
@@ -656,4 +671,34 @@ pub(super) fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// MP-08/MP-10/MP-11: one-shot numeric inventory, private owned-display ABI.
+pub(super) fn inventory() -> Result<(), String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        pid: u32,
+    }
+    let mut line = String::new();
+    use std::io::Read;
+    std::io::stdin()
+        .take(8193)
+        .read_to_string(&mut line)
+        .map_err(|_| "MP-11: native window query")?;
+    if line.len() > 8192 {
+        return Err("MP-11: native window query bound".into());
+    }
+    let q: Query = serde_json::from_str(&line).map_err(|_| "MP-11: native window query")?;
+    if q.pid <= 1 {
+        return Err("MP-11: native window owner".into());
+    }
+    let mut data = [0i64; 32 * 9];
+    let count = unsafe { ffi::cx_capture_inventory(q.pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    if count < 0 {
+        return Err("MP-11: native window inventory".into());
+    }
+    let rows:Vec<_>=data.chunks_exact(9).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1})).collect();
+    serde_json::to_writer(std::io::stdout().lock(), &rows)
+        .map_err(|_| "MP-11: native window inventory reply".into())
 }

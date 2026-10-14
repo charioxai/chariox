@@ -73,6 +73,17 @@ extern "C" {
         width: i32,
         height: i32,
     ) -> *mut c_void;
+    pub(super) fn cx_capture_open_selected_region(
+        owner: libc::c_ulong,
+        window: libc::c_ulong,
+        window_width: i32,
+        window_height: i32,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+    ) -> *mut c_void;
+    pub(super) fn cx_capture_inventory(owner: libc::c_ulong, out: *mut i64, limit: i32) -> i32;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
