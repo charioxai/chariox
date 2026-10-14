@@ -63,8 +63,9 @@ does not prove current `/context`, >75%, queue-once, negative controls or outage
 
 Remote TUI shaping uses owned namespaces and external `ns-tools/` slirp4netns.
 Web uses the opaque CONNECT worker; it never terminates TLS or prints headers.
-Web screenshots cover DPR1/2; set viewport cases required by the active plan and
-retain screen video for real-use inspection. The former 150ms gate is measurement
+Web records screen video and screenshots at DPR1/2, default 1440×900. Repeat
+with `CTXVAL_VIEWPORT='{"width":1920,"height":1080}'` for the second desktop case;
+inspect every recording for stuck or blank views. The former 150ms gate is measurement
 only under owner C2. Runtime requests used for enrollment/read-only observation do
 not replace actual TUI/Web input for user-facing acceptance.
 
