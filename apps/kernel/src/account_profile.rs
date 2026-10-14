@@ -1196,16 +1196,7 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         self.find(owner_user_id, provider, profile_id)?
-            .ok_or_else(|| {
-                registry_error(
-                    "resolve account profile",
-                    format!(
-                        "account profile `{}` is not registered for {}",
-                        profile_id.trim(),
-                        provider.trim()
-                    ),
-                )
-            })
+            .ok_or_else(|| missing_account_profile(provider, profile_id))
     }
 
     pub(crate) fn find(
@@ -4183,15 +4174,21 @@ fn resolve_stored_profile<'a>(
     provider: &str,
     profile_id: &str,
 ) -> Result<&'a StoredProviderAccountProfile, DaemonError> {
-    find_stored_profile(document, owner_user_id, provider, profile_id).ok_or_else(|| {
-        registry_error(
-            "resolve account profile",
-            format!(
-                "account profile `{}` is not registered for {provider}",
-                profile_id.trim()
-            ),
-        )
-    })
+    find_stored_profile(document, owner_user_id, provider, profile_id)
+        .ok_or_else(|| missing_account_profile(provider, profile_id))
+}
+
+// MP-08 / MP-10 / MP-11: a profile ID is scoped to this kernel and owner.
+// Provider run modes are not distinct credential families.
+fn missing_account_profile(provider: &str, profile_id: &str) -> DaemonError {
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+    registry_error(
+        "resolve account profile",
+        format!(
+            "account profile `{}` is not registered for {provider} on this kernel. Sign in on this machine, or copy login from the machine that owns the account, then select it again",
+            profile_id.trim(),
+        ),
+    )
 }
 
 fn find_stored_profile<'a>(
@@ -4936,6 +4933,59 @@ mod tests {
         observed_at_ms: u64,
         #[serde(default)]
         resets_at_ms: Option<u64>,
+    }
+
+    // MP-08 / MP-10 / MP-11: aliases share the same kernel-local account;
+    // another kernel and another owner must never inherit its signed-in state.
+    #[test]
+    fn claude_modes_resolve_only_the_owning_kernel_profile() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-mode-account-scope");
+        let source = ProviderAccountProfileRegistry::open(root.path().join("a.json")).unwrap();
+        let target = ProviderAccountProfileRegistry::open(root.path().join("b.json")).unwrap();
+        let profile = source.create_managed("local", "claude", "miguel").unwrap();
+        source
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        for mode in ["claude", "claude-p", "claude-headless"] {
+            assert_eq!(
+                source
+                    .get("local", mode, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Authenticated
+            );
+            source
+                .require_authenticated("local", mode, &profile.profile_id, None, "test launch")
+                .unwrap();
+            assert!(source
+                .resolve_environment("local", mode, &profile.profile_id)
+                .unwrap()
+                .contains_key("CLAUDE_CONFIG_DIR"));
+            assert!(source
+                .find("other-owner", mode, &profile.profile_id)
+                .unwrap()
+                .is_none());
+        }
+        for mode in ["claude", "claude-p", "claude-headless"] {
+            let error = target.get("local", mode, &profile.profile_id).unwrap_err();
+            let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+            assert!(
+                !mapped.retryable,
+                "missing {mode} profile requires user action"
+            );
+            assert!(mapped.message.contains("this kernel"));
+            assert!(mapped.message.contains("copy login"));
+        }
     }
 
     #[test]

@@ -219,3 +219,11 @@ test("exhausted selected account exposes reset and a usable alternative", () => 
   assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
   assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
 })
+
+// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
+test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+  for (const mode of ["claude", "claude-p", "claude-headless"]) {
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
+      /not available on this kernel.*[Cc]opy login/)
+  }
+})

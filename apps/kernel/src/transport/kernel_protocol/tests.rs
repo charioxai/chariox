@@ -816,3 +816,21 @@ fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
         other => panic!("unexpected event: {other:?}"),
     }
 }
+
+// MP-08 / MP-10 / MP-11: do not turn a missing account into a retry loop.
+#[test]
+fn missing_account_resolution_is_definitive_on_kernel_transport() {
+    let error = DaemonError::LocalTransport {
+        operation: "resolve account profile",
+        message: "account is absent on this kernel; copy login or sign in".into(),
+    };
+    let mapped = map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+    assert_eq!(mapped.message, error.to_string());
+    let transient = DaemonError::LocalTransport {
+        operation: "read account profile registry",
+        message: "temporary read failure".into(),
+    };
+    assert!(map_kernel_error(&transient).retryable);
+}

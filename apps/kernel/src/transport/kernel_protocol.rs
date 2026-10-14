@@ -854,6 +854,13 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::RelayPeerCleanupAbsent { .. } => {
             kernel_error("local_transport_error", error, false)
         }
+        // MP-08 / MP-10 / MP-11: profile absence/isolation needs an explicit
+        // account action; repeating the same launch cannot repair it.
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "resolve account profile" =>
+        {
+            kernel_error("local_transport_error", error, false)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
