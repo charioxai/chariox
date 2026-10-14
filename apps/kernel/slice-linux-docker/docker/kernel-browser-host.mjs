@@ -46,7 +46,7 @@ export function scheduleHostRequest(request, browser) {
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach']);
+const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
@@ -241,6 +241,7 @@ export class KernelBrowserHost {
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
   async compositorFor(tab,stream) {
+    if(stream.regionSource)return stream.regionSource;
     // MP-08/MP-10/MP-11: mirror capture/input never loads the video backend.
     const {LinuxCapture,selectNativeCapture} = await import('./kernel-browser-native.mjs');
     const {CompositorSource} = await import('./kernel-browser-compositor.mjs');
@@ -483,6 +484,11 @@ export class KernelBrowserHost {
     }, Math.max(1, stream.expires - Date.now()));
     stream.timer.unref?.();
   }
+  async removeDisplay(id) {
+    const stream=this.displays.get(id);
+    if(!stream)return;
+    this.displays.delete(id);await stream.close();
+  }
   async removeStream(id) {
     const stream = this.streams.get(id);
     if (!stream) return;
@@ -511,7 +517,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -525,6 +531,14 @@ export class KernelBrowserHost {
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     if (command.op === "open") return this.observe(await this.open(command.url, undefined, { signal }), null, scope);
     for (const [id, stream] of this.displays) if (Date.now() > stream.expires) { await stream.close(); this.displays.delete(id); }
+    if(command.op==='display_subscribe'&&command.target) {
+      const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
+      return subscribeRegion(this,command,scope,signal);
+    }
+    if(command.op==='display_input_target'||command.op==='input'&&command.binding_id) {
+      const {regionInput,regionInputTarget}=await import('./kernel-browser-display-regions.mjs');
+      return command.op==='display_input_target'?regionInputTarget(this,command,scope,signal):regionInput(this,command,scope,signal);
+    }
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
@@ -724,7 +738,7 @@ export class KernelBrowserHost {
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
-        if (!["screenshot", "poll", "mirror_next"].includes(request.params?.op)) {
+        if (!["screenshot", "poll", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
         return { id: request.id, ok: true, result };

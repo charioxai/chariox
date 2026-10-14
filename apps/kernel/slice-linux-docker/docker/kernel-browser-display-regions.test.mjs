@@ -1,0 +1,90 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {subscribeRegion, regionInput, regionInputTarget} from './kernel-browser-display-regions.mjs';
+
+function fixture(kind='region') {
+ const tab={tab_id:'t',target_id:'target',document_id:'doc'},calls=[];
+ let alive=true;
+ const lease={binding_id:'opaque',tab_id:'t',generation:2,document_id:'doc',sequence:3,input_epoch:3,
+  rect:{x:10,y:20,width:100,height:50},device_scale_factor:2,
+  isAlive:()=>alive,isCurrent:async()=>{calls.push('live');return alive;},close:async()=>{alive=false;},
+  attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
+ const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,scale:2,isCurrent:()=>alive};
+ const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
+  chromium:{display:{},child:{pid:42},scale:2},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
+  displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
+  mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
+  chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
+ class Capture {constructor(options){this.options=options;this.region={css_width:options.rect.width/2,css_height:options.rect.height/2};calls.push(options);}async start(){return this;}async close(){calls.push('close');} valid(){return alive;}}
+ const command={op:'display_subscribe',tab_id:'t',generation:2,codecs:['png','avc1.420033'],bitrate:2_000_000,device_scale_factor:1,
+  target:kind==='region'?{kind,mirror_subscription_id:'mirror',document_id:'doc',sequence:3,region_id:'n1'}:{kind,window_generation:7}};
+ return {host,tab,lease,binding,calls,command,Capture,retire:()=>{alive=false;}};
+}
+test('MP-08/MP-11 §2a lease supplies crop; viewer density never selects geometry',async()=>{
+ const f=fixture(),result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert.deepEqual(f.calls[0],[{mirror_subscription_id:'mirror',generation:2,document_id:'doc',sequence:3,region_id:'n1'},'terminal:a']);
+ assert.equal(result.source_kind,'region');assert.equal(result.binding_id,'opaque');assert.equal(result.css_width,100);assert.equal(result.css_height,50);assert.equal(result.device_scale_factor,2);
+ const source=[...f.host.displays.values()][0].regionSource;
+ assert.deepEqual(source.options.rect,{left:20,top:214,width:200,height:100});
+ assert.equal(typeof source.options.validateCurrent,'function');
+ await [...f.host.displays.values()][0].close();
+});
+test('MP-08/MP-11 chrome band uses owner constructor shape and window epoch',async()=>{
+ const f=fixture('browser_chrome'),result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert.equal(result.css_width,1280);assert.equal(result.css_height,87);assert.equal(result.sequence,7);assert.notEqual(result.document_id,'doc');
+ const s=[...f.host.displays.values()][0];assert.equal(s.regionSource.options.surface,'browser_chrome');await s.close();
+});
+for(const extra of ['rect','xid','pid','selector'])test(`MP-11 rejects client ${extra} before resolving`,async()=>{
+ const f=fixture();f.command.target[extra]=1;await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));assert.equal(f.calls.length,0);
+});
+test('MP-11 stale chrome generation and inactive page bindings refuse',async()=>{
+ const f=fixture('browser_chrome');f.command.target.window_generation=6;await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));
+ const p=fixture();p.command.tab_id='foreign';await assert.rejects(subscribeRegion(p.host,p.command,'terminal:a',undefined,{Capture:p.Capture}));
+});
+test('MP-11 region input checks caller, epoch, live geometry and final mirror hit',async()=>{
+ const f=fixture();await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=[...f.host.displays.values()][0];let dispatch=0;
+ const command={op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}};
+ f.host.dispatchRegionInput=async(_s,resolved)=>{await resolved.guard();dispatch++;};
+ await regionInput(f.host,command,'terminal:a');assert.equal(dispatch,1);assert(f.calls.includes('hit'));
+ for(const changed of [{sequence:4},{document_id:'new'},{_agent_input:true}])await assert.rejects(regionInput(f.host,{...command,...changed},'terminal:a'));
+ await assert.rejects(regionInput(f.host,command,'terminal:b'));f.retire();await assert.rejects(regionInput(f.host,command,'terminal:a'));assert.equal(dispatch,1);await stream.close();
+});
+test('MP-11 chrome pre-ledger target comes from owner arbiter; missing seam refuses',async()=>{
+ const f=fixture('browser_chrome'),r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const command={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'key',key:'l',modifiers:2}};
+ await assert.rejects(regionInputTarget(f.host,command,'terminal:a'));
+ f.host.arbiter={resolveDisplayInput:async()=>({tab_id:'t',document_id:'current'})};
+ const target=await regionInputTarget(f.host,command,'terminal:a');assert.equal(target.document_id,'current');assert.equal(target.region_document_id,r.document_id);
+ await [...f.host.displays.values()][0].close();
+});
+test('MP-08/MP-11 fractional clips round inward and input retains canonical offset',async()=>{
+ const f=fixture();f.lease.rect={x:10.2,y:20.2,width:100.1,height:50.1};
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert.equal(r.css_width,99);assert.equal(r.css_height,49);
+ const s=[...f.host.displays.values()][0];assert.deepEqual(s.regionSource.options.rect,{left:21,top:215,width:198,height:98});
+ assert(Math.abs(s.regionOffset.x-.3)<1e-9);await s.close();
+});
+test('MP-11 capture rejected after async geometry retirement leaves no display',async()=>{
+ const f=fixture();class Capture extends f.Capture {async start(){f.retire();return this;}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}));assert.equal(f.host.displays.size,0);assert(f.calls.includes('close'));
+});
+test('MP-08/MP-11 actual credit and frame path uses crop/window lifetime; retires before delivery',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ let current=true,checks=0;
+ const tab={tab_id:'t',target_id:'target',document_id:'window-2-7'},policy={unknown:false};
+ const sample={serial:1,tab_id:'t',document_id:tab.document_id,raw:{},width:200,height:100,motion:true,data_base64:'signature',encoded:{key:true,data_base64:'YWJj'}};
+ const source={native:true,attested:true,regionRevision:0,policy,tab,closed:false,valid:()=>true,allowed:()=>true,sample:()=>sample};
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',codec:'avc1.420033',bitrate:2_000_000,device_scale_factor:2,css_width:100,css_height:50,dependencies:true},{encoder:{close:async()=>{}},wait:async()=>{}});
+ const producer={source,feedback(){},retireUnsent(){},invalidate(){},take:()=>sample,close:async()=>{}};
+ Object.assign(stream,{regionSource:source,regionLease:{isAlive:()=>current,isCurrent:async()=>{checks++;return current;}},regionWindow:{isCurrent:()=>current},compositorRegionRevision:0,producer,
+  refinerDocument:tab.document_id,refiner:{request:()=>null,invalidate(){},close:async()=>{}}});
+ const host={generation:2,protection:policy,compositors:new Map(),inputEpochs:new Map(),inputChangedAt:new Map(),timing:()=>{},compositorFor:async()=>source,
+  displayTarget:()=>{throw Error('band must not acquire a page document');}};
+ try {
+  const result=await displayCredit(host,stream,{generation:2,after_sequence:0,push:{congested:false}});
+  assert.equal(result.frame_sent,true);assert.equal(result.display_frame.document_id,tab.document_id);assert.equal(result.display_frame.width,200);assert.equal(result.display_frame.css_width,100);assert(checks>=2);
+  current=false;await assert.rejects(displayCredit(host,stream,{generation:2,after_sequence:1}));assert.equal(stream.sequence,1);
+ }finally{await stream.close();}
+});

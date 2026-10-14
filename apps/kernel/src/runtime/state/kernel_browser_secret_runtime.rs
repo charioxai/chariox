@@ -128,8 +128,8 @@ impl KernelRuntimeState {
         let pixels =
             method == "host.browser" && (params["op"] == "screenshot" || params["op"] == "poll");
         let display = method == "host.browser"
-            && params["op"] == "screenshot"
-            && params["display_subscription_id"].is_string();
+            && ((params["op"] == "screenshot" && params["display_subscription_id"].is_string())
+                || params["op"] == "display_subscribe");
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
         let input = method == "host.browser" && params["op"] == "input";
         let at = std::time::Instant::now();
@@ -363,6 +363,11 @@ fn scrub_browser_result(
     display: bool,
     mirror: bool,
 ) -> Result<Value, DaemonError> {
+    if display && result["source_kind"] == "region" {
+        // MP-11: these are trusted lease/codec fields, never page observations.
+        protection.require(scope, false)?;
+        return scrub_display_metadata(protection, scope, result, true);
+    }
     if mirror {
         // MP-08/MP-11: the protected host converts matching page text and
         // metadata to compositor tiles before hashing its final wire tree.
@@ -441,6 +446,8 @@ fn scrub_display_metadata(
                             | "subscription_id"
                             | "tab_id"
                             | "document_id"
+                            | "binding_id"
+                            | "source_kind"
                             | "data_base64"
                     )
                 {
@@ -474,6 +481,16 @@ fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp08_mp11_region_lease_schema_survives_short_secret_scrubbing() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("region-lease-boundary");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        for secret in ["r", "d", "a"] { store.register("region", secret).unwrap(); }
+        let lease = serde_json::json!({"source_kind":"region","binding_id":"r","document_id":"d","subscription_id":"s","codec":"avc1.420033","css_width":100,"css_height":50,"sequence":3,"device_scale_factor":2});
+        assert_eq!(scrub_browser_result(&store, "region", lease.clone(), false, true, false).unwrap(), lease);
+        assert_ne!(scrub_browser_result(&store, "region", serde_json::json!({"text":"r"}), false, false, false).unwrap(), serde_json::json!({"text":"r"}));
+    }
     #[test]
     fn mp08_mp11_mirror_wire_tree_survives_kernel_scrub_boundary() {
         use super::super::room_secret_observation::RoomSecretObservations;

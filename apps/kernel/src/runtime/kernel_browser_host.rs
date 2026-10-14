@@ -538,6 +538,29 @@ impl KernelBrowserHost {
         backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
+        if method == "host.browser" && params["op"] == "input" && params["binding_id"].is_string() {
+            // MP-11: resolve the owner-issued crop before the SAME actor ledger.
+            // Chrome's owner arbiter observes the active page; no client Tab
+            // claim can attribute band input to another actor's document.
+            let mut query = params.clone();
+            query["op"] = "display_input_target".into();
+            let target = backend.host_request_cancellable(
+                "host.browser", query, admission.map(|a| a.cancellation.clone()),
+            )?;
+            for key in ["tab_id", "document_id"] {
+                if target[key].as_str().is_none_or(|s| s.is_empty() || s.len() > 256) {
+                    return Err("MP-11: invalid region input target".into());
+                }
+                params[key] = target[key].clone();
+            }
+            if let Some(document) = target["region_document_id"].as_str() {
+                if document.is_empty() || document.len() > 256 {
+                    return Err("MP-11: invalid region input epoch".into());
+                }
+                params["region_document_id"] = document.into();
+            }
+            self.check_admission(admission)?;
+        }
         if method == "host.browser"
             && matches!(
                 params["op"].as_str(),

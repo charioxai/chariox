@@ -306,4 +306,5 @@ pub use workspace::*;
 /// (MP-08/MP-10/MP-11).
 /// Version 517 combines App Tab calls/grants and ordered reads with DOM mirror v2
 /// author CSS, live controls, compact deltas, native density and long-poll credits.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 517;
+/// Version 519 adds caller-bound display region references and input epochs.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 519;

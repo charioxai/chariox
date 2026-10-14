@@ -23,6 +23,12 @@ pub(crate) enum KernelBrowserDisplayRequest {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
         input: crate::local::KernelBrowserInput,
     },
+    RegionInput {
+        binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
+        binding_id: String,
+        sequence: u64,
+        input: crate::local::KernelBrowserInput,
+    },
     Takeover {
         tab_id: String,
         generation: u64,
@@ -36,6 +42,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
     NegotiatedSubscribe {
         tab_id: String,
         generation: u64,
+        target: Option<crate::local::KernelBrowserDisplayTarget>,
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
@@ -153,12 +160,14 @@ impl KernelRuntimeState {
             KernelBrowserCommand::DisplaySubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
@@ -184,14 +193,21 @@ impl KernelRuntimeState {
                 tab_id,
                 generation,
                 document_id,
+                binding_id,
+                sequence,
                 input,
-            } => KernelBrowserDisplayRequest::Input {
-                binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
+            } => {
+                let binding = crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
                     tab_id,
                     generation,
                     document_id,
-                },
-                input,
+                };
+                match (binding_id, sequence) {
+                    (None, None) => KernelBrowserDisplayRequest::Input { binding, input },
+                    (Some(binding_id), Some(sequence)) if !binding_id.is_empty() && binding_id.len() <= 256 && sequence > 0 =>
+                        KernelBrowserDisplayRequest::RegionInput { binding, binding_id, sequence, input },
+                    _ => return Err(host_error("MP-11: region input requires its binding and epoch".into())),
+                }
             },
             KernelBrowserCommand::DisplayTakeover { tab_id, generation } => {
                 KernelBrowserDisplayRequest::Takeover { tab_id, generation }
@@ -352,7 +368,7 @@ impl KernelRuntimeState {
     ) -> Result<serde_json::Value, DaemonError> {
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
         // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
-        let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. })
+        let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. } | KernelBrowserDisplayRequest::RegionInput { .. })
             .then(std::time::Instant::now);
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
@@ -362,11 +378,14 @@ impl KernelRuntimeState {
             KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
             } => {
-                serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor})
+                let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
+                if let Some(target) = target { params["target"] = serde_json::to_value(target).map_err(|_| host_error("MP-11: invalid display target".into()))?; }
+                params
             }
             KernelBrowserDisplayRequest::EncodedCapture {
                 subscription_id,
@@ -403,6 +422,12 @@ impl KernelRuntimeState {
                 // MP-08/MP-10/MP-11: only this admitted human display path may
                 // use asynchronous wheel dispatch; agent calls keep their ack.
                 serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
+            }
+            KernelBrowserDisplayRequest::RegionInput { binding, binding_id, sequence, input } => {
+                if binding.document_id.is_empty() || binding.document_id.len() > 256 {
+                    return Err(host_error("MP-11: observed region document required".into()));
+                }
+                serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"binding_id":binding_id,"sequence":sequence,"input":input})
             }
             KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
                 let outcome = host

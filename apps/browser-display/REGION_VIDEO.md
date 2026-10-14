@@ -35,9 +35,10 @@ The kernel's shared terminal admission, actor/input ownership, Vault barrier,
 mirror epoch and relay subscription lifecycle must wrap it. Mirror P3 requires
 a current kernel-resolved region ID and rectangle from mirror v2; browser chrome
 requires the browser UI lane's owned-window binding and enterprise policy
-admission. These consumer bindings and their client-facing protocol are not
-implemented by this source module. Protocol 519/127 is reserved by the
-coordinator for that work and is not consumed here.
+admission. The public adapter now lives in `kernel-browser-display-regions.mjs` on the
+integration line and consumes allocated519/127. It delegates to the concrete
+mirror resolver and the ChromeWindows/arbiter owner seams. This source module
+does not implement those owner authorities.
 
 MP-10 acceptance requires the real built clients/kernel/hosted relay, public
 sites, normal cookies/popups/tabs/typing/scroll, watched DPR1/2 recordings and
@@ -89,7 +90,6 @@ only from a kernel-negotiated `source_kind: 'region'` lease with its opaque
 and scale. Frames must match that geometry and document; frame headers cannot
 select a crop. Region input retains the lease and mirror epoch, while ACKs
 retain the ordinary display sequence. A target request requires protocol 519
-and refuses a whole-page negotiation. The public kernel target and concrete
-mirror/Chrome binding adapters are still pending the display integration step;
-this presenter preparation does not consume the allocated protocol or establish
-DISPLAY-P3 acceptance.
+and refuses a whole-page negotiation. The public target adapter consumes519/127 and the concrete mirror resolver.
+Native Chrome uses the browserux-owned ChromeWindows and arbiter; their live
+integration and strict paired hosted drills remain DISPLAY-P3 acceptance gates.

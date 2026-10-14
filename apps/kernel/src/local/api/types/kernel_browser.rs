@@ -65,6 +65,8 @@ pub enum KernelBrowserCommand {
     DisplaySubscribe {
         tab_id: String,
         generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<KernelBrowserDisplayTarget>,
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
@@ -87,6 +89,10 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
         document_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<u64>,
         input: KernelBrowserInput,
     },
     Start,
@@ -128,6 +134,21 @@ pub enum KernelBrowserCommand {
     Unsubscribe {
         subscription_id: String,
         generation: u64,
+    },
+}
+
+/// MP-08/MP-10/MP-11: allocated519; only owner-issued references select regions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KernelBrowserDisplayTarget {
+    Region {
+        mirror_subscription_id: String,
+        document_id: String,
+        sequence: u64,
+        region_id: String,
+    },
+    BrowserChrome {
+        window_generation: u64,
     },
 }
 
