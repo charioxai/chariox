@@ -1,6 +1,6 @@
 mod sessions;
 use sessions::HttpState;
-pub(super) use sessions::{dispatch, release_run, release_session};
+pub(super) use sessions::{dispatch_with_excluded_roots, release_run, release_session};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
@@ -16,6 +16,7 @@ fn forward_streamable_http_mcp_request(
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
     state: &mut HttpState,
+    excluded_roots: &[std::path::PathBuf],
 ) -> Result<serde_json::Value, DaemonError> {
     let request_id = payload.get("id").cloned();
     let expects_response = |message: &serde_json::Value| {
@@ -43,6 +44,7 @@ fn forward_streamable_http_mcp_request(
         env_http_headers,
         timeout,
         state,
+        excluded_roots,
     )?;
 
     let response = match request.send_bytes(&body) {
@@ -138,8 +140,9 @@ fn http_request(
     env_http_headers: &BTreeMap<String, String>,
     timeout: Duration,
     state: &HttpState,
+    excluded_roots: &[std::path::PathBuf],
 ) -> Result<ureq::Request, DaemonError> {
-    let agent = streamable_http_agent(url, timeout)?;
+    let agent = streamable_http_agent(url, timeout, excluded_roots)?;
     let mut request = agent
         .request(method, url)
         .set("Content-Type", "application/json")
@@ -225,7 +228,12 @@ fn read_sse_json_rpc_response(
     })
 }
 
-fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
+fn streamable_http_agent(
+    url: &str,
+    timeout: Duration,
+    excluded_roots: &[std::path::PathBuf],
+) -> Result<ureq::Agent, DaemonError> {
+    let excluded_roots = excluded_roots.to_vec();
     // ureq's synchronous default DNS is outside its transport timeout. Own
     // each lookup (including proxies/redirects) under this dispatch deadline.
     let deadline = std::time::Instant::now() + timeout;
@@ -247,7 +255,7 @@ fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, Da
                     "MCP DNS deadline exceeded",
                 ));
             }
-            crate::local::provider_requests::resolve_bounded_host(host, remaining, &[])
+            crate::local::provider_requests::resolve_bounded_host(host, remaining, &excluded_roots)
                 .map(|addresses| {
                     addresses
                         .into_iter()

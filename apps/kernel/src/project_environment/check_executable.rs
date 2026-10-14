@@ -31,7 +31,7 @@ fn trusted(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, &'static str> {
 
 /// Resolve the shebang before clearing the environment. Invoke the vetted
 /// interpreter explicitly, so /usr/bin/env cannot choose a different runtime.
-pub(super) fn command(
+pub(crate) fn command(
     path: &Path,
     roots: &[PathBuf],
 ) -> Result<std::process::Command, &'static str> {

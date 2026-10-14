@@ -7,7 +7,7 @@ mod aggregate_store;
 mod check;
 mod check_admission;
 mod check_assets;
-mod check_executable;
+pub(crate) mod check_executable;
 mod check_files;
 mod check_gui_identity;
 mod check_health;

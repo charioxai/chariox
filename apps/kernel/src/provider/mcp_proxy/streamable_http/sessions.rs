@@ -10,6 +10,7 @@ pub(super) struct HttpState {
 }
 struct HttpSession {
     backing: CharioxMcpServerConfig,
+    excluded_roots: Vec<std::path::PathBuf>,
     state: Mutex<SessionState>,
 }
 #[derive(Default)]
@@ -49,6 +50,7 @@ impl HttpSession {
             payload,
             self.backing.tool_timeout_sec,
             &mut headers,
+            &self.excluded_roots,
         );
         if initialize || headers != before {
             let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
@@ -88,25 +90,32 @@ impl Drop for HttpSession {
                 env_http_headers,
                 Duration::from_secs(1),
                 state,
+                &self.excluded_roots,
             ) {
                 let _ = request.call();
             }
         }
     }
 }
-type OwnerKey = (String, String, String);
+type OwnerKey = (String, String, String, Vec<std::path::PathBuf>);
 type Sessions = BTreeMap<OwnerKey, Arc<HttpSession>>;
 fn sessions() -> &'static Mutex<Sessions> {
     static SESSIONS: OnceLock<Mutex<Sessions>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-pub(crate) fn dispatch(
+pub(crate) fn dispatch_with_excluded_roots(
     run: &str,
     owner: &str,
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
+    excluded_roots: &[std::path::PathBuf],
 ) -> Result<serde_json::Value, DaemonError> {
-    let key = (run.to_owned(), owner.to_owned(), backing.definition_hash()?);
+    let key = (
+        run.to_owned(),
+        owner.to_owned(),
+        backing.definition_hash()?,
+        excluded_roots.to_vec(),
+    );
     let session = sessions()
         .lock()
         .expect("HTTP MCP sessions mutex poisoned")
@@ -114,6 +123,7 @@ pub(crate) fn dispatch(
         .or_insert_with(|| {
             Arc::new(HttpSession {
                 backing: backing.clone(),
+                excluded_roots: excluded_roots.to_vec(),
                 state: Mutex::new(SessionState::default()),
             })
         })
@@ -145,6 +155,16 @@ fn release(matches: impl Fn(&OwnerKey) -> bool) {
         // belongs on a blocking cleanup thread, after all local leases retire.
         std::thread::spawn(move || drop(released));
     }
+}
+
+#[cfg(test)]
+fn dispatch(
+    run: &str,
+    owner: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, DaemonError> {
+    dispatch_with_excluded_roots(run, owner, backing, payload, &[])
 }
 
 #[cfg(test)]

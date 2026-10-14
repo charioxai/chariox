@@ -59,7 +59,8 @@ pub(crate) fn resolve_bounded_host(
         if roots.iter().any(|root| path.starts_with(root)) {
             return Err("resolver_unavailable");
         }
-        let mut command = std::process::Command::new(path);
+        let mut command = crate::project_environment::check_executable::command(&path, roots)
+            .map_err(|_| "resolver_unavailable")?;
         command
             .current_dir("/")
             .env_clear()
