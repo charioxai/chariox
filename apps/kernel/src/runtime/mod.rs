@@ -104,6 +104,7 @@ pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
+pub(crate) mod perf_timing;
 pub mod process_health;
 pub(crate) mod project_environment_setup_utility;
 pub mod projection;

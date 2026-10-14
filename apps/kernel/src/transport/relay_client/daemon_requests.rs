@@ -51,6 +51,7 @@ pub(super) async fn handle_daemon_request(
     encrypted_request: EncryptedRelayPayload,
     command_result_cache: &Arc<CommandResultCache>,
 ) -> RelayRequestOutcome {
+    let received_at_ms = crate::session::unix_epoch_ms();
     if relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
         MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
@@ -295,6 +296,11 @@ pub(super) async fn handle_daemon_request(
                     };
                 }
             };
+            crate::runtime::perf_timing::record_relay_request(
+                request_kind,
+                received_at_ms,
+                plaintext.len(),
+            );
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",

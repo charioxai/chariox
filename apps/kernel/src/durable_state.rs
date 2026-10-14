@@ -1636,6 +1636,7 @@ fn run_durable_writer(
                 continue;
             }
         };
+        let received_at = Instant::now();
         let mut batch = vec![first];
         let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
@@ -1688,7 +1689,14 @@ fn run_durable_writer(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
+        let records = batch.len();
+        let commit_started_at = Instant::now();
         commit_durable_write_batch(&mut connection, batch, &health);
+        crate::runtime::perf_timing::record_durable_commit(
+            records,
+            commit_started_at.duration_since(received_at).as_micros(),
+            commit_started_at.elapsed().as_micros(),
+        );
     }
 }
 
