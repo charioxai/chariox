@@ -11,7 +11,7 @@ export function waitingRoomProjectRows(
   state: Pick<WaitingRoomState, "focus" | "projectIndex" | "showArchivedProjects">,
   projects: readonly WaitingRoomProjectSummary[] | undefined,
   sessions: readonly SessionListEntry[],
-  options: { inventoryLoading: boolean; loadingText: string; titleWidth: number },
+  options: { inventoryLoading: boolean; loadingText: string; titleWidth: number; kernelLabel?: string },
 ): WaitingRoomRow[] {
   const active = activeWaitingRoomProjects(projects)
   const archived = archivedWaitingRoomProjects(projects)
@@ -62,6 +62,8 @@ export function waitingRoomProjectRows(
       selectable: true,
       scrollbar: "",
     })
+    // MP-08 / MP-10 / MP-11: ownership stays visible beside every Project.
+    rows.push({id:`project-kernel:${project.id}`,title:"Kernel",value:options.kernelLabel ?? "Unnamed kernel",titleWidth:options.titleWidth,indent:2,focused:false,selectable:false,scrollbar:""})
   }
   return rows
 }
