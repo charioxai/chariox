@@ -70,9 +70,7 @@ fn cloud_directory_discovery_targets(
         // The owner directory retains enrollment history. Live discovery needs
         // only Cloud-fresh online targets; dormant history must not exhaust the
         // bounded inventory grant or make an offline sibling look available.
-        .filter(|target| {
-            target.get("status").and_then(serde_json::Value::as_str) == Some("ONLINE")
-        })
+        .filter(|target| target.get("status").and_then(serde_json::Value::as_str) == Some("ONLINE"))
         .filter_map(|target| {
             target
                 .get("daemonId")
