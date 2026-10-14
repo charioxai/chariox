@@ -44,8 +44,8 @@ pub(crate) fn require_agent_account_authenticated(
     let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
         return Ok(());
     };
-    if delegated_run.is_some_and(|run| run.authenticates_leased_claude_agent(agent)) {
-        registry.get(owner, provider, agent.provider_account_profile())?;
+    if let Some(run) = delegated_run.filter(|run| run.authenticates_leased_claude_agent(agent)) {
+        registry.get(owner, provider, run.account_profile())?;
     } else {
         registry.require_authenticated(
             owner,

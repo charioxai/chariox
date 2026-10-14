@@ -559,7 +559,9 @@ mod tests {
                 // leased run holds the concrete profile and delegated credential.
                 let mut selected = request.clone();
                 crate::account_profile::bind_provider_account_authority(
-                    &mut selected, "cloud-owner".into(), "default".into(),
+                    &mut selected,
+                    "cloud-owner".into(),
+                    "default".into(),
                 );
                 let mut alias_run = run.clone();
                 alias_run.resolved_provider_account = selected.resolved_provider_account;

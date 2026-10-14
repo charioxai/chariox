@@ -709,7 +709,9 @@ impl RuntimeProviderRun {
             && self.session_id() == agent.session_id()
             && self.agent_instance_id() == Some(agent.id())
             && self.owner_user_id() == agent.owner_user_id()
-            && self.account_profile() == agent.provider_account_profile()
+            && (self.account_profile() == agent.provider_account_profile()
+                || crate::account_profile::provider_account_selection_for_run(self)
+                    == agent.provider_account_profile())
             && matches!(
                 self.state(),
                 ProviderRunState::Starting | ProviderRunState::Running
