@@ -12,6 +12,7 @@ export function recordPaneFirstFrame(
   const prefix = process.env.CHARIOX_PANE_TIMING_PREFIX
   const tagPattern = prefix ? new RegExp(prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[0-9]{2}(?![A-Za-z0-9-])") : null
   const seen = new Set<string>()
+  const seenUsers = new Set<string>()
   let recorded = false
   const write = (value: Record<string, unknown>) => appendFileSync(destination,
     JSON.stringify({ ...value, epochMs: Date.now(), elapsedMs: process.uptime() * 1000, pid: process.pid }) + "\n", { mode: 0o600 })
@@ -26,7 +27,13 @@ export function recordPaneFirstFrame(
     for (const prompt of entries) {
       if (prompt.role !== "user" || prompt.turnTracking === "none") continue
       const tag = prompt.text.match(tagPattern)?.[0]
-      if (!tag || seen.has(tag)) continue
+      if (!tag) continue
+      if (!seenUsers.has(tag)) {
+        seenUsers.add(tag)
+        write({ event: "pane_user_frame", tag, entryId: prompt.id,
+          promptId: prompt.promptId ?? null, turnId: prompt.turnId ?? null })
+      }
+      if (seen.has(tag)) continue
       const answer = entries.find(entry => entry.role === "assistant"
         && entry.text.trim().length > 0
         && !(entry.historyBlobId && !entry.historyBlobLoaded)
