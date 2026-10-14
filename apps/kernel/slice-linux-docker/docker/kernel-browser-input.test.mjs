@@ -136,23 +136,32 @@ test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch 
   assert.equal(await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120}),undefined,'synchronous callers still await the ack');
 });
 // MP-08/MP-10: wheel notches use the owned display after the same fences;
-// precise deltas and unavailable native input keep CDP or fail closed.
+// unavailable native input keeps precise CDP deltas or fails closed.
 test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{
   const {browser,sent}=fixture();const wheels=[];let dispatched=0;
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>{dispatched++;}});
   assert.deepEqual(wheels,[[10,20,0,-2]]);assert.equal(dispatched,1);
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
-  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>assert.fail('precise deltas stay on CDP')});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native input falls back to CDP');
 });
 
 // MP-08/MP-10: line-sized wheel deltas from real viewers animate natively.
-test('MP-08/MP-10 viewer wheel deltas map to native notches; fine trackpad deltas stay precise',async()=>{
+test('MP-08/MP-10 viewer wheel deltas map to native notches including fine trackpad input',async()=>{
  const {notches}=await import('./kernel-browser-input.mjs');
  assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,1,-1,2,1,-1,0]);
- for(const delta of [1,-12,37,49])assert.equal(notches(delta),null,String(delta));
+ assert.deepEqual([1,-12,37,49].map(notches),[1,-1,1,1]);
+});
+
+test('MP-08/MP-10 fine viewer wheel starts native animation without a CDP wheel acknowledgement',async()=>{
+ const {browser,sent}=fixture(),wheels=[];let dispatched=0;
+ for(const dy of [16,-16,1,-1])await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:dy},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>dispatched++});
+ assert.deepEqual(wheels,[[10,20,0,1],[10,20,0,-1],[10,20,0,1],[10,20,0,-1]]);
+ assert.equal(dispatched,4);
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
+ assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'MP-11 document fence retained');
 });
 // MP-08/MP-10: viewer clicks on the owned display use XTest after the fence.
 test('MP-08/MP-10 viewer click routes to the owned display after the document fence; refusal falls back to CDP',async()=>{

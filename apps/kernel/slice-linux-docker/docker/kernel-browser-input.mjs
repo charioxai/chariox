@@ -12,8 +12,8 @@ const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b, Backs
 // MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
 // owned display (Selkies forwards every wheel event as X button notches).
 // Viewers report a notch as 120 (wheelDelta), 100 (Chrome on Windows,
-// automation) or other line-sized deltas; fine trackpad deltas (< 50 px)
-// stay precise on CDP.
+// automation) or fine trackpad deltas. An admitted native display starts
+// a notch for each nonzero fine delta; other callers retain precise CDP deltas.
 
 // MP-11: the focused element (through open shadow roots and, for admitted mirror
 // input, same-origin frames) must not be a sensitive field. A cross-origin frame
@@ -29,7 +29,7 @@ export const sensitiveFocusExpression = observedFrameInput => `(() => { let e = 
           return false;
         } return true; })()`;
 
-export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.abs(delta) >= 50 ? Math.round(delta / 100) || Math.sign(delta) : null;
+export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.round(delta / 100) || Math.sign(delta);
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
 // (the retired source re-observes the outcome) and is never replayed via CDP.
