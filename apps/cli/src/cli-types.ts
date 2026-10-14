@@ -436,6 +436,7 @@ export type SessionBinding = {
 }
 
 export type BootstrapDeferredState = {
+  promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
@@ -446,6 +447,7 @@ export type BootstrapDeferredState = {
     agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
+    includesPromptHistory?: boolean
     nextHistoryCursor: SessionHistoryCursorState
   }>
 }

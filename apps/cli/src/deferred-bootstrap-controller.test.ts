@@ -10,6 +10,22 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
+test("MP-08 / MP-10: delayed composer history belongs to its unchanged startup attachment and input", async () => {
+  for (const change of ["none", "attachment", "input", "navigation"]) {
+    let resolve!: (value: { sessionId: string; entries: string[] }) => void
+    const harness = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "attachment-1",
+      deferred: { promptInputHistory: new Promise(r => { resolve = r }) } })
+    harness.controller.apply()
+    if (change === "attachment") harness.attachmentId = "attachment-2"
+    if (change === "input") harness.promptHistoryEntries = ["fresh user prompt"]
+    if (change === "navigation") { harness.promptHistoryIndex = 0; harness.promptHistoryDraft = "draft" }
+    resolve({ sessionId: "session-1", entries: ["earlier input"] })
+    await flushPromises()
+    assert.deepEqual(harness.promptHistoryEntries, change === "none" ? ["earlier input"] : change === "input" ? ["fresh user prompt"] : [])
+    assert.equal(harness.promptHistoryResetCount, change === "none" ? 1 : 0)
+  }
+})
+
 test("deferred bootstrap controller applies provider catalog hydration", async () => {
   const providerCatalog = {} as ProviderCatalog
   const providerCommandCatalogs = {} as ProviderCommandCatalogs
@@ -193,6 +209,8 @@ function bootstrapHarness(options: {
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
+    promptHistoryIndex: null as number | null,
+    promptHistoryDraft: null as string | null,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     terminalCommandCatalog: null as unknown,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
@@ -207,6 +225,9 @@ function bootstrapHarness(options: {
     getDeferred: () => harness.deferred,
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentAttachmentId: () => harness.attachmentId,
+    currentPromptHistoryEntries: () => harness.promptHistoryEntries,
+    currentPromptHistoryIndex: () => harness.promptHistoryIndex,
+    currentPromptHistoryDraft: () => harness.promptHistoryDraft,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
     setProviderCatalog: (catalog) => {

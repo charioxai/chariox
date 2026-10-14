@@ -861,6 +861,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
+    promptHistoryEntries, promptHistoryIndex, promptHistoryDraft,
     setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
     setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
     attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,

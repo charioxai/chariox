@@ -243,6 +243,13 @@ export async function bootstrapSession(
   const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
   const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
   const terminalCommandCatalogPromise = deps.getTerminalCommandCatalog(client, deps.logger)
+  // MP-08 / MP-10: the composer inventory must not delay an already bundled
+  // transcript. Its later application is fenced by attachment and input ownership.
+  const promptInputHistoryPromise = initialView && deps.getPromptInputHistory
+    ? loadSessionPromptHistory(client, session.id, deps).then(entries => ({ sessionId: session.id, entries }))
+    : undefined
+  // Keep an early failure handled until the mounted controller observes it.
+  void promptInputHistoryPromise?.catch(() => {})
   const attachedHistoryPromise = hydrateAttachedHistory(
     client,
     session.id,
@@ -250,6 +257,7 @@ export async function bootstrapSession(
     hydratedSession,
     deps,
     initialView?.history,
+    Boolean(promptInputHistoryPromise),
   )
 
   return {
@@ -274,6 +282,7 @@ export async function bootstrapSession(
     options,
     preferences,
     deferred: {
+      ...(promptInputHistoryPromise ? { promptInputHistory: promptInputHistoryPromise } : {}),
       providerCatalog: providerCatalogPromise,
       providerCommandCatalogs: providerCommandCatalogsPromise,
       terminalCommandCatalog: terminalCommandCatalogPromise,
@@ -289,6 +298,7 @@ async function hydrateAttachedHistory(
   session: RuntimeSession,
   deps: Pick<BootstrapDeps, "getSessionHistoryOutline" | "getPromptInputHistory" | "prepareHistoryOutlineAgent">,
   initialOutline?: SessionHistoryOutline,
+  deferPromptHistory = false,
 ) {
   const agentIds = session.agents.map((agent) => agent.id)
   const outlinePromise = initialOutline && agentIds.every(id => initialOutline.agents.some(agent => agent.agent_id === id))
@@ -298,7 +308,7 @@ async function hydrateAttachedHistory(
     : Promise.resolve({ agents: [] })
   const [outline, promptHistoryEntries] = await Promise.all([
     outlinePromise,
-    loadSessionPromptHistory(client, sessionId, deps),
+    deferPromptHistory ? Promise.resolve([]) : loadSessionPromptHistory(client, sessionId, deps),
   ])
   const agentEntries = Object.fromEntries(outline.agents.map((agent) => [
     agent.agent_id,
@@ -311,6 +321,7 @@ async function hydrateAttachedHistory(
     agentEntries,
     historyEntries,
     promptHistoryEntries,
+    includesPromptHistory: !deferPromptHistory,
     nextHistoryCursor: sessionHistoryCursorForVisibleAgent(outline, visibleAgentId),
   }
 }

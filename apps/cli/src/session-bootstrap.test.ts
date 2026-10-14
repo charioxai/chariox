@@ -19,18 +19,22 @@ test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves b
   const session = { id: "s", active_provider_run_id: "run-1", agents: [{ id: "a" }], focused_agent_id: "a", workspace_id: "/workspace", worktree_id: "/workspace" }
   const outline = { agents: [outlineAgent("a", "real earlier prompt", "earlier answer")] }
   const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  const pendingPromptHistory = new Promise<never>(() => {})
   const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
     listSessions: async () => [session], resolveSession: async () => session,
     attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
     attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
     getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getPromptInputHistory: () => pendingPromptHistory,
     getProviderCatalog: async () => fallbackProviderCatalog(),
     getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
     getTerminalCommandCatalog: async () => terminalCatalog(),
     resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
   } as never)
   assert.equal(boot.binding?.attachment.id, "binding")
-  const history = await boot.deferred?.attachedHistory
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked", "bundled transcript must not wait for composer input history")
+  if (history === "blocked") return
   assert.equal(history?.agentEntries.a?.length, 2)
 })
 
