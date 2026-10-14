@@ -18,7 +18,7 @@ test("MP-08/MP-10 cold inventory waits for the provider catalog before showing s
   const state = createWaitingRoomState([], catalog, "codex", "default", "")
   const rows = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "cloud",
     relay: { configured: true, connected: true, daemon_id: "cold-kernel" }, kernels: [{
-    kernel_id: "cold-kernel", machine_id: "cold-machine", capabilities: ["kernel_ws"],
+    kernel_id: "cold-kernel", machine_id: "cold-machine",
   }] })
   for (const id of ["new", "launch-machine", "launch-kernel", "provider", "model"]) {
     assert.match(rows.find(row => row.id === id)!.value, /^loading/)
