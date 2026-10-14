@@ -4,6 +4,9 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod apply_bindings;
+mod apply_plan;
+mod apply_store;
 mod check;
 mod check_admission;
 mod check_assets;
@@ -16,6 +19,7 @@ mod check_journal;
 mod check_package_inventory;
 mod check_platform;
 mod check_runner;
+mod check_selection;
 mod check_start;
 mod check_store;
 mod check_tools;
@@ -48,7 +52,11 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub(crate) use apply_bindings::*;
+pub(crate) use apply_plan::*;
+pub(crate) use apply_store::*;
 pub(crate) use check::*;
+pub(crate) use check_selection::*;
 #[doc(hidden)]
 pub use check_files::run_files_measurement_worker;
 pub(crate) use check_start::*;
@@ -84,6 +92,11 @@ mod detect_tests;
 #[cfg(test)]
 mod check_tests;
 
+#[cfg(test)]
+mod apply_tests;
+
+#[cfg(test)]
+mod source_alias_tests;
 #[cfg(test)]
 mod revision_exclusion_validation_tests;
 

@@ -334,6 +334,19 @@ impl CommandRouter {
                     .await
                     .map(Some);
             }
+            // MP-08 / MP-10 / MP-11: one Project-owned Apply path for every client.
+            LocalDaemonRequest::PlanProjectEnvironment(request) => {
+                return self.runtime_state.plan_project_environment(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::ApplyProjectEnvironment(request) => {
+                return self.runtime_state.apply_project_environment(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::CancelEnvironmentOperation(request) => {
+                return self.runtime_state.cancel_environment_operation(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::RetryEnvironmentOperation(request) => {
+                return self.runtime_state.retry_environment_operation(request.clone(), caller_user_id).await.map(Some);
+            }
             LocalDaemonRequest::PreviewEnvironmentDiff(request) => {
                 return self
                     .runtime_state

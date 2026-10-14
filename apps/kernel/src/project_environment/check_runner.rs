@@ -46,18 +46,13 @@ impl ProjectEnvironmentStore {
         }
         self.save_checks(project.id(), &checks)?;
         drop(lock);
+        let selected = check_selection(&env, &operation.selected_items)?;
         let mut last_progress = std::time::Instant::now();
         for r in env
             .project_requirements
             .iter()
             .chain(env.folders.iter().flat_map(|f| &f.requirements))
-            .filter(|r| {
-                if operation.selected_items.is_empty() {
-                    r.required
-                } else {
-                    operation.selected_items.contains(&r.requirement_id)
-                }
-            })
+            .filter(|r| selected.contains(&r.requirement_id))
         {
             let observation = if std::time::Instant::now() >= deadline {
                 MachineObservation {
