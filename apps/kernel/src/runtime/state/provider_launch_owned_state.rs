@@ -555,6 +555,19 @@ mod tests {
                     .get_agent(request.agent_id.as_deref().unwrap())
                     .unwrap();
                 assert!(run.authenticates_leased_claude_agent(&agent));
+                // MP-08/MP-11: main retains a selected alias while the live
+                // leased run holds the concrete profile and delegated credential.
+                let mut selected = request.clone();
+                crate::account_profile::bind_provider_account_authority(
+                    &mut selected, "cloud-owner".into(), "default".into(),
+                );
+                let mut alias_run = run.clone();
+                alias_run.resolved_provider_account = selected.resolved_provider_account;
+                let mut alias_agent = agent.clone();
+                alias_agent.set_account_profile(Some("default".into()));
+                assert!(alias_run.authenticates_leased_claude_agent(&alias_agent));
+                alias_agent.set_account_profile(Some("another-account".into()));
+                assert!(!alias_run.authenticates_leased_claude_agent(&alias_agent));
                 let mut value = serde_json::to_value(&run).unwrap();
                 assert!(value.get("leased_credential_authority").is_none());
                 value["leased_credential_authority"] = serde_json::json!(true);
