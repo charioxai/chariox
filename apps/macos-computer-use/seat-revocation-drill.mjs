@@ -1,20 +1,19 @@
 // Connect to a coordinator-prepared disposable kernel seat. This runner never
 // creates a kernel home, relay identity, credential, helper build or grant.
+// The owner starts and revokes; native input comes only from the admitted agent.
 import assert from 'node:assert/strict';
-import { revokeDuringInput } from './seat-revocation.mjs';
+import { revokeDuringInput, requirePhysicalClick } from './seat-revocation.mjs';
 import { verifyNativeCapture } from './verify-native-capture.mjs';
-import { readFileSync, writeFileSync, mkdirSync, statSync, existsSync } from 'node:fs';
+import { connectKernel, createAgentCallback } from './agent-admission-drill.mjs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 const { values: args } = parseArgs({ options: {
-  port: { type: 'string' }, 'token-file': { type: 'string' }, 'scope-file': { type: 'string' },
+  workspace: { type: 'string' }, 'scope-file': { type: 'string' },
   'fixture-log': { type: 'string' }, evidence: { type: 'string' },
 } });
-for (const key of ['token-file', 'scope-file', 'fixture-log', 'evidence']) assert.ok(args[key] && path.isAbsolute(args[key]), `${key} must be absolute`);
+for (const key of ['workspace', 'scope-file', 'fixture-log', 'evidence']) assert.ok(args[key] && path.isAbsolute(args[key]), `${key} must be absolute`);
 assert.ok(args.evidence.startsWith('/Users/miguel/.codex/evidence/'), 'evidence must stay under the owner evidence root');
-assert.ok(Number.isInteger(Number(args.port)) && Number(args.port) > 0 && Number(args.port) < 65536, 'valid approved endpoint port required');
-const tokenStat = statSync(args['token-file']);
-assert.ok(tokenStat.isFile() && (tokenStat.mode & 0o077) === 0 && tokenStat.uid === process.getuid(), 'private local kernel token required');
 const scope = JSON.parse(readFileSync(args['scope-file'], 'utf8'));
 assert.ok(scope.pid > 0 && scope.window > 0 && [1, 2].includes(scope.scale));
 assert.ok(scope.bounds && scope.point && Number.isInteger(scope.expected_location));
@@ -31,36 +30,33 @@ while (existsSync(path.join(lane, 'GUI_HOLD')) && !existsSync(path.join(lane, 'G
 }
 mkdirSync(args.evidence, { recursive: true });
 const report = { status: 'FAIL', checks: [], started_at: new Date().toISOString() };
-const pending = new Map(); let sequence = 0, socket, control;
+let owner, control, callback;
 const selected = () => [...readFileSync(args['fixture-log'], 'utf8').matchAll(/fixture selection location=(\d+) length=(\d+)/g)].at(-1)?.slice(1).map(Number);
-function computer(command, channel = socket) {
-  const id = `cumac-r6-${++sequence}`;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('kernel request timeout')); }, 10_000);
-    pending.set(id, frame => {
-      clearTimeout(timer); pending.delete(id);
-      if (frame.response?.KernelBrowser) resolve(frame.response.KernelBrowser.result);
-      else { const error=frame.error ?? {code:'kernel_refused'}; reject(Object.assign(new Error(error.message ?? 'kernel refused'), {code:error.code})); }
-    });
-    const request = command.op === 'revoke_grants' ? { KernelBrowser: { command } } : { KernelBrowser: { command: { op: 'computer', command } } };
-    channel.send(JSON.stringify({ type: 'request', request_id: id, command_id: id, request }));
-  });
+const computer = async (client, command) => (await client.send({ KernelBrowser: { command: { op: 'computer', command } } })).KernelBrowser.result;
+const revokeAll = client => client.send({ KernelBrowser: { command: { op: 'revoke_grants', agent_id: null } } });
+async function agent(command) {
+  const envelope = await callback.input(command);
+  const text = envelope?.result?.content?.find(item => item.type === 'text')?.text;
+  if (envelope?.error || envelope?.result?.isError) {
+    // Keep only the kernel refusal code; the message is product text.
+    const message = String(envelope.error?.message ?? text ?? '');
+    const code = message.match(/\b(browser_action_cancelled|user_domain_not_granted|not_granted)\b/)?.[1] ?? 'agent_refused';
+    throw Object.assign(new Error(`agent Computer refused: ${code}`), { code });
+  }
+  return JSON.parse(text);
 }
 try {
-  // Authorization bytes remain inside this process/header, never in reports.
-  socket = new WebSocket(`ws://127.0.0.1:${Number(args.port)}`, { headers: { authorization: `Bearer ${readFileSync(args['token-file'], 'utf8').trim()}` } });
-  socket.onmessage = event => { const frame = JSON.parse(event.data); pending.get(frame.request_id)?.(frame); };
-  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error('local kernel connection failed')); });
-  const state = await computer({ op: 'start' });
+  owner = connectKernel();
+  callback = await createAgentCallback(owner, args.workspace);
+  await callback.call('tools/call', { name: 'chariox.load_kernel_computer', arguments: {} });
+  const state = await computer(owner, { op: 'start' });
   assert.equal(state.mode, 'scoped-drill');
   const target = { surface_id: state.surface_id, generation: state.generation };
   const input = { op: 'input', target, input: { kind: 'click', x, y, button: 1 } };
-  const delivered = await computer(input);
-  assert.equal(delivered.dispatched, true);
-  assert.ok(delivered.receipts.some(value => value.includes(`location=${scope.expected_location} length=0`)));
+  requirePhysicalClick(await agent(input));
   await sleep(100); assert.deepEqual(selected(), [scope.expected_location, 0]);
-  report.checks.push({ name: 'live-paired-caret-before-revoke', passed: true });
-  const snapshot = await computer({ op: 'screenshot', target });
+  report.checks.push({ name: 'live-paired-agent-caret-before-revoke', passed: true });
+  const snapshot = await computer(owner, { op: 'screenshot', target });
   assert.equal(snapshot.mime_type, 'image/png');
   assert.equal(snapshot.surface_id, target.surface_id); assert.equal(snapshot.generation, target.generation);
   assert.equal(snapshot.width, state.width); assert.equal(snapshot.height, state.height);
@@ -69,39 +65,52 @@ try {
   const damageInput = { ...input, input: { kind: 'click', button: 1,
     x: Math.round((scope.revoke_point.x - scope.bounds.X) * scope.scale),
     y: Math.round((scope.revoke_point.y - scope.bounds.Y) * scope.scale) } };
-  const damageReceipt = await computer(damageInput);
-  assert.ok(damageReceipt.receipts.some(value => value.includes(`location=${scope.revoke_location} length=0`)));
+  requirePhysicalClick(await agent(damageInput));
   await sleep(100); assert.deepEqual(selected(), [scope.revoke_location, 0]);
   await sleep(100);
-  const changed = await computer({ op: 'screenshot', target });
+  const changed = await computer(owner, { op: 'screenshot', target });
   assert.equal(changed.width, snapshot.width); assert.equal(changed.height, snapshot.height);
   const changedPath = path.join(args.evidence, 'protected-fixture-changed.png');
   writeFileSync(changedPath, Buffer.from(changed.data_base64, 'base64'), { mode: 0o600 });
   report.checks.push(verifyNativeCapture(path.join(args.evidence, 'protected-fixture.png'), changedPath, scope.scale, args.evidence));
-  // Independent authenticated connection lets Revoke all cancel before the
-  // in-flight input request releases the native seat lock.
-  control = new WebSocket(`ws://127.0.0.1:${Number(args.port)}`, { headers: { authorization: `Bearer ${readFileSync(args['token-file'], 'utf8').trim()}` } });
-  control.onmessage = event => { const frame = JSON.parse(event.data); pending.get(frame.request_id)?.(frame); };
-  await new Promise((resolve, reject) => { control.onopen = resolve; control.onerror = () => reject(new Error('control connection failed')); });
-  const revokeInput = input;
-  const revoked = await revokeDuringInput({ dispatch: () => computer(revokeInput),
+  // Independent owner connection lets Revoke all cancel while agent input is in flight.
+  control = connectKernel();
+  await control.ready;
+  // The owner's shared Action ledger is the cancellation authority: the agent's
+  // own Action must be running at revoke and end cancelled by the controller.
+  const actions = async () => (await computer(control, { op: 'actors' })).actions;
+  let inFlight;
+  const revoked = await revokeDuringInput({ dispatch: () => agent(input),
     observe: selected, changed: value => value?.[0] === scope.expected_location && value?.[1] === 0,
-    revoke: () => computer({ op: 'revoke_grants', agent_id: null }, control) });
+    revoke: async () => {
+      const running = (await actions()).filter(action => action.state === 'running');
+      assert.equal(running.length, 1, 'agent input must be running at revoke');
+      inFlight = running[0].action_id;
+      return revokeAll(control);
+    },
+    cancelled: async error => {
+      const action = (await actions()).find(action => action.action_id === inFlight);
+      return error.code === 'user_domain_not_granted' && action?.state === 'cancelled'
+        && action.outcome?.status === 'cancelled' && action.outcome?.reason === 'controller_cancellation';
+    } });
   const before = selected();
-  const denial = await computer(input).then(() => null, error => error.message);
-  assert.ok(denial && /explicitly start|not running|not_granted|revoked|unavailable/.test(denial), 'old seat must refuse after Revoke all');
+  const denial = await agent(input).then(() => null, error => error.code);
+  assert.ok(/not_granted/.test(denial ?? ''), 'revoked agent must be refused');
   await sleep(500); assert.deepEqual(selected(), before, 'no input after revoke acknowledgment');
   report.checks.push({ name: 'kernel-revoke-mid-input-stops-input', passed: true,
-    ...revoked, selection_unchanged_after_ack: true });
+    ...revoked, action_id: inFlight, selection_unchanged_after_ack: true });
   report.status = 'PASS';
 } catch (error) {
   // No untrusted target strings, frames or authentication values enter the report.
   report.failure = /permission|helper refused/.test(String(error)) ? 'native-drill-refused' : 'seat-drill-assertion-or-transport-failed';
+  // Kernel refusals keep only their product code; local check messages are ours.
+  report.error = error.code ?? String(error.message).slice(0, 300);
   process.exitCode = 1;
 } finally {
   // Stop only the explicitly configured native seat; never delete kernel state.
-  if (socket?.readyState === WebSocket.OPEN) await computer({ op: 'revoke_grants', agent_id: null }).catch(() => {});
-  socket?.close(); control?.close(); report.finished_at = new Date().toISOString();
+  if (owner) await revokeAll(owner).catch(() => {});
+  if (callback) await callback.stop().catch(() => {});
+  owner?.close(); control?.close(); report.finished_at = new Date().toISOString();
   writeFileSync(path.join(args.evidence, 'result.json'), JSON.stringify(report, null, 2) + '\n');
 }
 console.log(`${report.status} paired grant revocation and protected capture`);
