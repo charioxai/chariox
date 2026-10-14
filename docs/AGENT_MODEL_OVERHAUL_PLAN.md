@@ -912,77 +912,75 @@ action or unlanded real client/App support are explicit blocking seams; source
 tests cannot relabel them accepted. No infrastructure action is authorized by
 this design study.
 
-## MP-08 / MP-09 / MP-10 / MP-11 — appendix: exhaustive acceptance matrices
+## MP-08 / MP-09 / MP-10 / MP-11 — appendix: representative acceptance matrix
 
-The numbered tables below replace one-line drills. Factor the repeated axes to
-keep the plan readable; **every Cartesian cell is mandatory**, not a choice of
-representative combinations. Before each PR starts, the shared e2e runner must
-materialize the entire expected cell set in an external machine-readable
-manifest. Each row stores its expanded ID, numbered steps, assertions, evidence
-paths, base/candidate source and binary identities, result and blocker owner/
-action. The gate compares expected IDs with results: missing, duplicate, blank,
-skipped, N/A or unknown results fail. No provider/client/placement substitution
-or source-only pass. A runner failure cannot silently shorten the manifest.
-At this revision the gating expected set is 19,440 A cells plus 432 I cells
-(three scenarios × 72 axis combinations × two integration phases) and 1,152 FB
-cells (eight LIVE flagship cases × 72 axes × two integration phases): 21,024
-acceptance cells. The 1,440 FA controlled regression cells (ten cases × 72 axes
-× two integration phases) are separate and never acceptance. DPR 1/2 and each
-required site/condition are individually asserted subruns, retained in the
-manifest without changing these parent-cell counts. These are coverage
-requirements, not executed results; the planning manifest initializes each
-separate ID to B0 with its steps/evidence. Later PR splits must expand the same
-requirements for every new PR; they cannot reduce coverage.
+**Miguel 2026-10-14** approved this acceptance reset. Each scenario row requires
+five representative real-provider/client cells, replacing the full Cartesian
+product. The shared e2e manifest records the exact source/binary identities,
+steps, assertions, screenshots/logs, result and blocker owner/action for each
+required cell. Missing or skipped required cells still fail acceptance; source
+checks and fixtures remain supplementary. Later PR splits preserve these
+scenario rows and representative cells without multiplying all placement,
+provider and machine axes.
 
-**Cell numbering.** For PR nn, enumerate
-`Ann-{provider}-{client}-{placement}-{environment}-{case}` over **all** values
-in the axis table, G01–G18 and that PR's S cells. For example
-`A04-CX-W-L-O-S02` is fresh extension on Codex/web/local/ordinary. The steps for
-each cell are, in order: (1) the axis setup below, (2) that PR's S01 feature flow
-to reach the tested seam, (3) the numbered case steps, (4) evidence and owned
-cleanup. G cases inject faults/negatives into that feature flow; S01 runs once,
-not twice. Use isolated tasks/resources for each destructive variant. Each
-variant named within a cell is required and individually asserted. Record
-exact fault point before/after commit and first failing seam on base.
-
-| Axis | Numbered setup steps / required values |
+| Representative cell per scenario row | Required real path |
 | --- | --- |
-| Provider | CX = Codex, OC = OpenCode, CL = Claude. 1. Select a product-linked account and pin official harness version. 2. Launch the selected real provider through the built kernel; no SDK, stub or alternate runtime. |
-| Client | W = web, T = local TUI, R = remote TUI, B = combined web + local + remote TUI. 1. Attach built real client(s), web with real entry/flags in a real desktop browser via Playwright at DPR 1 and 2, TUI binary via PTY on a real machine. 2. Drive prompts and owner interactions through that UI over the hosted relay. 3. Reconnect and inspect the same task. B rotates prompt/answering clients in both directions and asserts every projection; other cells drive only their selected client, plus the existing real browser attachment at both densities when pixels are needed. |
-| Placement | L = provider on home kernel; R = leased provider on a distinct real worker kernel through the hosted relay; S = provider in a product-provisioned Docker slice selected by `slice_ref`, attached through home admission. 1. Provision lane-owned topology through product commands on real machines. 2. Verify execution and home/worker/run/lease bindings; L still uses the hosted client relay path. 3. Keep the user-domain Chromium outside the slice. All 12 PRs affect provider/task paths, so S is relevant to each; include worker-loss subcases on S. |
-| Machine | O = ordinary machine (the user's own kernel); M = managed machine running the same reviewed runtime on a fresh/fresh-equivalent Path-1 host. 1. Pin OSS/Cloud/binary/image identities. 2. Run with normal product launch, compare O/M outcomes after excluding only signed deployment and mandatory shutdown. M requires coordinator-provided authorized infrastructure; this study authorizes no provisioning/deployment. |
+| Codex local TUI | Official Codex, built TUI, ordinary home kernel. |
+| Codex web DPR 1 | Official Codex, real built web entry/flags, desktop browser at DPR 1, hosted relay. |
+| Codex web DPR 2 | The same real web path at DPR 2. |
+| Claude local TUI | Official Claude, built TUI, ordinary home kernel. |
+| Codex remote TUI | Official Codex and built remote TUI through the hosted relay to the ordinary kernel. |
 
-**P0 — owner prerequisites shared by every A/I/FB matrix:** product-linked
-real accounts and available quota for all three official providers; paired
+Run one OpenCode-specific smoke on A01-S01 on the final head; do not repeat
+OpenCode across every row. Pin the actual resolved validation model and official
+harness version, and use the coordinator's current model/turn budget.
+
+Managed-machine and slice parity are two separate rows, run once on the final
+head: `AM-PARITY-M` and `AM-PARITY-S`. Compare ordinary outcomes with each target
+on A01-S01, A04-S01 and A10-S01, excluding only signed deployment and mandatory
+shutdown. Missing approved infrastructure or slice opt-in blocks its parity row
+without multiplying that prerequisite into every ordinary scenario.
+
+Real-service acceptance is three flagship runs: the FB01 service chain, I01 and
+I03. Fold I02's recovery/stability leg into the FB06 three-hour continuity run.
+These runs require the actual authorized services/accounts and retain their
+specific assertions; missing scopes remain exact owner-resource blockers.
+
+**Cell numbering.** Retain stable A/G/S scenario row IDs. Manifest child IDs
+identify the five representative combinations and distinguish web DPR 1 from
+DPR 2; the OpenCode smoke and the two parity rows have their own results.
+For each cell run (1) the required provider/client setup, (2) that PR's S01 flow
+unless it is itself S01, (3) the numbered scenario steps, and (4) evidence and
+owned cleanup. Security/fault variants named in a scenario remain individually
+asserted within those cells. Use isolated tasks/resources for destructive cases
+and retain the exact base RED seam and candidate GREEN outcome.
+
+**P0 — owner prerequisites for the selected representative or flagship cell:**
+product-linked real accounts and available quota for its official provider; paired
 built OSS/Cloud clients/kernel; real desktop browser and TUI machines; owning
 kernel's user-domain Chromium; authorized hosted `wss://` relay enrollment;
 lane-scoped network shaping at approximately 8 Mbit/s client uplink and measured
-RTT ≥60 ms; authorized real worker/Path-1 hosts and slice provisioner/image for
-the placement axes; enrolled passkey, protected Vault setup and owner available
+RTT ≥60 ms; authorized worker/Path-1 hosts and slice provisioner/image only for
+the scenarios or separate parity rows that need them; enrolled passkey, protected Vault setup and owner available
 for approvals, 2FA, renewal and hand-offs. Missing resources retain the affected
 cell as BLOCKED with the owner/coordinator's exact provisioning/linking action.
 
-**Real conditions, required alongside every user-facing matrix:** freeze URLs
-before dispatch for an `en.wikipedia.org` article, `www.wikipedia.org` portal,
-`github.com` repo page, Google search results page, a major news site and
-`developer.mozilla.org` docs page. At each site, at DPR 1 and 2 over the shaped
-hosted path, report DOM-mirror coverage (full mirroring expected; only an
-explicit owner-accepted exception permits a gap), successful screenshot
-capture, click/type → visible change P95 ≤150 ms, and smooth scroll ≥30 fps
-where streamed. Use an applicable real action on each page and retain sample
-counts, frame/timing traces, RTT/uplink and screenshots per site/condition.
-No PNG polling slideshow as a primary path. A missed threshold is FAIL. Include
-an uninterrupted ≥3-hour real browser/provider/relay stability session in FB06,
-with no unintended disconnect or stuck view, plus I02's recovery run. These
-conditions apply even when the feature's service-specific flow targets another
-real site; no loopback or fixture result replaces them.
+**Area-owned real conditions (Miguel 2026-10-14):** real-site DOM-mirror,
+screenshot coverage, click/type P95 and scroll/fps gates belong to the Browser /
+multidomain-mirroring and panes/display areas. They are not dimensions of every
+agent-model row. Those areas retain their public-site, DPR 1/2, shaped hosted
+relay and usability thresholds; this reset waives none of their requirements.
+Agent-model cells still use real clients/providers/networks and retain the
+scenario's own observable results, disconnect/recovery and cleanup assertions.
+FB06/I02 retains its uninterrupted three-hour stability/recovery evidence.
 
 Browser/App positive cells target an admitted user-domain resource on its owning
 execution kernel; never route leased user-domain control across kernels. Where
 that positive leg is unavailable, retain BLOCKED with the exact coordinator
 dependency; still execute the cross-kernel denial subcase. Room Browser/Computer
-tools use their existing home-owned routing. Local cells of PR10 retain local
-control plus a real leased child; its R/S cells exercise remote primary runs.
+tools use their existing home-owned routing. PR10 scenarios that exercise worker authority retain a real leased child or
+remote primary as their numbered steps require; slice placement is exercised
+in the separate final-head parity row.
 
 **Evidence E, required for every cell:** screenshots per web/view step, TUI
 screen captures per terminal step, redacted console/kernel/relay/worker/provider
@@ -1035,7 +1033,7 @@ already pass on base; do not deliberately weaken base to manufacture RED.
 | G10 | 1. Retain a request/completion from the old provider run/lease. 2. Replace run/placement, then deliver the stale request through the real boundary. Reject old tool authority, completion and lineage mutation; current run remains usable. | Run/epoch pairs, denials, current-run UI and ledger. | BLOCKED(B0) |
 | G11 | 1. Elevate parent. 2. Spawn child → grandchild and workflow node, send/forward messages and wake them. 3. Try privileged operations, passkey/approval replies and Extend from each descendant. All stay regular; owner-only verification and unrelated peer destruction remain denied. | Status rows for entire chain, denied operations and unchanged peer objects. | BLOCKED(B0) |
 | G12 | 1. Exercise real owner passkey, Vault-backed service login, actual hand-off and private-overlay protection via product paths. 2. Check real page/process observation and output without exposing any value. 3. Privately scan model/tool/history/trace/events/FTS, DOM/screenshots/mirror, logs and retained evidence. No secret is observable/searchable; relay/Cloud receive no plaintext. Synthetic echo/malicious-output canaries supplement these real flows as separate regression subruns. | Boolean leak report for each sink, actual service outcome, protection epochs and safe pixels; no secret in reports. | BLOCKED(B0) |
-| G13 | 1. Start an owned source that stays healthy. 2. Yield with a 60-second deadline. 3. Let it lapse, then repeat with restart before the deadline. One `deadline_reached` wake re-evaluates; new waiting requires a fresh finite deadline. | Countdown screens, durable occurrence/time and real provider re-evaluation. | BLOCKED(B0) |
+| G13 | 1. Start an owned source that stays healthy. 2. Yield with a 60-second deadline. 3. Let it lapse: one `deadline_reached` wake re-evaluates, and new waiting needs a fresh finite deadline. 4. Repeat with restart before the deadline: `source_lost` is the intended outcome (Miguel 2026-10-14), with explicit recovery rather than pretending the old executor survived. | Countdown screens, durable deadline/source-loss occurrences, provider handling and recovery. | BLOCKED(B0) |
 | G14 | 1. Wait separately on delegate, workflow, process and App source. 2. Delete/fail delegate, cancel workflow, lose process and revoke App. 3. Remove all sources before deadline; also lose one required source while another lives. Immediate failure event wakes/blocks, never eternal waiting. | Per-source cause and bounded wake time, visible failed obligation and resolution. | BLOCKED(B0) |
 | G15 | 1. Cause three consecutive wakes with only repeated status/deadline changes. 2. Restart between wakes 2/3. Escalate once to blocked with one user interaction; no fourth autonomous loop. 3. Repeat with a real result between wakes; counter resets. | Counter/progress receipts, blocked notification/screens and negative-loop count. | BLOCKED(B0) |
 | G16 | 1. Keep delegate/workflow/watcher/process/hand-off obligations open in separate runs. 2. Cause provider to claim done, then claim done again without resolving them. First claim re-prompts once with safe obligation list, second blocks; no completion feedback. 3. Resolve/cancel and finish successfully. | Correction receipt, purported final shown as progress, second block and terminal zero-open ledger. | BLOCKED(B0) |
@@ -1287,18 +1285,15 @@ publication runtime serves the produced app, never proxies agent traffic.
 | A — controlled regression suite | Supply isolated `scripts/e2e-stack` (equivalent until available), built clients/kernel and authorized regression publication namespace, Mailpit, local OIDC, DB and Stripe test-mode configuration. Use protected product input and owned resources. These are regression prerequisites only; this plan authorizes no deployment and no FA receipt can close a live gate. |
 | B — LIVE acceptance gate | Supply P0 and a dedicated **real mailbox** with credentials in the Vault and approved real recipient; an **existing Google account** authorized for Firebase Spark (free) Auth + Firestore + Hosting; real Chariox Cloud publication account/namespace and public URL; a selected real Supabase/Clerk-style service permitting normal email sign-up; linked real provider plans and agreed usage/time/$ ceiling. Owner remains available for 2FA, phone/human verification, approvals and passkey renewal. Payment uses an approved real provider account's native sandbox/test mode where offered; otherwise BLOCKED(owner payment approval) until exact real payment is authorized. Missing mailbox/account/service permission/quota/Cloud deploy authority or owner action is BLOCKED(owner, supply/link/authorize the named resource); no implicit upgrade, fixture substitution or automated Google account creation. |
 
-**Matrix expansion:** `FA{01..10}-{provider}-{client}-{placement}-{environment}-
-{before-retirement|after-retirement}` and
-`FB{01..08}-{provider}-{client}-{placement}-{environment}-
-{before-retirement|after-retirement}`, using all 72 axes
-above with the selected provider as root and all three providers in the team.
-Each FA cell first runs FA01 to reach its seam; each FB cell first runs FB01.
-Other required variants in a row get separate asserted subruns. Materialize
-every ID with steps, E, extra evidence and explicit result; no omitted cells.
-FB must show real live base RED → candidate GREEN for changed behavior and pass
-on both integration heads, with P0/site/density/network/duration conditions.
-FA records regression RED/GREEN separately. Scheduling or running only FA cannot
-close FB, I or any MP gate; every missing live resource/action remains explicit.
+**Flagship selection (Miguel 2026-10-14):** FB01, I01 and I03 are the three
+required real-service runs on the final head, with FB06/I02's retained stability
+and recovery leg. Do not multiply them by the former 72-axis Cartesian product
+or freeze a new acceptance head for every PR split. The remaining FA/FB patterns
+below describe supplementary regression/fault variants and service assertions;
+select the applicable ones within those runs. Source/regression FA results never
+replace a real-service receipt. Missing required service authority or resources
+remain explicit owner blockers. Use Codex/Claude for these runs; the one required
+OpenCode smoke remains A01-S01.
 
 #### MP-08 / MP-09 / MP-10 / MP-11 — variant A: controlled regression suite (never acceptance)
 
