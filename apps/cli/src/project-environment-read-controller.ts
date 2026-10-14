@@ -137,14 +137,24 @@ export function createProjectEnvironmentReadController(deps: {
       const requestGeneration = generation
       previousProposalOffsets = []
       savingGeneration = requestGeneration
+      let savedReply: ProjectEnvironment | null = null
       try {
         const response = await deps.send(saveEnvironmentRevisionRequest(current, environmentRevisionDraft(current), decision === "accept" ? [proposal.proposal_id] : [], decision === "exclude" ? [proposal.proposal_id] : [])) as { ProjectEnvironmentSaved?: { environment: ProjectEnvironment; diff?: EnvironmentRevisionDiff } }
         if (generation !== requestGeneration) return
         const saved = response.ProjectEnvironmentSaved?.environment
         if (!saved || saved.local_project_id !== current.local_project_id) throw new Error("Proposal review unavailable")
-        diff = response.ProjectEnvironmentSaved?.diff ?? null; diffLabel = "Kernel Save diff"; showingDiff = false; cache.remember(scope, saved); current = saved; proposalIndex = Math.min(proposalIndex, Math.max(0, saved.proposals.length - 1)); lines = viewLines(saved); offset = 0
+        savedReply = saved
+        // MP-08 / MP-10 / MP-11: unchanged-content decisions preserve Check
+        // freshness by reading a clock-bearing snapshot from this kernel.
+        const fresh = current.read_view && !saved.read_view ? await readEnvironment(saved.local_project_id) : saved
+        if (generation !== requestGeneration) return
+        if (fresh.local_project_id !== saved.local_project_id || fresh.lineage.environment_id !== saved.lineage.environment_id || fresh.revision < saved.revision || (current.read_view && !fresh.read_view)) throw new Error("Saved Environment refresh unavailable")
+        diff = response.ProjectEnvironmentSaved?.diff ?? null; diffLabel = "Kernel Save diff"; showingDiff = false; cache.remember(scope, fresh); current = fresh; proposalIndex = Math.min(proposalIndex, Math.max(0, fresh.proposals.length - 1)); lines = viewLines(fresh); offset = 0
       } catch (error) {
-        if (generation === requestGeneration) lines = [error instanceof Error ? error.message : "Proposal review failed", "r · Refresh to review the latest revision", ...viewLines(current)]
+        if (generation === requestGeneration) {
+          if (savedReply) { cache.remember(scope,savedReply); current = savedReply; proposalIndex = 0 }
+          lines = [savedReply ? "Proposal decision saved · Refresh to load current Check freshness" : error instanceof Error ? error.message : "Proposal review failed", "r · Refresh to review the latest revision", ...viewLines(current)]
+        }
       } finally { if (savingGeneration === requestGeneration) savingGeneration = null; if (generation === requestGeneration) deps.render() }
     },
     async proposalPage(proposalOffset:number, selectLast=false) {
