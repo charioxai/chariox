@@ -42,7 +42,9 @@ export function launchArguments(profile, headless, display = false, scale = 1) {
     "--enable-unsafe-extension-debugging",
     `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
-    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"] : []), "about:blank",
+    ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+      // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.
+      "--disable-features=ExplicitBrowserSigninUIOnDesktop"] : []), "about:blank",
   ];
 }
 

@@ -352,7 +352,7 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
-    this.activeTarget = await this.tabGroups?.active().catch(() => null) ?? null;
+    this.activeTarget = await this.tabGroups?.active?.().catch(() => null) ?? null;
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();

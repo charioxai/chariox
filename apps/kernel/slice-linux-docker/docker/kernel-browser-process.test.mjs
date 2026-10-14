@@ -64,3 +64,9 @@ test('MP-11 headed mirror refuses an unavailable private display before spawning
  try{await assert.rejects(host.start(),/owned X server unavailable/);assert.equal(host.child,null,'ambient display must not launch a browser');assert.equal(host.display,null);}
  finally{OwnedDisplay.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
 });
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): the native band shows no dead-end sign-in chip
+// (sign-in is policy-blocked); evidence r4/strip a-ExplicitBrowserSigninUIOnDesktop.png.
+test('the owned window has no "Sign in to Chrome?" chip in its band', async () => {
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ assert(launchArguments('/private',false,true).includes('--disable-features=ExplicitBrowserSigninUIOnDesktop'));
+});
