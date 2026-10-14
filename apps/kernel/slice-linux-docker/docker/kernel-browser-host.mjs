@@ -328,7 +328,7 @@ export class KernelBrowserHost {
         const sample = async () => {
           const compositor=this.compositors.get(tab.tab_id)?.source;
           if(clip)compositor?.pause();
-          try{return await connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId)}
+          try{return await this.browser.inputCapture.run(connection,sessionId,()=>connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId))}
           finally{if(clip)compositor?.resume()}
         };
         const policy=this.protection;

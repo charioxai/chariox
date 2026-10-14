@@ -1057,3 +1057,12 @@ test('MP-08/MP-10/MP-11 canonical mirror density does not depend on video', asyn
     if(beforeVideo===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=beforeVideo;
   }
 });
+
+test('MP-08/MP-10/MP-11: protected still captures keep the hidden render widget active without OS focus',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://en.wikipedia.org/'});
+ let rendering=false,holds=0;
+ host.browser.inputCapture.run=async(_connection,_session,operation)=>{assert.equal(rendering,false);rendering=true;holds++;try{return await operation()}finally{rendering=false}};
+ connection.beforeSend=async method=>{if(method==='Page.captureScreenshot')assert.equal(rendering,true,'a hidden widget cannot paint without its existing transient capture lease');assert.notEqual(method,'Page.bringToFront')};
+ const captured=await host.request({op:'screenshot',_capture_protection:true,tab_id:opened.tab_id,generation:opened.generation});
+ assert(captured.data_base64);assert.equal(holds,1);assert.equal(rendering,false);
+}));
