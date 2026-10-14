@@ -768,14 +768,18 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
     assert_eq!(next_run.model(), PRIMARY_MODEL);
     assert!(next_run.turn_substitute().is_none());
 
-    let next_prompt = turn.runtime.owned.prompt_with_pending_context_handoff(
-        &turn.session_id,
-        &turn.agent_id,
-        &next_run,
-        "prompt-next",
-        "implement that solution",
-        false,
-    );
+    let next_prompt = turn
+        .runtime
+        .owned
+        .prompt_with_pending_context_handoff(
+            &turn.session_id,
+            &turn.agent_id,
+            &next_run,
+            "prompt-next",
+            "implement that solution",
+            false,
+        )
+        .unwrap();
     assert!(
         next_prompt.contains("Proposed fix: rename parse_all to parse."),
         "the primary's next turn carries the substitute's answer: {next_prompt}"

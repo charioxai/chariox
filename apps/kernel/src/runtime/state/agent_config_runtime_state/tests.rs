@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/account_sync_timeout.rs"]
+mod account_sync_timeout;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -1254,3 +1256,6 @@ fn same_execution_profile(
         && a.model() == b.model()
         && a.effort() == b.effort()
 }
+
+#[path = "tests/profile_compaction.rs"]
+mod profile_compaction;

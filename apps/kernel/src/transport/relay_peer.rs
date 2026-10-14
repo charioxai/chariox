@@ -1002,6 +1002,21 @@ pub enum RelayPeerRequest {
     },
 }
 
+impl RelayPeerRequest {
+    /// Off-lock callers can wait for both bounded native account probes plus
+    /// reply cleanup. App-locked callers retain their configured response bound.
+    pub(crate) fn off_lock_response_timeout(
+        &self,
+        configured: std::time::Duration,
+    ) -> std::time::Duration {
+        if matches!(self, Self::EnsureRemoteProviderAccount { .. }) {
+            configured.max(std::time::Duration::from_secs(150))
+        } else {
+            configured
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {

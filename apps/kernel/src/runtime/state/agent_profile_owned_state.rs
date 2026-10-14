@@ -28,17 +28,75 @@ impl owned::OwnedRemoteAgentProfileUpdate {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct AgentProfileSelections {
+    pub(super) provider: Option<String>,
+    pub(super) account_profile: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<Option<String>>,
+}
+
+pub(super) struct ValidatedAgentProfile {
+    pub(super) agent: crate::agent::AgentInstance,
+    pub(super) provider: String,
+    pub(super) account_profile: String,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
+}
+
 impl KernelRuntimeOwnedState {
-    pub(super) fn update_agent_profile(
+    /// MP-08 / MP-10 / MP-11: selections and resolved run identities compare in
+    /// the same namespace before deciding whether a native session survives.
+    pub(super) fn agent_profile_source_account(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> String {
+        if let Some(run) = self
+            .provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+            .or_else(|| {
+                self.provider_store
+                    .get_latest_run_for_agent(agent.session_id(), agent.id())
+            })
+        {
+            let native_session = agent
+                .provider_resume_state()
+                .provider_session_id(run.adapter_key());
+            let owns_native_session = native_session.is_some()
+                && run
+                    .provider_session_id()
+                    .or_else(|| run.resume_state().provider_session_id(run.adapter_key()))
+                    == native_session;
+            if (crate::account_profile::provider_account_selection_for_run(&run)
+                == agent.provider_account_profile()
+                || owns_native_session)
+                && crate::provider::canonical_provider_family(run.provider())
+                    .unwrap_or(run.provider())
+                    == crate::provider::canonical_provider_family(agent.provider())
+                        .unwrap_or(agent.provider())
+            {
+                return run.account_profile().to_string();
+            }
+        }
+        // An unbound selector may have been reassigned since the native session
+        // ran. Compare it as stored: concrete ids retain their original behavior,
+        // while aliases reset instead of guessing the current account owns it.
+        agent.provider_account_profile().to_string()
+    }
+
+    pub(super) fn validate_agent_profile_update(
         &self,
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        provider: Option<String>,
-        account_profile: Option<String>,
-        model: Option<String>,
-        effort: Option<Option<String>>,
-    ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
+        selections: AgentProfileSelections,
+    ) -> Result<ValidatedAgentProfile, DaemonError> {
+        let AgentProfileSelections {
+            provider,
+            account_profile,
+            model,
+            effort,
+        } = selections;
         let provider = provider
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
@@ -115,10 +173,40 @@ impl KernelRuntimeOwnedState {
             None if family_changed => None,
             None => agent.effort(),
         };
+        Ok(ValidatedAgentProfile {
+            effort: target_effort.map(str::to_string),
+            agent,
+            provider: target_provider,
+            account_profile: target_account_profile,
+            model: target_model,
+        })
+    }
+
+    pub(super) fn update_agent_profile(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        selections: AgentProfileSelections,
+    ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
+        let account_requested = selections.account_profile.is_some();
+        let validated =
+            self.validate_agent_profile_update(session_id, agent_id, caller_user_id, selections)?;
+        let agent = validated.agent;
+        let target_provider = validated.provider;
+        let target_account_profile = validated.account_profile;
+        let target_model = validated.model;
+        let target_effort = validated.effort.as_deref();
+        let source_account = self.agent_profile_source_account(&agent);
         let provider_model_or_account_changed = target_provider != agent.provider()
             || target_model.as_deref() != agent.model()
-            || target_account_profile != agent.provider_account_profile();
-        if !provider_model_or_account_changed && target_effort == agent.effort() {
+            || target_account_profile != source_account;
+        let selection_changed =
+            account_requested && target_account_profile != agent.provider_account_profile();
+        if !provider_model_or_account_changed
+            && target_effort == agent.effort()
+            && !selection_changed
+        {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
                 terminated_run_ids: Vec::new(),
@@ -140,7 +228,9 @@ impl KernelRuntimeOwnedState {
                     effort: target_effort.map(str::to_string),
                 });
         let mut terminated_run_ids = Vec::new();
-        if remote_update.is_none() {
+        if remote_update.is_none()
+            && (provider_model_or_account_changed || target_effort != agent.effort())
+        {
             if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
                 match run.state() {
                     crate::provider::ProviderRunState::Starting
@@ -168,7 +258,7 @@ impl KernelRuntimeOwnedState {
         } else {
             let resume_state = agent.provider_resume_state().after_profile_change(
                 agent.provider(),
-                agent.provider_account_profile(),
+                &source_account,
                 &target_provider,
                 &target_account_profile,
             );
@@ -259,9 +349,10 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        let source_account = self.agent_profile_source_account(&agent);
         let resume_state = agent.provider_resume_state().after_profile_change(
             agent.provider(),
-            agent.provider_account_profile(),
+            &source_account,
             &provider,
             &account_profile,
         );

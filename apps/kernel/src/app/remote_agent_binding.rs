@@ -1749,6 +1749,7 @@ impl DaemonApp {
         use_connected_relay: bool,
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms);
         if use_connected_relay {
             let relay_state = self.relay_client_state();
             self.block_on_relay_future(send_peer_request_via_connected_relay_authorized(
@@ -1756,7 +1757,7 @@ impl DaemonApp {
                 &relay_state,
                 target,
                 request,
-                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                timeout,
                 authorize,
             ))
         } else {
@@ -1764,7 +1765,7 @@ impl DaemonApp {
                 relay_config,
                 target,
                 request,
-                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                timeout,
                 authorize,
             ))
         }
@@ -1873,13 +1874,15 @@ async fn send_remote_binding_request_off_lock(
     use_connected_relay: bool,
     authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
 ) -> Result<RelayPeerResponse, DaemonError> {
+    let timeout = request
+        .off_lock_response_timeout(Duration::from_millis(relay_config.relay_request_timeout_ms));
     if use_connected_relay {
         send_peer_request_via_connected_relay_authorized(
             relay_config,
             relay_state,
             target,
             request,
-            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            timeout,
             authorize,
         )
         .await
@@ -1888,7 +1891,7 @@ async fn send_remote_binding_request_off_lock(
             relay_config,
             target,
             request,
-            Duration::from_millis(relay_config.relay_request_timeout_ms),
+            timeout,
             authorize,
         )
         .await
@@ -2165,6 +2168,138 @@ mod tests {
     use crate::session::CreateSessionRequest;
     use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_locked_account_sync_keeps_the_configured_response_bound() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let worker = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("account-sync-fixture-admission".into());
+        config.relay_request_timeout_ms = 50;
+        let home_public_key = config.relay_public_key.clone();
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let relay_state = app.relay_client_state();
+        let (sender, mut replies, _events) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        {
+            let mut state = relay_state.write().await;
+            state.test_set_connected_sender(sender, "ws://127.0.0.1:1");
+            state.remember_peer_public_key("worker", worker.relay_public_key.clone());
+        }
+        let task = tokio::task::spawn_blocking(move || {
+            app.send_remote_binding_request_authorized(
+                &config,
+                chariox_relay::protocol::ClientTarget {
+                    daemon_id: Some("worker".into()),
+                    daemon_alias: None,
+                },
+                crate::transport::relay_peer::RelayPeerRequest::EnsureRemoteProviderAccount {
+                    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                        home_kernel_id: "home".into(),
+                        home_session_id: "session".into(),
+                        home_agent_id: "agent".into(),
+                        execution_lease_id: "lease".into(),
+                    },
+                    materialization: crate::account_profile::ProviderAccountMaterialization {
+                        profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                            owner_user_id: "owner".into(),
+                            provider: "opencode".into(),
+                            profile_id: "go".into(),
+                            label: "Go".into(),
+                            origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+                            is_default: true,
+                        },
+                        files: vec![],
+                        generated_at_ms: 0,
+                    },
+                },
+                true,
+                &|| Ok(()),
+            )
+        });
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest { request_id, .. } = envelope
+        else {
+            panic!("expected encrypted account sync");
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let reply = crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+            provider: "opencode".into(),
+            account_profile: "go".into(),
+        };
+        let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &worker.relay_private_key,
+            &home_public_key,
+            &serde_json::to_vec(&reply).unwrap(),
+        )
+        .unwrap();
+        crate::transport::relay_client::resolve_pending_peer_response_for_test(
+            &relay_state,
+            request_id,
+            "worker".into(),
+            encrypted,
+        )
+        .await;
+        let result = task.await.unwrap();
+        assert!(
+            matches!(result, Err(crate::error::DaemonError::LocalTransport {
+        operation: "read relay peer response", ref message,
+    }) if message.contains("timed out") && message.contains("50ms")),
+            "app-locked account sync exceeded its configured response budget: {result:?}"
+        );
+    }
+
+    #[test]
+    fn off_lock_account_sync_wait_covers_both_native_probes() {
+        let config = DaemonConfig::for_tests();
+        let request = crate::transport::relay_peer::RelayPeerRequest::EnsureRemoteProviderAccount {
+            context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "session".into(),
+                home_agent_id: "agent".into(),
+                execution_lease_id: "lease".into(),
+            },
+            materialization: crate::account_profile::ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner".into(),
+                    provider: "opencode".into(),
+                    profile_id: "go".into(),
+                    label: "Go".into(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+                    is_default: true,
+                },
+                files: vec![],
+                generated_at_ms: 0,
+            },
+        };
+        let actual = request.off_lock_response_timeout(std::time::Duration::from_millis(
+            config.relay_request_timeout_ms,
+        ));
+        let ordinary =
+            crate::transport::relay_peer::RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            };
+        assert_eq!(
+            ordinary.off_lock_response_timeout(std::time::Duration::from_millis(
+                config.relay_request_timeout_ms
+            )),
+            std::time::Duration::from_millis(config.relay_request_timeout_ms)
+        );
+        let mut longer = config.clone();
+        longer.relay_request_timeout_ms = 200_000;
+        assert_eq!(
+            request.off_lock_response_timeout(std::time::Duration::from_millis(
+                longer.relay_request_timeout_ms
+            )),
+            std::time::Duration::from_secs(200)
+        );
+        assert!(
+            actual >= std::time::Duration::from_secs(150),
+            "home expires before worker auth + model refresh + reply"
+        );
+    }
     #[test]
     fn remote_account_receipt_matches_the_materialized_profile_id_not_its_alias() {
         let expected = crate::account_profile::ProviderAccountReplicaMetadata {
