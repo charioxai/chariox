@@ -4,6 +4,7 @@
 // flight per viewer). Resources are hash-addressed and follow the packet.
 import { createHash } from 'node:crypto';
 import { createDeflateRaw, constants as zlib } from 'node:zlib';
+import { mirrorExceptionReason } from './kernel-browser-error-label.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { assertCurrentDocument, assertNotCancelled } from './browser-controller-actions.mjs';
@@ -163,7 +164,7 @@ export class Mirror2 {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
-      const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? 'observer_exception'; throw error;
+      const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
     }
     if (!Object.hasOwn(reply.result ?? {}, 'value')) throw new Error('MP-11: mirror observation unavailable');
     return reply.result.value;

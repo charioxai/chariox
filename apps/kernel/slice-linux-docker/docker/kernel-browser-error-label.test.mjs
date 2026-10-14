@@ -1,6 +1,6 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {hostErrorLabel} from './kernel-browser-error-label.mjs';
+import {hostErrorLabel,mirrorExceptionReason} from './kernel-browser-error-label.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
  assert.equal(hostErrorLabel(error),'host_error TypeError ENOENT kernel-browser-native-worker.mjs:17:20');
@@ -13,4 +13,12 @@ test('MP-11 attacker-controlled exception fields cannot become timing labels',()
 test('MP-08/MP-10/MP-11 CDP timeouts identify the public method without its arguments',()=>{
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method Page.captureScreenshot timed out after 5000ms'}),'host_error Error browser_cdp_timeout Page.captureScreenshot');
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method protectedcanary timed out after 5000ms'}),'host_error Error browser_cdp_timeout');
+});
+
+test('MP-08/MP-10/MP-11: observer diagnostics admit fixed input refusal classes only',()=>{
+ assert.equal(mirrorExceptionReason('Error: mirror2 invalid selection\n at private'), 'invalid_selection');
+ assert.equal(mirrorExceptionReason('Error: mirror2 unavailable native text focus\n at private'), 'unavailable_native_text_focus');
+ assert.equal(mirrorExceptionReason('Error: mirror2 private-canary'), 'observer_exception');
+ assert.equal(hostErrorLabel({mirrorReason:'invalid_selection'}),'host_error Error invalid_selection');
+ assert.equal(hostErrorLabel({mirrorReason:'private-canary'}),'host_error Error');
 });
