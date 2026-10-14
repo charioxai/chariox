@@ -41,6 +41,7 @@ export function waitingRoomRows(
   const choice = waitingRoomChoice(state, sessions, catalog, remote)
   const inventoryLoading = waitingRoomInventoryPending(remote, waitingRoomSessions(sessions).length > 0)
     || (providerCatalogIsLocalFallback(catalog)
+      && !catalog.unavailable_reason
       && Boolean(remote.relay?.daemon_id))
   const loadingText = waitingRoomLoadingText(remote.loadingFrame)
   const modelOptions = catalogModelOptions(catalog, state.providerId)
@@ -70,6 +71,9 @@ export function waitingRoomRows(
     titleWidth,
   })
 
+  if (providerCatalogIsLocalFallback(catalog) && catalog.unavailable_reason) {
+    rows.push({ id: "catalog-error", title: "Catalog", value: "Lookup failed · Change Provider or Kernel to retry", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
+  }
   if (inventoryLoading && visibleSessions.length > 0) {
     rows.push({ id: "inventory-refreshing", title: "Inventory", value: "cached/refreshing", titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "" })
   }

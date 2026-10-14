@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { getProviderCatalog } from "./provider-api.js"
+import type { LocalIpcClient } from "./ipc.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
@@ -61,4 +63,25 @@ test("waiting room rows expose local provider catalog fallback", () => {
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
+})
+
+// MP-08/MP-10: a completed failed read is not an in-flight catalog.
+test("failed catalog plus successful empty inventory leaves retry and kernel selection reachable", async () => {
+  const client = { send: async () => { throw new Error("catalog request timed out") } } as unknown as LocalIpcClient
+  const catalog = await getProviderCatalog(client)
+  assert.equal(catalog.source, "local_fallback")
+  assert.ok(catalog.unavailable_reason)
+  const state = createWaitingRoomState([], catalog, "codex", "default", "low")
+  // Inventory polling can succeed indefinitely without a new catalog event.
+  for (let i = 0; i < 3; i++) {
+    const rows = waitingRoomRows(state, [], catalog, { inventoryStatus: "ready", collaborationBackend: "cloud",
+      relay: { configured: true, connected: true, daemon_id: "kernel-a" },
+      kernels: [{ kernel_id: "kernel-a", machine_id: "machine-a" }, { kernel_id: "kernel-b", machine_id: "machine-b" }],
+    })
+    for (const id of ["new", "launch-machine", "launch-kernel", "provider", "model"]) {
+      assert.equal(rows.find(row => row.id === id)?.selectable, true, id)
+      assert.doesNotMatch(rows.find(row => row.id === id)!.value, /^loading/, id)
+    }
+    assert.match(rows.find(row => row.id === "catalog-error")?.value ?? "", /failed.*Provider or Kernel.*retry/i)
+  }
 })
