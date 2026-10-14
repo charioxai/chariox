@@ -181,6 +181,11 @@ pub(super) fn opencode_observed_turn_from_value(
     value: &Value,
 ) -> Option<ObservedExternalProviderTurn> {
     let role_text = string_field(value, &["role", "type"]);
+    if opencode_internal_summary(role_text.as_deref(), value)
+        || opencode_internal_user_part(role_text.as_deref(), value)
+    {
+        return None;
+    }
     let text = text_from_content(value.get("content").or_else(|| value.get("message"))?)
         .and_then(|text| clean_observed_turn_text(role_text.as_deref(), text))?;
     Some(ObservedExternalProviderTurn {
@@ -213,6 +218,9 @@ pub(super) fn opencode_observed_turns_from_value(
 pub(super) fn opencode_message_observed_turns(value: &Value) -> Vec<ObservedExternalProviderTurn> {
     let info = value.get("info").unwrap_or(value);
     let role = string_field(info, &["role"]).or_else(|| string_field(value, &["role", "type"]));
+    if opencode_internal_summary(role.as_deref(), info) {
+        return Vec::new();
+    }
     let observed_at_ms = string_field(value, &["created", "createdAt", "timestamp"])
         .or_else(|| string_field(info, &["created", "createdAt", "timestamp"]))
         .and_then(|timestamp| parse_timestamp_millis(&timestamp));
@@ -227,6 +235,9 @@ pub(super) fn opencode_message_observed_turns(value: &Value) -> Vec<ObservedExte
     let mut turns = Vec::new();
     let mut user_parts = Vec::new();
     for (index, part) in parts.enumerate() {
+        if opencode_internal_user_part(role.as_deref(), part) {
+            continue;
+        }
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("text");
         match (role.as_deref(), part_type) {
             (Some("user"), "text") => {
@@ -581,6 +592,10 @@ pub(super) fn read_opencode_sqlite_observed_turns(
         updated_at_ms,
     ) in rows.filter_map(Result::ok)
     {
+        let message_info = serde_json::from_str::<Value>(&message_data).unwrap_or(Value::Null);
+        if opencode_internal_summary(role.as_deref(), &message_info) {
+            continue;
+        }
         let observed_at_ms = updated_at_ms.or(created_at_ms);
         if let Some(turn) = opencode_sqlite_part_observed_turn(
             role.as_deref(),
@@ -593,12 +608,10 @@ pub(super) fn read_opencode_sqlite_observed_turns(
             turns.push(turn);
         }
         if status_message_ids.insert(message_id.clone()) {
-            if let Ok(message_info) = serde_json::from_str::<Value>(&message_data) {
-                if let Some(status) =
-                    opencode_message_status_turn(&message_info, Some(&message_id), observed_at_ms)
-                {
-                    status_turns.push(status);
-                }
+            if let Some(status) =
+                opencode_message_status_turn(&message_info, Some(&message_id), observed_at_ms)
+            {
+                status_turns.push(status);
             }
         }
     }
@@ -710,6 +723,9 @@ pub(super) fn opencode_sqlite_part_observed_turn(
     observed_at_ms: Option<u64>,
 ) -> Option<ObservedExternalProviderTurn> {
     let part = serde_json::from_str::<Value>(part_data).ok()?;
+    if opencode_internal_user_part(role, &part) {
+        return None;
+    }
     let provider_turn_id = if part_id.trim().is_empty() {
         message_id.to_string()
     } else {

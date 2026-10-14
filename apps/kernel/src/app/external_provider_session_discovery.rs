@@ -26,6 +26,7 @@ mod codex;
 mod common;
 mod jsonl;
 mod opencode;
+mod opencode_observation_filter;
 mod paths;
 #[cfg(test)]
 mod tests;
@@ -36,6 +37,7 @@ use self::codex::*;
 use self::common::*;
 use self::jsonl::*;
 use self::opencode::*;
+use self::opencode_observation_filter::*;
 use self::paths::*;
 
 const MAX_PROVIDER_FILES: usize = 1_000;

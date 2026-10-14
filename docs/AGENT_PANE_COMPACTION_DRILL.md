@@ -30,6 +30,14 @@ settles once, and retains its order after reload; the compaction context and
 synthetic user are not extra user turns. Exercise required permission mode too:
 a continuation tool approval must use the original kernel runtime interaction.
 
+Compare the native SQLite/JSON observation path as well as the live adapter.
+Both must omit `synthetic: true` user parts and assistant `summary: true`
+messages, including their completion telemetry. A user's summary object or
+ordinary text saying "Continue" must remain visible. Count actual user prompts
+against kernel turns across compaction and verify the final public answer in
+the real UI. A model may omit a requested reference after compaction; preserve
+that failed criterion and distinguish it from missing output or a stuck turn.
+
 A controlled request to the documented native summarize endpoint is useful
 supplementary reproduction evidence. It does not replace natural long-history
 acceptance or the full provider/client matrix. Focused Rust tests are regression
