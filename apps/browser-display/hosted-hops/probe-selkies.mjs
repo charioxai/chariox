@@ -1,4 +1,4 @@
-import {probePaths} from './probe-config.mjs';
+import {probePaths,visibleSourcePage} from './probe-config.mjs';
 import {CpuSampler,cpuSpan} from '../drill-cpu.mjs';
 // MP-08/MP-10/MP-11: real hosted web, public controls, numeric per-hop diagnostics.
 const {chromium}=await import(process.env.VIDHOPS_PLAYWRIGHT??'/w/valenv/tools/node_modules/playwright-core/index.mjs');
@@ -15,10 +15,14 @@ const ipc={close:async()=>{}};
 const display=new OwnedDisplay(root+'/viewer'),report={items:['MP-08','MP-10','MP-11'],oss:process.env.OSS_SOURCE??null,cloud:process.env.CLOUD_SOURCE??null,status:'RUNNING',recording:process.env.VIDHOPS_RECORD==='1',cells:[],viewer_gpu_mode:process.env.VIDLAT_VIEWER_DEFAULT_GPU==='1'?'chromium_default':'forced_software',qualification:'Pinned Selkies actual viewer + Decision G native pixel observer; source CDP is preparation/read-only oracle. Engineering diagnostics; host recorded in command receipt; source canvas pixel echo plus next RAF, not campaign X11 endpoint acceptance. Input driven only through real hosted web.'};
 let browser,network,pixels;const cpu=new CpuSampler({root:paths.S,viewerRoot:paths.viewer});if(paths.ownerAB)await cpu.track(state.selkiesPid,'pipeline');cpu.start();process.once('SIGTERM',async()=>{report.status='INTERRUPTED_SIGTERM';await cpu.close();await save();await browser?.close();await network?.close();await pixels?.close();await display.close();await ipc.close();process.exit(143)});
 const save=()=>writeFile(E+'/results.json',JSON.stringify(report,null,2));
+async function sourceRead(target,method,params={}){
+ const w=new WebSocket(target.webSocketDebuggerUrl);await new Promise((r,j)=>{w.once('open',r);w.once('error',j)});
+ try{return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('MP-10 source oracle deadline')),5000);const done=(error,value)=>{clearTimeout(timer);error?reject(error):resolve(value)};w.once('error',()=>done(Error('MP-10 source oracle failed')));w.once('message',b=>{const v=JSON.parse(b);v.error?done(Error('MP-10 source oracle failed')):done(null,v.result)});w.send(JSON.stringify({id:1,method,params}))})}finally{w.close()}
+}
 async function cdpRead(method,params={}){
- const pages=await(await fetch(`http://127.0.0.1:${state.cdpPort}/json/list`)).json();const t=pages.find(t=>t.type==='page');if(!t)throw Error('MP-10 own baseline source missing');
- const w=new WebSocket(t.webSocketDebuggerUrl);await new Promise((r,j)=>{w.once('open',r);w.once('error',j)});
- try{return await new Promise((r,j)=>{w.once('message',b=>{const v=JSON.parse(b);v.error?j(Error('MP-10 baseline source diagnostic failed')):r(v.result)});w.send(JSON.stringify({id:1,method,params}))})}finally{w.close()}
+ const pages=await(await fetch(`http://127.0.0.1:${state.cdpPort}/json/list`)).json();
+ const target=await visibleSourcePage(pages,async p=>(await sourceRead(p,'Runtime.evaluate',{expression:'document.visibilityState === "visible"',returnByValue:true})).result?.value===true);
+ return sourceRead(target,method,params);
 }
 async function controls(){
  const result=await cdpRead('Runtime.evaluate',{expression:`(()=>{if(!['en.wikipedia.org','www.wikipedia.org'].includes(location.hostname))throw Error('public source required');const ids=['searchInput','skin-client-pref-skin-theme-value-day','skin-client-pref-skin-theme-value-night','js-lang-list-button'];const controls=ids.map(id=>document.getElementById(id)).filter(Boolean).map(e=>{const b=e.getBoundingClientRect();return {id:e.id,value:e.value,expanded:e.getAttribute('aria-expanded'),bounds:{x:b.x,y:b.y+${paths.ownerAB?87:0},width:b.width,height:b.height}}});const close=document.querySelector('.frb-icon-close');const b=close?.getBoundingClientRect();return {url:location.href,controls,bannerClose:b?{x:b.x,y:b.y+${paths.ownerAB?87:0},width:b.width,height:b.height}:null}})()`,returnByValue:true});return result.result.value;

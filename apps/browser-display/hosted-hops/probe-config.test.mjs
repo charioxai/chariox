@@ -16,3 +16,11 @@ test('MP-10 typing sample count requires an actual source echo and physical endp
  assert.deepEqual(typingMetric([good,{source_echo_matches:false,physical:{latency_ms:1}},{source_echo_matches:true,physical:{latency_ms:null}}]),{attempts:3,samples:[125]});
  assert.deepEqual(typingMetric([{source_equals_public_c:true,physical:{latency_ms:126}}]).samples,[126]);
 });
+
+test('MP-10 source read-only oracle follows the visible tab rather than CDP list order',async()=>{
+ const {visibleSourcePage}=await import('./probe-config.mjs');
+ const pages=[{type:'page',id:'new-background'},{type:'page',id:'active'},{type:'worker',id:'worker'}];
+ assert.equal((await visibleSourcePage(pages,async p=>p.id==='active')).id,'active');
+ await assert.rejects(()=>visibleSourcePage(pages,async()=>true),/ambiguous/);
+ await assert.rejects(()=>visibleSourcePage(pages,async()=>false),/missing/);
+});

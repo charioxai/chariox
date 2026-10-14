@@ -10,3 +10,11 @@ export function typingMetric(rows){
  return {attempts:rows.length,samples:rows.filter(r=>(r.source_echo_matches??r.source_equals_public_c)===true)
   .map(r=>r.physical?.latency_ms).filter(Number.isFinite)};
 }
+
+// MP-10: CDP lists new/background tabs first. Observe visibility only; never
+// activate a source target to make a coordinate oracle appear correct.
+export async function visibleSourcePage(pages,isVisible){
+ const visible=[];for(const page of pages)if(page.type==='page'&&await isVisible(page))visible.push(page);
+ if(visible.length!==1)throw Error(visible.length?'MP-10 ambiguous visible source':'MP-10 missing visible source');
+ return visible[0];
+}
