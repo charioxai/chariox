@@ -33,7 +33,7 @@ import {
 } from "./session-state.js"
 import { normalizeBackendProviderId } from "./provider-catalog.js"
 import { registerCliLauncherParentExit } from "./cli-launcher-parent.js"
-import { createTerminalExitController } from "./terminal-exit-controller.js"
+import { createTerminalExitController, writeTerminalModeRestore } from "./terminal-exit-controller.js"
 import { createWaitingRoomTransitionController } from "./waiting-room-transition-controller.js"
 
 type AnyFn = (...args: any[]) => any
@@ -374,6 +374,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         error: deps.formatError(error),
       })
     },
+    restoreTerminalModes: writeTerminalModeRestore,
   })
   // MP-08/MP-11: macOS parent death must leave the user's shell usable.
   registerCliLauncherParentExit(() => { void terminalExitController.restoreAndExit(1) })
