@@ -3652,6 +3652,17 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
+        if !dispatch.steering {
+            self.with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app).activate_leased_home_prompt_for_dispatch(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                );
+            })
+            .await;
+        }
         let hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,
             &dispatch.hidden_system_context,

@@ -324,7 +324,6 @@ impl KernelRuntimeState {
         };
         let finish_leased_agent_id = leased_agent_id.clone();
         let finish_home_prompt_id = home_prompt_id.clone();
-        let finish_provider_run_id = provider_run_id.clone();
         let (provider_run_id, outcome, dispatch) = self
             .with_app_side_effect(move |app| {
                 let mut runtime = RemoteLeaseRuntime::new(app);
@@ -336,19 +335,24 @@ impl KernelRuntimeState {
                     // Admission and its receipt precede provider I/O. An
                     // admitted dispatch failure is then an exact Failed turn,
                     // projected through the usual worker completion path.
-                    runtime.update_leased_prompt_receipt(
-                        &finish_leased_agent_id,
-                        home_prompt_id,
-                        if result.is_ok() {
-                            WorkerPromptReceiptPhase::Accepted
-                        } else {
-                            WorkerPromptReceiptPhase::Rejected
-                        },
-                        result
-                            .as_ref()
-                            .ok()
-                            .map(|_| finish_provider_run_id.as_str()),
-                    )?;
+                    match result.as_ref() {
+                        Ok((run, outcome, _)) => {
+                            let (crate::session::PromptSubmissionOutcome::Started { prompt }
+                            | crate::session::PromptSubmissionOutcome::Queued { prompt }) = outcome;
+                            runtime.accept_leased_prompt_receipt(
+                                &finish_leased_agent_id,
+                                home_prompt_id,
+                                run,
+                                prompt.id(),
+                            )?;
+                        }
+                        Err(_) => runtime.update_leased_prompt_receipt(
+                            &finish_leased_agent_id,
+                            home_prompt_id,
+                            WorkerPromptReceiptPhase::Rejected,
+                            None,
+                        )?,
+                    }
                 }
                 result
             })

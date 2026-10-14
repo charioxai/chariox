@@ -325,6 +325,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
             })
             .map(|binding| binding.backing_prompt_id.clone())
+            .or_else(|| {
+                home_prompt_id.as_deref().and_then(|home| {
+                    completion_scope::backing_prompt_id(
+                        self.app,
+                        &leased_agent,
+                        provider_run_id,
+                        home,
+                    )
+                    .map(str::to_string)
+                })
+            })
             .or_else(|| home_prompt_id.clone());
         let worker_settlement = termination_prompt_id
             .as_deref()
@@ -368,10 +379,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         completions.retain(|completion| {
-            let completion_key = leased_provider_run_completion_key(
+            let completion_key = completion_scope::completion_key(
+                self.app,
                 &leased_agent,
                 provider_run_id,
                 &completion.message_id,
+                completion.home_prompt_id.as_deref(),
             );
             !leased_agent
                 .projected_completion_keys
@@ -489,10 +502,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     replay.provider_run_id == provider_run_id
                         && replay.home_prompt_id == home_prompt_id
                         && !leased_agent.projected_completion_keys.iter().any(|key| {
-                            key == &leased_provider_run_completion_key(
+                            key == &completion_scope::completion_key(
+                                self.app,
                                 &leased_agent,
                                 provider_run_id,
                                 &replay.message_id,
+                                replay.home_prompt_id.as_deref(),
                             )
                         })
                 });
@@ -607,10 +622,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         || (home_prompt_id.is_none() && !backing_prompt_active))
             })
             .is_some_and(|replay| {
-                let completion_key = leased_provider_run_completion_key(
+                let completion_key = completion_scope::completion_key(
+                    self.app,
                     &leased_agent,
                     provider_run_id,
                     &replay.message_id,
+                    replay.home_prompt_id.as_deref(),
                 );
                 leased_agent
                     .projected_completion_keys
@@ -634,10 +651,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         && replay.home_prompt_id == home_prompt_id
                 })
             {
-                let completion_key = leased_provider_run_completion_key(
+                let completion_key = completion_scope::completion_key(
+                    self.app,
                     &leased_agent,
                     provider_run_id,
                     &replay.message_id,
+                    replay.home_prompt_id.as_deref(),
                 );
                 if !leased_agent
                     .projected_completion_keys
@@ -686,8 +705,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 latest_output_history_completion_key.as_deref(),
                 &output_chunks,
             );
-            let completion_key =
-                leased_provider_run_completion_key(&leased_agent, provider_run_id, &message_id);
+            let completion_key = completion_scope::completion_key(
+                self.app,
+                &leased_agent,
+                provider_run_id,
+                &message_id,
+                home_prompt_id.as_deref(),
+            );
             if !leased_agent
                 .projected_completion_keys
                 .iter()
@@ -704,8 +728,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
         }
+        completion_scope::append_settled_receipts(
+            self.app,
+            &leased_agent,
+            provider_run_id,
+            &mut completions,
+        );
         if !completions.is_empty() {
             if backing_prompt_active
+                && !requires_explicit_completion
                 && (!native_run
                     || completions.iter().any(|completion| {
                         completion.home_prompt_id.as_deref() == backing_active_prompt_id.as_deref()
@@ -725,10 +756,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let completion_keys = completions
                 .iter()
                 .map(|completion| {
-                    leased_provider_run_completion_key(
+                    completion_scope::completion_key(
+                        self.app,
                         &leased_agent,
                         provider_run_id,
                         &completion.message_id,
+                        completion.home_prompt_id.as_deref(),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -753,7 +786,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             provider_termination: completion.provider_termination.clone(),
                         });
                 }
-                if agent.active_home_prompt_id.as_deref() == home_prompt_id.as_deref() {
+                if agent.active_home_prompt_id.is_some()
+                    && completions
+                        .iter()
+                        .any(|completion| completion.home_prompt_id == agent.active_home_prompt_id)
+                {
                     agent.active_home_prompt_id = None;
                     agent.active_home_prompt_started_at_ms = None;
                     agent.applied_home_steer_ids.clear();
@@ -765,9 +802,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             // queued contexts before queue promotion can reactivate them.
             self.app.leased_workflow_turns.retain(|_, binding| {
                 binding.provider_run_id != provider_run_id
-                    || home_prompt_id
-                        .as_deref()
-                        .is_some_and(|completed| binding.home_prompt_id != completed)
+                    || !completions.iter().any(|completion| {
+                        completion.home_prompt_id.as_deref()
+                            == Some(binding.home_prompt_id.as_str())
+                    })
             });
         }
         if replay_settled_completion

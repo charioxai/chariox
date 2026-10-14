@@ -116,6 +116,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             receipt: WorkerPromptReceipt {
                 home_prompt_id: home_prompt_id.to_string(),
                 worker_provider_run_id: None,
+                backing_prompt_id: None,
                 execution_lease_id: leased_agent.lease_id,
                 phase: WorkerPromptReceiptPhase::Dispatching,
             },
@@ -123,6 +124,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
         };
         self.app.worker_prompt_receipts.persist(record)?;
         Ok(None)
+    }
+
+    // MP-08 / MP-10 / MP-11: bind the exact backing prompt before provider I/O.
+    pub(crate) fn accept_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        provider_run_id: &str,
+        backing_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut record = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "accept leased prompt receipt",
+                message: "worker admission receipt is missing".into(),
+            })?;
+        record.receipt.phase = WorkerPromptReceiptPhase::Accepted;
+        record.receipt.worker_provider_run_id = Some(provider_run_id.into());
+        record.receipt.backing_prompt_id = Some(backing_prompt_id.into());
+        self.app.worker_prompt_receipts.persist(record)?;
+        Ok(())
     }
 
     pub(crate) fn update_leased_prompt_receipt(
@@ -284,6 +309,37 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mut projection = leased_prompt_admission_receipt_projection(record);
             if record.receipt.phase == WorkerPromptReceiptPhase::Accepted {
                 if let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id) {
+                    // MP-08 / MP-10 / MP-11: a successor may replace the latest
+                    // replay, but this exact persisted turn remains definitive.
+                    if record
+                        .receipt
+                        .backing_prompt_id
+                        .as_deref()
+                        .is_some_and(|backing| {
+                            self.app
+                                .completed_git_turn_snapshot_store()
+                                .projection_for_prompt(
+                                    &leased_agent.backing_session_id,
+                                    &leased_agent.backing_agent_id,
+                                    backing,
+                                )
+                                .is_some_and(|turn| {
+                                    turn.provider_run_id == projection.worker_provider_run_id
+                                })
+                        })
+                        && self
+                            .app
+                            .providers
+                            .get_run(&projection.worker_provider_run_id)
+                            .is_ok_and(|run| {
+                                run.session_id() == leased_agent.backing_session_id
+                                    && run.agent_instance_id()
+                                        == Some(leased_agent.backing_agent_id.as_str())
+                            })
+                    {
+                        projection.phase = LeasedPromptReceiptPhase::Completed;
+                        return Ok(Some(projection));
+                    }
                     if let Some(completed) =
                         leased_agent
                             .replayable_completion
@@ -777,12 +833,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
         )?;
-        let current_submission_was_promoted = backing_active.as_ref().is_some_and(|active| {
-            active.created_at_ms() == accepted_prompt.created_at_ms()
-                && active.prompt() == accepted_prompt.prompt()
-                && active.hidden_system_context() == accepted_prompt.hidden_system_context()
-                && active.attachments() == accepted_prompt.attachments()
-        });
+        let current_submission_was_promoted = backing_active
+            .as_ref()
+            .is_some_and(|active| active.id() == accepted_prompt.id());
         if started && !held_for_capacity {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
         }

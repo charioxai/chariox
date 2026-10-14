@@ -291,9 +291,10 @@ provider exit must publish independently of relay heartbeat cadence.
 
 ### MP-08 / MP-10 / MP-11: leased admission and definitive outcomes
 
-A worker reserves the exact home prompt receipt before checking replay or
-preparing a new turn. A read-only replay failure must durably reject that
-reservation, without sending or replaying provider input. New admission commits
+Catalog and credential negotiation precede receipt reservation, allowing the
+home's bounded same-prompt retry when that negotiation requests a credential.
+A read-only replay failure durably rejects the exact home prompt receipt,
+without sending or replaying provider input. New admission commits
 the home/backing prompt binding and an Accepted receipt before handing the
 provider dispatch to the ordinary async provider lane. Dispatch failure then
 settles the exact backing turn as Failed through the normal completion
@@ -310,3 +311,29 @@ an idle counter alone is insufficient. Measure P95 over the complete five
 samples with an 8 Mbit/s WAN client uplink and at least 60 ms RTT; the limit is
 150 ms. Preserve the baseline failure and exact-head screenshots. Kernel
 receipt/lane fixtures are supplementary checks and cannot establish acceptance.
+
+
+MP-08 / MP-10 / MP-11: queue a second ordinary home-origin prompt while the
+first provider result is pending on the same leased Claude run, without a
+terminal subscriber driving provider output. Require exact home IDs and
+Completed status on both projections; both receipt queries must stay Completed
+after the successor replaces the latest replay. The worker persists the accepted backing prompt ID in its
+private admission receipt. The shared dispatcher activates that binding before
+queued provider input; completion lookup must match the leased agent, execution
+lease, provider run and backing prompt. A settled predecessor projection must
+retain its own identity without retiring the active successor. Legacy receipts without that
+private field remain readable. Worker projection pumping uses the normal owned
+provider lane before reading committed records, so it cannot consume a result
+through a second provider-output implementation. Neither mechanism changes the
+public wire shape. Repeat the actual native queued-steer case and the full
+five-prompt WAN cohort on the final source; synthetic two-turn checks establish
+regression coverage only.
+
+MP-08 / MP-10 / MP-11: when deferred message records are lost, the worker
+recovers a completion from the prompt owner's exact settled-turn proof.
+Deduplicate provider, generic and recovered records by the private turn
+binding; order recovered outcomes by settlement time. While the successor's
+provider result is still pending, delivering the predecessor's Completed
+projection must leave the successor active. An idle run or output text cannot
+supply that proof. Validate this ordering on the real native queued-steer path
+before marking the cell accepted.
