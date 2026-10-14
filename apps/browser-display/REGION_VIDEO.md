@@ -82,3 +82,14 @@ before injection, including input that arrives before the next readback.
 Resize events retire the crop even when the window returns to its old size.
 Moving a window without resizing it retains its binding and updates the native
 pointer origin. A replacement crop requires a newly resolved kernel lease.
+
+MP-08/MP-10/MP-11 integration preparation: the shared presenter admits a crop
+only from a kernel-negotiated `source_kind: 'region'` lease with its opaque
+`binding_id`, document, applied mirror `sequence`, canonical CSS dimensions
+and scale. Frames must match that geometry and document; frame headers cannot
+select a crop. Region input retains the lease and mirror epoch, while ACKs
+retain the ordinary display sequence. A target request requires protocol 519
+and refuses a whole-page negotiation. The public kernel target and concrete
+mirror/Chrome binding adapters are still pending the display integration step;
+this presenter preparation does not consume the allocated protocol or establish
+DISPLAY-P3 acceptance.
