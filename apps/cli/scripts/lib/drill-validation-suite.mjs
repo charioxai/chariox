@@ -121,6 +121,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/live-relay-freeform-multi-user-history.test.mjs",
   "apps/cli/scripts/lib/live-relay-freeform-multi-user-options.test.mjs",
   "apps/cli/scripts/lib/live-remote-native-tui-drill-scenario.test.mjs",
+  "apps/cli/scripts/lib/model-switch-coverage.test.mjs",
   "apps/cli/scripts/lib/native-tui-capabilities.test.mjs",
   "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
   "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
@@ -194,6 +195,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
     id: "matrix-validation",
     description: "Matrix runners, resilience drill plans, report validation, summaries, and validation gates.",
     testPaths: Object.freeze([
+      "apps/cli/scripts/lib/model-switch-coverage.test.mjs",
       "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
       "apps/cli/scripts/drill-cross-repo-validation-gate.test.mjs",
       "apps/cli/scripts/drill-distributed-runtime-gate.test.mjs",

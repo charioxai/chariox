@@ -26,6 +26,8 @@ Fork targets and turn substitutes start outside the agent's own conversation and
 
 MP-08 / MP-10: ready leased worker turns use the shared runtime dispatcher, so provider and account changes carry the conversation before submission. The worker admits the turn under the app lock and dispatches after releasing it.
 
+MP-08 / MP-10 / MP-11: OpenCode authentication probes disable native background model fetching for `auth list` only. The short-lived probe must not strand a models-cache lock before worker provisioning. Explicit `models --refresh` still runs with the original selected-account environment and validates the authenticated built-in Go/Zen services before acknowledgement. Custom service definitions are not transferred by this worker credential-copy path and do not gate admission; provider servers and turns keep their normal native refresh behavior.
+
 Stored user history, prompt queues, and terminal echoes remain the original user text.
 
 ## Handoff contents

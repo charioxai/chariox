@@ -64,6 +64,15 @@ async fn home_projection_drain_leaves_hook_for_a_busy_provider_lane() {
 }
 
 #[tokio::test]
+async fn native_context_rejection_does_not_drop_a_retry_in_the_same_batch() {
+    rejection_scenario(NativeContextScenario {
+        same_batch: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn expired_managed_hook_replaces_a_settled_previous_delivery() {
     rejection_scenario(NativeContextScenario {
         stale_expired_delivery: true,
@@ -80,6 +89,7 @@ struct NativeContextScenario {
     leased: bool,
     recent_failure: bool,
     hold_provider_lane: bool,
+    same_batch: bool,
     stale_expired_delivery: bool,
 }
 
@@ -91,6 +101,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         leased,
         recent_failure,
         hold_provider_lane,
+        same_batch,
         stale_expired_delivery,
     } = scenario;
     let worktree = crate::test_support::TestWorktree::new("native-context-failure");
@@ -323,12 +334,14 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
             0,
         );
     }
-    assert!(runtime
+    let original_prompt_id = runtime
         .owned
         .session_snapshot(session.id())
         .unwrap()
         .active_prompt_for_agent(agent.id())
-        .is_some());
+        .expect("original prompt must be active")
+        .id()
+        .to_string();
     if stale_expired_delivery {
         let previous = runtime
             .owned
@@ -425,7 +438,14 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         )
         .unwrap();
     } else {
-        fs::write(&events, serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"}).to_string()).unwrap();
+        let rejection = serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"});
+        let retry = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"retry native request", "hook_context_request_id":"retry-request", "hook_context_deadline_ms":crate::session::unix_epoch_ms() + 5000});
+        let rows = if same_batch {
+            format!("{rejection}\n{retry}\n")
+        } else {
+            rejection.to_string()
+        };
+        fs::write(&events, rows).unwrap();
     }
     if subscription {
         let mut locked = app.lock().await;
@@ -460,6 +480,19 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         },
         "native failure must settle without confusing hook rejection with a provider failure"
     );
+    if same_batch {
+        let snapshot = runtime.owned.session_snapshot(session.id()).unwrap();
+        let retry = snapshot
+            .active_prompt_for_agent(agent.id())
+            .expect("later retry row was dropped");
+        assert_ne!(
+            retry.id(),
+            original_prompt_id,
+            "the rejected original prompt remained active"
+        );
+        assert_eq!(retry.prompt(), "retry native request");
+        return;
+    }
     assert!(runtime
         .owned
         .session_snapshot(session.id())
@@ -496,7 +529,14 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         assert_eq!(failures[0].source_agent_id.as_deref(), Some(agent.id()));
         assert!(failures[0].summary.contains("context delivery failed"));
         // A duplicated receipt must not emit another failure.
-        fs::write(&events, serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"}).to_string()).unwrap();
+        let rejection = serde_json::json!({"hook_event_name":"CharioxContextFailed", "hook_context_request_id":"failed-request"});
+        let retry = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":"retry native request", "hook_context_request_id":"retry-request", "hook_context_deadline_ms":crate::session::unix_epoch_ms() + 5000});
+        let rows = if same_batch {
+            format!("{rejection}\n{retry}\n")
+        } else {
+            rejection.to_string()
+        };
+        fs::write(&events, rows).unwrap();
         runtime
             .pump_owned_provider_output(session.id(), run.id(), vec![], true)
             .await
