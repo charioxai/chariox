@@ -92,8 +92,8 @@ export class MirrorFrames {
   // Child snapshot with the frame's Vault fill targets protected by identity.
   async snapshot(child, loaderId, policy, tab, slot) {
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
-    await this.mirror.markClosedHosts(child);
     const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
+    await this.mirror.markClosedHosts(child, snap);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
   }
   // Stylesheets the child's CSSOM cannot read: CDP reads them in the child's own
@@ -139,7 +139,7 @@ export class MirrorFrames {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
         let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
-        if (raw.closed_candidates) { await this.mirror.markClosedHosts(entry.child); raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
+        if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
         if (raw.resync) throw new Error('resync');
         delete raw.closed_candidates; // Controller-private discovery signal never enters the strict rebased delta schema.
         const delta = rebaseDelta(raw, entry.slot);
