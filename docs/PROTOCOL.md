@@ -3697,3 +3697,16 @@ Kernel-private provenance survives consumption of the launch secret and is
 bound to the live run's exact session, agent, owner and account. Both launch and
 run provenance are serde-skipped: restoration or client JSON cannot claim it.
 Other accounts use normal registry authentication. This adds no serialized shape.
+
+### MP-07 / MP-08 / MP-10 / MP-11: merged Path-1 contract, local523 / peer131
+
+The coordinator allocated local daemon protocol523 and relay peer131 on
+2026-10-14 for the main491/101 and Path-1 candidate515/112 integration.
+The combined union retains kernel-owned enrollment and credential-free Cloud
+projections, client-owned human Cloud controls, workflow notifications and
+Environment operations alongside schema-5 Vault-backed account packages and
+capability-gated update failure diagnostics. Protocol snapshots and hashes
+bind the merged identity. Existing client feature minima remain unchanged.
+Signed release transition admission retains main487/490/491 and signed-R515,
+plus the prior reviewed predecessors. These source gates do not establish a
+signed-image live acceptance result or mirror-v2 support.

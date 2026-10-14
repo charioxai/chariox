@@ -1242,10 +1242,10 @@ fn mp08_vault_setup_token_claude_account_reaches_only_the_target_vault() {
 #[test]
 fn mp08_schema_five_provider_account_wire_snapshot_is_versioned() {
     assert_eq!(PACKAGE_SCHEMA_VERSION, 5);
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 515);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 523);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        112
+        131
     );
     let component = ProviderAccountComponent::Vaulted {
         materializations: Vec::new(),
