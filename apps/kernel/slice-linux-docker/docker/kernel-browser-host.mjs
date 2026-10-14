@@ -41,6 +41,8 @@ export function scheduleHostRequest(request, browser) {
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+// Read-only host operations: they never dispatch input into a page.
+const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
@@ -677,7 +679,10 @@ export class KernelBrowserHost {
       this.timing(hostErrorLabel(error),timestamp());
       if (error instanceof UserDomainRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
-      if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id) await this.stop();
+      // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
+      // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
+      if (error?.code === "browser_action_cancelled" && !request.params?.display_subscription_id
+        && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

@@ -1111,3 +1111,22 @@ test('MP-08/MP-10 opt-in timing labels Tab lifecycle ops', () => using(async ({ 
     assert.ok(stages.includes('host_op open')); assert.ok(stages.includes('host_op state tab'));
   } finally { if (before === undefined) delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING; else process.env.CHARIOX_BROWSER_DISPLAY_TIMING = before; }
 }));
+
+// MP-08/MP-10 (real site html.spec.whatwg.org): a viewer's mirror credit on a huge page was cancelled by its
+// caller and the host stopped the whole browser (every Tab) as if input had been cut mid-dispatch. A cancelled
+// read-only observation leaves the browser running; cancelled input still stops it (b220 tests above).
+test('MP-08/MP-10 a cancelled read-only observation does not stop the browser', () => using(async ({ host, chromium }) => {
+  const mirror = process.env.CHARIOX_KERNEL_BROWSER_MIRROR; process.env.CHARIOX_KERNEL_BROWSER_MIRROR = '1';
+  try {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  for (const params of [{ op: 'state' }, { op: 'mirror_next', subscription_id: 'gone', generation: opened.generation, after_sequence: 0, wait_ms: 2000 }, { op: 'snapshot', tab_id: opened.tab_id, generation: opened.generation }]) {
+    const cancel = new AbortController();
+    const pending = host.handle({ id: 7, method: 'host.browser', params }, { signal: cancel.signal });
+    cancel.abort(); // the caller goes away while the read is in flight
+    const reply = await pending;
+    assert.equal(reply.error?.code, 'browser_action_cancelled', params.op);
+    assert.ok(chromium.child && host.browser, `${params.op}: the browser keeps running`);
+  }
+  assert.equal((await host.request({ op: 'state' })).tabs.length, 1);
+  } finally { if (mirror === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = mirror; }
+}));
