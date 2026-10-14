@@ -59,6 +59,7 @@ fn same_socket_activation_confirmation_when_token_already_authenticated() {
 async fn exercise_activation(heartbeat_ms: u64) {
     let _guard = relay_client_test_guard().await;
     let _home = RelayTestHome::new();
+    crate::logging::init_process_logger("tokenroll-activation-test").unwrap();
     let mut owner = DaemonConfig::for_tests();
     owner.daemon_id = "activation-owner".into();
     owner.host_machine_id = "activation-owner-machine".into();
@@ -202,6 +203,7 @@ async fn exercise_activation(heartbeat_ms: u64) {
         .await
         .pending_managed_slice_activation_confirmation()
         .is_some();
+    let worker_requests = worker_state.read().await.next_peer_request_id;
     let reconnects = worker_router
         .transport_health_store()
         .snapshot(0, 0, 0)
@@ -220,7 +222,7 @@ async fn exercise_activation(heartbeat_ms: u64) {
     assert_eq!(reconnects, 0, "even a reconnect between samples must fail");
     assert!(
         confirmed,
-        "same-socket registration must dispatch pending activation confirmation"
+        "same-socket registration must dispatch pending activation confirmation (requests={worker_requests}, pending={pending})"
     );
     assert!(!pending, "successful confirmation must settle worker state");
 }
