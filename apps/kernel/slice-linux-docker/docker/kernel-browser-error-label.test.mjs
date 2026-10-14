@@ -22,3 +22,8 @@ test('MP-08/MP-10/MP-11: observer diagnostics admit fixed input refusal classes 
  assert.equal(hostErrorLabel({mirrorReason:'invalid_selection'}),'host_error Error invalid_selection');
  assert.equal(hostErrorLabel({mirrorReason:'private-canary'}),'host_error Error');
 });
+
+test('MP-08/MP-10/MP-11: kernel-owned mirror fences have fixed diagnostic names',()=>{
+ assert.equal(hostErrorLabel({message:'MP-11: changed mirror input target'}),'host_error Error input_target_changed');
+ assert.equal(hostErrorLabel({message:'MP-11: changed mirror input target private-canary'}),'host_error Error');
+});

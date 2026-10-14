@@ -11,9 +11,16 @@ export function mirrorExceptionReason(description) {
  const reason=/^Error: mirror2 ([a-z ]+)$/.exec(first)?.[1].replaceAll(' ','_');
  return observerReasons.has(reason)?reason:'observer_exception';
 }
+const inputReasons=new Map([
+ ['MP-11: changed mirror input target','input_target_changed'],
+ ['MP-11: stale mirror input document','input_document_stale'],
+ ['MP-11: stale mirror input epoch','input_epoch_stale'],
+ ['MP-11: stale mirror protection policy or admitted input','input_policy_stale'],
+ ['MP-11: unavailable native text focus','input_focus_unavailable'],
+]);
 export function hostErrorLabel(error) {
  const name=names.has(error?.name)?error.name:'Error';
  const frame=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].find(m=>files.has(m[1])):null;
  const method=error?.code==='browser_cdp_timeout'&&typeof error.message==='string'?/^browser CDP method ([A-Za-z.]+) timed out after [0-9]+ms$/.exec(error.message)?.[1]:null;
- return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
+ return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(inputReasons.has(error?.message)?' '+inputReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
 }
