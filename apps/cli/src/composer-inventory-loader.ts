@@ -15,19 +15,28 @@ export function createComposerInventoryLoader<T extends object>(
       observedEpoch = clientInventoryEpoch()
       loadedAt = Date.now()
     }
-    const generation = clientInventoryEpoch()
-    return flight ??= (async () => {
+    if (flight) return flight
+    const generation = clientInventoryEpoch(), requestedSelection = selection()
+    const task = (async () => {
       const { key, owner } = await scope()
+      if (selection() !== requestedSelection) throw new Error("composer selection superseded")
       const stored = await readClientInventory<T>(key, owner)
+      if (selection() !== requestedSelection) throw new Error("composer selection superseded")
       const refresh = async () => {
         const value = await fetch()
-        if (generation === clientInventoryEpoch()) void writeClientInventory({ key, owner, savedAt: Date.now(), value })
+        if (generation === clientInventoryEpoch() && selection() === requestedSelection) void writeClientInventory({ key, owner, savedAt: Date.now(), value })
         return value
       }
       if (!stored) return refresh()
       const reconciliation = Date.now() - stored.savedAt >= 4 * 60 * 60 * 1000 ? refresh() : undefined
       if (reconciliation) void reconciliation.catch(() => {})
       return { ...stored.value, ...(reconciliation ? { reconciliation } : {}) }
-    })().catch(error => { flight = undefined; throw error })
+    })()
+    const current: Promise<T & { reconciliation?: Promise<T> }> = task.catch(error => {
+      if (flight === current) flight = undefined
+      throw error
+    })
+    flight = current
+    return current
   }
 }

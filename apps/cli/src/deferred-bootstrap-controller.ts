@@ -165,7 +165,7 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     const attachment = deps.currentAttachmentId()
     const promptHistory = deps.currentPromptHistoryEntries?.()
     const applyComposer = (data: import("./cli-types.js").ComposerInventory) => {
-      if (attachment !== deps.currentAttachmentId()) return
+      if (attachment !== deps.currentAttachmentId() || selectedScope !== deps.getDeferred()?.composerScopeKey?.()) return
       deps.setProviderCatalog(data.providerCatalog)
       deps.setProviderCommandCatalogs(data.providerCommandCatalogs)
       deps.setTerminalCommandCatalog(data.terminalCommandCatalog)
