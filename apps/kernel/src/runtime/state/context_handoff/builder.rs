@@ -317,7 +317,15 @@ fn format_recreated_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String 
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
     }
-    let details = truncate_bytes(&turn.latest_details.join("\n"), 1_500 * 2);
+    let details = truncate_bytes(
+        &turn
+            .latest_details
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        1_500 * 2,
+    );
     if !details.trim().is_empty() {
         lines.push(format!(
             "- Latest-turn tool/status/error details:\n{}",
