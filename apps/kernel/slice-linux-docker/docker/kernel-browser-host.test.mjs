@@ -239,7 +239,7 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   assert.equal(polled.frame.mime_type,'image/png');assert.equal(decodePng(polled.frame.data_base64).pixels[0],255);
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 100);
   await host.request({ op: "unsubscribe", ...subscription });
-  assert.equal(handlers.size, 0);
+  assert.equal(handlers.size, 1, "only the browser lockdown observer remains");
   assert(sent.some(call => call.method === "Page.stopScreencast"));
   chromium.child.exitCode = 1;
   await assert.rejects(host.request({ op: "poll", ...subscription }), /unavailable/);
@@ -623,7 +623,7 @@ test("MD integration: target close revokes its frame subscription", () => using(
   await host.browser.manageTab({target_id:host.tabs.get(tab.tab_id).target_id});
   await host.reconcile();
   assert.equal(host.streams.size,0);
-  assert.equal(handlers.size,0);
+  assert.equal(handlers.size,1,'only the browser lockdown observer remains');
   assert(sent.some(call=>call.method==="Page.stopScreencast"));
   await assert.rejects(host.request({op:"poll",...stream}),error => error.code === "user_domain_stale_reference");
 }));
@@ -943,7 +943,7 @@ test("MP-08 completed agent input cannot attribute a later native popup on the s
   assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
   assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
   assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
-  assert.equal(handlers.size, 1, "activation observer remains until host shutdown");
+  assert.equal(handlers.size, 2, "activation and lockdown observers remain until host shutdown");
 }));
 
 // MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
@@ -1164,4 +1164,26 @@ test('MP-08/MP-10 Tabs keep their order and new Tabs are appended', () => using(
   const c = await host.request({ op: 'open', url: 'https://c.example/' });
   const order = (await host.request({ op: 'state' })).tabs.map(tab => tab.tab_id);
   assert.deepEqual(order, [a.tab_id, b.tab_id, c.tab_id]);
+}));
+
+// MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host denies
+// downloads and closes a Tab that reaches a blocked scheme without the policy's refusal page.
+test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () => using(async ({ host, handlers, sent, connection, pages }) => {
+  await host.request({ op: 'open', url: 'about:blank' });
+  assert(sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'));
+  const send = connection.send;
+  connection.send = async (method, params, session) => method === 'DOM.getDocument'
+    ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
+    : method === 'Target.attachToTarget' ? { sessionId: params.targetId === 'policy-refused' ? 'refused' : 'live' } : send(method, params, session);
+  const emit = async (method, targetInfo) => { for (const handler of [...handlers]) handler({ method, params: { targetInfo } }); await new Promise(resolve => setTimeout(resolve, 10)); };
+  const before = sent.length, closed = () => sent.slice(before).filter(call => call.method === 'Target.closeTarget').map(call => call.params.targetId);
+  await emit('Target.targetInfoChanged', { targetId: 'settings', type: 'page', url: 'chrome://settings/' });
+  await emit('Target.targetCreated', { targetId: 'devtools', type: 'page', url: 'devtools://devtools/bundled/devtools_app.html' });
+  await emit('Target.targetInfoChanged', { targetId: 'file', type: 'page', url: 'file:///etc/hostname' });
+  await emit('Target.targetInfoChanged', { targetId: 'policy-refused', type: 'page', url: 'chrome://extensions/' });
+  await emit('Target.targetCreated', { targetId: 'ntp', type: 'page', url: 'chrome://newtab/' });
+  await emit('Target.targetCreated', { targetId: 'omnibox', type: 'browser_ui', url: 'chrome://omnibox-popup.top-chrome/' });
+  await emit('Target.targetInfoChanged', { targetId: 'site', type: 'page', url: 'https://example.com/' });
+  assert.deepEqual(closed(), ['settings', 'devtools', 'file']);
+  assert(pages.size > 0);
 }));

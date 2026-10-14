@@ -8,6 +8,7 @@ import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
 import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
+import { writePolicyLayer } from './kernel-browser-policy.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -89,8 +90,12 @@ export class HostChromium {
       try{environment={...environment,...await this.display.start()};}
       catch(error){await this.display.close();this.display=null;throw error;}
     }
-    const child = spawn(binary, launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.scale), {
+    const args = launchArguments(profile,
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.scale);
+    // MP-11: on Linux the kernel's managed policies apply through a private namespace.
+    // macOS has no such per-process policy path; its CDP layer still fails closed.
+    const launch = process.platform === "linux" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
+    const child = spawn(launch.command, launch.args, {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;

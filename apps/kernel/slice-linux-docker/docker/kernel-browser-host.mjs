@@ -11,6 +11,7 @@ import { hostErrorLabel } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { HostChromium } from "./kernel-browser-process.mjs";
+import { blockedUrl } from "./kernel-browser-policy.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
@@ -149,6 +150,7 @@ export class KernelBrowserHost {
     this.restoring = true;
     try {
       const connection = await this.browser.ensureConnection();
+      await this.lockdown(connection);
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
@@ -167,6 +169,27 @@ export class KernelBrowserHost {
       await this.save();
     } catch (error) { await this.stop(); throw error; }
     finally { this.restoring = false; }
+  }
+  // MP-11: fail-closed second layer behind the kernel's managed policies: no
+  // downloads, and a Tab that still reaches a blocked scheme is closed unless it
+  // shows the policy's own refusal (Chrome's error document).
+  async lockdown(connection) {
+    await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
+    this.lockdownOff?.();
+    this.lockdownOff = connection.subscribe(message => {
+      const info = message?.params?.targetInfo;
+      if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
+      // The new tab page is the policy's home page (NewTabPageLocation).
+      if (blockedUrl(info.url) && !/^chrome:\/\/newtab\/?$/.test(info.url)) void this.closeBlocked(connection, info.targetId);
+    });
+  }
+  async closeBlocked(connection, targetId) {
+    try {
+      const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
+      try { if (/^chrome-error:/.test((await connection.send("DOM.getDocument", { depth: 0 }, sessionId)).root?.documentURL ?? "")) return; }
+      finally { await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {}); }
+    } catch {}
+    await connection.send("Target.closeTarget", { targetId }).catch(() => {});
   }
   // MP-08/MP-10 (BROWSER-UX-14): the keepalive is a popup window (no tab strip; Chrome never adds Tabs
   // to it), so the native tab strip shows only the person's Tabs, in their own tabbed window.
@@ -230,6 +253,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop() {
+    this.lockdownOff?.(); this.lockdownOff = null;
     await this.closeCompositors();
     this.sampleLanes.clear();
     this.popupEvidence.clear();
