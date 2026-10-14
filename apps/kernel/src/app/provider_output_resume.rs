@@ -18,29 +18,45 @@ pub(super) fn persist_resolved_resume_state(
     else {
         return Ok(());
     };
-    // A delayed native hook cannot replace a newer run's resume identity.
-    if app
-        .providers
-        .get_run_for_agent(provider_run.session_id(), agent_id)
-        .is_none_or(|current| current.id() != provider_run.id())
-    {
-        return Ok(());
-    }
     let durable_state_store = app.durable_state_store();
-    app.agents.set_agent_runtime_profile_durably(
-        &durable_state_store,
-        agent_id,
-        provider_run.provider(),
-        Some(provider_run.model().to_string()),
-        provider_run.variant().map(str::to_string),
-        None,
-        resume_state.clone(),
-        Some(provider_run.id()),
-        None,
-    )?;
+    {
+        // MP-08 / MP-10 / MP-11: profile control retires the provider run
+        // before taking the agent-store lock. Keep that same lock order here
+        // so a source identity cannot commit onto a destination profile.
+        let providers = app.providers.read();
+        if providers
+            .get_run_for_agent(provider_run.session_id(), agent_id)
+            .is_none_or(|current| current.id() != provider_run.id())
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        AFTER_RUN_CHECK.with(|gate| {
+            if let Some(gate) = gate.borrow_mut().take() {
+                gate();
+            }
+        });
+        app.agents.set_agent_runtime_profile_durably(
+            &durable_state_store,
+            agent_id,
+            provider_run.provider(),
+            Some(provider_run.model().to_string()),
+            provider_run.variant().map(str::to_string),
+            None,
+            resume_state.clone(),
+            Some(provider_run.id()),
+            None,
+        )?;
+    }
+    // Snapshot rebuilding reads the provider store again, outside the guard.
     let _ = crate::app::KernelSessionReadService::new(app)
         .session_snapshot(provider_run.session_id())?;
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_RUN_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
 }
 
 #[cfg(test)]
@@ -129,6 +145,118 @@ mod tests {
                 .provider_resume_state()
                 .claude_session_id(),
             Some("current-native-session")
+        );
+    }
+    // MP-08 / MP-10 / MP-11: retire + commit the destination while a native
+    // identity write is paused after its ownership check, exactly as profile control does.
+    #[test]
+    fn concurrent_profile_change_wins_over_source_native_metadata() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let root = crate::test_support::TestWorktree::new("native-resume-concurrent-fence");
+        let mut app = crate::test_support::bootstrap_authenticated_app(
+            crate::config::DaemonConfig::for_tests(),
+        )
+        .unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request())
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "source-account",
+            "haiku",
+        )
+        .with_agent_id(agent.id());
+        let mut run = RuntimeProviderRun::new(
+            "source-native-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "metadata-only-concurrent-native-resume-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "claude-headless",
+                Some("haiku".into()),
+                None,
+                Some("source-account".into()),
+                crate::provider::ProviderResumeState::from_claude_session_id(
+                    "source-native-session",
+                ),
+            )
+            .unwrap();
+        let providers = app.providers().clone();
+        let agents = app.agents().clone();
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let run_id = run.id().to_string();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (commit_tx, commit_rx) = mpsc::channel();
+        let (start_tx, start_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            attempt_tx.send(()).unwrap();
+            providers
+                .terminate_run_provider_only(&session_id, &run_id)
+                .unwrap();
+            agents
+                .set_agent_runtime_profile_with_account_profile(
+                    &agent_id,
+                    "claude-headless",
+                    Some("sonnet".into()),
+                    Some("high".into()),
+                    Some("destination-account".into()),
+                    Default::default(),
+                )
+                .unwrap();
+            let _ = commit_tx.send(());
+        });
+        AFTER_RUN_CHECK.with(|gate| {
+            *gate.borrow_mut() = Some(Box::new(move || {
+                start_tx.send(()).unwrap();
+                attempt_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                // A linearized implementation keeps retirement blocked until this
+                // native write commits. The unfenced base commits the destination here.
+                let _ = commit_rx.recv_timeout(Duration::from_millis(250));
+            }))
+        });
+        persist_resolved_resume_state(
+            &mut app,
+            &run,
+            &ProviderPromptSignalBatch {
+                resolved_resume_state: Some(
+                    crate::provider::ProviderResumeState::from_claude_session_id(
+                        "late-source-session",
+                    ),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        writer.join().unwrap();
+        let destination = app.agents().get_agent(agent.id()).unwrap();
+        assert_eq!(
+            destination.provider_account_profile(),
+            "destination-account"
+        );
+        assert_eq!(destination.model(), Some("sonnet"));
+        assert_eq!(destination.effort(), Some("high"));
+        assert_eq!(
+            destination.provider_resume_state().claude_session_id(),
+            None
         );
     }
 }
