@@ -32,27 +32,42 @@ fn main() {
             build.include(path);
         }
     }
-    let library_paths = std::env::var_os("CHARIOX_NATIVE_DISPLAY_LIB")
+    let mut library_paths = std::env::var_os("CHARIOX_NATIVE_DISPLAY_LIB")
         .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .unwrap_or_default();
-    for path in &library_paths {
-        println!("cargo:rustc-link-search=native={}", path.display());
-    }
-    // MP-08/MP-10/MP-11: WebP 1.2 (Bookworm) has no separate SharpYUV
-    // archive. Newer WebP needs it after libwebp; use the selected compiler's
-    // search path as well as explicit native-library paths.
-    let sharpyuv = library_paths
-        .iter()
-        .any(|path| path.join("libsharpyuv.a").is_file())
-        || build
+    // Rust packs static native archives into the rlib before the final C
+    // linker runs, so compiler-default multiarch directories must be explicit.
+    for library in ["yuv", "webp", "sharpyuv"] {
+        if library_paths
+            .iter()
+            .any(|path| path.join(format!("lib{library}.a")).is_file())
+        {
+            continue;
+        }
+        if let Some(path) = build
             .get_compiler()
             .to_command()
-            .arg("-print-file-name=libsharpyuv.a")
+            .arg(format!("-print-file-name=lib{library}.a"))
             .output()
             .ok()
             .filter(|output| output.status.success())
             .and_then(|output| String::from_utf8(output.stdout).ok())
-            .is_some_and(|path| std::path::Path::new(path.trim()).is_file());
+            .map(|path| std::path::PathBuf::from(path.trim()))
+            .filter(|path| path.is_absolute() && path.is_file())
+        {
+            let parent = path.parent().unwrap().to_path_buf();
+            if !library_paths.contains(&parent) {
+                library_paths.push(parent);
+            }
+        }
+    }
+    for path in &library_paths {
+        println!("cargo:rustc-link-search=native={}", path.display());
+    }
+    // Bookworm WebP 1.2 has no separate SharpYUV archive.
+    let sharpyuv = library_paths
+        .iter()
+        .any(|path| path.join("libsharpyuv.a").is_file());
     build.compile("chariox_display_native");
     // OpenH264, x264 and libavcodec are loaded at runtime, never linked.
     for library in ["X11", "Xext", "Xdamage", "Xcomposite", "Xtst", "dl"] {
