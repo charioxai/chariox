@@ -2,6 +2,9 @@
 // retain their query barriers; an admitted native source uses this state only.
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 const snapshot=Symbol('native display document');
+export class DisplayDocumentPending extends Error {
+ constructor(){super('MP-11: display document unavailable while loading');}
+}
 export class DisplayDocuments {
  constructor(){this.entries=new Map();}
  async target(browser,stored){
@@ -14,7 +17,9 @@ export class DisplayDocuments {
    entry.ready=this.admit(entry,stored.target_id).catch(error=>{this.retire(entry,stored.target_id);throw error});
   }
   await entry.ready;
-  if(entry.retired||entry.pending||!entry.document||entry.connection.isOpen?.()===false)throw Error('MP-11: display document unavailable');
+  if(entry.retired||entry.connection.isOpen?.()===false)throw Error('MP-11: display document unavailable');
+  if(entry.pending)throw new DisplayDocumentPending();
+  if(!entry.document)throw Error('MP-11: display document unavailable');
   const tab={...stored,document_id:entry.document};
   Object.defineProperty(tab,snapshot,{value:{entry,revision:entry.revision}});
   return tab;

@@ -1,38 +1,40 @@
-# MP-08 / MP-10 — owner hands-on A/B
+# MP-08 / MP-10 — owner hands-on A/B (20 minutes)
 
-Chariox: [Open the waiting room](https://pr972-vidlatr8ab.val.51-255-87-178.sslip.io/waiting-room).
-Selkies: [Open the gated baseline](https://pr972-vidlatr8ab-selkies.val.51-255-87-178.sslip.io/).
+Chariox: [Open the disposable-account waiting room](https://pr972-vidlatab.val.51-255-87-178.sslip.io/waiting-room).
+Selkies: [Open the gated baseline](https://pr972-vidlatab-selkies.val.51-255-87-178.sslip.io/).
 
-The coordinator activates these links only when the quiet CCX43 is rented.
-Both remote Chromiums run on that one Ubuntu 26.04 host. Use your Mac browser,
-Retina display and normal home network; leave browser zoom at 100%. Only one
-side should be actively scrolling at a time. Your sign-in uses your own email
-through the normal product login. There is no shared password or secret URL.
+**One-step sign-in:** open the Chariox link. This private validation stack
+signs you in automatically as `pr972-vidlatab@chariox.invalid`, a disposable
+test account. No email, password, approval code or existing account is needed.
+The coordinator enrolls the quiet host beforehand. Both links become active
+when the coordinator starts the test; use your admitted home network
+(46.128.9.75). If your IP changed, tell the coordinator.
 
-1. Sign in to Chariox, then approve the coordinator's normal device enrollment
-   for **vidlat-owner-ab CCX43** in the same account. Select that Machine and
-   Kernel in the waiting room, then click **owner-ab** under **Open Existing Sessions**.
-   Open the **Browser** panel and **New tab** so this browser context owns
-   its tab. Choose **Video** if a mode selector appears.
-2. Open the Selkies link in a second tab. It starts with the same Wikipedia
-   article. Both sources use DPR 2 and a 2560×1600 display. Keep viewer zoom at 100%.
-   Selkies includes Chrome’s toolbar and window borders, leaving a smaller
-   page viewport (1272×709 in rehearsal); Chariox’s page is 1280×800. Compare
-   the same text and actions rather than matching line wraps.
-3. In Chariox's **Browser address**, open one site below. In Selkies, focus the
-   remote surface, press **Control+L** for the remote Linux Chrome,
-   or click its visible address bar, type the exact same URL and press Enter. Dismiss each site's banner identically. Alternate
-   which side you try first on each site.
-4. On each side, click a visible link/menu, type into search (do not submit
-   personal information), and scroll slowly, then quickly, for 20 seconds.
-   Compare click response, typing echo, scroll smoothness and small-text
-   sharpness. Repeat on the next site; try browser text selection as well.
-5. Fill the table, including freezes, missing pixels or accidental clicks.
-   Leave one side open for a longer normal browsing session if useful. Tell
-   the coordinator when finished so both runtimes and the rented host can be
-   removed. Your ratings decide whether further improvement is worthwhile.
+Both remote Chromiums run side by side on one quiet Ubuntu 26.04 CCX43.
+Use your Mac browser and Retina display with browser zoom at 100%.
 
-Try these exact pages on both sides:
+1. **Minutes 0–3:** open Chariox, select Machine **vidlat-owner-ab CCX43**,
+   Kernel **vidlat-owner-ab**, then session **owner-ab** under **Open Existing
+   Sessions**. Open **Browser**, enter the Wikipedia URL below and choose
+   **New tab**. Select **Video** if offered.
+2. **Minutes 3–4:** open Selkies in a second tab. It starts with the same
+   Wikipedia article. Both sources use DPR 2 and a 2560×1600 display. Keep
+   viewer zoom at 100%. Selkies includes the remote Chrome toolbar and borders,
+   so compare the same text and actions, allowing for different line wraps.
+3. **Minutes 4–16:** spend about two minutes per site, alternating which side
+   goes first. In Chariox use **Browser address** then **Go**. In Selkies click
+   its remote address bar, or focus its surface and press **Control+L**, enter
+   the identical URL and press Enter. Dismiss banners identically. Click a
+   visible link/menu, type in a search field, scroll slowly then quickly for
+   20 seconds, and select small text on each side. Navigate back to the listed
+   page before switching sides.
+4. **Minutes 16–19:** enter 1–5 ratings below. Note freezes, missing pixels,
+   accidental clicks or CAPTCHAs. Use public content only; enter no personal
+   information or credentials into this disposable environment.
+5. **Minute 20:** tell the coordinator you are finished. The coordinator
+   stops both pipelines and deletes the quiet host and disposable kernel state.
+
+Use these exact pages on both sides:
 
 - [Wikipedia article](https://en.wikipedia.org/wiki/Web_browser)
 - [GitHub repository](https://github.com/charioxai/chariox)
@@ -40,8 +42,8 @@ Try these exact pages on both sides:
 - [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 - [GitLab docs](https://docs.gitlab.com/)
 
-Optional search/portal comparisons: https://www.wikipedia.org/ and a Google
-search for `browser rendering`. Record any external CAPTCHA separately.
+Optional portal/search: https://www.wikipedia.org/ and a Google search for
+`browser rendering`. Record any external CAPTCHA separately.
 
 Rate each property **1 = poor, 3 = usable, 5 = excellent**.
 
@@ -58,12 +60,11 @@ Rate each property **1 = poor, 3 = usable, 5 = excellent**.
 | GitLab docs | Chariox | | | | | |
 | GitLab docs | Selkies | | | | | |
 
-MP-08/MP-10 qualification: Chariox uses its native OpenH264 video path with
-#965, #972, the two document-cache review fixes and vidsink's overlay fix.
-Selkies is the **qualified wheel baseline**, frozen Selkies `3f87241fcd6ab`
-plus official pixelflux `6974a8c16a14` GPL wheel (CPU H.264/libx264, 60fps,
-8 Mbit/s). It is not an official container image. The existing strict latency,
-FPS and CPU comparison remains FAIL; this is Miguel's requested subjective
-comparison, not acceptance or a provider/Vault drill. No further encoder tuning
-or GPL helper was added to Chariox. MP-11 peer gating and ordinary kernel
-authority apply throughout.
+MP-08/MP-10 qualification: Chariox uses the frozen native OpenH264 video
+build (OSS `ae4ffec402`, Cloud `1921b7cc05`), including the vidsink overlay fix.
+Selkies is the **qualified wheel baseline**: frozen `3f87241fcd6ab` plus
+pixelflux `6974a8c16a14` GPL wheel, CPU H.264/libx264, 60 fps, 8 Mbit/s.
+This is Miguel’s requested subjective comparison. Strict latency/FPS/CPU
+acceptance remains FAIL; this guide does not claim provider/Vault or soak
+acceptance. OpenH264 stays and optimization remains paused. MP-11 kernel
+ownership, private admission and guarded cleanup apply.

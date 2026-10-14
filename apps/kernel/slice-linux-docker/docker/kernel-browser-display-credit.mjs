@@ -11,6 +11,7 @@ import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { NativeRefiner } from './kernel-browser-refiner.mjs';
 import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending } from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
+import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
@@ -28,7 +29,14 @@ export async function displayCredit(host, stream, command, signal) {
     if(empty())return {generation:host.generation,frame_sent:false,display_frame:null};
   }
   const native = cachedSource?.native===true&&cachedSource.attested;
-  const tab = await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native);
+  let tab;
+  try { tab = await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }
+  catch(error) {
+    // MP-11: pending navigation still refuses old pixels, but does not fail
+    // the subscription. The event-bound loader refresh admits a later credit.
+    if(!(error instanceof DisplayDocumentPending))throw error;
+    return {generation:host.generation,frame_sent:false,display_frame:null};
+  }
   // Recreate the closure when navigation changes the loader binding. Pixels
   // and pending repairs are then invalidated by the new document as usual.
   if (!stream.capture || stream.capture.document !== tab.document_id)

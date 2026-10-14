@@ -1,35 +1,28 @@
 # MP-08 / MP-10 / MP-11 — owner A/B runtime scripts
 
-These scripts start the Chariox kernel/browser and the qualified Selkies wheel
-baseline on one quiet Ubuntu 26.04 CCX43. The web app and relay use the matching
-prebuilt hosted validation stack. The owner guide has the two links, five steps,
-public sites and rating table; the operator guide covers enrollment and cleanup.
+The kit runs the frozen Chariox OpenH264 kernel/browser and qualified Selkies
+wheel baseline on one quiet Ubuntu26.04 CCX43. The web app uses the private
+validation stack's disposable fixture account. Opening its waiting-room link
+is the entire owner sign-in step; the coordinator enrolls the kernel through
+normal product device approval beforehand. See OWNER_AB_TEST.md and OPERATOR.md.
 
-The distributable kit also needs these public, prebuilt assets beside the scripts:
+Ship these public prebuilt assets alongside the scripts:
 
-- `bin/chariox-kernel`, `bin/chariox-cli` and their actual `bin/OSS_HEAD`.
-- The matching built `packages/kernel-client` as `sdk/`, plus its runtime dependencies.
-- The qualified standalone Python as `baseline/python/`, wheel environment as
-  `baseline/runtime-venv/`, native wheel libraries as `baseline/runtime/`,
-  `baseline/selkies.lock.json` and license notices as `licenses/`.
-- `runtime-libs/`, `ARTIFACTS.json` with exact source/image/file identities, and
-  `SHA256SUMS` covering every shipped file except itself.
+- `bin/chariox-kernel`, `bin/chariox-cli`, and their actual `bin/OSS_HEAD`.
+- Matching built kernel-client in `sdk/`, with runtime dependencies.
+- Standalone Python, qualified wheel environment and native libraries under
+  `baseline/`, the Selkies lock and license notices under `licenses/`.
+- `runtime-libs/`, exact-source `ARTIFACTS.json` with validation qualification,
+  and `SHA256SUMS` covering every shipped file except itself.
 
-Build these assets before transferring the kit. Native builds use the approved
-cargo slot with `cargo build --release --locked -p chariox-kernel
---bin chariox-kernel --bin chariox-cli --features native-display`. Pin the Cloud
-bundle to those runtime display assets. Seal the kit with SHA-256 after copying
-assets; exclude runtime state, provider profiles, auth files and keys. OpenH264
-is fetched directly from Cisco at startup and is not redistributed in the kit.
+OpenH264 is fetched directly from Cisco at startup. The archive includes no
+provider profile, auth file, token or private key. Normal startup verifies the
+pinned private fixture origin and machine API before launching runtimes.
+`AB_REHEARSAL=1` changes only the Selkies bind/firewall behavior; it does not
+bypass origin qualification. Scripts isolate state, record exact PID/start
+identities and remove only marked owned resources. The gate helper edits only
+the lane stack's Caddy fragment under the existing lock.
 
-`ab-up.sh` accepts only the public settings listed in `OPERATOR.md`. Normal owner
-use rejects fixture authentication. Rehearsal must explicitly set
-`AB_REHEARSAL=1`; `AB_SKIP_INSTALL=1` is only for a host with dependencies already
-installed. Startup and cleanup receipts do not establish latency, CPU parity,
-Mac usability, provider/Vault coverage or multi-hour stability. Preserve RED
-results and source identities alongside the archive hash.
-
-Scripts keep generated identities in disposable state, isolate both browser
-profiles, retain exact child PID/start identities, and remove only their own
-marked state, workspace and firewall rule. The gate helper edits only the owned
-validation stack's Caddy fragment under the stack lock.
+Video optimization remains paused. Startup and public-site rehearsal results
+qualify the A/B kit; they do not establish strict latency/CPU/FPS parity,
+Mac/home-network ratings, provider/Vault acceptance or multi-hour stability.

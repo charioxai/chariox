@@ -37,7 +37,9 @@ def public_origin(key,scheme):
         raise SystemExit('MP-11: credential-free TLS origin required: '+key)
 mode=sys.argv[1]
 if mode=='preflight':
-    for key,scheme in [('AB_ORIGIN','https'),('AB_RELAY_URL','wss'),('AB_SELKIES_ORIGIN','https')]:public_origin(key,scheme)
+    for key,scheme in [('AB_ORIGIN','https'),('AB_SELKIES_ORIGIN','https')]:public_origin(key,scheme)
+    if os.environ.get('AB_RELAY_URL'):public_origin('AB_RELAY_URL','wss')
+    if os.environ.get('AB_API_ORIGIN'):public_origin('AB_API_ORIGIN','https')
     ipaddress.IPv4Address(os.environ['AB_GATEWAY_IP'])
     free=shutil.disk_usage('/').free
     available=int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:')))*1024
@@ -57,7 +59,7 @@ elif mode=='firewall':
 elif mode=='stop':
     if root.exists() and (not (root/'.vidlat-owned').exists() or (root/'.vidlat-owned').read_text().strip()!='vidlat-owner-ab'):
         raise SystemExit('MP-11: state ownership marker missing; no cleanup performed')
-    evidence=Path(os.environ.get('AB_EVIDENCE','/root/.codex/evidence/browser-resume-20260930/vidlat/r8'))
+    evidence=Path(os.environ.get('AB_EVIDENCE','/root/.codex/evidence/browser-resume-20260930/vidlat/r9'))
     evidence.mkdir(parents=True,exist_ok=True)
     signals=[];remaining=[]
     if (root/'owned.json').exists():
