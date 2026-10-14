@@ -2,6 +2,26 @@
 use super::*;
 
 #[test]
+fn native_claude_starting_run_keeps_the_exact_pending_hook() {
+    let mut f = CancellationFixture::new(0);
+    f.app
+        .active_turns
+        .bind_native_prompt_hook_request(f.run.id(), f.prompt.id(), "startup-hook");
+    let mut value = serde_json::to_value(&f.run).unwrap();
+    value["state"] = serde_json::to_value(crate::provider::ProviderRunState::Starting).unwrap();
+    f.run = serde_json::from_value(value).unwrap();
+    f.app.providers_mut().insert_run_for_test(f.run.clone());
+    let raw = serde_json::json!({"hook_event_name":"UserPromptSubmitReady", "hook_context_request_id":"startup-hook"}).to_string()+"\n";
+    fs::write(f.root.0.join("events.jsonl"), &raw).unwrap();
+    f.process();
+    assert_eq!(
+        fs::read_to_string(f.root.0.join("events.jsonl")).unwrap(),
+        raw,
+        "MP-08 MP-10 a starting run must retain its hook until prompt admission is ready"
+    );
+}
+
+#[test]
 fn native_claude_cancel_after_hook_return_does_not_wait_for_first_assistant_block() {
     let mut f = CancellationFixture::new(800);
     f.app

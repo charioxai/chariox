@@ -814,14 +814,21 @@ mod tests {
         }
 
         assert_eq!(reconstructed, context);
-        assert_eq!(
-            fs::read_to_string(&native.events_file)
-                .expect("hook events should read")
-                .lines()
-                .count(),
-            1,
-            "context-only hooks must not duplicate prompt acknowledgements"
-        );
+        let events = fs::read_to_string(&native.events_file)
+            .expect("hook events should read")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        for kind in ["UserPromptSubmit", "UserPromptSubmitReady"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["hook_event_name"] == kind)
+                    .count(),
+                1,
+                "MP-08 MP-10 context-only hooks must not duplicate {kind}"
+            );
+        }
         let settings: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(native.settings_file).unwrap()).unwrap();
         let hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]

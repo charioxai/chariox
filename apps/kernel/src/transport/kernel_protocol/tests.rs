@@ -494,6 +494,15 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
         "MP-08 MP-10 newly admitted work must bypass prior output backlog"
     );
     assert!(prompt_admission_activity_event(&previous, Some(&previous)).is_none());
+    let mut admitting_with_metadata = current.clone();
+    admitting_with_metadata
+        .session
+        .set_alias(Some("changed alongside admission".to_string()));
+    assert!(agent_activity_changed_event(&admitting_with_metadata, Some(&previous)).is_none());
+    assert!(
+        prompt_admission_activity_event(&admitting_with_metadata, Some(&previous)).is_some(),
+        "MP-08 MP-10 committed admission is visible before its later full snapshot"
+    );
     let mut completing = current.clone();
     completing.agent_activity.get_mut("agent-a").unwrap().last_completed_turn = Some(serde_json::from_value(serde_json::json!({
         "turn_id":"prior", "prompt_id":"prior", "provider_run_id":"run", "agent_id":"agent-a", "completed_at_ms":9

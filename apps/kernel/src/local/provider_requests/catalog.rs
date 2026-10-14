@@ -37,7 +37,10 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let focus = request.provider.as_deref().and_then(crate::provider::canonical_provider_family);
+    let focus = request
+        .provider
+        .as_deref()
+        .and_then(crate::provider::canonical_provider_family);
     let mut catalogs = vec![claude_provider_catalog()];
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
@@ -143,8 +146,13 @@ pub(crate) fn load_provider_catalog(
 }
 
 // MP-08 / MP-10 / MP-11: a provider-scoped account query carries only that family.
-fn focused_provider_catalog(mut catalog: OpenCodeProviderCatalog, focus: Option<&str>) -> OpenCodeProviderCatalog {
-    let Some(focus) = focus else { return catalog; };
+fn focused_provider_catalog(
+    mut catalog: OpenCodeProviderCatalog,
+    focus: Option<&str>,
+) -> OpenCodeProviderCatalog {
+    let Some(focus) = focus else {
+        return catalog;
+    };
     // Backend choices and default models remain valid while the client loads
     // another account. Only the requested harness carries its complete model set.
     for provider in &mut catalog.all {
@@ -1463,23 +1471,57 @@ mod tests {
 
     #[test]
     fn mp08_mp10_provider_scoped_catalog_preserves_backend_switching_and_native_modes() {
-        let ids = ["claude", "claude-p", "claude-headless", "codex", "opencode", "opencode-go", "openai"];
+        let ids = [
+            "claude",
+            "claude-p",
+            "claude-headless",
+            "codex",
+            "opencode",
+            "opencode-go",
+            "openai",
+        ];
         let catalog = OpenCodeProviderCatalog {
-            all: ids.iter().map(|id| OpenCodeProviderInfo {
-                id: (*id).into(), name: (*id).into(), remote_machine_aliases: vec!["worker".into()],
-                models: ["default", "alternate"].into_iter().map(|model| (model.into(), OpenCodeProviderModel { id: model.into(), name: model.into(), status: "active".into(), limit: None, variants: BTreeMap::new() })).collect(),
-            }).collect(),
+            all: ids
+                .iter()
+                .map(|id| OpenCodeProviderInfo {
+                    id: (*id).into(),
+                    name: (*id).into(),
+                    remote_machine_aliases: vec!["worker".into()],
+                    models: ["default", "alternate"]
+                        .into_iter()
+                        .map(|model| {
+                            (
+                                model.into(),
+                                OpenCodeProviderModel {
+                                    id: model.into(),
+                                    name: model.into(),
+                                    status: "active".into(),
+                                    limit: None,
+                                    variants: BTreeMap::new(),
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
             connected: ids.iter().map(|id| (*id).into()).collect(),
-            default: ids.iter().map(|id| ((*id).into(), "default".into())).collect(),
+            default: ids
+                .iter()
+                .map(|id| ((*id).into(), "default".into()))
+                .collect(),
         };
         assert_eq!(focused_provider_catalog(catalog.clone(), None), catalog);
         for focus in ["claude", "codex", "opencode"] {
             let scoped = focused_provider_catalog(catalog.clone(), Some(focus));
-            assert_eq!(scoped.all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ids);
+            assert_eq!(
+                scoped.all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+                ids
+            );
             assert_eq!(scoped.connected, catalog.connected);
             assert_eq!(scoped.default, catalog.default);
             for provider in &scoped.all {
-                let family = crate::provider::canonical_provider_family(&provider.id).unwrap_or("opencode");
+                let family =
+                    crate::provider::canonical_provider_family(&provider.id).unwrap_or("opencode");
                 assert_eq!(provider.models.len(), if family == focus { 2 } else { 1 });
                 assert!(provider.models.contains_key("default"));
                 assert_eq!(provider.remote_machine_aliases, ["worker"]);

@@ -512,7 +512,9 @@ pub(crate) fn prompt_admission_activity_event(
     previous: Option<&SessionSnapshotProjection>,
 ) -> Option<KernelEvent> {
     let previous = previous?;
-    if snapshot.room_workflows != previous.room_workflows
+    if snapshot.session.id() != previous.session.id()
+        || snapshot.agent_activity.len() != previous.agent_activity.len()
+        || snapshot.room_workflows != previous.room_workflows
         || snapshot.agent_activity.iter().any(|(id, activity)| {
             previous
                 .agent_activity
@@ -530,9 +532,11 @@ pub(crate) fn prompt_admission_activity_event(
                         != old.active_turn.as_ref().map(|turn| &turn.prompt_id)
             })
     });
-    admitted
-        .then(|| agent_activity_changed_event(snapshot, Some(previous)))
-        .flatten()
+    admitted.then(|| KernelEvent::AgentActivityChanged {
+        session_id: snapshot.session.id().to_string(),
+        agent_activity: Box::new(snapshot.agent_activity.clone()),
+        agent_activity_revision: snapshot.metadata.last_event_id,
+    })
 }
 
 pub(crate) fn agent_activity_changed_event(

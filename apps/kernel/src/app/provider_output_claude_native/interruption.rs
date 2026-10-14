@@ -392,6 +392,7 @@ pub(super) fn bind_prompt_hook_request(
 }
 
 pub(super) fn reply_ignored_prompt_hook(context_file: &str, event: &serde_json::Value) {
+    super::hook_observation::record("ignored", event, None);
     if let Some(request_id) = event
         .get("hook_context_request_id")
         .and_then(serde_json::Value::as_str)

@@ -297,10 +297,14 @@ pub(super) async fn handle_daemon_request(
                 }
             };
             if std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1") {
-                crate::logging::info_with_fields("daemon.request_timing", "relay response prepared", serde_json::json!({
-                    "request_kind":request_kind, "received_at_ms":received_at_ms,
-                    "prepared_at_ms":crate::session::unix_epoch_ms(), "response_bytes":plaintext.len(),
-                }));
+                crate::logging::info_with_fields(
+                    "daemon.request_timing",
+                    "relay response prepared",
+                    serde_json::json!({
+                        "request_kind":request_kind, "received_at_ms":received_at_ms,
+                        "prepared_at_ms":crate::session::unix_epoch_ms(), "response_bytes":plaintext.len(),
+                    }),
+                );
             }
             if !quiet_success_request {
                 crate::logging::info_with_fields(

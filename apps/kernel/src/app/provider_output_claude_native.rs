@@ -20,6 +20,7 @@ use crate::terminal::TerminalOutputKind;
 mod attachments;
 #[cfg(test)]
 mod cancellation_tests;
+mod hook_observation;
 mod interruption;
 mod permission;
 #[cfg(test)]
@@ -294,6 +295,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(outcome);
         };
+        // MP-08 / MP-10 / MP-11: the CLI can publish a hook before its managed
+        // run commits Running. Keep that mailbox pending until admission is ready.
+        if provider_run.state() == crate::provider::ProviderRunState::Starting {
+            return Ok(outcome);
+        }
 
         if let Some(message) = claude_workspace_trust_failure(context_file) {
             outcome.terminal_failure = Some(message.to_string());
@@ -405,6 +411,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             let Ok(event) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
+            hook_observation::record("seen", &event, Some(provider_run_id));
             if let Some(transcript_path) = event
                 .get("transcript_path")
                 .and_then(Value::as_str)

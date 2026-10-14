@@ -14,7 +14,11 @@ impl ProviderReportedTranscript {
     }
 
     pub(super) fn open_with_error(path: PathBuf, confined: bool) -> std::io::Result<Self> {
-        let file = if confined { open_without_symlinks(&path)? } else { File::open(&path)? };
+        let file = if confined {
+            open_without_symlinks(&path)?
+        } else {
+            File::open(&path)?
+        };
         if !file.metadata()?.is_file() {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
         }
@@ -54,7 +58,8 @@ fn open_without_symlinks(path: &std::path::Path) -> std::io::Result<File> {
     // reopened after admission, and no ancestor/leaf link can escape the bind.
     let mut opened = File::open("/")?;
     for (index, name) in components.iter().enumerate() {
-        let name = CString::new(name.as_bytes()).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let last = index + 1 == components.len();
         let flags = libc::O_RDONLY
             | libc::O_CLOEXEC

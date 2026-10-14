@@ -263,13 +263,19 @@ pub(super) async fn run_subscription_loop(
                     // A terminal run update is the authoritative replacement for the
                     // archived run. Treat it as a projection delta so the fallback full
                     // hot-session snapshot cannot immediately erase it in the client.
-                    let mut emitted_projection_delta =
-                        emitted_admission || emitted_terminal_workflow_run_update;
+                    let activity_change =
+                        agent_activity_changed_event(&snapshot, previous_snapshot_ref);
+                    // Early admission is independent; only the ordinary predicate
+                    // proves it covers the full snapshot's remaining changes.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update
+                        || (emitted_admission && activity_change.is_some());
                     let mut emit_failed = false;
                     for event in [
-                        (!emitted_admission)
-                            .then(|| agent_activity_changed_event(&snapshot, previous_snapshot_ref))
-                            .flatten(),
+                        if emitted_admission {
+                            None
+                        } else {
+                            activity_change
+                        },
                         provider_run_changed_event(&snapshot, previous_snapshot_ref),
                         session_metadata_changed_event(&snapshot, previous_snapshot_ref),
                         runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
