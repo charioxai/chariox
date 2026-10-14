@@ -1,3 +1,5 @@
+import {acquireTerminationResource} from './termination.mjs';
+import {registerTerminationCleanup} from './termination.mjs';
 import {clientModule,playwrightModule} from './paths.mjs';
 // MP-08 / MP-10 / MP-11: owned leased VM; SSH bridge is diagnostics and enrollment only.
 const {chromium}=await import(playwrightModule());
@@ -17,10 +19,11 @@ export async function remoteWorker(home,label,name,head){
  function rpc(op,value){if(socket.destroyed||socket.readableEnded)return Promise.reject(Error('remote diagnostic bridge ended'));return new Promise((resolve,reject)=>{const id=++serial,timer=setTimeout(()=>{pending.delete(id);reject(Error('remote '+op+' deadline'))},360000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,op,value})+'\n')})}
  const client={send:request=>rpc('request',request)};let identity;
  async function close(){if(closed)return;closed=true;try{const cleanup=await rpc('close');await home.record('remote-worker-cleanup',{...cleanup,host});}finally{socket.end();await vm.close();}}
+ registerTerminationCleanup(close);
  try{
  identity=await rpc('start',{label,name,head});if(identity.head!==head)throw Error('Worker source head differs from requested exact candidate');await home.record('remote-worker-identity',identity);
  const origin=process.env.CTXVAL_ORIGIN,relay=origin.replace('https://','wss://').replace('.val.','relay.val.');
- const browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage']});
+ const browser=await acquireTerminationResource(()=>chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage']}),browser=>browser.close());
  let status;
  try{const context=await browser.newContext(),page=await context.newPage();await page.goto(origin+'/validation/ready');const before=variant(await client.send({RelayStatus:null}),'RelayStatus').status;
  const login=variant(await client.send({StartCloudRelayLogin:{api_url:origin,client_id:'ctxfix2-r9-worker-'+name,client_alias:'Context worker '+name,machine_id:before.machine_id,machine_alias:'ctxfix2-worker-'+name}}),'CloudRelayLoginStarted').login;

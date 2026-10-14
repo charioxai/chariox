@@ -1,3 +1,4 @@
+import {acquireTerminationResource} from './termination.mjs';
 // MP-08 / MP-10 / MP-11: dormant history comes from normal product device enrollment, never database injection.
 import {mkdir,writeFile,rm} from 'node:fs/promises';
 import net from 'node:net';
@@ -11,7 +12,7 @@ const port=()=>new Promise((resolve,reject)=>{const s=net.createServer();s.on('e
 export async function enrollDormantHistory(run,count=65){
  if(!Number.isInteger(count)||count<65||count>80)throw Error('History reproduction requires65–80 real enrollments');
  const origin=process.env.CTXVAL_ORIGIN;if(!origin)throw Error('Hosted origin required');
- const browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage','--js-flags=--max-old-space-size=1024']});
+ const browser=await acquireTerminationResource(()=>chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage','--js-flags=--max-old-space-size=1024']}),browser=>browser.close());
  const rows=[];
  try{const context=await browser.newContext(),page=await context.newPage();await page.goto(origin+'/validation/ready');
   for(let n=0;n<count;n++){

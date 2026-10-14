@@ -1,3 +1,5 @@
+import {acquireTerminationResource} from './termination.mjs';
+import {registerTerminationCleanup} from './termination.mjs';
 import {harness} from './paths.mjs';
 import {clientModule,playwrightModule} from './paths.mjs';
 // MP-08 / MP-10 / MP-11: real paired TUI; shape only its owned network namespace.
@@ -23,12 +25,13 @@ export async function shapedRemoteTui(run,{useTui=true}={}){
  const options=parseArgs(['--terminal-pairing-link',pairing.pairing_link]);let bootstrap,holder,slirp,echo,cloud;const peers=new Set();
  async function stop(child){if(!child||child.exitCode!==null||child.signalCode!==null)return;signalOwnedProcessGroup(child,'SIGTERM');for(let i=0;i<50&&child.exitCode===null&&child.signalCode===null;i++)await sleep(100);if(child.exitCode===null&&child.signalCode===null)signalOwnedProcessGroup(child,'SIGKILL')}
  async function close(){cloud?.stop();await bootstrap?.close();for(const s of peers)s.destroy();if(echo)await new Promise(res=>echo.close(res));await stop(slirp);await stop(holder)}
+ registerTerminationCleanup(close);
  try{
   let clientId=pairing.terminal_id,bootstrapToken=options.relayToken;
   if(bootstrapToken==='cloud-client-token-required'){
    if(!process.env.CTXVAL_ORIGIN)throw Error('Hosted CLIENT enrollment needs an origin');
    cloud=new CloudClient(new CloudClientCredentialStore(run.root+'/home/relay/cloud-client.json'),()=>identity);
-   const browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage']});
+   const browser=await acquireTerminationResource(()=>chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage']}),browser=>browser.close());
    try{const context=await browser.newContext(),page=await context.newPage();await page.goto(process.env.CTXVAL_ORIGIN+'/validation/ready');await cloud.login(process.env.CTXVAL_ORIGIN,async verification=>{if(new URL(verification.verificationUrl).origin!==process.env.CTXVAL_ORIGIN)throw Error('Wrong terminal approval origin');await page.goto(verification.verificationUrl);const approve=page.getByRole('button',{name:/approve|allow|connect/i});if(await approve.count()===1)await approve.click();});let fresh=false;for(let i=0;i<120;i++){const dashboard=await page.evaluate(async()=>{const r=await fetch('/dashboard');if(!r.ok)return null;const d=await r.json();return {targets:(d.relayTargets??[]).map(t=>({daemonId:t.daemonId,status:t.status}))}});if(dashboard?.targets.some(t=>t.daemonId===options.targetDaemonId&&t.status==='ONLINE')){fresh=true;break}await sleep(500)}await run.record('receiving-client-fresh-target',{target:options.targetDaemonId,fresh});if(!fresh)throw Error('Receiving client cannot issue against a stale/unowned target');}finally{await browser.close()}
    clientId='cli:'+identity.publicKeyThumbprint;bootstrapToken=(await cloud.issue(options.targetDaemonId)).token;
    await run.record('terminal-client-enrollment',{receivingClientOwnLogin:true,clientId,profileScopedToDisposableState:true});

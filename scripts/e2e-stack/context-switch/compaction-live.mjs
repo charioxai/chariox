@@ -4,6 +4,7 @@ import {webClients} from './web-live.mjs';
 import {nativeWindow} from './native-window.mjs';
 import {execFileSync} from 'node:child_process';
 import {sleep} from './runtime.mjs';
+import {validateCompactionOutage} from './control-validation.mjs';
 const mode=process.env.CTXVAL_COMPACTION??'positive',result={MP:['MP-08','MP-10','MP-11'],status:'FAIL',mode,cells:[],started:new Date().toISOString()};
 const source=process.env.CTXVAL_COMPACTION_SOURCE??'claude-sonnet-5-5[1m]',target=process.env.CTXVAL_COMPACTION_TARGET??'claude-haiku-5-5';let web=[],remote,outage,worker;
 async function logs(label){let data=JSON.parse(execFileSync('python3',[new URL('./log-observe.py',import.meta.url).pathname,r.root],{encoding:'utf8'}));if(worker){const home=data;data=await worker.logs();await r.record('home-compaction-log-'+label,home);}await r.record('compaction-log-'+label,data);return data.rows.filter(x=>/compacted the session before|failed to compact the session before/.test(x.message));}
@@ -26,8 +27,7 @@ try{
   if(!compacting)throw Error('Visible source compaction was never observed');await r.capture('compacting');for(const c of web)await c.capture('compacting');
   if(mode==='outage'){
    await selection;if(selectionError)throw selectionError;const settledAt=Date.now();await outage;outage=null;const after=await r.binding(),events=await logs('outage-after');
-   if(events.length!==baseline.length+1||!/failed to compact the session before/.test(events.at(-1).message))throw Error('Scoped source outage did not log one precompaction failure');
-   const elapsedMs=settledAt-selectedAt;if(elapsedMs>320000)throw Error('Profile did not settle within300s plus normal relay response budget');
+   const elapsedMs=settledAt-selectedAt;validateCompactionOutage({baseline,events,elapsedMs,sourceRunId:before.runs.find(x=>x.provider===before.provider)?.id.split(':').at(-1),sourceModel:before.model,targetModel:target});
    await probe(facts,false,{addDecision:true});await probe(facts,true);for(const c of web){await c.probe(facts,true);await c.capture('outage-fallback-recall');}
    result.cells.push({cell:'300s-source-outage',status:'PASS',contextTokens:tokens,targetWindow,elapsedMs,relayResponseBudgetMs:20000,outageMs:310000,before,after,events,ordinaryFallbackRecall:10});result.status='PASS';result.limits='300s source failure/fallback only; queued work and unrelated-agent interactions measured separately';
    await r.record('result',result);

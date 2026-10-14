@@ -1,6 +1,7 @@
 // MP-08 / MP-10 / MP-11: M3 nine ordinary/leased pairs and five restart/account variants.
 import {r,init,finish,enrollClaude,workload,select,selectAccount,probe} from './common.mjs';
 import {webClients} from './web-live.mjs';
+import {validateAccountNativeSwitch} from './control-validation.mjs';
 const models={codex:'gpt-6-luna','claude-p':'claude-haiku-5-5',opencode:process.env.CTXVAL_OPENCODE_MODEL??'opencode-go/deepseek-v4.1-flash'};
 const alternate={codex:'gpt-6.1-sol','claude-p':'claude-sonnet-5-5',opencode:'opencode/glm-5.3-flash'};
 const mode=process.env.CTXVAL_MATRIX??'coverage',leased=process.env.CTXVAL_LEASED==='1';
@@ -23,7 +24,7 @@ try{
    const facts=await workload(item.source,models[item.source],Number(process.env.CTXVAL_SOURCE_TURNS??15));const before=await r.binding();row.before=before;
    for(const c of web)await c.close();web=[];
    if(item.restart==='before-switch')await r.restart();
-   await select(item.target,item.source===item.target?alternate[item.target]:models[item.target]);
+   await select(item.target,item.source===item.target&&!item.account?alternate[item.target]:models[item.target]);
    if(item.account)await selectAccount('codex',secondary);
    if(item.restart==='after-switch')await r.restart();
    if(mode==='restart-account'){
@@ -37,7 +38,7 @@ try{
    await select(item.source,models[item.source]);if(item.account)await selectAccount('codex',primary);
    await probe(facts,true);const after=await r.binding();if(!before.nativeId||!target.nativeId||!after.nativeId)throw Error('Native IDs were not observed');if(item.source!==item.target&&before.nativeId===target.nativeId)throw Error('Foreign native ID was reused');row.legs.push({score:10,total:10,binding:after});
    if(item.source===item.target&&!item.account&&(!before.nativeId||before.nativeId!==target.nativeId||before.nativeId!==after.nativeId))throw Error('Same-account model roundtrip changed native session');
-   if(item.account&&(target.accountProfile!==secondary||after.accountProfile!==primary))throw Error('Independent account did not roundtrip');
+   if(item.account)validateAccountNativeSwitch({before,target,after,primary,secondary});
    if(before.remoteExecution&&JSON.stringify(before.remoteExecution)!==JSON.stringify(after.remoteExecution))throw Error('Worker placement changed');
    // Web changed-action checkpoints run separately; OpenCode never pays for duplicate web probes.
    row.status='PASS';row.limit='Pair core; queue/one-shot and UI checkpoint dimensions remain separate';

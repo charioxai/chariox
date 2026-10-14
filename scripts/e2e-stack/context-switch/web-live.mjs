@@ -1,3 +1,4 @@
+import {acquireTerminationResource} from './termination.mjs';
 import {clientModule,playwrightModule} from './paths.mjs';
 // MP-08 / MP-10 / MP-11: real Cloud controls/composer, both display densities.
 const {chromium}=await import(playwrightModule());
@@ -12,7 +13,7 @@ export async function webClients(run,remote){
   const out=run.out+'/web-'+callId+'-dpr'+dpr;await mkdir(out,{recursive:true,mode:0o700});
   const network=await startViewerNetwork(e.relay,{httpsOrigins:[e.origin]});
   const wrapper=run.root+'/chrome-ns-wrapper.sh';const quote=v=>"'"+v.replaceAll("'","'\\''")+"'";await writeFile(wrapper,'#!/bin/sh\nexec '+remote.chromePrefix.map(quote).join(' ')+" /opt/google/chrome/chrome \"$@\"\n",{mode:0o700});
-  const browser=await chromium.launch({headless:true,executablePath:wrapper,proxy:{server:network.proxyUrl.replace('127.0.0.1','10.0.2.2')},args:['--no-sandbox','--disable-dev-shm-usage','--js-flags=--max-old-space-size=3072','--renderer-process-limit=2']});
+  const browser=await acquireTerminationResource(()=>chromium.launch({headless:true,executablePath:wrapper,proxy:{server:network.proxyUrl.replace('127.0.0.1','10.0.2.2')},args:['--no-sandbox','--disable-dev-shm-usage','--js-flags=--max-old-space-size=3072','--renderer-process-limit=2']}),browser=>browser.close());
   const ctx=await browser.newContext({viewport:JSON.parse(process.env.CTXVAL_VIEWPORT??'{"width":1440,"height":900}'),deviceScaleFactor:dpr,recordVideo:{dir:out,size:JSON.parse(process.env.CTXVAL_VIEWPORT??'{"width":1440,"height":900}')}}),page=await ctx.newPage();network.attach(page);const logs=[];
   const safe=x=>String(x).replace(/sk-(?:ant-oat01-)?[A-Za-z0-9_-]{20,}|Bearer\s+[^\s"\\]+|[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,'[redacted]');
   page.on('console',m=>{const text=safe(m.text()).replace(/((?:token|credential|authorization|secret)[\w -]*[:=]\s*)[^,;\n]+/gi,'$1[redacted]');logs.push({at:Date.now(),type:m.type(),text})});page.on('pageerror',e=>logs.push({at:Date.now(),type:'pageerror',text:safe(e.message)}));

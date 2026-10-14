@@ -1,3 +1,4 @@
+import {registerTerminationCleanup} from './termination.mjs';
 // MP-08 / MP-10 / MP-11: official /context through the actual native Chariox client.
 import {writeFile,readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
@@ -10,6 +11,7 @@ export async function nativeWindow(run,model,{worker}={}){
  if(worker){if(process.env.CTXVAL_MATCH_NATIVE_WORKTREE!=='1')throw Error('Leased native probe requires the ordinary matching checkout path on both kernels');args.push('--machine',worker.enrollment.machine_id);}
  const quote=v=>"'"+v.replaceAll("'","'\\''")+"'";
  const child=spawnOwned('script',['-qefc','stty cols 160 rows 48; exec '+args.map(quote).join(' '),'/dev/null'],{cwd:run.tree,env:{...run.env,TERM:'xterm-256color'},stdio:['pipe','pipe','pipe'],detached:true});
+ registerTerminationCleanup(async()=>{if(child.exitCode===null&&child.signalCode===null)signalOwnedProcessGroup(child,'SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await sleep(100);});
  let output='',trusted=false,trustOffset=0;
  child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
  try{

@@ -136,3 +136,20 @@ detached account-inspection servers, with captured process generations and the
 production signal guard. It records those removals separately and preserves
 other runtime scopes. This is drill cleanup, not a claim that production kernel
 shutdown has been repaired.
+
+MP-08 / MP-10 / MP-11 interruption uses the shared termination registry before
+any detached kernel, namespace, native client or worker starts. SIGINT/SIGTERM
+settle owned resources before exiting. Run the supplementary process and oracle
+regressions with an external disk-backed TMPDIR:
+
+```sh
+node --test scripts/e2e-stack/context-switch/termination.test.mjs scripts/e2e-stack/context-switch/control-validation.test.mjs
+```
+
+The source-outage oracle requires the source run/model's timeout record and
+approximately 300 seconds of kernel elapsed time. Account transitions require
+fresh native IDs on both legs; profile labels and recall alone cannot pass.
+`enrollment-history.mjs` creates dormant targets only through normal device
+approval, with zero provider turns. The receiving profile in
+`account-read-live.mjs` uses product linking/refresh; a fresh 401 is recorded as
+a coordinator account action, while primary-thread continuity is checked.
