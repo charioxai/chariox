@@ -57,6 +57,23 @@ pub(crate) fn settled_report(
     }
 }
 
+/// MP-07: the root updater's first failed step for an update, written as
+/// `1`, the update id and an enumerated step. Foreign or malformed records
+/// carry no reason.
+pub(crate) fn failure_step(record: &str, update_id: &str) -> Option<String> {
+    match record.lines().collect::<Vec<_>>().as_slice() {
+        ["1", id, step]
+            if *id == update_id
+                && (1..=64).contains(&step.len())
+                && step.starts_with(|c: char| c.is_ascii_lowercase())
+                && step.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            Some((*step).to_string())
+        }
+        _ => None,
+    }
+}
+
 /// A collected transient unit is absent, not an unknown systemd result. Accept
 /// only explicit known states, including the full not-found/inactive pair.
 pub(crate) fn unit_settled(status: Option<i32>, output: &str) -> Result<bool, &'static str> {
@@ -274,6 +291,26 @@ mod tests {
             ),
             UpdateReport::Pending
         );
+    }
+
+    #[test]
+    fn only_this_update_s_enumerated_failure_step_is_reported() {
+        let id = identity().update_id;
+        assert_eq!(
+            failure_step(&format!("1\n{id}\ntarget_health_check\n"), id).as_deref(),
+            Some("target_health_check")
+        );
+        for record in [
+            "1\nmanaged_release_update_other\ntarget_health_check\n".to_string(),
+            format!("2\n{id}\ntarget_health_check\n"),
+            format!("1\n{id}\nTarget health\n"),
+            format!("1\n{id}\n_step\n"),
+            format!("1\n{id}\n{}\n", "a".repeat(65)),
+            format!("1\n{id}\nstep\nextra\n"),
+            format!("1\n{id}\n"),
+        ] {
+            assert_eq!(failure_step(&record, id), None, "{record}");
+        }
     }
 
     #[test]

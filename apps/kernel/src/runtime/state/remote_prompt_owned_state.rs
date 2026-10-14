@@ -244,11 +244,7 @@ impl KernelRuntimeOwnedState {
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            &target_agent,
-            "submit remote prompt",
-        )?;
+        self.require_agent_provider_account_authenticated(&target_agent, "submit remote prompt")?;
         if target_agent.state() == crate::agent::AgentState::Error {
             let _ = self
                 .agent_store
@@ -1084,13 +1080,7 @@ mod tests {
                 .await
                 .unwrap()
         } else {
-            let project_id = runtime
-                .owned
-                .session_store
-                .get_session(&session)
-                .unwrap()
-                .project_id()
-                .to_string();
+            let stored = runtime.owned.session_store.get_session(&session).unwrap();
             let evidence = crate::project_environment::ProjectEnvironmentEvidence::default();
             crate::project_environment::ProjectEnvironmentStore::new(
                 &runtime
@@ -1103,9 +1093,25 @@ mod tests {
                 source: None,
                 manifest: crate::project_environment::ProjectEnvironmentManifest {
                     schema_version: 1,
-                    project_id,
+                    project_id: stored.project_id().into(),
                     evidence_digest: evidence.digest(),
-                    entries: vec![],
+                    // An empty environment needs no Vault; one value keeps the unlock wait.
+                    entries: vec![crate::project_environment::ProjectEnvironmentEntry {
+                        name: "APP_LABEL".into(),
+                        workspace_id: stored.workspace_id().into(),
+                        kind: crate::project_environment::ProjectEnvironmentEntryKind::Variable,
+                        classification: Default::default(),
+                        excluded: false,
+                        uses: vec![crate::project_environment::ProjectEnvironmentUse {
+                            path: "app.ts".into(),
+                            line: 1,
+                        }],
+                        locator: crate::project_environment::ProjectEnvironmentLocator::EnvFile {
+                            path: ".env".into(),
+                            key: "APP_LABEL".into(),
+                        },
+                        status: Default::default(),
+                    }],
                     private_files: vec![],
                     toolchain_hints: vec![],
                     package_hints: vec![],

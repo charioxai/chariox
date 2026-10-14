@@ -475,6 +475,14 @@ pub struct LaunchProviderRequest {
     /// Selected kernel-local namespace survives subsequent preparation passes.
     #[serde(skip)]
     pub(crate) resolved_provider_account: Option<crate::account_profile::ResolvedProviderAccount>,
+    /// MP-01/MP-08: authenticated lease routes keep their replica namespace.
+    /// This authority is kernel-local and cannot be supplied by serialized clients.
+    #[serde(skip)]
+    pub(crate) leased_account_authority: bool,
+    /// An admitted lease supplied the account credential to this launch.
+    /// Private provenance survives consumption of the secret environment.
+    #[serde(skip)]
+    pub(crate) leased_credential_authority: bool,
     /// Vault-resolved values for this in-flight launch. This is excluded from
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
@@ -649,6 +657,8 @@ impl LaunchProviderRequest {
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
             resolved_provider_account: None,
+            leased_account_authority: false,
+            leased_credential_authority: false,
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
             project_environment_revision: None,
             preparation_environment: None,
@@ -736,6 +746,23 @@ impl LaunchProviderRequest {
         self
     }
 
+    pub(crate) fn with_leased_account_authority(mut self) -> Self {
+        self.leased_account_authority = true;
+        self.note_leased_credential_authority();
+        self
+    }
+
+    fn note_leased_credential_authority(&mut self) {
+        if self.leased_account_authority
+            && crate::provider::canonical_provider_family(&self.provider) == Some("claude")
+            && self.provider_credential_env.iter().any(|(name, value)| {
+                name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV && !value.trim().is_empty()
+            })
+        {
+            self.leased_credential_authority = true;
+        }
+    }
+
     pub(crate) fn with_provider_account_env(
         mut self,
         environment: BTreeMap<String, String>,
@@ -749,6 +776,7 @@ impl LaunchProviderRequest {
         environment: super::ProviderCredentialEnvironment,
     ) -> Self {
         self.provider_credential_env = environment;
+        self.note_leased_credential_authority();
         self
     }
 

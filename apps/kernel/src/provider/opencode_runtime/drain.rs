@@ -27,6 +27,9 @@ const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
 const OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 const OPENCODE_EMPTY_IDLE_ASSISTANT_FAILURE: &str =
     "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
+const OPENCODE_UNSTARTED_TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const OPENCODE_UNSTARTED_TURN_FAILURE: &str =
+    "OpenCode did not start a response within 3 minutes of accepting the prompt. Chariox ended this turn; send it again to retry.";
 
 pub(in crate::provider) fn drain_opencode_events(
     run: &RuntimeProviderRun,
@@ -379,7 +382,36 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut current_user_without_assistant_is_idle = false;
     if state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-        if let Ok(status) = client.session_status(&state.session_id) {
+        let status = client.session_status(&state.session_id);
+        // A busy or unreachable session that never created an assistant message
+        // for the accepted prompt would otherwise keep the turn running forever.
+        // Retry states stay visible and are left to the provider.
+        if status.as_ref().map_or(true, |status| status.kind == "busy")
+            && state.active_prompt_has_elapsed(OPENCODE_UNSTARTED_TURN_TIMEOUT)
+            && !state.active_prompt_has_assistant()
+        {
+            let messages = client.messages(&state.session_id).ok();
+            if let Some(messages) = messages.as_deref() {
+                record_snapshot_message_metadata(state, messages);
+            }
+            if !state.active_prompt_has_assistant() {
+                let _ = client.abort_session(&state.session_id);
+                record_terminal_failure(
+                    state,
+                    OPENCODE_UNSTARTED_TURN_FAILURE.to_string(),
+                    &mut chunks,
+                    &mut completions,
+                    &mut notices,
+                    &mut terminal_failure,
+                    &mut explicit_provider_error,
+                    false,
+                    &mut prompt_completed,
+                    drain_active_user_message_id.as_deref(),
+                );
+                state.settle_aborted_turn(messages.as_deref().unwrap_or_default());
+            }
+        }
+        if let Some(status) = status.ok().filter(|_| !prompt_completed) {
             if status.kind != "idle" {
                 if state.last_status.as_ref() != Some(&status) {
                     state.last_status = Some(status.clone());

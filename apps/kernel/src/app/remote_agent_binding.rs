@@ -20,6 +20,7 @@ use super::remote_kernel_selection::{
     no_remote_kernel_available_message, select_remote_kernel,
 };
 
+mod discovery_authorization;
 mod slice_recovery;
 use slice_recovery::SliceBindingRecovery;
 
@@ -49,36 +50,15 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     (plan.authorizer)()?;
     let old_binding = plan.expected_binding.clone();
     let old_worker_ref = old_binding.worker_kernel_id.clone();
-    let mut discovery_config = plan.relay_config.clone();
     let hosted_shared_slice = plan
         .slice_recovery
         .as_ref()
         .is_some_and(|recovery| recovery.uses_connected_relay(&plan.config));
-    if hosted_shared_slice {
-        let profile =
-            discovery_config
-                .cloud_relay
-                .clone()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "discover hosted slice worker",
-                    message: "hosted shared slice requires a Cloud relay profile".to_string(),
-                })?;
-        let owner_kernel_ref = plan.config.daemon_id.clone();
-        let worker_kernel_ref = old_worker_ref.clone();
-        let token = crate::runtime::cloud_api_client::issue_cloud_slice_discovery_token(
-            &profile,
-            &owner_kernel_ref,
-            &worker_kernel_ref,
-        )
-        .await?;
-        discovery_config.relay_token = Some(token.token);
-    }
-
     let machine_ref =
         crate::config::DaemonConfig::resolve_registered_machine_ref(&old_binding.worker_machine_id)
             .unwrap_or_else(|| old_binding.worker_machine_id.clone());
-    let can_use_connected_inventory = discovery_config.relay_url == plan.config.relay_url
-        && (discovery_config.relay_token == plan.config.relay_token || hosted_shared_slice);
+    let can_use_connected_inventory = plan.relay_config.relay_url == plan.config.relay_url
+        && (plan.relay_config.relay_token == plan.config.relay_token || hosted_shared_slice);
     let select_worker = |kernels| match plan.slice_recovery.as_ref() {
         Some(recovery) => recovery.select(kernels, plan.agent.provider()),
         None => Ok(select_remote_kernel(
@@ -93,6 +73,13 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 return Ok(worker);
             }
         }
+        let discovery_config = discovery_authorization::worker_config(
+            &plan.config.daemon_id,
+            &old_worker_ref,
+            hosted_shared_slice,
+            plan.relay_config.clone(),
+        )
+        .await?;
         let kernels =
             relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine_ref).await?;
         let message =
@@ -682,12 +669,10 @@ impl DaemonApp {
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
-        let discovery_config =
-            self.remote_worker_discovery_config(kernel_ref, relay_config.clone())?;
         let worker_kernel = self.select_remote_kernel_by_ref_with_config(
             kernel_ref,
             &request.provider,
-            &discovery_config,
+            &relay_config,
         )?;
         authorize()?;
         let worker_worktree_id =
@@ -1178,10 +1163,6 @@ impl DaemonApp {
         let slice_recovery =
             SliceBindingRecovery::admit(&self.slices, &remote_execution, agent.session_id(), None)?;
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
-        let discovery_config = self.remote_worker_discovery_config(
-            &remote_execution.worker_kernel_id,
-            relay_config.clone(),
-        )?;
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
         let worker_kernel = match slice_recovery.as_ref() {
@@ -1189,14 +1170,14 @@ impl DaemonApp {
                 self.select_remote_kernel_by_ref_with_config(
                     &remote_execution.worker_kernel_id,
                     agent.provider(),
-                    &discovery_config,
+                    &relay_config,
                 )?,
                 agent.provider(),
             )?,
             None => self.select_remote_kernel_for_machine_with_config(
                 &remote_execution.worker_machine_id,
                 agent.provider(),
-                &discovery_config,
+                &relay_config,
             )?,
         };
         let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
@@ -1329,20 +1310,18 @@ impl DaemonApp {
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
-        let discovery_config =
-            self.remote_worker_discovery_config(machine_ref, relay_config.clone())?;
         let worker_kernel =
             if slice_recovery::recorded_slice_worker_id(&self.slices, machine_ref)?.is_some() {
                 self.select_remote_kernel_by_ref_with_config(
                     machine_ref,
                     agent.provider(),
-                    &discovery_config,
+                    &relay_config,
                 )?
             } else {
                 self.select_remote_kernel_for_machine_with_config(
                     machine_ref,
                     agent.provider(),
-                    &discovery_config,
+                    &relay_config,
                 )?
             };
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
@@ -1577,8 +1556,10 @@ impl DaemonApp {
                 return Ok(kernel);
             }
         }
+        let discovery_config =
+            self.remote_worker_discovery_config(&machine_ref, relay_config.clone())?;
         let kernels = self.block_on_relay_future(
-            relay_discovery::list_live_kernels_for_machine(relay_config, &machine_ref),
+            relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine_ref),
         )?;
         let kernels = slice_recovery::ordinary_machine_workers(&self.slices, kernels);
         let message = no_remote_kernel_available_message(&kernels, &machine_ref, provider);
@@ -1611,10 +1592,12 @@ impl DaemonApp {
                 return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
             }
         }
+        let discovery_config =
+            self.remote_worker_discovery_config(kernel_ref, relay_config.clone())?;
         let mut last_error = None;
         for attempt in 0..REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
             match self.block_on_relay_future(relay_discovery::get_live_kernel(
-                relay_config,
+                &discovery_config,
                 expected_slice_worker.as_deref().unwrap_or(kernel_ref),
             )) {
                 Ok(kernel) => {
@@ -1705,32 +1688,14 @@ impl DaemonApp {
     fn remote_worker_discovery_config(
         &self,
         kernel_ref: &str,
-        mut config: DaemonConfig,
+        config: DaemonConfig,
     ) -> Result<DaemonConfig, DaemonError> {
-        if !self.hosted_shared_slice_uses_connected_relay(kernel_ref) {
-            return self.block_on_relay_future(async move {
-                crate::runtime::cloud_api_client::relay_metadata_discovery_config(&config).await
-            });
-        }
-        let profile = config
-            .cloud_relay
-            .clone()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "discover hosted slice worker",
-                message: "hosted shared slice requires a Cloud relay profile".to_string(),
-            })?;
-        let owner_kernel_ref = self.config.daemon_id.clone();
-        let worker_kernel_ref = kernel_ref.to_string();
-        let token = self.block_on_relay_future(async move {
-            crate::runtime::cloud_api_client::issue_cloud_slice_discovery_token(
-                &profile,
-                &owner_kernel_ref,
-                &worker_kernel_ref,
-            )
-            .await
-        })?;
-        config.relay_token = Some(token.token);
-        Ok(config)
+        self.block_on_relay_future(discovery_authorization::worker_config(
+            &self.config.daemon_id,
+            kernel_ref,
+            self.hosted_shared_slice_uses_connected_relay(kernel_ref),
+            config,
+        ))
     }
 
     fn send_remote_binding_request(
@@ -2302,6 +2267,11 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!previous.relay_peer_protocol_compatible());
+        let pre_vault_package = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(73),
+            ..legacy.clone()
+        };
+        assert!(!pre_vault_package.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy
@@ -2987,6 +2957,135 @@ mod tests {
         )));
         assert!(request.contains(r#""allowUnpairedClientSubject":true"#));
         assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
+    }
+
+    // MP-01: the kernel runtime grant cannot authorize client metadata reads.
+    #[test]
+    fn ordinary_hosted_worker_spawn_uses_projected_inventory_when_cloud_is_unreachable() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("kernel-runtime-token".into());
+        let mut profile = cloud_relay_profile("ws://127.0.0.1:1");
+        profile.api_url = "http://127.0.0.1:1".into();
+        config.cloud_relay = Some(profile);
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "kernel-remote".into(),
+            machine_id: "machine-remote".into(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: None,
+            available_providers: vec!["codex".into()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "public-key".into(),
+        };
+        app.remote_relay_inventory_projection_store()
+            .update(Vec::new(), vec![worker]);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let error = app
+            .spawn_worker_agent(
+                crate::agent::CreateAgentRequest::new("unused-session", "codex"),
+                "kernel-remote",
+                &|| {
+                    if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        Ok(())
+                    } else {
+                        Err(crate::error::DaemonError::LocalTransport {
+                            operation: "MP-01 test selection completed",
+                            message: "stop before creating a lease".into(),
+                        })
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "selection must not require Cloud"
+        );
+        assert!(error.to_string().contains("MP-01 test selection completed"));
+    }
+
+    #[test]
+    fn ordinary_hosted_worker_discovery_uses_read_only_inventory_token() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) =
+                accept_cloud_request(&listener, std::time::Duration::from_secs(30)).unwrap();
+            let request = read_http_request(&mut stream);
+            let body = r#"{"token":"inventory-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
+            stream.write_all(format!("HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body).as_bytes()).unwrap();
+            request
+        });
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("kernel-runtime-token".into());
+        let mut profile = cloud_relay_profile("wss://relay.example.test");
+        profile.api_url = format!("http://{address}");
+        config.cloud_relay = Some(profile);
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let discovery = app
+            .remote_worker_discovery_config("kernel-remote", app.config().clone())
+            .unwrap();
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("inventory-metadata-token")
+        );
+        assert_eq!(
+            app.config().relay_token.as_deref(),
+            Some("kernel-runtime-token")
+        );
+        let request = fixture.join().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body["subject"],
+            format!("relay-inventory:{}", app.config().daemon_id)
+        );
+        assert_eq!(body["subjectKind"], "client");
+        assert_eq!(body["ttlMs"], 60_000);
+        assert_eq!(
+            body["allowedActions"],
+            serde_json::json!(["client.metadata.read"])
+        );
+        assert_eq!(body["allowUnpairedClientSubject"], true);
+        assert!(body.get("sessionId").is_none());
+        assert!(body.get("allowedTargets").is_none());
+    }
+
+    #[test]
+    fn ordinary_self_hosted_worker_discovery_keeps_its_configured_token() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("self-hosted-token".into());
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let discovery = app
+            .remote_worker_discovery_config("kernel-remote", app.config().clone())
+            .unwrap();
+        assert_eq!(discovery.relay_token.as_deref(), Some("self-hosted-token"));
+        assert!(discovery.cloud_relay.is_none());
+    }
+
+    #[test]
+    fn ordinary_temporary_worker_discovery_does_not_use_a_different_cloud_realm() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("temporary-relay-token".into());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test"));
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let discovery = app
+            .remote_worker_discovery_config("kernel-remote", app.config().clone())
+            .unwrap();
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("temporary-relay-token")
+        );
+        assert_eq!(discovery.relay_url, app.config().relay_url);
     }
 
     #[test]

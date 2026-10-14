@@ -295,8 +295,8 @@ impl KernelRuntimeOwnedState {
             self.passkey_prompts.record_change();
         }
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if let Err(error) = self.session_snapshot(session_id) {
             let mut pending = self.pending_interactions.write();
             if pending

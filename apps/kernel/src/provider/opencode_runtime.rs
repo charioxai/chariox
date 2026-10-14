@@ -8,6 +8,8 @@ mod retry_status_tests;
 mod snapshot;
 mod state;
 mod transcript;
+#[cfg(test)]
+mod unstarted_turn_tests;
 
 pub(in crate::provider) use drain::drain_opencode_events;
 pub(crate) use state::OpenCodeRuntimeState;

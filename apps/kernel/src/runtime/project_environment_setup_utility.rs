@@ -354,6 +354,29 @@ pub(crate) fn project_environment_setup_utility_missing_input_message(
     }
 }
 
+const UTILITY_FAILED_MESSAGE: &str = "utility agent could not prepare the target environment";
+const UTILITY_FAILURE_REASON_CHARS: usize = 240;
+
+/// MP-05/MP-10: a failed setup keeps the provider's own reason, redacted and
+/// bounded, instead of dropping it.
+pub(crate) fn project_environment_setup_utility_failure_message(error: &DaemonError) -> String {
+    let detail = match error {
+        DaemonError::ProviderProtocol { message, .. }
+        | DaemonError::LocalTransport { message, .. } => message.clone(),
+        other => other.to_string(),
+    };
+    let reason = crate::provider::redact_provider_diagnostic(&detail)
+        .chars()
+        .take(UTILITY_FAILURE_REASON_CHARS)
+        .collect::<String>();
+    let reason = reason.trim();
+    if reason.is_empty() {
+        UTILITY_FAILED_MESSAGE.to_string()
+    } else {
+        format!("{UTILITY_FAILED_MESSAGE}: {reason}")
+    }
+}
+
 fn project_environment_setup_utility_schema() -> serde_json::Value {
     let definition = serde_json::json!({
         "type": "object",
@@ -505,6 +528,28 @@ mod tests {
         ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStep,
         ProjectEnvironmentSetupStepKind, ProjectEnvironmentSetupUtilityInput,
     };
+
+    #[test]
+    fn mp05_mp10_failed_setup_keeps_the_redacted_provider_reason() {
+        let error = DaemonError::ProviderProtocol {
+            provider_run_id: "run-1".to_string(),
+            operation: "claude_utility_failed",
+            message: format!(
+                "Claude Code reported an error (error_during_execution): No conversation found with session ID: 0f0e token=sk-ant-oat01-SECRETSECRETSECRETSECRET {}",
+                "x".repeat(1000)
+            ),
+        };
+        let message = project_environment_setup_utility_failure_message(&error);
+        let reason =
+            "Claude Code reported an error (error_during_execution): No conversation found";
+        assert!(message.starts_with(&format!("{UTILITY_FAILED_MESSAGE}: {reason}")));
+        assert!(!message.contains("SECRETSECRET"));
+        assert!(!message.contains("claude_utility_failed"));
+        assert!(
+            message.chars().count()
+                <= UTILITY_FAILED_MESSAGE.len() + 2 + UTILITY_FAILURE_REASON_CHARS
+        );
+    }
 
     fn definition() -> ProjectEnvironmentDefinition {
         ProjectEnvironmentDefinition {

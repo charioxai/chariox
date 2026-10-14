@@ -70,6 +70,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
         .with_agent_id(leased_agent.backing_agent_id.clone())
         .with_owner_user_id(lease.owner_user_id)
+        .with_leased_account_authority()
         .with_working_directory(PathBuf::from(backing_session.worktree_id()))
         .with_client_interface(ProviderClientInterface::NativeTui)
         .with_mcp_servers(

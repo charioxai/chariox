@@ -189,10 +189,9 @@ impl KernelRuntimeOwnedState {
             return;
         };
         let account = if crate::provider::canonical_provider_family(agent.provider()).is_some() {
-            let owner = crate::account_profile::provider_account_authority_owner_user_id(
-                &self.config_projection.snapshot(),
-                agent.owner_user_id(),
-            );
+            let Ok(owner) = self.provider_account_owner_for_agent(&agent) else {
+                return;
+            };
             self.provider_account_profiles
                 .get(&owner, agent.provider(), agent.provider_account_profile())
                 .map(|account| account.profile_id)
@@ -217,10 +216,7 @@ impl KernelRuntimeOwnedState {
         tried: &[crate::agent::AgentSubstituteProfile],
     ) -> Result<Option<usize>, DaemonError> {
         let config = self.config_projection.snapshot();
-        let owner = crate::account_profile::provider_account_authority_owner_user_id(
-            &config,
-            agent.owner_user_id(),
-        );
+        let owner = self.provider_account_owner_for_agent(agent)?;
         let now_ms = crate::session::unix_epoch_ms();
         for (index, candidate) in agent.substitutes().iter().enumerate() {
             if tried.contains(candidate) {

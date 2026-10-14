@@ -504,3 +504,149 @@ async fn app_file_export_saved_from_another_session_closes_only_its_presented_pr
         Err(oneshot::error::TryRecvError::Empty)
     ));
 }
+
+// MP-05 / MP-08: activity persistence reads the session store. Exercise the
+// managed-only paths in bounded child tests so a lock regression cannot hang CI.
+fn bounded_managed_interaction_check(case: &str, check: impl FnOnce()) {
+    const CHILD: &str = "CHARIOX_MANAGED_INTERACTION_LOCK_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(case) {
+        check();
+        return;
+    }
+    let thread = std::thread::current();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", thread.name().unwrap(), "--nocapture"])
+        .env(CHILD, case)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "managed {case} interaction failed");
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            assert!(child.id() > 1, "refuse an invalid process signal target");
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("managed {case} interaction deadlocked while recording activity");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[tokio::test]
+async fn managed_interaction_registration_records_activity_without_deadlock() {
+    bounded_managed_interaction_check("register", || {
+        let fixture = Fixture::new();
+        fixture
+            .state
+            .ensure_managed_activity_tracking("managed-registration")
+            .unwrap();
+        let mut receiver = fixture.register("managed").unwrap();
+        assert_eq!(fixture.active_ids(), vec![fixture.id("managed")]);
+        assert_eq!(fixture.state.managed_running_agent_count(), 1);
+        fixture
+            .state
+            .owned
+            .resolve_runtime_interaction(
+                &fixture.session,
+                &fixture.id("managed"),
+                "allow",
+                None,
+                Some(DEFAULT_LOCAL_USER_ID),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.try_recv().unwrap().choice_id.as_deref(),
+            Some("allow")
+        );
+        assert_eq!(fixture.state.managed_running_agent_count(), 0);
+    });
+}
+
+#[tokio::test]
+async fn managed_orphan_cleanup_records_activity_without_deadlock() {
+    bounded_managed_interaction_check("orphan", || {
+        let source = Fixture::new();
+        let receiver = source.register("restored").unwrap();
+        let restored = Fixture::with_session_id(source.session.clone());
+        restored.state.owned.session_store.write().restore_session(
+            source
+                .state
+                .owned
+                .session_store
+                .get_session(&source.session)
+                .unwrap(),
+        );
+        restored
+            .state
+            .ensure_managed_activity_tracking("managed-orphan")
+            .unwrap();
+        assert_eq!(restored.state.managed_running_agent_count(), 1);
+        restored
+            .state
+            .owned
+            .sweep_kernel_operation_interactions(true);
+        assert!(restored.active_ids().is_empty());
+        assert_eq!(restored.state.managed_running_agent_count(), 0);
+        drop(receiver);
+    });
+}
+
+#[tokio::test]
+async fn managed_interaction_withdrawal_records_activity_without_deadlock() {
+    bounded_managed_interaction_check("withdraw", || {
+        let fixture = Fixture::new();
+        fixture
+            .state
+            .ensure_managed_activity_tracking("managed-withdrawal")
+            .unwrap();
+        let mut receiver = fixture.register("withdraw").unwrap();
+        let pending = fixture
+            .state
+            .owned
+            .pending_interactions
+            .write()
+            .get(&fixture.id("withdraw"))
+            .unwrap()
+            .clone();
+        let _mutation = fixture
+            .state
+            .owned
+            .pending_interactions
+            .mutation
+            .lock()
+            .unwrap();
+        fixture
+            .state
+            .owned
+            .withdraw_agent_interaction_locked(&fixture.id("withdraw"), &pending)
+            .unwrap();
+        assert_eq!(receiver.try_recv().unwrap().status, "timed_out");
+        assert!(fixture.active_ids().is_empty());
+        assert_eq!(fixture.state.managed_running_agent_count(), 0);
+        drop(_mutation);
+    });
+}
+
+#[tokio::test]
+async fn managed_interaction_timeout_records_activity_without_deadlock() {
+    bounded_managed_interaction_check("timeout", || {
+        let fixture = Fixture::new();
+        fixture
+            .state
+            .ensure_managed_activity_tracking("managed-timeout")
+            .unwrap();
+        let mut receiver = fixture.register("timeout").unwrap();
+        fixture
+            .state
+            .owned
+            .timeout_runtime_interaction(&fixture.session, &fixture.id("timeout"))
+            .unwrap();
+        assert_eq!(receiver.try_recv().unwrap().status, "timed_out");
+        assert!(fixture.active_ids().is_empty());
+        assert_eq!(fixture.state.managed_running_agent_count(), 0);
+    });
+}

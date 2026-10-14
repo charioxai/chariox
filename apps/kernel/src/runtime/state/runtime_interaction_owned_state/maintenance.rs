@@ -82,8 +82,8 @@ impl KernelRuntimeOwnedState {
                 continue;
             }
             sessions.restore_session(session);
-            activity_mutation.record();
             drop(sessions);
+            activity_mutation.record();
             let _ = self.session_snapshot(&session_id);
             self.terminal_stream
                 .notify_terminal_projection_change(&session_id);

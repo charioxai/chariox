@@ -395,6 +395,8 @@ impl CommandRouter {
                 &completion_config,
                 &caller.owner_user_id,
             ),
+            credential_vault: completion_config.user_config.credential_vault.clone(),
+            target_kernel_id: completion_config.daemon_id.clone(),
         };
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
