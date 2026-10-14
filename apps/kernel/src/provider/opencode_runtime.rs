@@ -1140,6 +1140,16 @@ mod tests {
             },
         )
         .expect("idle status should send");
+        // MP-08 / MP-10: metadata reconciliation must not end the failure
+        // fence once idle has cleared the active prompt identity.
+        tx.send(OpenCodeEvent::MessagePartDelta {
+            session_id: "session-1".into(),
+            message_id: "metadata-not-yet-known".into(),
+            part_id: "unknown-part".into(),
+            field: "text".into(),
+            delta: "late part".into(),
+        })
+        .unwrap();
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
                 info: serde_json::from_value(json!({

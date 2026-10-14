@@ -64,7 +64,10 @@ pub(in crate::provider) fn drain_opencode_events(
             .take()
             .map(Ok)
             .unwrap_or_else(|| state.event_subscription.receiver.try_recv());
-        if !chunks.is_empty() {
+        // Completion clears the state's active prompt. Keep inspecting queued
+        // failures with this drain's captured identity before returning success,
+        // including failures behind metadata/HTTP reconciliation barriers.
+        if !chunks.is_empty() && !prompt_completed {
             match &event {
                 Ok(next) if event_needs_blocking_work(state, next) => {
                     state.pending_event = event.ok();
