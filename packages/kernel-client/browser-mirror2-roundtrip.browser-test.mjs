@@ -138,3 +138,12 @@ for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves auth
    await evaluate(expression);for(let i=0;i<3;i++){const packet=await next();assert(!packet.reset);await apply(packet);await page.waitForTimeout(30);}await agree();
   }
  }));
+
+test('MP-08/MP-10: ordinary typing invokes the native page keyboard contract',()=>roundtrip(
+  '<input id="field"><script>window.keys=[];document.addEventListener("keydown",e=>window.keys.push(e.key))</script>','',async({page,next,apply,evaluate})=>{
+    await apply(await next()); const field=page.frameLocator('iframe[title="Mirrored kernel browser page"]').locator('#field');
+    await field.click(); await page.waitForTimeout(150);await page.keyboard.type('Chariox',{delay:60});
+    for(let i=0;i<30&&await evaluate('document.querySelector("#field").value')!=='Chariox';i++){await apply(await next());await page.waitForTimeout(25);}
+    assert.deepEqual(await evaluate('window.keys'),[...'Chariox'],'ordinary keys must reach native keydown listeners');
+    assert.equal(await evaluate('document.querySelector("#field").value'),'Chariox');
+  }));

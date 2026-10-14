@@ -207,6 +207,10 @@ export class BrowserMirror2Renderer {
       // A select or picker keeps its keys (typeahead, arrows, its popup): the committed state goes as `set`.
       const active = this.active(); if (active && picked(active) && !['Tab', 'Enter'].includes(key)) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
+      // Ordinary physical keys use the existing native key path. Page keydown
+      // handlers (including deferred search widgets) run before insertion.
+      // Paste and IME keep beforeinput/composition's committed text path.
+      if (/^[^\p{C}]$/u.test(key)) { event.preventDefault(); this.enqueue({ kind: 'key', key }); return }
       if (['Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) {
         event.preventDefault()
         // Shift keeps its meaning for focus and selection keys (back-tab, extending a range).
@@ -478,6 +482,8 @@ export class BrowserMirror2Renderer {
     return out
   }
   private csp(doc: Document): void {
+    // Resource hydration must not turn scroll anchoring into user input.
+    doc.documentElement.style.setProperty('overflow-anchor', 'none', 'important')
     const head = doc.head ?? doc.documentElement.insertBefore(doc.createElement('head'), doc.documentElement.firstChild)
     const meta = doc.createElement('meta'); meta.httpEquiv = 'Content-Security-Policy'; meta.content = mirror2SandboxCsp; head.prepend(meta)
   }
@@ -506,6 +512,8 @@ export class BrowserMirror2Renderer {
       const states = this.states; this.states = []
       for (const element of states) this.uaState(element)
       this.targets(packet.fragment ?? null)
+      this.doc.documentElement.style.setProperty('overflow-anchor', 'none', 'important')
+      for (const id of this.frameDocuments) { const d = this.dom.get(id) as Document | undefined; if (d?.nodeType === 9) d.documentElement.style.setProperty('overflow-anchor', 'none', 'important') }
       // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
       // scroller, kept while deferred) apply on reset or once the viewer settles.
       if (packet.reset) { this.deferred.clear(); this.wheel.cancel() }
