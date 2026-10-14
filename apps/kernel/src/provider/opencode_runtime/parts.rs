@@ -144,26 +144,23 @@ pub(super) fn emit_authoritative_part_text(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    // A subscriber can join after a part already has text and receive only the
-    // next delta. Until a full part update or snapshot establishes the prefix,
-    // those deltas must stay buffered; treating their byte count as an offset
-    // skips the real prefix and duplicates the final suffix on reconciliation.
+    // MP-08 / MP-10: a live subscription established before a new prompt
+    // sees its empty part announcement from offset zero. Reconnected/late
+    // subscriptions still need a non-empty authoritative prefix.
     let Some(emitted) = state.emitted_text_by_part.get_mut(part_id) else {
-        // `message.part.updated` first announces a newly-created empty text
-        // part. That is metadata, not proof that streaming began at offset
-        // zero for this subscriber. Keep subsequent deltas buffered until a
-        // non-empty cumulative part or snapshot supplies the real prefix.
-        if text.is_empty() {
+        if text.is_empty() && !state.live_text_from_start {
             return;
         }
         state
             .emitted_text_by_part
             .insert(part_id.to_string(), text.to_string());
-        chunks.push(OpenCodeOutputChunk {
-            kind,
-            merge_key: Some(part_id.to_string()),
-            bytes: text.as_bytes().to_vec(),
-        });
+        if !text.is_empty() {
+            chunks.push(OpenCodeOutputChunk {
+                kind,
+                merge_key: Some(part_id.to_string()),
+                bytes: text.as_bytes().to_vec(),
+            });
+        }
         return;
     };
 
@@ -193,9 +190,23 @@ fn emit_part_delta(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
+    if state.live_text_from_start
+        && state
+            .emitted_text_by_part
+            .get(&part_id)
+            .is_some_and(String::is_empty)
+    {
+        state
+            .streamed_text_by_part
+            .entry(part_id.clone())
+            .or_default();
+    }
     let Some(streamed) = state.streamed_text_by_part.get_mut(&part_id) else {
         return;
     };
+    if !state.live_text_from_start && streamed.is_empty() {
+        return;
+    }
     let caught_up = state
         .emitted_text_by_part
         .get(&part_id)

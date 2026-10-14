@@ -419,6 +419,14 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &mut self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.run_actor_mailbox
+            .drain_finished_output_polls_for_run(run_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn push_finished_structured_prompt_submit_for_test(
         &mut self,

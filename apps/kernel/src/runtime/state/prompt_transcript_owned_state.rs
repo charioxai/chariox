@@ -18,6 +18,13 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) bytes: Vec<u8>,
 }
 
+pub(super) struct PreparedHistoryEntry {
+    pub(super) position: usize,
+    pub(super) entry: SessionHistoryEntry,
+    pub(super) context: crate::history::HistoryEventTurnContext,
+    pub(super) sequence: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct ActivePromptTranscriptMetadata {
     pub(super) prompt_origin: Option<crate::session::PromptOrigin>,
@@ -567,43 +574,60 @@ impl KernelRuntimeOwnedState {
         self.append_operational_history_entry(&entry, None, None, None);
     }
 
-    /// Returns the history sequence of each entry, `None` for entries that
-    /// were not persisted.
+    /// Reserve the live/history identity before the write is handed off.
+    /// Capture turn context now, while this batch still belongs to its turn.
+    pub(super) fn prepare_history_entries(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) -> Vec<PreparedHistoryEntry> {
+        if self.session_store.get_session(session_id).is_err() {
+            return Vec::new();
+        }
+        let active_turns = self.active_turns.snapshot();
+        entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                let entry = bounded_history_entry(
+                    self.room_secret_observations
+                        .protect_transcript_entry(entry),
+                )?;
+                let active_turn = entry
+                    .provider_run_id
+                    .as_deref()
+                    .and_then(|id| active_turns.get(id));
+                let context = self.operational_history_context_with_active_turn(
+                    &entry,
+                    None,
+                    None,
+                    None,
+                    active_turn,
+                );
+                Some(PreparedHistoryEntry {
+                    position,
+                    entry,
+                    context,
+                    sequence: self.operational_history_store.reserve_sequence(),
+                })
+            })
+            .collect()
+    }
+
     pub(super) fn append_history_entries(
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
     ) -> Vec<Option<u64>> {
         let mut sequences = vec![None; entries.len()];
-        let (positions, entries): (Vec<_>, Vec<_>) = entries
-            .into_iter()
-            .enumerate()
-            .filter_map(|(position, entry)| {
-                bounded_history_entry(
-                    self.room_secret_observations
-                        .protect_transcript_entry(entry),
-                )
-                .map(|entry| (position, entry))
-            })
-            .unzip();
-        if entries.is_empty() {
-            return sequences;
-        }
-        if let Err(error) = self.session_store.get_session(session_id) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "skipping provider-output history append because session lookup failed",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "entry_count": entries.len(),
-                    "error": error.to_string(),
-                }),
-            );
-            return sequences;
-        }
+        let prepared = self.prepare_history_entries(session_id, entries);
+        let positions = prepared
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>();
         for (position, sequence) in positions
             .into_iter()
-            .zip(self.append_operational_history_entries(&entries))
+            .zip(self.append_prepared_history_entries(prepared))
         {
             sequences[position] = Some(sequence);
         }
@@ -764,42 +788,28 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    fn append_operational_history_entries(
+    pub(super) fn append_prepared_history_entries(
         &self,
-        entries: &[crate::history::SessionHistoryEntry],
+        prepared: Vec<PreparedHistoryEntry>,
     ) -> Vec<u64> {
-        if entries.is_empty() {
+        if prepared.is_empty() {
             return Vec::new();
         }
-        let scrubbed = entries
-            .iter()
-            .cloned()
-            .map(|entry| {
-                self.room_secret_observations
-                    .protect_transcript_entry(entry)
+        let (entries, events): (Vec<_>, Vec<_>) = prepared
+            .into_iter()
+            .map(|item| {
+                let entry = self
+                    .room_secret_observations
+                    .protect_transcript_entry(item.entry);
+                let event =
+                    crate::history::HistoryEvent::transcript(item.sequence, &entry, item.context);
+                (entry, event)
             })
-            .collect::<Vec<_>>();
-        let entries = scrubbed.as_slice();
-        let active_turns = self.active_turns.snapshot();
-        let mut prepared = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let active_turn = entry
-                .provider_run_id
-                .as_deref()
-                .and_then(|provider_run_id| active_turns.get(provider_run_id));
-            let context = self.operational_history_context_with_active_turn(
-                entry,
-                None,
-                None,
-                None,
-                active_turn,
-            );
-            prepared.push((entry, context));
-        }
+            .unzip();
         let (updates, sequences) = {
             let _append_guard = self.transcript_history_append_guard();
-            match self.operational_history_store.append_transcripts(prepared) {
-                Ok(events) => {
+            match self.operational_history_store.append_many(&events) {
+                Ok(()) => {
                     let mut updates = Vec::new();
                     for (entry, event) in entries.iter().zip(events.iter()) {
                         if is_unread_output_history_entry(entry) {

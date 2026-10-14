@@ -16,6 +16,14 @@ impl KernelRuntimeState {
         saw_settlement_blocking_activity: bool,
         force: bool,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        if force
+            || prompt_completed
+            || self
+                .owned
+                .prompt_completion_settlement_pending(provider_run_id)
+        {
+            self.flush_provider_history(provider_run_id).await?;
+        }
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let agent_id = provider_run

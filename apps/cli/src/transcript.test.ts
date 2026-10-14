@@ -765,5 +765,9 @@ test("shouldRenderTranscriptAsMarkdown enables markdown rendering for assistant 
   assert.equal(shouldRenderTranscriptAsMarkdown("assistant", "A plain paragraph with **bold** text"), true)
   assert.equal(shouldRenderTranscriptAsMarkdown("tool", "```ts\nconst value = 1\n```"), true)
   assert.equal(shouldRenderTranscriptAsMarkdown("error", "**OpenCode error**\n\nnetwork timeout"), true)
-  assert.equal(shouldRenderTranscriptAsMarkdown("assistant", "plain text only"), true)
+  for (const role of ["assistant", "reasoning", "tool", "error"]) {
+    assert.equal(shouldRenderTranscriptAsMarkdown(role, "plain text only"), false)
+    assert.equal(shouldRenderTranscriptAsMarkdown(role, "ready_value_2 001"), false)
+    assert.equal(shouldRenderTranscriptAsMarkdown(role, "**formatted** text"), true)
+  }
 })

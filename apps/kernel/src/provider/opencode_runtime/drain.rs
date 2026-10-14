@@ -24,6 +24,7 @@ const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Durat
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
+const OPENCODE_EVENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(10);
 const OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 const OPENCODE_EMPTY_IDLE_ASSISTANT_FAILURE: &str =
     "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
@@ -46,8 +47,37 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut resolved_usage_tokens_total = None;
     let drain_active_user_message_id = state.active_user_message_id.clone();
 
+    let started = std::time::Instant::now();
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
-        match state.event_subscription.receiver.try_recv() {
+        // MP-08 / MP-10: publish ready text before a long render burst. The
+        // next actor poll resumes the same queue without losing an event.
+        // Once completion was observed, inspect the remaining queued events so
+        // a sibling failure still overrides completion in this drain.
+        if !chunks.is_empty()
+            && !prompt_completed
+            && started.elapsed() >= OPENCODE_EVENT_DRAIN_BUDGET
+        {
+            break;
+        }
+        let event = state
+            .pending_event
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| state.event_subscription.receiver.try_recv());
+        // Completion clears the state's active prompt. Keep inspecting queued
+        // failures with this drain's captured identity before returning success,
+        // including failures behind metadata/HTTP reconciliation barriers.
+        if !chunks.is_empty() && !prompt_completed {
+            match &event {
+                Ok(next) if event_needs_blocking_work(state, next) => {
+                    state.pending_event = event.ok();
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => break,
+                _ => {}
+            }
+        }
+        match event {
             Ok(OpenCodeEvent::MessageUpdated { info }) => {
                 if info.session_id != state.session_id {
                     continue;
@@ -220,7 +250,9 @@ pub(in crate::provider) fn drain_opencode_events(
                             bytes: format_session_status(&status).into_bytes(),
                         });
                     }
-                    if state.active_user_message_id.is_some() {
+                    // MP-08 / MP-10: busy/retry events already carry the live
+                    // status. Reconcile history at idle, after ready SSE text.
+                    if kind == "idle" && state.active_user_message_id.is_some() {
                         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                         if let Ok(messages) = client.messages(&state.session_id) {
                             if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
@@ -294,10 +326,16 @@ pub(in crate::provider) fn drain_opencode_events(
                 // cumulative SSE part update must establish that position.
                 state.streamed_text_by_part.clear();
                 let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
+                state.live_text_from_start = false;
+                let output_notifier = state.event_subscription.output_notifier.clone();
                 state.event_subscription = client.subscribe_events_with_retry(
                     OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT,
                     OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL,
                 )?;
+                state
+                    .event_subscription
+                    .output_notifier
+                    .inherit_binding(&output_notifier);
                 if let Ok(snapshot) = client.snapshot(&state.session_id) {
                     if resolved_model.is_none() {
                         resolved_model = snapshot
@@ -380,7 +418,7 @@ pub(in crate::provider) fn drain_opencode_events(
     }
 
     let mut current_user_without_assistant_is_idle = false;
-    if state.active_user_message_id.is_some() && !prompt_completed {
+    if chunks.is_empty() && state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
         if let Ok(status) = client.session_status(&state.session_id) {
             if status.kind != "idle" {
@@ -520,6 +558,34 @@ pub(in crate::provider) fn drain_opencode_events(
         resolved_variant,
         resolved_usage_tokens_total,
     })
+}
+
+// MP-08 / MP-10: batch every immediately renderable event, but publish it
+// before HTTP reconciliation, resubscription or a permission bridge can wait.
+fn event_needs_blocking_work(state: &OpenCodeRuntimeState, event: &OpenCodeEvent) -> bool {
+    match event {
+        OpenCodeEvent::MessageUpdated { info } => {
+            opencode_message_completes_active_prompt(state, info)
+        }
+        OpenCodeEvent::MessagePartDelta {
+            session_id,
+            message_id,
+            ..
+        } => session_id == &state.session_id && !state.message_roles.contains_key(message_id),
+        OpenCodeEvent::MessagePartUpdated { part } => {
+            part.session_id == state.session_id
+                && !state.message_roles.contains_key(&part.message_id)
+        }
+        OpenCodeEvent::SessionStatus { session_id, status } => {
+            session_id == &state.session_id
+                && status.kind == "idle"
+                && state.active_user_message_id.is_some()
+        }
+        OpenCodeEvent::SessionError { session_id, .. } => {
+            session_id == &state.session_id && state.session_errors_require_prompt_match
+        }
+        OpenCodeEvent::PermissionAsked { request } => request.session_id == state.session_id,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

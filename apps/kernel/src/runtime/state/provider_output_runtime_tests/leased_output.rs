@@ -182,7 +182,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
 
 fn run_isolated_launch_fixture() {
     let root = std::env::temp_dir().join(format!(
-        "chariox-leased-output-start-{}-{}",
+        "ch-lease-{}-{}",
         std::process::id(),
         rand::random::<u64>(),
     ));
@@ -227,6 +227,8 @@ fi
         .unwrap()
         .is_none()
     {
+        // MP-08 / MP-10 / MP-11: signal only the fixture's reserved child PID.
+        assert!(child.id() > 1, "refuse a system PID during fixture cleanup");
         let _ = child.kill();
         let _ = child.wait();
         panic!("isolated leased launch fixture timed out");
