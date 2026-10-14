@@ -143,7 +143,7 @@ pub enum KernelBrowserInput {
     },
     Key {
         key: String,
-        /// MP-08/MP-11 protocol498: bounded CDP modifier bitset.
+        /// MP-08/MP-11 protocol517: bounded CDP modifier bitset (carried from 498).
         #[serde(
             default,
             deserialize_with = "deserialize_key_modifiers",
