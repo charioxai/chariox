@@ -178,3 +178,24 @@ and successor signature checks must correlate with their approved public invento
 MP-04/MP-07/MP-08/MP-10/MP-11 remain open until independent review and the
 authorized live receipts agree. Offline helper/signed-fixture passes do not
 establish ordinary-versus-managed parity, browser acceptance or VM cleanup.
+
+## MP-07 / MP-11 release root inventory
+
+The extracted release root is a closed set: it contains the manifest-listed
+artifacts, the release manifest/signature/public key, and their parent
+directories. A declared tree authenticates its entire subtree. Extra files,
+service drop-ins, metadata siblings, empty directories, symlinks, and special
+entries are rejected before installation or activation. The only directory-only
+compatibility exception is the two empty rootless-Docker/quota-allocator drop-in
+directories created by historical installers. An unlisted file, child directory,
+symlink or special entry there still fails. New install/upgrade publication creates
+these directories only when copying the signed data-volume drop-ins. This applies to legacy
+schema-2 rollback releases as well as schema-3 releases; the manifest format
+and trust pins are unchanged.
+
+The focused verifier regressions include an unlisted executable and unit
+drop-in. Repeat the production verifier against a clean signed archive and a
+disposable extracted copy containing `usr/local/bin/chariox-extra`; the clean
+archive must pass and the modified copy must fail. Keep the signed archive
+unchanged. This proves the verification seam, not the live managed update,
+rollback, or fresh-machine MP-10 matrix.

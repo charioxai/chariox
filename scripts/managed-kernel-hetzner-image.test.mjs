@@ -278,7 +278,7 @@ test("provider probes use a credential-free disposable home and remove it", asyn
   assert.match(helper, /sh -c 'cd "\$HOME" && exec "\$@"' sh "\$@"/)
   assert.match(
     script,
-    /provider_tool_as_chariox pnpm --version[\s\S]*rm -rf "\$provider_probe_home"\ntrap - 0 HUP INT TERM[\s\S]*managed runtime state entered the image/,
+    /provider_tool_as_chariox pnpm --version[\s\S]*rm -rf "\$provider_probe_home"\ntrap - 0 HUP INT TERM[\s\S]*\nrequire_pristine_state_root \/var\/lib\/chariox\n/,
   )
 })
 

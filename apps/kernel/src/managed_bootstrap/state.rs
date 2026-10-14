@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::MetadataExt;
 use url::Url;
 
-use crate::config::write_private_file;
 use crate::error::DaemonError;
 
 use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
@@ -517,10 +516,11 @@ impl ManagedBootstrapGrantBinding {
 
     pub(super) fn read_for_receipt(receipt_path: &Path) -> Result<Option<Self>, DaemonError> {
         let path = managed_bootstrap_grant_binding_path(receipt_path)?;
-        if !path.exists() {
+        let Some(binding) =
+            super::control_state::read_optional::<Self>(&path, "managed bootstrap grant binding")?
+        else {
             return Ok(None);
-        }
-        let binding: Self = read_bounded_json(&path, "managed bootstrap grant binding")?;
+        };
         binding.validate()?;
         Ok(Some(binding))
     }
@@ -533,7 +533,7 @@ impl ManagedBootstrapGrantBinding {
         if bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(state_error("managed bootstrap grant binding is too large"));
         }
-        write_private_file(&path, &bytes).map_err(|error| state_error(&error.to_string()))
+        super::control_state::persist(&path, &bytes)
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
@@ -621,10 +621,11 @@ fn legacy_receipt_binding_digest(
 
 impl BootstrapReceipt {
     pub(super) fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
-        if !path.exists() {
+        let Some(receipt) =
+            super::control_state::read_optional::<Self>(path, "managed bootstrap receipt")?
+        else {
             return Ok(None);
-        }
-        let receipt: Self = read_bounded_json(path, "managed bootstrap receipt")?;
+        };
         receipt.validate()?;
         Ok(Some(receipt))
     }
@@ -682,7 +683,7 @@ impl BootstrapReceipt {
         if bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(state_error("managed bootstrap receipt is too large"));
         }
-        write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
+        super::control_state::persist(path, &bytes)
     }
 }
 
@@ -839,10 +840,11 @@ pub(super) fn overlaps_protected_managed_root(candidate: &str) -> bool {
 
 impl BootstrapReceiptDocument {
     pub(super) fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
-        if !path.exists() {
+        let Some(document) =
+            super::control_state::read_optional::<Self>(path, "managed bootstrap receipt")?
+        else {
             return Ok(None);
-        }
-        let document: Self = read_bounded_json(path, "managed bootstrap receipt")?;
+        };
         match &document {
             Self::ManagedEnvironment(receipt) => receipt.validate()?,
             Self::DisposableWorker(receipt) => receipt.validate()?,
@@ -889,10 +891,13 @@ impl DisposableWorkerReleaseOverride {
         binding_digest: &str,
     ) -> Result<Option<Self>, DaemonError> {
         let path = disposable_worker_release_override_path(receipt_path)?;
-        if !path.exists() {
+        let Some(value) = super::control_state::read_optional::<Self>(
+            &path,
+            "disposable worker release override",
+        )?
+        else {
             return Ok(None);
-        }
-        let value: Self = read_bounded_json(&path, "disposable worker release override")?;
+        };
         if value.schema_version != 1
             || value.kind != "disposable_worker_release"
             || value.binding_digest != binding_digest

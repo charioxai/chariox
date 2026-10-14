@@ -146,6 +146,31 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
   return { kind: "managed_environment", receipt, bytes: receiptBytes, releaseOverride: null }
 }
 
+// MP-07/MP-11: compare Ed25519 identity, accepting only the two deployed
+// representations: canonical 32-byte base64, optionally followed by one LF.
+// Bound reads and never include public material or paths in failure output.
+async function readBuilderPin(path) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await handle.stat()
+    if (!metadata.isFile() || ![44, 45].includes(metadata.size)) fail("builder public key representation is invalid")
+    const buffer = Buffer.alloc(46)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    const bytes = buffer.subarray(0, bytesRead)
+    if (bytesRead !== metadata.size || (bytesRead === 45 && bytes[44] !== 10)) {
+      fail("builder public key representation is invalid")
+    }
+    const text = bytes.subarray(0, 44).toString("ascii")
+    const raw = Buffer.from(text, "base64")
+    if (raw.length !== 32 || !Buffer.from(raw.toString("base64")).equals(bytes.subarray(0, 44))) {
+      fail("builder public key representation is invalid")
+    }
+    return raw
+  } catch {
+    fail("builder public key cannot be compared")
+  } finally { await handle.close() }
+}
+
 async function fsyncDirectory(path) {
   const handle = await open(path, "r")
   try {
@@ -422,6 +447,12 @@ async function run(args) {
       || !isDeepStrictEqual(actual.releaseOverride, expected.releaseOverride)) {
       fail("managed bootstrap receipt identity changed during upgrade")
     }
+    return
+  }
+  if (operation === "compare-builder-pins" && values.length === 2) {
+    const left = await readBuilderPin(resolve(values[0]))
+    const right = await readBuilderPin(resolve(values[1]))
+    if (!left.equals(right)) fail("builder public key identities differ")
     return
   }
   if (operation === "atomic-file" && values.length === 2) {

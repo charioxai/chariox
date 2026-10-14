@@ -453,8 +453,16 @@ test("shared-host rollback retains direct ExecStart and release-signature verifi
     dataVolumeArtifactNames: [],
     appArtifactNames: [],
   })
+  for (const relativePath of ["etc/systemd/system/chariox-rootless-docker.service.d", "etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"]) {
+    await mkdir(join(fixture.rootfs, relativePath), { recursive: true })
+  }
   const result = runVerifier(fixture, "shared_host")
   assert.equal(result.status, 0, result.stderr)
+  const extra = join(fixture.rootfs, "etc/systemd/system/chariox-rootless-docker.service.d/99-extra.conf")
+  await writeFile(extra, "unlisted")
+  const tampered = runVerifier(fixture, "shared_host")
+  assert.equal(tampered.status, 1)
+  assert.match(tampered.stderr, /release root contains an undeclared entry/)
 })
 
 test("a Path-1 release built before Apps stays verifiable with its three attested binaries", async (context) => {
@@ -531,5 +539,16 @@ for (const directive of ["TemporaryFileSystem=/home:ro", "IPAddressDeny=any", "P
     const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
     assert.notEqual(result.status, 0, result.stderr)
     assert.match(result.stderr, /Path-1 managed bootstrap service/)
+  })
+}
+
+for (const extra of ["usr/local/bin/chariox-extra", "etc/systemd/system/chariox-path1-managed-bootstrap.service.d/99-extra.conf", "usr/lib/chariox/extra", "opt/empty/"]) {
+  test(`MP-07 MP-11 signed rootfs refuses unlisted entry ${extra}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    if (extra.endsWith("/")) await mkdir(join(fixture.rootfs, extra), { recursive: true })
+    else await put(fixture.rootfs, "/" + extra, Buffer.from("unlisted"))
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release root contains an undeclared entry/)
   })
 }
