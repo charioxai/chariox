@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 fn environment_relay_receipt_transport_snapshot_is_versioned() {
     let local = crate::local::LOCAL_DAEMON_PROTOCOL_VERSION;
     let peer = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
-    assert_eq!((local, peer), (505, 113));
+    assert_eq!((local, peer), (524, 132));
     let snapshot = serde_json::json!({
         "local": local,
         "peer": peer,
@@ -33,6 +33,6 @@ fn environment_relay_receipt_transport_snapshot_is_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bbd61dcba78399d3207e00faa6895095f638b1998ce99f222404fc9259f5f8ea",
+        "a317b2edadebe2fcbe27a66b40c5b64b8ff87ecd420139194df6f91cee906a27",
     );
 }

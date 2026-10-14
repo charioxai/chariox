@@ -1,3 +1,4 @@
+mod project_resolution;
 use crate::error::DaemonError;
 use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,

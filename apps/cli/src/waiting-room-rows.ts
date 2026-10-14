@@ -73,7 +73,7 @@ export function waitingRoomRows(
   }
   if (projects.length > 0) {
     const ownerKernel=remote.kernels?.find(kernel=>kernel.kernel_id===remote.relay?.daemon_id)
-    const kernelLabel=ownerKernel?.kernel_alias?.trim() || "Unnamed kernel"
+    const kernelLabel=remote.relay?.daemon_alias?.trim() || ownerKernel?.kernel_alias?.trim() || "Unnamed kernel"
     rows.push(...waitingRoomProjectRows(state, remote.projects, sessions, { inventoryLoading, loadingText, titleWidth, kernelLabel }))
   } else {
     rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))

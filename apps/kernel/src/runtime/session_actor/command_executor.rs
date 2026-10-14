@@ -171,6 +171,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::CreateSession(request) => {
                 self.store.create_session(request, caller_user_id).await
             }
+            LocalDaemonRequest::ResolveProject(request) => {
+                (self.store.resolve_project(request, &caller_user_id), None)
+            }
             LocalDaemonRequest::ListProjects(request) => {
                 self.store.list_projects(request, caller_user_id).await
             }

@@ -35,7 +35,7 @@ export type WaitingRoomKeyControllerDeps = {
   setWaitingRoomState: (state: WaitingRoomState) => void
   rebuildTranscript: () => void
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
-  openProjectEnvironment?: (projectId: string) => void
+  openProjectEnvironment?: (projectId: string | null, workspaceId?: string) => void
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
@@ -94,11 +94,15 @@ export function createWaitingRoomKeyController(
       }
       if (event.eventType !== "release" && !promptFocused && !event.ctrl && !event.meta && !event.alt && !event.super) {
         const state = deps.getWaitingRoomState()
+        if (state.focus === "workspace" && event.name === "v") {
+          deps.openProjectEnvironment?.(null, deps.getRemoteState().workspaceId)
+          return true
+        }
         const project = state.focus === "project-entry"
           ? waitingRoomProjectsForNavigation(deps.getRemoteState().projects)[state.projectIndex ?? 0]
           : null
         if (project && event.name === "v") {
-          deps.openProjectEnvironment?.(project.id)
+          deps.openProjectEnvironment?.(project.id, project.workspace_id)
           return true
         }
         if (project && event.name === "e") {

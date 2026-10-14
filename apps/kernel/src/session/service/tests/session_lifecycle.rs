@@ -2052,3 +2052,17 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
         BTreeSet::from([hidden.id().to_string(), ephemeral.id().to_string()])
     );
 }
+
+// MP-08 / MP-10 / MP-11: standalone Projects own their lifecycle without a session.
+#[test]
+fn standalone_project_remains_visible_and_survives_empty_project_recovery() {
+    let mut service = SessionService::new(&DaemonConfig::for_tests());
+    let project = RuntimeProject::new("standalone", "owner", "/public/source", "Source", RuntimeProjectKind::Default);
+    let mut encoded = serde_json::to_value(project).unwrap();
+    encoded["standalone"] = serde_json::json!(true);
+    service.restore_projects(vec![serde_json::from_value(encoded).unwrap()]);
+    assert_eq!(service.list_visible_projects("owner", false).len(), 1);
+    assert!(service.list_visible_projects("other", true).is_empty());
+    assert!(service.remove_projects_without_visible_sessions().is_empty());
+    assert_eq!(service.durable_projects().len(), 1);
+}

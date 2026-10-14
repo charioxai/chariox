@@ -275,4 +275,6 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 505;
+/// Version 524 adds session-free ResolveProject and durable standalone Projects.
+/// MP-08 / MP-10 / MP-11: lookup does not create; setup publishes after journaling.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 524;

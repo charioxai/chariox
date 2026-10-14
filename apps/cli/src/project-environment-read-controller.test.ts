@@ -268,3 +268,23 @@ test("ENV-UX-02 TUI explains Environment and available editing",async()=>{
 test("ENV-UX-01 missing Project TUI is a clear empty state",async()=>{
  const controller=createProjectEnvironmentReadController({send:async()=>{throw new Error("local transport `project.get` failed: project `missing` was not found (code=local_transport_error retryable=true)")},render(){},pageSize:()=>100});await controller.open("missing");assert(controller.visibleLines().includes("No Environment for this project yet."));assert(!controller.visibleLines().some(line=>line.includes("local transport")))
 })
+
+// MP-08 / MP-10 / MP-11: the kernel returns the durable ID; no provider or session.
+test("standalone TUI confirms absence then explicitly sets up and opens the returned Project",async()=>{
+ const requests:unknown[]=[]
+ const environment:any={schema_version:1,local_project_id:"kernel-project",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"d",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
+ const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);const r=request as any;if(r.ResolveProject)return{ProjectResolved:{project:r.ResolveProject.create_if_missing?{id:"kernel-project",name:"Source",workspace_id:"/source"}:null}};return{ProjectEnvironment:{environment}}},render(){},pageSize:()=>100,kernelKey:()=>"kernel"})
+ await controller.open(null,"/source")
+ assert(controller.visibleLines().includes("s · Set up Environment for this folder"))
+ await controller.setup()
+ assert(controller.visibleLines().includes("Project-wide"))
+ assert.deepEqual(requests.slice(0,2),[{ResolveProject:{workspace_id:"/source",project_id:null,create_if_missing:false}},{ResolveProject:{workspace_id:"/source",project_id:null,create_if_missing:true}}])
+ assert(!requests.some(r=>"CreateSession" in (r as object)))
+ controller.close()
+})
+test("standalone TUI does not create after a kernel selection change",async()=>{
+ let kernel="one",calls=0
+ const controller=createProjectEnvironmentReadController({send:async()=>{calls++;return{ProjectResolved:{project:null}}},render(){},pageSize:()=>100,kernelKey:()=>kernel})
+ await controller.open(null,"/source");kernel="two";await controller.setup()
+ assert.equal(calls,1);assert(controller.visibleLines().some(line=>line.includes("selection changed")));controller.close()
+})

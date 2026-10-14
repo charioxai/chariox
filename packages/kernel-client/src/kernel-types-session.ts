@@ -79,6 +79,7 @@ export type SessionProjectSelection =
   | { kind: "new" }
 
 export type RuntimeProject = {
+  standalone?: boolean
   id: string
   owner_user_id: string
   workspace_id: string

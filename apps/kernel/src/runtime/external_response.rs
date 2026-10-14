@@ -191,6 +191,7 @@ response_policies! {
         ProviderRunLaunchAccepted,
         ProviderRunsLaunchAccepted,
         ProjectsListed,
+        ProjectResolved,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,

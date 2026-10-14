@@ -104,7 +104,7 @@ pub use api::{
     ListEventConnectionsRequest, ListEventGeneratorResourcesRequest,
     ListExternalProviderSessionsRequest, ListHomeExtensionAuditRequest,
     ListManagedEnvironmentCatalogRequest, ListMcpServersRequest, ListMetaagentEventsRequest,
-    ListPairedClientsRequest, ListProjectsRequest, ListPromptSettingsRequest,
+    ListPairedClientsRequest, ListProjectsRequest, ResolveProjectRequest, ListPromptSettingsRequest,
     ListProviderProcessesRequest, ListQueuedWorkflowPromptsRequest,
     ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
     ListRoomEnvironmentActionHistoryRequest, ListScriptsRequest, ListSessionMembersRequest,

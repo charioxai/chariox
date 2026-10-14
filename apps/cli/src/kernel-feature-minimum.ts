@@ -7,6 +7,7 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  ResolveProject: { feature: "Project Environment setup", minimum: requests.projectResolutionMinimumProtocolVersion },
   CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },

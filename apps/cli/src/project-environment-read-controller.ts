@@ -1,3 +1,4 @@
+import { resolveProjectRequest, projectResolutionFromResponse, projectResolutionFailureMessage } from "@chariox/kernel-client"
 import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatusRequest } from "@chariox/kernel-client/ipc-requests"
@@ -13,6 +14,7 @@ export function createProjectEnvironmentReadController(deps: {
   render: () => void
   pageSize: () => number
   copyLink?: (link: string) => void
+  kernelKey?: () => unknown
 }) {
   const cache = createEnvironmentViewCache()
   let previousProposalOffsets: number[] = []
@@ -24,6 +26,9 @@ export function createProjectEnvironmentReadController(deps: {
   let lines: string[] = []
   let offset = 0
   let requestedProjectId: string | null = null
+  let requestedWorkspaceId: string | null = null
+  let resolutionConfirmed = false
+  let resolutionKernel: unknown
   let current: ProjectEnvironment | null = null
   let proposalIndex = 0
   let diff: EnvironmentRevisionDiff | null = null
@@ -38,7 +43,36 @@ export function createProjectEnvironmentReadController(deps: {
     isOpen: () => open,
     visibleLines: () => lines.slice(offset, offset + Math.max(1, deps.pageSize())),
     close() { clearTimeout(expiryTimer); open = false; generation++; deps.render() },
-    async open(projectId: string) {
+    async resolveOpening(projectId: string | null, workspaceId: string | null, create = false): Promise<void> {
+      if (!workspaceId) { open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
+      const g = ++generation, kernel = deps.kernelKey?.()
+      requestedProjectId = projectId; requestedWorkspaceId = workspaceId
+      open = true; current = null; refreshing = true; resolutionConfirmed = false; offset = 0
+      lines = [create ? "Setting up Environment…" : "Looking for this Project’s Environment…"]; deps.render()
+      try {
+        const project = projectResolutionFromResponse(await deps.send(resolveProjectRequest(workspaceId, projectId, create)))
+        if (g !== generation) return
+        if (kernel !== deps.kernelKey?.()) throw new Error("Kernel selection changed. Close Environment and reopen it on the selected kernel.")
+        if (project) { await controller.open(project.id, project.workspace_id); return }
+        if (create) throw new Error("Project setup response is unavailable")
+        resolutionConfirmed = true; resolutionKernel = kernel
+        lines = ["No Environment for this project yet.", `Folder: ${workspaceId}`, "s · Set up Environment for this folder", "r · Refresh"]
+      } catch (cause) { if (g === generation) lines = [projectResolutionFailureMessage(cause), "r · Refresh"] }
+      finally { if (g === generation) { refreshing = false; deps.render() } }
+    },
+    async setup(): Promise<void> {
+      if (!resolutionConfirmed || refreshing || !requestedWorkspaceId) return
+      if (resolutionKernel !== deps.kernelKey?.()) {
+        resolutionConfirmed = false
+        lines = ["Kernel selection changed. Close Environment and reopen it on the selected kernel."]; deps.render(); return
+      }
+      await controller.resolveOpening(requestedProjectId, requestedWorkspaceId, true)
+    },
+    async open(projectId: string | null, workspaceId?: string): Promise<void> {
+      const workspace = workspaceId ?? (projectId === requestedProjectId ? requestedWorkspaceId : null)
+      requestedWorkspaceId = workspace
+      if (!projectId) { await controller.resolveOpening(null, workspace); return }
+      resolutionConfirmed = false
       previousProposalOffsets = []
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
@@ -55,6 +89,9 @@ export function createProjectEnvironmentReadController(deps: {
       } catch (error) {
         if (requestGeneration !== generation) return
         cache.forget(scope, projectId); current = null
+        if (workspace && environmentReadFailureMessage(error) === "No Environment for this project yet.") {
+          await controller.resolveOpening(projectId, workspace); return
+        }
         lines = [environmentReadFailureMessage(error), "r · Refresh"]
       }
       if (requestGeneration === generation) refreshing = false
@@ -189,7 +226,8 @@ export function createProjectEnvironmentReadController(deps: {
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }
-      if (event.name === "r" && requestedProjectId) { void controller.open(requestedProjectId); return true }
+      if (event.name === "s" && !current) { void controller.setup(); return true }
+      if (event.name === "r" && (requestedProjectId || requestedWorkspaceId)) { void controller.open(requestedProjectId, requestedWorkspaceId ?? undefined); return true }
       if (event.name === "a" || event.name === "x") { void controller.review(event.name === "a" ? "accept" : "exclude"); return true }
       if ((event.name === "n" || event.name === "p") && current && (current.proposals.length || (current.read_view?.proposal_count ?? 0)>0)) {
         if(refreshing)return true
