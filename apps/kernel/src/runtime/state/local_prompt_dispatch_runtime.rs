@@ -3505,7 +3505,7 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
-        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
+        Box::pin(self.enqueue_prompt_dispatch_with_acceptance(dispatch))
             .await
             .map(|_| ())
     }
@@ -3540,9 +3540,10 @@ impl KernelRuntimeState {
                     return Ok(false);
                 }
             }
-            let result = self
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
-                .await;
+            let result = Box::pin(
+                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned),
+            )
+            .await;
             if result.as_ref().is_ok_and(|accepted| *accepted) {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
@@ -4715,8 +4716,10 @@ impl KernelRuntimeState {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            // Bound the spawned task state: cold leased admission already has
+            // a large launch future on the worker's normal stack.
+            if let Err(error) = Box::pin(state.enqueue_prompt_dispatch(&dispatch)).await {
+                let _ = Box::pin(state.fail_prompt_dispatch(dispatch, error)).await;
             }
         });
     }

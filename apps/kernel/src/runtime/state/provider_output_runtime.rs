@@ -22,9 +22,7 @@ impl KernelRuntimeState {
         let uses_structured_prompt_io = provider_run_uses_structured_output_pump(&provider_run);
         if !initial_liveness_already_checked
             && uses_structured_prompt_io
-            && self
-                .reconcile_provider_run_exit(session_id, provider_run_id)
-                .await?
+            && Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await?
         {
             return Ok(owned
                 .structured_output_records

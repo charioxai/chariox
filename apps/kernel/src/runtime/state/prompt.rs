@@ -173,18 +173,19 @@ impl KernelRuntimeOwnedState {
         } else {
             false
         };
-        // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
-        // before dispatch creates prompt activity. Preserve this dispatch's
-        // run identity if the failed provider was already retired.
-        self.cancel_active_prompt_only_for_provider_run(
+        // MP-08 / MP-10 / MP-11: use the ordinary exact-prompt Failed
+        // settler, including completion fan-out before provider activity exists.
+        let Some(failed) = self.fail_local_prompt_without_advance_with_termination_if_matches(
             session_id,
             agent_id,
             Some(provider_run_id),
-        )?;
-        self.agent_store
-            .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
-        let released_claim = self.clear_prompt_activity(provider_run_id);
-        let _ = self.session_snapshot(session_id)?;
+            Some(prompt_id),
+            None,
+        )?
+        else {
+            return Ok(None);
+        };
+        let released_claim = failed.released_claim;
         // Workflow failure settlement releases the claim by run/node identity before
         // prompt activity is cleared by provider-run identity. Preserve that signal so
         // the caller still retries nodes which were already blocked on the released

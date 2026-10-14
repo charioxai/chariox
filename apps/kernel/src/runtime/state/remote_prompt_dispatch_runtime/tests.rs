@@ -1661,6 +1661,21 @@ mod receipt_reconciliation {
             "the rejected original prompt must not stay held"
         );
         assert_eq!(queued.len(), 1, "the successor must remain ordered");
+        let projected = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        let activity = fixture.runtime.agent_activity_for_session(&projected);
+        assert_eq!(
+            activity[&fixture.agent_id]
+                .last_completed_turn
+                .as_ref()
+                .unwrap()
+                .settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            "a worker admission rejection is Error, not a human cancellation"
+        );
         assert_eq!(queued[0].prompt(), fixture.successor_prompt.prompt());
         assert_eq!(
             fixture

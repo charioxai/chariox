@@ -719,11 +719,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_prepared_leased_prompt_submission(
         &mut self,
         prepared: PreparedLeasedPromptSubmission,
         provider_run_id: String,
     ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
+        let (provider_run_id, outcome, dispatch) =
+            self.admit_prepared_leased_prompt_submission(prepared, provider_run_id)?;
+        crate::app::KernelAgentService::new(self.app).finish_compat_prompt_dispatch(dispatch)?;
+        Ok((provider_run_id, outcome))
+    }
+
+    // MP-08 / MP-10 / MP-11: commit worker ownership before provider I/O.
+    // The runtime dispatches this intent through the ordinary async provider lane.
+    pub(crate) fn admit_prepared_leased_prompt_submission(
+        &mut self,
+        prepared: PreparedLeasedPromptSubmission,
+        provider_run_id: String,
+    ) -> Result<
+        (
+            String,
+            PromptSubmissionOutcome,
+            Option<crate::app::KernelPromptDispatch>,
+        ),
+        DaemonError,
+    > {
         let PreparedLeasedPromptSubmission {
             leased_agent,
             prompt,
@@ -747,20 +768,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 materialized_attachments,
             )?;
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
-        match dispatch {
-            Some(dispatch) if held_for_capacity => {
-                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
-            }
-            dispatch => {
-                if let Some(git_context) = git_context {
-                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
-                }
-                crate::app::KernelAgentService::new(self.app)
-                    .finish_compat_prompt_dispatch(dispatch)?
-            }
-        }
-        crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(&leased_agent.backing_session_id)?;
         let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
         let accepted_prompt = match &outcome {
             PromptSubmissionOutcome::Started { prompt }
@@ -821,7 +828,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 },
             );
         }
-        Ok((provider_run_id, outcome))
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&leased_agent.backing_session_id)?;
+        let dispatch = match dispatch {
+            Some(dispatch) if held_for_capacity => {
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context);
+                None
+            }
+            dispatch => {
+                if let Some(git_context) = git_context {
+                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+                }
+                dispatch
+            }
+        };
+        Ok((provider_run_id, outcome, dispatch))
     }
 
     pub(crate) fn prepare_leased_prompt_steer(

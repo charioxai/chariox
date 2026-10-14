@@ -34,7 +34,7 @@ impl KernelRuntimeState {
                         "provider run was already ended during liveness reconciliation",
                         crate::session::unix_epoch_ms(),
                     );
-                    self.settle_unexpected_provider_run_exit_with_diagnostic(
+                    Box::pin(self.settle_unexpected_provider_run_exit_with_diagnostic(
                         session_id,
                         provider_run_id,
                         exit.ended_run.agent_instance_id().ok_or_else(|| {
@@ -44,48 +44,52 @@ impl KernelRuntimeState {
                         })?,
                         termination,
                         Some(diagnostic),
-                    )
+                    ))
                     .await?;
                     return Ok(exit.already_ended);
                 }
             }
-            if self
-                .settle_completed_claude_prompt_after_provider_exit(
-                    session_id,
-                    provider_run_id,
-                    &exit.ended_run,
-                )
-                .await?
+            if Box::pin(self.settle_completed_claude_prompt_after_provider_exit(
+                session_id,
+                provider_run_id,
+                &exit.ended_run,
+            ))
+            .await?
             {
                 return Ok(exit.already_ended);
             }
-            let session_outcome = if owned
-                .provider_run_has_active_prompt(session_id, &exit.ended_run)?
-            {
-                let termination = crate::provider::ProviderRunTermination::runtime_failure(
-                    "provider run was already ended during liveness reconciliation",
-                    crate::session::unix_epoch_ms(),
-                );
-                let diagnosed = owned
-                    .provider_store
-                    .record_terminal_diagnostic(provider_run_id, termination.reason.clone())?;
-                owned.provider_run_projection.update(diagnosed);
-                self.settle_unexpected_provider_run_exit_with_diagnostic(
-                    session_id,
-                    provider_run_id,
-                    exit.ended_run.agent_instance_id().ok_or_else(|| {
-                        DaemonError::AgentNotFound {
-                            agent_id: "provider run has no agent".to_string(),
-                        }
-                    })?,
-                    termination,
-                    None,
-                )
-                .await?
-            } else {
-                self.settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+            let session_outcome =
+                if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
+                    let termination = crate::provider::ProviderRunTermination::runtime_failure(
+                        "provider run was already ended during liveness reconciliation",
+                        crate::session::unix_epoch_ms(),
+                    );
+                    let diagnosed = owned
+                        .provider_store
+                        .record_terminal_diagnostic(provider_run_id, termination.reason.clone())?;
+                    owned.provider_run_projection.update(diagnosed);
+                    Box::pin(self.settle_unexpected_provider_run_exit_with_diagnostic(
+                        session_id,
+                        provider_run_id,
+                        exit.ended_run.agent_instance_id().ok_or_else(|| {
+                            DaemonError::AgentNotFound {
+                                agent_id: "provider run has no agent".to_string(),
+                            }
+                        })?,
+                        termination,
+                        None,
+                    ))
                     .await?
-            };
+                } else {
+                    Box::pin(self.settle_owned_provider_prompt(
+                        session_id,
+                        provider_run_id,
+                        false,
+                        false,
+                        true,
+                    ))
+                    .await?
+                };
             if session_outcome.had_active_prompt && !session_outcome.cancelled_prompt {
                 let recipients = owned
                     .attachment_store
@@ -163,31 +167,35 @@ impl KernelRuntimeState {
                         .map(|exit| (exit.exit_code, exit.signal.as_deref())),
                     crate::session::unix_epoch_ms(),
                 );
-                self.settle_unexpected_provider_run_exit_with_diagnostic(
+                Box::pin(self.settle_unexpected_provider_run_exit_with_diagnostic(
                     session_id,
                     provider_run_id,
                     agent_id,
                     termination,
                     Some(diagnostic),
-                )
+                ))
                 .await?;
                 return Ok(true);
             }
         }
         if exit.already_ended {
-            let _ = self
-                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
-                .await?;
+            let _ = Box::pin(self.settle_owned_provider_prompt(
+                session_id,
+                provider_run_id,
+                false,
+                false,
+                true,
+            ))
+            .await?;
             return Ok(true);
         }
 
-        if self
-            .settle_completed_claude_prompt_after_provider_exit(
-                session_id,
-                provider_run_id,
-                &exit.ended_run,
-            )
-            .await?
+        if Box::pin(self.settle_completed_claude_prompt_after_provider_exit(
+            session_id,
+            provider_run_id,
+            &exit.ended_run,
+        ))
+        .await?
         {
             return Ok(true);
         }
@@ -204,15 +212,14 @@ impl KernelRuntimeState {
                 .map(|exit| (exit.exit_code, exit.signal.as_deref())),
             crate::session::unix_epoch_ms(),
         );
-        let session_outcome = self
-            .settle_unexpected_provider_run_exit_with_diagnostic(
-                session_id,
-                provider_run_id,
-                agent_id,
-                termination.clone(),
-                terminal_diagnostic.as_deref(),
-            )
-            .await?;
+        let session_outcome = Box::pin(self.settle_unexpected_provider_run_exit_with_diagnostic(
+            session_id,
+            provider_run_id,
+            agent_id,
+            termination.clone(),
+            terminal_diagnostic.as_deref(),
+        ))
+        .await?;
         if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
             return Ok(true);
         }
@@ -252,9 +259,14 @@ impl KernelRuntimeState {
         {
             return Ok(false);
         }
-        let _ = self
-            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
-            .await?;
+        let _ = Box::pin(self.settle_owned_provider_prompt(
+            session_id,
+            provider_run_id,
+            false,
+            false,
+            true,
+        ))
+        .await?;
         Ok(true)
     }
 
@@ -265,13 +277,13 @@ impl KernelRuntimeState {
         agent_id: &str,
         termination: crate::provider::ProviderRunTermination,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
-        self.settle_unexpected_provider_run_exit_with_diagnostic(
+        Box::pin(self.settle_unexpected_provider_run_exit_with_diagnostic(
             session_id,
             provider_run_id,
             agent_id,
             termination,
             None,
-        )
+        ))
         .await
     }
 
@@ -308,9 +320,14 @@ impl KernelRuntimeState {
             });
         };
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
-            return self
-                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
-                .await;
+            return Box::pin(self.settle_owned_provider_prompt(
+                session_id,
+                provider_run_id,
+                false,
+                false,
+                true,
+            ))
+            .await;
         }
         let message = match terminal_diagnostic {
             Some(diagnostic) if !diagnostic.trim().is_empty() => format!(

@@ -211,11 +211,12 @@ impl KernelRuntimeState {
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                         Some(error.to_string()),
                     );
-                    owned.record_cancelled_prompt_settlement(
+                    owned.record_terminal_prompt_settlement(
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         &settled_prompt,
                         settled_prompt.durable_delivery_provider_run_id(),
+                        crate::git_observer::CompletedTurnSettlementStatus::Failed,
                     );
                     if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                         settled_prompt.workflow_run_id(),

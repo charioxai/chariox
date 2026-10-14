@@ -288,3 +288,25 @@ Record provider-scoped catalogue response bytes during the WAN visibility drill;
 a Claude account model query must keep backend choices and default models while
 omitting complete unrelated OpenCode/Codex model sets. Native-origin state and
 provider exit must publish independently of relay heartbeat cadence.
+
+### MP-08 / MP-10 / MP-11: leased admission and definitive outcomes
+
+A worker reserves the exact home prompt receipt before checking replay or
+preparing a new turn. A read-only replay failure must durably reject that
+reservation, without sending or replaying provider input. New admission commits
+the home/backing prompt binding and an Accepted receipt before handing the
+provider dispatch to the ordinary async provider lane. Dispatch failure then
+settles the exact backing turn as Failed through the normal completion
+projection. A worker admission rejection is projected as Error rather than a
+human cancellation.
+
+For the real hosted drill, use the built CLI and web entry, home and worker
+kernels from the recorded OSS head, the recorded Cloud head, and a real official
+provider account. Submit the five public MDN/GitHub conversation prompts from
+alternating DPR 1/2 web clients over hosted WSS. Capture each admitted prompt ID,
+its exact definitive settlement, the rendered result, console/log classes, and
+Enter-to-other-client-paint timings. Require every provider turn to complete;
+an idle counter alone is insufficient. Measure P95 over the complete five
+samples with an 8 Mbit/s WAN client uplink and at least 60 ms RTT; the limit is
+150 ms. Preserve the baseline failure and exact-head screenshots. Kernel
+receipt/lane fixtures are supplementary checks and cannot establish acceptance.

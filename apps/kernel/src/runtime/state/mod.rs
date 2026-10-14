@@ -423,6 +423,7 @@ mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
+mod relay_leased_prompt_admission_runtime;
 mod relay_peer_runtime_state;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;

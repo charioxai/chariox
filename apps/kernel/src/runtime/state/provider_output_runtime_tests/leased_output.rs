@@ -223,6 +223,7 @@ fi
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
+    assert!(child.id() > 1, "owned fixture child PID must exceed one");
     if child
         .wait_timeout(std::time::Duration::from_secs(25))
         .unwrap()
