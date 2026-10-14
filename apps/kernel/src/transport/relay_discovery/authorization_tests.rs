@@ -240,7 +240,8 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
                         .contains("x-chariox-kernel-credential: synthetic-kernel-credential"));
                     json!({"targets": [
                         {"daemonId":"owner", "status":"ONLINE"},
-                        {"daemonId":"worker", "status":"OFFLINE"},
+                        {"daemonId":"worker", "status":"ONLINE"},
+                        {"daemonId":"dormant", "status":"OFFLINE"},
                         {"daemonId":"unlinked", "status":"REVOKED"}
                     ]})
                     .to_string()
