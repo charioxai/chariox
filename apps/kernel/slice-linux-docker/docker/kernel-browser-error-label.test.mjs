@@ -1,6 +1,6 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage} from './kernel-browser-error-label.mjs';
+import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage,browserLaunchFailureReason} from './kernel-browser-error-label.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
  assert.equal(hostErrorLabel(error),'host_error TypeError ENOENT kernel-browser-native-worker.mjs:17:20');
@@ -38,4 +38,21 @@ test('public Browser failures distinguish timeout, stale target, observer refusa
  assert.match(hostFailureMessage(unexpected),/TypeError kernel-browser-host.mjs:17:20/);
  assert(!hostFailureMessage(unexpected).includes('private-canary'));
  assert(!hostFailureMessage({code:'private-canary',mirrorReason:'private-canary',message:'private-canary'}).includes('private-canary'));
+});
+
+// MP-08/MP-10/MP-11: observed on the fresh Ubuntu24 quiet host, before CDP exists.
+test('launch failures retain specific safe namespace, sandbox and executable causes',()=>{
+ for(const [stderr,spawnCode,reason]of [
+  ['unshare: write failed /proc/self/uid_map: Operation not permitted\n',undefined,'browser_namespace_permission_denied'],
+  ['unshare: unshare failed: Operation not permitted',undefined,'browser_namespace_permission_denied'],
+  ['mount: /etc: permission denied.',undefined,'browser_policy_mount_denied'],
+  ['No usable sandbox! private-canary',undefined,'browser_sandbox_unavailable'],
+  ['Missing X server or $DISPLAY',undefined,'browser_display_unavailable'],
+  ['', 'ENOENT','browser_executable_missing'],
+  ['', 'EACCES','browser_executable_permission_denied'],
+  ['private-canary', 'private-canary','browser_launch_failed'],
+ ]){
+  const code=browserLaunchFailureReason(stderr,spawnCode);assert.equal(code,reason);
+  const reply=hostFailureMessage({code,message:stderr});assert(reply.includes(reason));assert(!reply.includes('private-canary'));assert(!reply.includes('/proc/'));
+ }
 });

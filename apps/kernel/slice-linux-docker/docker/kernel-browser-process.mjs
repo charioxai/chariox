@@ -9,6 +9,7 @@ import * as linux from "./kernel-browser-linux.mjs";
 import * as macos from "./kernel-browser-macos.mjs";
 import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 import { writePolicyLayer } from './kernel-browser-policy.mjs';
+import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -100,17 +101,22 @@ export class HostChromium {
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
     const child = spawn(launch.command, launch.args, {
-      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: environment,
+      stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
     });
     this.child = child;
+    // MP-11: startup text remains bounded in memory and is never logged/replied.
+    let startupStderr='', spawnCode;
+    const collectStderr=chunk=>{if(startupStderr.length<8192)startupStderr+=chunk.toString('utf8').slice(0,8192-startupStderr.length);};
+    child.stderr.on('data',collectStderr);
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
     this.connection = connection;
-    child.once('error', () => { void connection.close(); });
+    child.once('error', error => { spawnCode=error.code; void connection.close(); });
     child.once('exit', () => { void connection.close(); });
-    try { await connection.send('Browser.getVersion'); return connection; }
+    try { await connection.send('Browser.getVersion'); child.stderr.off('data',collectStderr);child.stderr.resume();startupStderr='';return connection; }
     catch {}
     await this.stop();
-    throw new Error("MD-2: sandboxed host Chromium did not become ready (check executable, display and profile ownership)");
+    const code=browserLaunchFailureReason(startupStderr,spawnCode);startupStderr='';
+    throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
   }
   async stop(connection = this.connection) {
     const child = this.child;

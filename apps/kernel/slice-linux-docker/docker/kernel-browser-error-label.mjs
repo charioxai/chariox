@@ -1,7 +1,7 @@
 // MP-11: opt-in diagnostics identify public code, never exception/page values.
 const names=new Set(['Error','TypeError','RangeError','ReferenceError','SyntaxError']);
-const files=new Set(['kernel-browser-host.mjs','kernel-browser-display.mjs','kernel-browser-motion.mjs','kernel-browser-native.mjs','kernel-browser-native-worker.mjs','kernel-browser-native-pipe.mjs','kernel-browser-native-credit.mjs','kernel-browser-refiner.mjs','kernel-browser-pixels.mjs','kernel-browser-pixel-worker.mjs','kernel-browser-display-capture.mjs','kernel-browser-display-credit.mjs','browser-controller-cdp.mjs','browser-controller-actions.mjs','kernel-browser-mirror2.mjs']);
-const codes=new Set(['ENOENT','EACCES','EINVAL','EPIPE','ETIMEDOUT','ERR_BUFFER_OUT_OF_BOUNDS','ERR_OUT_OF_RANGE','browser_cdp_timeout','browser_cdp_command_failed','browser_cdp_disconnected','browser_cdp_socket_error','browser_target_not_found','browser_connection_changed','browser_cdp_response_too_large','browser_action_cancelled']);
+const files=new Set(['kernel-browser-host.mjs','kernel-browser-process.mjs','kernel-browser-owned-display.mjs','kernel-browser-linux.mjs','kernel-browser-display.mjs','kernel-browser-motion.mjs','kernel-browser-native.mjs','kernel-browser-native-worker.mjs','kernel-browser-native-pipe.mjs','kernel-browser-native-credit.mjs','kernel-browser-refiner.mjs','kernel-browser-pixels.mjs','kernel-browser-pixel-worker.mjs','kernel-browser-display-capture.mjs','kernel-browser-display-credit.mjs','browser-controller-cdp.mjs','browser-controller-actions.mjs','kernel-browser-mirror2.mjs']);
+const codes=new Set(['ENOENT','EACCES','EINVAL','EPIPE','ETIMEDOUT','ERR_BUFFER_OUT_OF_BOUNDS','ERR_OUT_OF_RANGE','browser_cdp_timeout','browser_cdp_command_failed','browser_cdp_disconnected','browser_cdp_socket_error','browser_target_not_found','browser_connection_changed','browser_cdp_response_too_large','browser_action_cancelled','browser_namespace_permission_denied','browser_policy_mount_denied','browser_sandbox_unavailable','browser_display_unavailable','browser_executable_missing','browser_executable_permission_denied','browser_launch_failed']);
 const methods=new Set(['Page.captureScreenshot','Page.getFrameTree','Page.getLayoutMetrics','Runtime.evaluate','Runtime.callFunctionOn','DOM.resolveNode','CSS.enable','DOMSnapshot.captureSnapshot']);
 // MP-11: classify only our fixed isolated-observer refusals; never print a
 // CDP exception description, page exception, input value or private path.
@@ -21,6 +21,9 @@ const inputReasons=new Map([
  ['MP-11: frame observer unavailable','mirror_frame_observer_unavailable'],
  ['MP-11: mirror observation unavailable','mirror_observation_unavailable'],
  ['MP-11: closed-root frame snapshot unavailable','mirror_frame_snapshot_unavailable'],
+ ['MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE','browser_executable_unavailable'],
+ ['MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported','browser_root_user_unsupported'],
+ ['MD-2: browser profile is already owned by a live process','browser_profile_in_use'],
  ['MD-2: host tab limit reached','browser_tab_limit'],
  ['MD-2: frame exceeds limit','browser_frame_limit'],
  ['MD-2: frame subscription limit reached','browser_subscription_limit'],
@@ -49,4 +52,17 @@ export function hostErrorLabel(error) {
 // Existing Web clients match this sentence when retrying a read; append the cause.
 export function hostFailureMessage(error) {
  return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+hostErrorLabel(error).slice('host_error '.length)+')';
+}
+
+// MP-08/MP-10/MP-11: classify bounded startup stderr; never expose its text,
+// executable/profile paths, URLs or environment. Unknown output stays generic.
+export function browserLaunchFailureReason(stderr, spawnCode) {
+ if(spawnCode==='ENOENT')return 'browser_executable_missing';
+ if(spawnCode==='EACCES')return 'browser_executable_permission_denied';
+ const text=typeof stderr==='string'?stderr.slice(0,8192):'';
+ if(/unshare: (?:write failed \/proc\/self\/(?:uid|gid)_map: Operation not permitted|unshare failed: Operation not permitted)/.test(text))return 'browser_namespace_permission_denied';
+ if(/mount: \/etc: (?:permission denied|must be superuser)/.test(text))return 'browser_policy_mount_denied';
+ if(/No usable sandbox|Failed to move to new namespace.*Operation not permitted/.test(text))return 'browser_sandbox_unavailable';
+ if(/Missing X server or \$DISPLAY|cannot open display|Unable to open X display/.test(text))return 'browser_display_unavailable';
+ return 'browser_launch_failed';
 }
