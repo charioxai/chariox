@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
+use std::time::Instant;
 use zeroize::Zeroizing;
 
 const MAX_ENTRIES: usize = 20_000;
@@ -14,6 +15,14 @@ struct Selection {
     bytes: u64,
     count: usize,
     protected: bool,
+    deadline: Option<Instant>,
+}
+fn check_deadline(deadline: Option<Instant>) -> Result<(), DaemonError> {
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        Err(environment_error("Files Check budget exceeded"))
+    } else {
+        Ok(())
+    }
 }
 fn protected_path(path: &str) -> bool {
     !safe_metadata(path)
@@ -31,6 +40,7 @@ fn stream(
     path: &str,
     selection: &mut Selection,
 ) -> Result<Option<String>, DaemonError> {
+    check_deadline(selection.deadline)?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(None);
@@ -55,6 +65,15 @@ fn stream(
     let mut overlap = Zeroizing::new(Vec::<u8>::new());
     let mut bytes = 0u64;
     loop {
+        check_deadline(selection.deadline)?;
+        #[cfg(test)]
+        if let Some(marker) = std::env::var_os("CHARIOX_FILES_CHECK_IO_STALL_MARKER") {
+            // MP-08 / MP-10 / MP-11: model an interruptible syscall stall after admission.
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
         let n = file
             .read(&mut buffer)
             .map_err(|_| environment_error("selected File read failed"))?;
@@ -106,6 +125,7 @@ fn walk(
     if depth > 32 {
         return Err(environment_error("selected folder exceeds depth capacity"));
     }
+    check_deadline(selection.deadline)?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(());
@@ -116,6 +136,7 @@ fn walk(
         .map_err(|_| environment_error("selected folder unavailable"))?
         .take(MAX_ENTRIES + 1)
     {
+        check_deadline(selection.deadline)?;
         let entry = entry.map_err(|_| environment_error("selected folder entry unavailable"))?;
         let name = entry
             .file_name()
@@ -175,19 +196,21 @@ pub(crate) fn verify_manual_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, true)
+    verify_files(current, draft, true, None)
 }
 // MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
 pub(super) fn verify_check_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
+    deadline: Instant,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, false)
+    verify_files(current, draft, false, Some(deadline))
 }
 fn verify_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
     git_metadata: bool,
+    deadline: Option<Instant>,
 ) -> Result<(), DaemonError> {
     let mut total_bytes = 0;
     let mut total_count = 0;
@@ -196,6 +219,7 @@ fn verify_files(
         .iter_mut()
         .chain(draft.folders.iter_mut().flat_map(|f| &mut f.requirements))
     {
+        check_deadline(deadline)?;
         let RequirementSpec::Files { folder_id, entries } = &mut requirement.spec else {
             continue;
         };
@@ -280,6 +304,7 @@ fn verify_files(
                 bytes: total_bytes,
                 count: total_count,
                 protected: false,
+                deadline,
             };
             let file_digest = match entry.kind {
                 EnvironmentFileKind::File => stream(&root, &entry.relative_path, &mut selection)?,
