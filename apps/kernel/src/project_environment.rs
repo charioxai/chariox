@@ -8,6 +8,7 @@ mod check;
 mod check_admission;
 mod check_assets;
 pub(crate) mod check_executable;
+mod dependency_graph;
 mod check_files;
 mod check_gui_identity;
 mod check_health;

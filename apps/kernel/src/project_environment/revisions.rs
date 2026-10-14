@@ -285,6 +285,11 @@ fn validate_draft(
             return Err(environment_error("invalid requirement dependency"));
         }
     }
+    if !super::dependency_graph::blocked(requirements(draft)).is_empty() {
+        return Err(environment_error(
+            "Environment requirement dependencies contain a cycle",
+        ));
+    }
     super::scope_conflicts::validate_scopes(draft)?;
     Ok(())
 }
