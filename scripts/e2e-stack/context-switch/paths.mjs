@@ -11,6 +11,8 @@ export const sourceTree=resolve(process.env.CTXVAL_TREE??repository);
 export const lane=resolve(process.env.CTXVAL_LANE??homedir()+'/.chariox/dev/context-switch/assets');
 export const stateRoot=resolve(process.env.CTXVAL_STATE_ROOT??homedir()+'/.chariox/dev/context-switch/state');
 export const evidence=resolve(process.env.CTXVAL_EVIDENCE??homedir()+'/.codex/evidence/context-switch');
+export const owner=process.env.CTXVAL_OWNER??'context-switch';
+if(!/^[a-z0-9-]+$/.test(owner))throw Error('Invalid context-switch resource owner');
 export const clientModule=name=>pathToFileURL(lane+'/client/apps/cli/dist/'+name).href;
 export function playwrightModule(){if(!process.env.PLAYWRIGHT_MODULE)throw Error('PLAYWRIGHT_MODULE must name an installed Playwright module');return pathToFileURL(resolve(process.env.PLAYWRIGHT_MODULE)).href;}
 function contains(parent,child){const r=relative(parent,child);return r===''||(!r.startsWith('../')&&!isAbsolute(r));}

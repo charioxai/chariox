@@ -19,6 +19,7 @@ proxy worker, and tests nine-fact scoring plus watermarks. Deleting
 
 Live inputs are explicit and stay outside every repository:
 
+- `CTXVAL_OWNER`: lane resource label (set `ctxfix2` on b3); default context-switch.
 - `CTXVAL_TREE`: exact checked-out runtime source, default this checkout.
 - `CTXVAL_LANE`: external build assets (`bin/`, `client/`, optional `ns-tools/`).
 - `CTXVAL_STATE_ROOT`: disposable external runtime parent; no default Vault is used.
