@@ -319,7 +319,9 @@ export async function bootstrapCliRuntime(
       attachment_id: bootstrap.binding.attachment.id,
       created_session: bootstrap.binding.createdSession,
     })
-    await deps.maybeResize(client, bootstrap.binding.session.id)
+    // Sizing is advisory. Send it before mounting, but do not put another
+    // relay round trip between the bundled transcript and the first frame.
+    void deps.maybeResize(client, bootstrap.binding.session.id).catch(() => {})
   } else {
     options.logger?.info("starting cli without attached session")
   }

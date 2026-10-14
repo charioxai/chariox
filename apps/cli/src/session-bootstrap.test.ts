@@ -38,6 +38,33 @@ test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves b
   assert.equal(history?.agentEntries.a?.length, 2)
 })
 
+test("MP-08 / MP-10: explicit attach resolves its target while unrelated startup reads are pending", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: [{ id: "a" }], focused_agent_id: "a" }
+  const calls: string[] = []
+  let finishDefaults!: (value: {}) => void, finishInventory!: (value: unknown[]) => void
+  const defaults = new Promise<{}>(resolve => { finishDefaults = resolve })
+  const inventory = new Promise<unknown[]>(resolve => { finishInventory = resolve })
+  const unexpected = async () => { throw new Error("unexpected fallback") }
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "alias", model: "default", effort: "", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    getConfiguredProviderLaunchDefaults: () => { calls.push("defaults"); return defaults },
+    listSessions: () => { calls.push("inventory"); return inventory },
+    resolveSession: async () => { calls.push("resolve"); return session },
+    attachSessionView: async () => { calls.push("view"); return { attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "prompt", "answer")] } } },
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  await new Promise(resolve => setImmediate(resolve))
+  const before = [...calls]
+  finishDefaults({}); finishInventory([session])
+  const result = await boot
+  assert.deepEqual(before, ["defaults", "inventory", "resolve"])
+  assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
+})
+
 test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
   const pending = new Promise<never>(() => {})
   const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {

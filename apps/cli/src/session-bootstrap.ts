@@ -97,20 +97,23 @@ export async function bootstrapSession(
   let createdSession = false
   let session: RuntimeSession | null = null
 
-  if (!options.provider || options.model === "default" || !options.effort.trim()) {
-    const configured = await deps.getConfiguredProviderLaunchDefaults?.(client) ?? {}
-    if (!options.provider && configured.provider) {
-      options.provider = configured.provider
-    }
-    if (options.model === "default" && configured.model) {
-      options.model = configured.model
-    }
-    if (!options.effort.trim() && configured.effort) {
-      options.effort = configured.effort
-    }
-  }
+  // These are independent reads. In particular, an explicit session reference
+  // does not depend on the waiting-room inventory or launch defaults. Keep
+  // attachment/launch mutations after all reads succeed.
+  const configuredPromise: Promise<{ provider?: string; model?: string; effort?: string }> = !options.provider || options.model === "default" || !options.effort.trim()
+    ? deps.getConfiguredProviderLaunchDefaults?.(client) ?? Promise.resolve({})
+    : Promise.resolve({})
+  const sessionsPromise = deps.listSessions(client)
+  const resolvedSessionPromise = options.sessionId && !options.createSession
+    ? deps.resolveSession(client, options.sessionId, workspace)
+    : Promise.resolve(null)
+  const [configured, sessions, resolvedSession] = await Promise.all([
+    configuredPromise, sessionsPromise, resolvedSessionPromise,
+  ])
+  if (!options.provider && configured.provider) options.provider = configured.provider
+  if (options.model === "default" && configured.model) options.model = configured.model
+  if (!options.effort.trim() && configured.effort) options.effort = configured.effort
 
-  const sessions = await deps.listSessions(client)
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)
   const requestedAgentDefaults = options.provider
     ? {
@@ -133,7 +136,7 @@ export async function bootstrapSession(
       createdSession = true
       break
     case "resolve":
-      session = await deps.resolveSession(client, decision.sessionRef, workspace)
+      session = resolvedSession ?? await deps.resolveSession(client, decision.sessionRef, workspace)
       break
     case "attach_existing": {
       const existing = selectAttachableSession(sessions, workspace, worktree)
