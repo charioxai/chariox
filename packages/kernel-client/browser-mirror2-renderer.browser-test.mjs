@@ -688,3 +688,18 @@ test('MP-10: review r19 large frame-rate deltas apply immediately while an exist
   assert(result.fast-result.before>=119,'large trackpad step follows its frame, rather than being classified as a notch');assert(result.tail-result.fast<=11,'falling below 50px does not flush the previous backlog');assert(result.frame-result.tail<50,'the retained tail remains eased');
  }finally{await page.close();}
 });
+
+// MP-08/MP-10/MP-11: a retired mirror is inert but holds the last safe paint
+// until protected video has actually painted its replacement.
+test('MP-10: retiring a mirror preserves inert paint until replacement disposal',async()=>{
+ const page=await viewer()
+ try{
+  await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'button'},{id:'n5',parent:'n4',kind:'text',text:'Last painted page'}]))
+  await page.evaluate(()=>window.r.close({preserveFrame:true}))
+  assert.deepEqual(await page.evaluate(()=>({connected:window.r.frame.isConnected,text:window.r.frame.contentDocument?.body?.innerText})),{connected:true,text:'Last painted page'})
+  await page.evaluate(()=>window.r.frame.contentDocument.querySelector('button').click())
+  assert.equal(await page.evaluate(()=>window.sent.length),0)
+  await page.evaluate(()=>window.r.close())
+  assert.equal(await page.evaluate(()=>window.r.frame.isConnected),false)
+ }finally{await page.close()}
+})

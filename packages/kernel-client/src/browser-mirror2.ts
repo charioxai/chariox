@@ -626,8 +626,10 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
-  close(): void {
-    this.disposed = true; this.doc = null
+  close(options?:{preserveFrame?:boolean}): void {
+    this.disposed = true; this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    if(options?.preserveFrame) {this.frame.inert=true;this.frame.style.pointerEvents='none';return}
+    this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
     URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
@@ -661,7 +663,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 517')
   const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
@@ -754,7 +756,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         if (generation === failGeneration) { failures++; failGeneration++; if(!closed) handlers.diagnostic?.(answered ? "mirror_apply_retry" : "mirror_credit_retry",error,applied) }
         if (answered) wantReset = true; else wantResend = true
         failingSince ||= performance.now()
-        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; handlers.diagnostic?.(fatal(error) ? "mirror_fatal" : terminal(error) ? "mirror_binding_retired" : "mirror_failing_streak",error,applied); inflater?.close(); renderer.close(); handlers.failure(error); void closeRemote() }
+        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; handlers.diagnostic?.(fatal(error) ? "mirror_fatal" : terminal(error) ? "mirror_binding_retired" : "mirror_failing_streak",error,applied); inflater?.close(); renderer.close({preserveFrame:preserveFrameOnFailure}); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { outstanding.splice(outstanding.indexOf(entry), 1); if (outstanding[0] && !outstanding[0].oldestAt) outstanding[0].oldestAt = performance.now(); if (resend) resendOutstanding = false; inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
@@ -769,7 +771,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)
   return {
     renderer,
-    async close() { clearTimeout(firstWait); if (!closed) { closed = true; inflater?.close(); renderer.close() } await closeRemote() },
+    async close(options?:{preserveFrame?:boolean}) { clearTimeout(firstWait); if (!closed) { closed = true; inflater?.close() } renderer.close(options); await closeRemote() },
     takeover: () => request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation }),
     release: () => request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation }),
   }
