@@ -1,0 +1,29 @@
+// MP-08 / MP-10 / MP-11: real official-provider outage; kernel/relay and user clients stay connected.
+import {r,init,finish,select,workload,probe,enrollClaude} from './common.mjs';
+import {webClients} from './web-live.mjs';
+import {sleep} from './runtime.mjs';
+import {execFileSync} from 'node:child_process';
+import {scoreContextValidationRecall} from './context-switch-validation-records.mjs';
+const result={MP:['MP-08','MP-10','MP-11'],status:'FAIL',started:new Date().toISOString(),scope:'real120s brief deadline with provider-only egress outage'};
+let web=[],remote,outage;
+async function observe(label){const s=await r.tui.send('snapshot');const x=JSON.parse(execFileSync('python3',[new URL('./history-observe.py',import.meta.url).pathname,r.root,s.session.id,s.session.focusedAgentId],{encoding:'utf8'}));await r.record('history-'+label,x);return x}
+try{
+ if(!r.providerNet)throw Error('Isolated official Codex provider namespace required');
+ ({remote}=await init());await enrollClaude();const facts=await workload('claude-p','claude-haiku-5-5',Number(process.env.CTXVAL_SOURCE_TURNS??3));
+ for(let n=0;(await observe('size-'+n)).contentBytes<=116280&&n<30;n++)await r.turn('Continue the real read-only code audit. Inspect apps/kernel/src/runtime/state/local_prompt_dispatch_runtime.rs and its current tests for cancellation and brief preparation. Review another responsibility not covered in the preceding answer and quote the necessary non-secret source excerpt. Preserve all audit records and your proposal. Do not edit source, run builds or read credentials/runtime state.','CTXFIX_DEADLINE_AUDIT_'+n,900000);
+ if((await observe('source')).contentBytes<=116280)throw Error('Actual transcript did not exceed the deterministic handoff budget');
+ web=await webClients(r,remote);await web[0].select('codex','gpt-6-luna');await probe(facts);const before=await observe('stored-baseline');if(!before.brief)throw Error('No genuine stored fold before outage');
+ await select('claude-p','claude-haiku-5-5');await r.turn('Continue the existing real audit by reading apps/kernel/src/runtime/state/context_handoff/brief_refresh.rs. Identify one exact deadline or protected-storage invariant with its source location. Preserve all audit records; do not repeat them, edit files or read credentials/runtime state.','CTXFIX_DEADLINE_INCREMENT');
+ await web[1].select('codex','gpt-6-luna');const snapshot=await r.tui.send('snapshot'),id=snapshot.session.focusedAgentId,marker='CTXFIX_DEADLINE_'+Date.now();const input=web[1].page.locator('[data-terminal-prompt]:not(:disabled)');await input.fill('Without tools, recall our audit records as JSON with exactly '+Object.keys(facts).join(', ')+'. End with '+marker+'.');await input.press('Enter');const submitted=Date.now();let preparing=false;
+ for(let i=0;i<120;i++){const s=await r.tui.send('snapshot'),rows=s.agentPanes?.[id]??[],at=rows.findLastIndex(x=>x.role==='user'&&x.text?.includes(marker));if(at>=0&&JSON.stringify({rows:rows.slice(at),status:s.statusLine}).includes('Preparing handoff brief')){preparing=true;break}await sleep(250)}if(!preparing)throw Error('Real switch never entered visible brief preparation');
+ await Promise.all(web.map(c=>c.capture('provider-outage-before')));outage=r.providerNet.outage(130000);const pending=r.turn('',marker,360000,false).then(value=>({value}),error=>({error}));
+ const controls=[];for(let n=0;n<50;n++){const page=web[n%2].page,start=performance.now(),pane=page.locator(`.freeform-agent-pane[data-agent-id="${id}"]`);await pane.click({position:{x:8,y:8}});await page.locator(`.freeform-agent-pane.focused[data-agent-id="${id}"]`).waitFor({timeout:30000});controls.push({dpr:web[n%2].dpr,elapsedMs:performance.now()-start});await sleep(100)}
+ await r.record('outage-controls',{controls,limits:'Focus-existing-pane actions only; no claim for unrelated-agent permission response'});await Promise.all(web.map(c=>c.capture('provider-outage-active')));await outage;outage=null;const settled=await pending;if(settled.error)throw settled.error;const turn=settled.value;
+ const score=scoreContextValidationRecall(turn.state.agentPanes[id],marker,facts);await r.record('deadline-recall',score);if(score.score!==9||score.toolCount)throw Error('Real deadline fallback recall '+score.score+'/9');
+ const after=await observe('deadline-after'),logs=JSON.parse(execFileSync('python3',[new URL('./log-observe.py',import.meta.url).pathname,r.root],{encoding:'utf8'}));await r.record('deadline-log',logs);const timeouts=logs.rows.filter(x=>x.errorClass==='timeout');if(!timeouts.length)throw Error('Official outage did not produce the120s brief timeout');
+ if(after.brief?.sha256!==before.brief.sha256||after.brief?.coveredThroughSequence!==before.brief.coveredThroughSequence)throw Error('Timed-out fold replaced the previously stored brief');
+ await probe(facts);for(const c of web){await c.probe(facts);await c.capture('deadline-recovered')}
+ const elapsedMs=Date.now()-submitted;result.status='PASS';result.elapsedMs=elapsedMs;result.recall=score;result.previousFoldPreserved=true;result.timeoutDiagnostics=timeouts;result.controlSamples=controls;result.limits='Changed provider-only deadline subcell; full CX-03 other-agent/permission/P95 and3h gates remain separate.';
+}catch(e){result.firstSeam=String(e?.message??e);await r.capture('deadline-failed').catch(()=>{});await Promise.allSettled(web.map(c=>c.capture('deadline-failed')))}
+finally{if(outage)await outage.catch(()=>{});for(const c of web)await c.close().catch(()=>{});result.finished=new Date().toISOString();await r.record('result',result);await finish()}
+if(result.status!=='PASS')process.exitCode=1;
