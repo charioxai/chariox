@@ -307,3 +307,13 @@ test("ENV-UX-02 TUI scrolls wrapped rows, not source lines", async () => {
   assert(controller.visibleLines().join(" ").endsWith("r · Refresh"), controller.visibleLines().join("|"))
   assert(controller.visibleLines().every(row => row.length <= 20))
 })
+
+// MP-08 / MP-10 / MP-11: section navigation uses the rendered row after wrapping.
+test("wrapped Environment navigation still lands on the Project-wide section", async () => {
+  const environment: any = {schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}}
+  const controller = createProjectEnvironmentReadController({send:async()=>({ProjectEnvironment:{environment}}),render(){},pageSize:()=>3,textWidth:()=>30})
+  await controller.open("project")
+  controller.handleKey({name:"right"})
+  assert.equal(controller.visibleLines()[0], "Project-wide")
+  controller.close()
+})

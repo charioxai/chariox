@@ -251,6 +251,7 @@ export function createProjectEnvironmentReadController(deps: {
       if ((event.name === "left" || event.name === "right") && current) {
         const titles = ["Project-wide", ...current.folders.map(f => f.label)]
         const positions = titles.map(t => lines.indexOf(t)).filter(p => p >= 0)
+          .map(index => lines.slice(0, index).reduce((rows, line) => rows + wrapLine(line, deps.textWidth?.() ?? Infinity).length, 0))
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }
