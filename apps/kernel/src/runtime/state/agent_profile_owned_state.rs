@@ -5,6 +5,11 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static AFTER_PROFILE_VALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+}
+
 impl owned::OwnedRemoteAgentProfileUpdate {
     pub(super) fn validate_worker_acknowledgement(
         &self,
@@ -193,6 +198,12 @@ impl KernelRuntimeOwnedState {
         let validated =
             self.validate_agent_profile_update(session_id, agent_id, caller_user_id, selections)?;
         let agent = validated.agent;
+        #[cfg(test)]
+        AFTER_PROFILE_VALIDATION.with(|gate| {
+            if let Some(gate) = gate.borrow_mut().take() {
+                gate();
+            }
+        });
         let target_provider = validated.provider;
         let target_account_profile = validated.account_profile;
         let target_model = validated.model;
@@ -256,22 +267,28 @@ impl KernelRuntimeOwnedState {
         let agent = if remote_update.is_some() {
             agent
         } else {
-            let resume_state = agent.provider_resume_state().after_profile_change(
-                agent.provider(),
-                &source_account,
-                &target_provider,
-                &target_account_profile,
-            );
-            let agent = self
-                .agent_store
-                .set_agent_runtime_profile_with_account_profile(
+            let agent = {
+                // MP-08 / MP-10 / MP-11: source retirement fences native writes.
+                // Retain identities confirmed since validation, under the same
+                // lock as the commit. Selection-only pins leave the run live,
+                // so their read and write must also be atomic with confirmation.
+                let mut agents = self.agent_store.write();
+                let current = agents.get_agent(agent_id)?;
+                let resume_state = current.provider_resume_state().after_profile_change(
+                    current.provider(),
+                    &source_account,
+                    &target_provider,
+                    &target_account_profile,
+                );
+                agents.set_agent_runtime_profile_with_account_profile(
                     agent_id,
                     &target_provider,
                     target_model,
                     target_effort.map(str::to_string),
                     Some(target_account_profile),
                     resume_state,
-                )?;
+                )?
+            };
             let _ = self.session_snapshot(session_id)?;
             agent
         };
@@ -280,6 +297,23 @@ impl KernelRuntimeOwnedState {
             terminated_run_ids,
             remote_update,
         })
+    }
+
+    /// MP-08 / MP-10 / MP-11: an idle native run may confirm another identity
+    /// after a selection-only commit. Persist the current agent while excluding
+    /// native writes, rather than append an older profile result over them.
+    pub(super) fn persist_current_local_agent_profile(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agents = self.agent_store.read();
+        let agent = agents.get_agent(agent_id)?;
+        self.durable_state_store.append_event(
+            "agent.updated",
+            Some(agent.id().to_string()),
+            serde_json::json!({ "agent": &agent, "capability_name": null }),
+        )?;
+        Ok(agent)
     }
 
     pub(super) fn commit_remote_agent_profile_update(

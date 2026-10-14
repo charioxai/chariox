@@ -31,6 +31,8 @@ mod provider_output_claude_native;
 mod provider_output_fanout;
 mod provider_output_prompt_settlement;
 mod provider_output_resume;
+#[cfg(test)]
+pub(crate) use provider_output_resume::persist_resolved_resume_state;
 mod provider_output_trace;
 mod provider_processes;
 mod provider_prompt_launch;

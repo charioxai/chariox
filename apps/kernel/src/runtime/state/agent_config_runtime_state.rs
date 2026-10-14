@@ -1066,9 +1066,11 @@ impl KernelRuntimeState {
                     remote_update.model,
                     remote_update.effort,
                 )?;
+                self.append_agent_durable_event("agent.updated", &agent, None)
+                    .await?;
+            } else {
+                agent = self.owned.persist_current_local_agent_profile(agent.id())?;
             }
-            self.append_agent_durable_event("agent.updated", &agent, None)
-                .await?;
             self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
             Ok(agent)
         }
