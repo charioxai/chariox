@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_fresh_relay_kernel_observation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 510);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 526);
 
     let request =
         LocalDaemonRequest::QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest {

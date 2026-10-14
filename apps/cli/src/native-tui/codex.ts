@@ -30,7 +30,7 @@ import {
   requestNativeProviderRunLaunch,
   waitForNativeProviderRunReady,
 } from "./provider-run-control.js"
-import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
+import { startCodexKernelTransport } from "./codex-kernel-transport.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
@@ -124,9 +124,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     bindState.promise = Promise.resolve(run)
     bindState.run = run
-    let upstreamEndpoint = run.structured_endpoint
-    const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamEndpoint, "Codex")
-    upstreamEndpoint = bridgedEndpoint.endpoint
+    const bridgedEndpoint = remotePlacement || options.relayUrl
+      ? await startCodexKernelTransport({ client, sessionId: session.id, attachmentId: attachment.id, agentId: agent.id, providerRunId: run.id })
+      : { endpoint: run.structured_endpoint, close: async () => {} }
+    const upstreamEndpoint = bridgedEndpoint.endpoint
     endpointBridge = bridgedEndpoint
     proxy = await startCodexProxy({
       upstreamEndpoint,

@@ -329,6 +329,7 @@ pub enum LocalDaemonRequest {
     UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest),
     ResizeTerminal(ResizeTerminalRequest),
     SendTerminalInput(SendTerminalInputRequest),
+    NativeProviderTransport(NativeProviderTransportRequest),
     PumpTerminalOutput(PumpTerminalOutputRequest),
     AppendNativeProviderOutput(AppendNativeProviderOutputRequest),
     AppendNativeProviderOutputBatch(AppendNativeProviderOutputBatchRequest),

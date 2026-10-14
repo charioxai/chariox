@@ -4,7 +4,7 @@ use super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) async fn connected_relay_state_for_config(
+    pub(crate) async fn connected_relay_state_for_config(
         &self,
         relay_config: &crate::config::DaemonConfig,
     ) -> Option<Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>> {

@@ -27,6 +27,7 @@ mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod native_provider_transport;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -64,6 +65,7 @@ pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use native_provider_transport::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -272,4 +274,5 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 510;
+/// MP-08 / MP-10 / MP-11: coordinator-allocated owning-kernel native Codex transport.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 526;

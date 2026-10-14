@@ -268,6 +268,24 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-08 / MP-10 / MP-11: allocated local protocol 526 and peer protocol 134
+add `NativeProviderTransport` for the official Codex native display upstream.
+The client supplies session, attachment, agent and current projected run, never
+an endpoint URL. The home kernel admits the attachment owner and session;
+remote execution uses the existing authenticated leased-agent peer admission.
+The owning kernel selects its current official loopback WebSocket. Open returns
+an opaque connection ID; Exchange sends and drains bounded JSON frames; Close
+retires it. Every operation and socket heartbeat fences the attachment/run or
+lease/backing run. Connections expire after 15 seconds without exchange, are
+limited to two per exact scope and 32 per kernel, and use 32-frame queues with
+256 KiB frame/batch limits. Backpressure closes or rejects without replay.
+This is a display/read/control transport: prompt start/steer/interrupt, arbitrary
+tool execution, login mutation and provider approval replies still use the
+normal kernel-owned prompt and RuntimeInteraction paths. Unsupported methods
+are rejected. Old clients/workers require an actionable 526/134 update and
+reattach, never an SSH tunnel or a caller-selected provider endpoint.
+
+
 MP-08 / MP-10 / MP-11: local protocol 491 fences `CancelActivePrompt` with
 optional `expected_prompt_id`. Native Codex resolves both requested display
 thread and turn to the existing home-prompt binding. The kernel compares that

@@ -17,6 +17,35 @@ fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn native_transport_binding(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(String, String), DaemonError> {
+        let agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&agent.lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: agent.lease_id.clone(),
+            })?;
+        if crate::session::unix_epoch_ms().saturating_sub(lease.created_at_ms)
+            >= super::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+        {
+            return Err(crate::transport::native_provider_socket::error(
+                "native execution lease expired",
+            ));
+        }
+        Ok((
+            agent.backing_session_id.clone(),
+            agent.backing_agent_id.clone(),
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_leased_native_provider_launch(
         &mut self,

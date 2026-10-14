@@ -93,3 +93,5 @@ impl TransportService {
         })
     }
 }
+
+pub(crate) mod native_provider_socket;

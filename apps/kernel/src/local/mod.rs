@@ -7,6 +7,9 @@ pub use api::{
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
 mod api;
+pub use api::{
+    NativeProviderTransportOperation, NativeProviderTransportRequest, NativeProviderTransportResult,
+};
 mod client;
 mod harness;
 pub(crate) mod ipc;

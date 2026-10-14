@@ -1,0 +1,429 @@
+//! MP-08 / MP-10 / MP-11: bounded, run-fenced official Codex display sockets.
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
+
+use crate::{
+    error::DaemonError,
+    local::{NativeProviderTransportOperation, NativeProviderTransportResult},
+};
+
+pub(crate) const FRAME_BYTES: usize = 256 * 1024;
+const QUEUE_FRAMES: usize = 32;
+const CONNECTION_LIMIT: usize = 32;
+
+pub(crate) fn error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "native provider transport",
+        message: message.into(),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SocketScope {
+    pub session_id: String,
+    pub agent_id: String,
+    pub attachment_id: String,
+    pub provider_run_id: String,
+    pub leased_agent_id: Option<String>,
+    pub endpoint: String,
+}
+
+struct Connection {
+    scope: SocketScope,
+    sender: mpsc::Sender<String>,
+    receiver: Mutex<mpsc::Receiver<String>>,
+    touched: std::sync::Mutex<std::time::Instant>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct NativeProviderSockets(Arc<Mutex<BTreeMap<String, Arc<Connection>>>>);
+
+/// Display/control reads only. User turns, tool execution and approval replies
+/// continue through the kernel's normal native prompt/interaction adapters.
+pub(crate) fn validate_frame(frame: &str) -> Result<(), DaemonError> {
+    if frame.len() > FRAME_BYTES {
+        return Err(error("native frame exceeds 256 KiB"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(frame).map_err(|_| error("native frame must be JSON"))?;
+    let method = value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| error("native approval replies must use runtime interactions"))?;
+    if !matches!(
+        method,
+        "initialize"
+            | "initialized"
+            | "thread/start"
+            | "thread/resume"
+            | "thread/read"
+            | "thread/list"
+            | "thread/loaded/list"
+            | "thread/archive"
+            | "thread/unarchive"
+            | "thread/name/set"
+            | "thread/compact/start"
+            | "model/list"
+            | "account/read"
+            | "account/rateLimits/read"
+            | "config/read"
+            | "configRequirements/read"
+            | "skills/list"
+            | "hooks/list"
+            | "plugin/list"
+            | "plugin/installed"
+            | "plugin/read"
+            | "plugin/skill/read"
+            | "mcpServerStatus/list"
+            | "app/read"
+            | "app/list"
+            | "app/installed"
+            | "thread/unsubscribe"
+            | "thread/turns/list"
+            | "thread/items/list"
+            | "threadSection/list"
+            | "permissionProfile/list"
+            | "modelProvider/capabilities/read"
+            | "experimentalFeature/list"
+    ) {
+        return Err(error(
+            "native method must use the owning kernel prompt/control path",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_endpoint(endpoint: &str) -> Result<(), DaemonError> {
+    let url = url::Url::parse(endpoint).map_err(|_| error("invalid owning provider endpoint"))?;
+    if url.scheme() != "ws"
+        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_none()
+    {
+        return Err(error(
+            "owning provider endpoint must be an official loopback WebSocket",
+        ));
+    }
+    Ok(())
+}
+
+impl NativeProviderSockets {
+    pub(crate) async fn execute<F, Fut>(
+        &self,
+        scope: SocketScope,
+        operation: NativeProviderTransportOperation,
+        authorize: F,
+    ) -> Result<NativeProviderTransportResult, DaemonError>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), DaemonError>> + Send,
+    {
+        authorize().await?;
+        match operation {
+            NativeProviderTransportOperation::Open => {
+                validate_endpoint(&scope.endpoint)?;
+                let mut entries = self.0.lock().await;
+                if entries.len() >= CONNECTION_LIMIT
+                    || entries
+                        .values()
+                        .filter(|entry| entry.scope == scope)
+                        .count()
+                        >= 2
+                {
+                    return Err(error(
+                        "native connection limit reached; close the existing attachment first",
+                    ));
+                }
+                let config = WebSocketConfig::default()
+                    .max_message_size(Some(FRAME_BYTES))
+                    .max_frame_size(Some(FRAME_BYTES));
+                let (socket, _) = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    tokio_tungstenite::connect_async_with_config(
+                        &scope.endpoint,
+                        Some(config),
+                        false,
+                    ),
+                )
+                .await
+                .map_err(|_| error("owning provider connection timed out"))?
+                .map_err(|_| error("owning provider connection failed"))?;
+                authorize().await?;
+                let connection_id = format!("native-socket-{:032x}", rand::random::<u128>());
+                let (sender, mut outbound) = mpsc::channel::<String>(QUEUE_FRAMES);
+                let (inbound, receiver) = mpsc::channel::<String>(QUEUE_FRAMES);
+                let entry = Arc::new(Connection {
+                    scope,
+                    sender,
+                    receiver: Mutex::new(receiver),
+                    touched: std::sync::Mutex::new(std::time::Instant::now()),
+                });
+                entries.insert(connection_id.clone(), entry.clone());
+                let weak_entries = Arc::downgrade(&self.0);
+                let id = connection_id.clone();
+                tokio::spawn(async move {
+                    let mut socket = socket;
+                    let mut interval = tokio::time::interval(Duration::from_secs(1));
+                    loop {
+                        tokio::select! {
+                            _ = interval.tick() => {
+                                let idle = entry.touched.lock().expect("native touch lock").elapsed() > Duration::from_secs(15);
+                                if idle || authorize().await.is_err() { break; }
+                            }
+                            frame = outbound.recv() => {
+                                let Some(frame) = frame else { break; };
+                                if authorize().await.is_err() || tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Text(frame.into()))).await.map_or(true, |result| result.is_err()) { break; }
+                            }
+                            message = socket.next() => {
+                                match message {
+                                    Some(Ok(Message::Text(frame))) => { if inbound.try_send(frame.to_string()).is_err() { break; } }
+                                    Some(Ok(Message::Ping(data))) => { if tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Pong(data))).await.map_or(true, |result| result.is_err()) { break; } }
+                                    Some(Ok(Message::Pong(_))) => {}
+                                    _ => break,
+                                }
+                            }
+                        }
+                    }
+                    // Bounded close even when the official server stops reading.
+                    let _ = tokio::time::timeout(Duration::from_secs(1), socket.close(None)).await;
+                    if let Some(entries) = weak_entries.upgrade() {
+                        entries.lock().await.remove(&id);
+                    }
+                });
+                Ok(NativeProviderTransportResult {
+                    connection_id,
+                    frames: vec![],
+                    closed: false,
+                })
+            }
+            NativeProviderTransportOperation::Exchange {
+                connection_id,
+                frames,
+            } => {
+                if frames.len() > QUEUE_FRAMES
+                    || frames.iter().map(String::len).sum::<usize>() > FRAME_BYTES
+                {
+                    return Err(error("native outbound queue exceeded"));
+                }
+                let mut rejected = Vec::new();
+                let mut admitted = Vec::new();
+                for frame in frames {
+                    // Optional native features may receive an RPC refusal without
+                    // tearing down the display connection or forwarding a turn.
+                    if validate_frame(&frame).is_ok() {
+                        admitted.push(frame);
+                    } else {
+                        let value: serde_json::Value = serde_json::from_str(&frame)
+                            .map_err(|_| error("native frame must be JSON"))?;
+                        if let Some(id) = value
+                            .get("id")
+                            .filter(|id| id.is_string() || id.is_number())
+                        {
+                            rejected.push(serde_json::json!({"id":id,"error":{"code":-32601,"message":"Use the owning kernel prompt/control or RuntimeInteraction path"}}).to_string());
+                        }
+                    }
+                }
+                if rejected.iter().map(String::len).sum::<usize>() > FRAME_BYTES {
+                    return Err(error("native refusal batch exceeds the response bound"));
+                }
+                let entry = self
+                    .0
+                    .lock()
+                    .await
+                    .get(&connection_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        error("native connection closed; reattach to the current run")
+                    })?;
+                if entry.scope != scope {
+                    return Err(error("native connection attachment or run mismatch"));
+                }
+                *entry.touched.lock().expect("native touch lock") = std::time::Instant::now();
+                for frame in admitted {
+                    entry.sender.try_send(frame).map_err(|_| {
+                        error("native input backpressure; reattach without replaying input")
+                    })?;
+                }
+                let mut receiver = entry.receiver.lock().await;
+                let mut result = rejected;
+                // A single bounded upstream frame per response keeps the relay envelope bounded.
+                if result.is_empty() {
+                    if let Ok(frame) = receiver.try_recv() {
+                        result.push(frame);
+                    }
+                }
+                Ok(NativeProviderTransportResult {
+                    connection_id,
+                    frames: result,
+                    closed: receiver.is_closed(),
+                })
+            }
+            NativeProviderTransportOperation::Close { connection_id } => {
+                let mut entries = self.0.lock().await;
+                if let Some(entry) = entries.get(&connection_id) {
+                    if entry.scope != scope {
+                        return Err(error("native connection attachment or run mismatch"));
+                    }
+                    // Wake the socket actor immediately on close.
+                    *entry.touched.lock().expect("native touch lock") =
+                        std::time::Instant::now() - Duration::from_secs(16);
+                    entries.remove(&connection_id);
+                }
+                Ok(NativeProviderTransportResult {
+                    connection_id,
+                    frames: vec![],
+                    closed: true,
+                })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mp08_native_transport_rejects_prompt_approval_and_arbitrary_endpoint() {
+        for method in [
+            "turn/start",
+            "turn/steer",
+            "turn/interrupt",
+            "command/exec",
+            "account/login/start",
+            "config/value/write",
+        ] {
+            assert!(
+                validate_frame(&serde_json::json!({"id":1,"method":method}).to_string()).is_err()
+            );
+        }
+        assert!(validate_frame(r#"{"id":1,"result":{"decision":"accept"}}"#).is_err());
+        assert!(validate_frame(r#"{"id":1,"method":"initialize"}"#).is_ok());
+        for endpoint in [
+            "ws://example.com:1234",
+            "ws://127.0.0.1",
+            "wss://localhost:1234",
+            "ws://user@localhost:1234",
+        ] {
+            assert!(validate_endpoint(endpoint).is_err());
+        }
+        assert!(validate_endpoint("ws://127.0.0.1:1234").is_ok());
+    }
+
+    #[tokio::test]
+    async fn mp08_native_socket_fences_attachment_and_passive_run_revocation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ended_tx, ended_rx) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                match message {
+                    Message::Text(_) => socket
+                        .send(Message::Text(
+                            r#"{"id":1,"result":{"userAgent":"official-test-seam"}}"#.into(),
+                        ))
+                        .await
+                        .unwrap(),
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            let _ = ended_tx.send(());
+        });
+        let scope = SocketScope {
+            session_id: "room".into(),
+            agent_id: "agent".into(),
+            attachment_id: "attachment".into(),
+            provider_run_id: "run".into(),
+            leased_agent_id: Some("lease-agent".into()),
+            endpoint: format!("ws://{address}"),
+        };
+        let allowed = Arc::new(AtomicBool::new(true));
+        let guard = {
+            let allowed = allowed.clone();
+            move || {
+                let allowed = allowed.clone();
+                async move {
+                    if allowed.load(Ordering::SeqCst) {
+                        Ok(())
+                    } else {
+                        Err(error("run replaced"))
+                    }
+                }
+            }
+        };
+        let sockets = NativeProviderSockets::default();
+        let id = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Open,
+                guard.clone(),
+            )
+            .await
+            .unwrap()
+            .connection_id;
+        let mut foreign = scope.clone();
+        foreign.attachment_id = "foreign".into();
+        assert!(sockets
+            .execute(
+                foreign,
+                NativeProviderTransportOperation::Close {
+                    connection_id: id.clone()
+                },
+                guard.clone()
+            )
+            .await
+            .is_err());
+        sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Exchange {
+                    connection_id: id.clone(),
+                    frames: vec![r#"{"id":1,"method":"initialize"}"#.into()],
+                },
+                guard.clone(),
+            )
+            .await
+            .unwrap();
+        let mut observed = false;
+        for _ in 0..100 {
+            let result = sockets
+                .execute(
+                    scope.clone(),
+                    NativeProviderTransportOperation::Exchange {
+                        connection_id: id.clone(),
+                        frames: vec![],
+                    },
+                    guard.clone(),
+                )
+                .await
+                .unwrap();
+            if !result.frames.is_empty() {
+                observed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(observed);
+        allowed.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(3), ended_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        upstream.await.unwrap();
+        // The socket stops even when a revoked attachment never polls again.
+        for _ in 0..100 {
+            if sockets.0.lock().await.is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("revoked native connection was retained");
+    }
+}

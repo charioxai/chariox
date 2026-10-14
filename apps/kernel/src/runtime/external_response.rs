@@ -87,6 +87,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        NativeProviderTransport,
         SessionInviteCreated,
         DebugBundleExported,
         McpServerInstalled,

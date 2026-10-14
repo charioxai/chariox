@@ -279,6 +279,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ResizeTerminal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::NativeProviderTransport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SendTerminalInput(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

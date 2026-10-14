@@ -340,6 +340,7 @@ pub(super) fn compose_command_router(
     );
     let terminal_output_executor = TerminalOutputExecutor::new(runtime_state.clone());
     CommandRouter {
+        native_provider_sockets: Default::default(),
         _native_interaction_bridge: native_interaction_bridge,
         app,
         runtime_state,

@@ -1675,6 +1675,30 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::NativeProviderTransport {
+            leased_agent_id,
+            provider_run_id,
+            attachment_id,
+            operation,
+        } => {
+            match router
+                .relay_native_provider_transport(
+                    leased_agent_id,
+                    provider_run_id,
+                    attachment_id,
+                    operation,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::NativeProviderTransport { result },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::ForwardNativeTurnInteraction {
             context,
             interaction,
@@ -2393,6 +2417,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::NativeProviderTransport {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::SendLeasedNativeProviderInput {
             leased_agent_id, ..
         }
@@ -2490,6 +2517,19 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 #[cfg(test)]
 mod tests {
     mod signed_slice;
+    #[test]
+    fn mp08_native_transport_requires_the_existing_leased_agent_caller_gate() {
+        let request = super::RelayPeerRequest::NativeProviderTransport {
+            leased_agent_id: "leased".into(),
+            provider_run_id: "run".into(),
+            attachment_id: "attachment".into(),
+            operation: crate::local::NativeProviderTransportOperation::Open,
+        };
+        assert!(matches!(
+            super::lease_resource(&request),
+            Some(super::LeaseResource::LeasedAgent("leased"))
+        ));
+    }
 
     use super::*;
 
