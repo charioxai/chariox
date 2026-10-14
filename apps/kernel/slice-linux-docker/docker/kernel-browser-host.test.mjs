@@ -1066,3 +1066,17 @@ test('MP-08/MP-10/MP-11: protected still captures keep the hidden render widget 
  const captured=await host.request({op:'screenshot',_capture_protection:true,tab_id:opened.tab_id,generation:opened.generation});
  assert(captured.data_base64);assert.equal(holds,1);assert.equal(rendering,false);
 }));
+
+// MP-08/MP-10 (owner A/B 2026-10-14, findings 6/8): a typed URL waited for full all-tab reconciles before
+// and after the navigation (up to 25 s on a loading page), holding the mutation lane for the next one.
+test('MP-08/MP-10 navigate answers at commit without all-tab reconciles', () => using(async ({ host, connection }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const browser = host.browser, reconcile = browser.reconcile;
+  let reconciles = 0;
+  browser.reconcile = async (...args) => { reconciles++; return reconcile(...args); };
+  browser.navigate = async ({ target_id, url }) => ({ target_id, document_id: 'doc-next', url });
+  const result = await host.request({ op: 'navigate', tab_id: opened.tab_id, generation: opened.generation, url: 'https://example.com/next' });
+  assert.equal(reconciles, 0, 'no all-tab reconcile on the navigation path');
+  const tab = result.tabs.find(entry => entry.tab_id === opened.tab_id);
+  assert.equal(tab.document_id, 'doc-next'); assert.equal(tab.url, 'https://example.com/next');
+}));

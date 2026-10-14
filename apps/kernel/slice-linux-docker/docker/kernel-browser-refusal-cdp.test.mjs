@@ -29,6 +29,7 @@ async function withAdapter(run) {
   host.browser = browser; host.generation = 1;
   host.start = async () => {};
   host.target = async () => ({ tab_id: 'host-tab', target_id: 'target', document_id: 'observed' });
+  host.displayTarget = host.target; // navigation and bound input read their own Tab (MP-08/MP-10)
   try { await run(host, wire); } finally { await browser.close(); await rm(root, { recursive: true, force: true }); }
 }
 const fill = { method: 'host.secret', id: 1, params: {
