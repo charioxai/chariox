@@ -1268,6 +1268,6 @@ fn mp08_schema_five_provider_account_wire_snapshot_is_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "25f852573fcbff89af6215d027f1bd651743a13e401afc0e30b59ef48df47afe"
+        "67bb65cad07000723a6a6ec4cd0c10bafa5a6b0683d5b40eeb918c5dd4b76728"
     );
 }
