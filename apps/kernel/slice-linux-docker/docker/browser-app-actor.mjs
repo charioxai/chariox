@@ -34,9 +34,10 @@ export function installAppActorTasks(controlKey, initialTask, ownerTask, notify)
   };
   const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
   // Tell the host which task started a page load: a gesture names the dispatched
-  // input or the owner, a script navigation the task that ran it.
+  // input or the owner, a script navigation the task that ran it. Page-dispatched
+  // events are never evidence.
   if (globalThis.navigation) apply(add, globalThis.navigation, ['navigate',
-    event => notify(event.userInitiated ? (dispatching ? input : ownerTask) : origin())]);
+    event => { if (event.isTrusted) notify(event.userInitiated ? (dispatching ? input : ownerTask) : origin()); }]);
   EventTarget.prototype.addEventListener = function(type, callback, options) {
     if (!callback) return apply(add, this, [type, callback, options]);
     let callbacks = get(listeners, this);
