@@ -55,9 +55,23 @@ int main(void) {
     assert(!cx_capture_open_selected_region(pid,w,127,160,0,0,128,32));
     int64_t inventory[32*9];assert(cx_capture_inventory(pid,inventory,32)==2);assert(cx_capture_inventory(pid,inventory,1)==-1);assert(cx_capture_inventory(1,inventory,32)==-1);
     XDestroyWindow(d,other);XSync(d,False);
+    struct Capture *transient=cx_capture_open_selected_region(pid,w,128,160,0,0,128,32);assert(transient);
+    XSync(transient->display,False);
+    XResizeWindow(d,w,128,161);XResizeWindow(d,w,128,160);XSync(d,False);
+    assert(cx_capture_damage(transient));
+    assert(cx_capture_key_modifiers(transient,XK_l,2)==-1);
+    cx_capture_close(transient);
     XResizeWindow(d,w,128,161);XSync(d,False);
+    /* MP-11: input can arrive before the next readback processes Configure.
+     * An old crop must not target the newly sized window in that interval. */
+    assert(cx_capture_click(chrome,10,10)==-1);
+    assert(cx_capture_wheel(page,10,10,0,1)==-1);
+    assert(cx_capture_key_modifiers(chrome,XK_l,2)==-1);
     assert(cx_capture_read(chrome,pixels,bounds)==-1);
     assert(cx_capture_read(page,pixels,bounds)==-1);
+    XResizeWindow(d,w,128,160);XSync(d,False);
+    assert(cx_capture_click(chrome,10,10)==-1);
+    assert(cx_capture_key_modifiers(chrome,XK_l,2)==-1);
     cx_capture_close(page);cx_capture_close(chrome);
     XFreeGC(d,gc);XDestroyWindow(d,w);XCloseDisplay(d);
     puts("MP-08/MP-10/MP-11 native window-region crop, input origin and retirement PASS");
