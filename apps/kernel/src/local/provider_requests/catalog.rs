@@ -1,9 +1,9 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
-    claude_provider_catalog, default_provider_command_catalogs, resolve_claude_executable,
-    resolve_opencode_executable, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
-    OpenCodeProviderInfo, ProviderAuthStatus,
+    claude_provider_catalog_with_environment, default_provider_command_catalogs,
+    resolve_claude_executable, resolve_opencode_executable, CodexClient, OpenCodeClient,
+    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -37,13 +37,20 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    let claude_environment = registry.resolve_environment(
+        &owner_user_id,
+        "claude",
+        &selected_profiles["claude"].profile_id,
+    )?;
+    let mut catalogs = vec![claude_provider_catalog_with_environment(
+        &claude_environment,
+    )];
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
-    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
     let opencode_profile = selected_profiles
         .get("opencode")
         .expect("OpenCode default profile is migrated");

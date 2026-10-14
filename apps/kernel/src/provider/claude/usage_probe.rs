@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -157,6 +157,78 @@ fn run_claude_print(
     timeout: Duration,
     label: &'static str,
 ) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
+    let mut command_args = vec![
+        "-p",
+        args[0],
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--no-chrome",
+        "--tools",
+        "",
+    ];
+    command_args.extend_from_slice(&args[1..]);
+    let (status, output) =
+        run_claude_capture(executable, environment, &command_args, None, timeout, label)?;
+    Ok((status, serde_json::from_slice(&output).ok()))
+}
+
+/// Official stream-json initialization reports the native picker without a model turn.
+pub(super) fn probe_claude_models(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<serde_json::Value, DaemonError> {
+    let input = b"{\"type\":\"control_request\",\"request_id\":\"chariox-catalog\",\"request\":{\"subtype\":\"initialize\"}}\n";
+    let (status, output) = run_claude_capture(
+        executable,
+        environment,
+        &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{}",
+        ],
+        Some(input),
+        Duration::from_secs(10),
+        "Claude model catalog",
+    )?;
+    if status.success() {
+        for line in output.split(|byte| *byte == b'\n') {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
+            if value["type"] == "control_response"
+                && value["response"]["request_id"] == "chariox-catalog"
+                && value["response"]["subtype"] == "success"
+            {
+                if let Some(models) = value["response"]["response"]["models"].as_array() {
+                    return Ok(serde_json::Value::Array(models.clone()));
+                }
+            }
+        }
+    }
+    Err(probe_error(
+        "Claude did not return native model metadata".into(),
+    ))
+}
+
+fn run_claude_capture(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+    args: &[&str],
+    input: Option<&[u8]>,
+    timeout: Duration,
+    label: &'static str,
+) -> Result<(std::process::ExitStatus, Vec<u8>), DaemonError> {
     let print_error = |message: String| DaemonError::LocalTransport {
         operation: label,
         message,
@@ -177,15 +249,7 @@ fn run_claude_print(
         .try_clone()
         .map_err(|_| print_error("failed to pin Claude stderr".into()))?;
     let mut command = Command::new(executable);
-    command.arg("-p").arg(args[0]).args([
-        "--output-format",
-        "json",
-        "--no-session-persistence",
-        "--no-chrome",
-        "--tools",
-        "",
-    ]);
-    command.args(&args[1..]);
+    command.args(args);
     command.current_dir(root.path());
     for (name, value) in environment {
         command.env(name, value);
@@ -200,7 +264,11 @@ fn run_claude_print(
     }
     command.env("DISABLE_AUTOUPDATER", "1");
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
@@ -226,6 +294,17 @@ fn run_claude_print(
     let mut child = command
         .spawn()
         .map_err(|error| print_error(format!("failed to start Claude: {error}")))?;
+    if let Some(input) = input {
+        let result = child
+            .stdin
+            .take()
+            .expect("piped catalog input")
+            .write_all(input);
+        if result.is_err() {
+            stop_claude_probe(&mut child);
+            return Err(print_error(format!("failed to initialize {label}")));
+        }
+    }
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         let overflow = [&stdout_metadata, &stderr_metadata]
@@ -274,7 +353,7 @@ fn run_claude_print(
     if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
         return Err(print_error(format!("{label} output limit exceeded")));
     }
-    Ok((status, serde_json::from_slice(&output).ok()))
+    Ok((status, output))
 }
 
 fn stop_claude_probe(child: &mut std::process::Child) {
@@ -414,6 +493,32 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    #[test]
+    #[cfg(unix)]
+    fn model_probe_initializes_without_sending_a_user_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let request = root.join("request.json");
+        let response = serde_json::json!({
+            "type":"control_response", "response":{"subtype":"success", "request_id":"chariox-catalog",
+                "response":{"models":[{"value":"haiku", "resolvedModel":"claude-haiku-5-5", "displayName":"Haiku"}]}}
+        });
+        fs::write(&executable, format!("#!/bin/sh\nread -r input\nprintf '%s' \"$input\" > '{}'\ncat >/dev/null\nprintf '%s\\n' '{}'\n", request.display(), response)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let models = probe_claude_models(&executable, &environment).unwrap();
+        assert_eq!(models[0]["resolvedModel"], "claude-haiku-5-5");
+        let input: serde_json::Value = serde_json::from_slice(&fs::read(request).unwrap()).unwrap();
+        assert_eq!(input["type"], "control_request");
+        assert_eq!(input["request"]["subtype"], "initialize");
+        assert!(input.get("message").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn probes_both_usage_windows_without_replacing_home() {
         if Command::new("node").arg("--version").output().is_err() {

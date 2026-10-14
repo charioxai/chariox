@@ -74,7 +74,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
-            name: "GPT-5.4",
+            name: "gpt-5.4",
             status: "active",
             variants: {
               low: {},
@@ -92,7 +92,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "gpt-5.4": {
             id: "gpt-5.4",
-            name: "GPT-5.4",
+            name: "gpt-5.4",
             status: "active",
             variants: {
               low: {},
@@ -109,7 +109,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "claude-sonnet-4-6": {
             id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+            name: "Sonnet 4.6",
             status: "active",
             variants: {
               low: {},
@@ -128,7 +128,7 @@ export function fallbackProviderCatalog(options: {
         models: {
           "claude-sonnet-4-6": {
             id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6",
+            name: "Sonnet 4.6",
             status: "active",
             variants: {
               low: {},
