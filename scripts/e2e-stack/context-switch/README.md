@@ -7,7 +7,7 @@ entry, hosted WSS, real official provider profiles, ordinary clicks/keys, and re
 screenshots/video. Inspect recordings before classifying UI PASS. Native Claude
 cancel remains a separate #993 cell. Slice/Path-1 placement is a separate row.
 
-From any fresh source checkout (Node 22, no dependencies or credentials needed):
+From a fresh checkout on Linux with Node 22 and Python 3 (no installed npm packages or credentials needed):
 
 ```sh
 node scripts/e2e-stack/context-switch/self-test.mjs
@@ -29,6 +29,7 @@ Live inputs are explicit and stay outside every repository:
 - `CTXVAL_NATIVE_CODEX_PROFILE`: disposable official native scope prepared by the
   approved product import; never manually refresh a shared login.
 - `CTXVAL_OPENCODE_PROFILE`: product-linked scope, for OpenCode-specific cells only.
+- `PLAYWRIGHT_BROWSERS_PATH`: external video-encoder cache; install Playwright ffmpeg before web cells.
 - `CHARIOX_CLAUDE_BIN`: installed official Claude CLI, also required for guest assets.
 
 Pass the existing coordinator Claude setup token on **stdin**, never as an argument
@@ -82,8 +83,10 @@ It exports public source/build/client inputs into `CTXVAL_LANE/public`; credenti
 are enrolled/transferred later by the normal product paths. The diagnostic bridge
 is guest stdio/control observation only; provider execution still uses home-owned
 leases over hosted WSS. VMs admit only above 15% free disk / 24 GiB available memory,
-use four vCPUs / 6 GiB, and reserve the shared b3 VM slot. Docker diagnostic mode
-requires `CTXVAL_WORKER_KIND=docker` and `CTXVAL_DOCKER_IMAGE`; same-host mode is
+use four vCPUs / 6 GiB, and reserve the shared b3 VM slot. Ordinary Docker short-cell mode
+requires `CTXVAL_WORKER_KIND=docker` and `CTXVAL_DOCKER_IMAGE`; `CTXVAL_PEER_ALLOW_HELPER` optionally names the operator peer-admission helper;
+only a unique exact own note is removed at cleanup. `CTXVAL_NODE_BIN` selects a
+verified portable Node executable for a guest with another OS. Same-host mode is
 supplementary and cannot establish real-machine acceptance.
 
 Every run has a unique safe name; existing state ownership markers reject reuse.
@@ -92,3 +95,44 @@ foreign groups. Cleanup stops only captured own processes, deletes receiving
 state/guest overlay/seed/slot, and records remaining processes. Stop own PR stacks
 and remove KEEP when the round ends. Delete public guest assets/copied binaries
 then; preserve evidence and shared provider profiles. No CI or publication runs.
+
+Window cells accept `CTXVAL_COMPACTION_SOURCE/TARGET` and `CTXVAL_WINDOW_MODELS`.
+Verify the installed official CLI: Haiku5.5 can report1M, so never assume a200k
+target. `CTXVAL_CONTROL_NAMES` isolates controls without skipping other work for
+an independent-account blocker. `CTXVAL_MATRIX=restart-account` requires a real
+second account; a failed product refresh is recorded while the other variants run.
+`CTXVAL_M4=1` keeps25% disk /24GiB memory admission; the optional external
+`CTXVAL_CODEX_PAUSE_FILE` holds long-run Codex switches behind short Codex cells.
+The long run restarts only the owned worker kernel mid-session, retaining its
+normal product state and recorded binary hash; the home kernel remains running.
+
+MP-08 / MP-10 / MP-11: `CTXVAL_ISOLATE_CLAUDE=1` with
+`CTXVAL_COMPACTION=outage` exercises the real 300s source-compaction deadline
+through an opaque, provider-only 310s CONNECT outage. The ordinary kernel and
+hosted relay stay connected. The receipt allows the normal 20s relay response
+budget separately from the 300s kernel deadline. `CTXVAL_COMPACTION_PEER=1`
+holds a real second-agent shell permission, then answers it through the TUI
+while source compaction is pending. Leased window probes use the built native client with `--machine`; set
+`CTXVAL_MATCH_NATIVE_WORKTREE=1` in Docker mode to materialize the same public
+checkout path on both kernels, as the ordinary native client expects. Source
+compaction diagnostics come from the worker. These are scoped subcells,
+not composite acceptance. Preserve startup blank frames and report their
+timestamps under the real-use rule.
+
+MP-08 / MP-10 / MP-11: the120s utility-outage driver also performs a real
+second-agent repository audit and answers its permission while the source
+utility remains pending. Pane focus uses ordinary web clicks while a permission
+owns the TUI keyboard; the approval itself uses the real TUI interaction.
+
+MP-08 / MP-10 / MP-11: worker startup also waits for its exact machine/kernel
+pair to appear ONLINE in the real hosted dashboard. A connected socket alone
+does not establish a fresh selectable target. Authorization failures after that
+check remain failures; the driver does not substitute credentials or bypass
+admission.
+
+MP-08 / MP-10 / MP-11: state roots are created exclusively; an existing directory
+is never adopted. Cleanup also checks exact disposable home/profile paths for
+detached account-inspection servers, with captured process generations and the
+production signal guard. It records those removals separately and preserves
+other runtime scopes. This is drill cleanup, not a claim that production kernel
+shutdown has been repaired.

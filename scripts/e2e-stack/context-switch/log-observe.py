@@ -11,7 +11,9 @@ for path in (root/'home/logs').glob('*-daemon-*.ndjson'):
         except ValueError: continue
         if e.get('component') != 'daemon.provider_context_handoff': continue
         f = e.get('fields') or e
+        details = f.get('details') if isinstance(f.get('details'), dict) else {}
+        observed = {**details, **f}
         error = str(f.get('error','')).lower()
         category = 'rejected-model' if any(x in error for x in ['unsupported model','model_not_found','model not found','not supported when using codex']) else 'auth-rejection' if any(x in error for x in ['401','unauthorized']) else 'invalid-brief' if 'not a handoff brief' in error else 'quota' if any(x in error for x in ['usage limit','quota','rate limit']) else 'timeout' if any(x in error for x in ['deadline','timeout','timed out']) else 'other-error' if error else None
-        rows.append({'atMs': e.get('timestamp_ms'),'level':e.get('level'),'message':e.get('message'), 'fields':{k:f[k] for k in fields if k in f},'errorClass':category})
+        rows.append({'atMs': e.get('timestamp_ms'),'level':e.get('level'),'message':e.get('message'), 'fields':{k:observed[k] for k in fields if k in observed},'errorClass':category})
 print(json.dumps({'rows':rows}))

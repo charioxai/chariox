@@ -3,7 +3,7 @@ import {r,init,finish,select,workload,probe,enrollClaude} from './common.mjs';
 import {sleep} from './runtime.mjs';
 import {webClients} from './web-live.mjs';
 import {execFileSync} from 'node:child_process';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile,writeFile,access} from 'node:fs/promises';
 import {summarizeBriefTransition,foreignNativeSession,formatContextValidationFailure} from './context-switch-validation-brief.mjs';
 const mode=process.argv[4]??'faults',leased=process.env.CTXVAL_LEASED==='1';
 const result={MP:['MP-08','MP-10','MP-11'],mode,leased,status:'RUNNING',started:new Date().toISOString(),cells:[]};let worker,remote,web=[];
@@ -34,7 +34,8 @@ const topics=[
 async function audit(n){const [file,task]=topics[n%topics.length];return r.turn(`Continue the actual read-only context-switch audit. Inspect ${file}; if moved, locate its responsibility with rg --files. ${task} Read needed implementation and existing tests; do not execute cargo. Give a detailed evidence-based answer with exact source excerpts where necessary, at most 350 words, limited to the named responsibility and its directly relevant tests. Use at most four read/search actions. Preserve the nine original audit records unchanged and do not repeat their JSON or assistant-only proposal. Do not write source/files or read account, credential or runtime state.`, 'CTXVAL_R4_AUDIT_'+n,900000)}
 try{
  ({worker,remote}=await init({leased}));
- await enrollClaude();facts=await workload('claude-p','claude-haiku-5-5',3);
+ await enrollClaude();facts=await workload('claude-p','claude-haiku-5-5',Number(process.env.CTXVAL_SOURCE_TURNS??3));
+ if(mode==='faults'||mode==='worker'){let n=0;while((await observe('fault-history-fill')).contentBytes<=116280&&n<40)await audit(n++);if((await observe('fault-ready')).contentBytes<=116280)throw Error('Actual fault workload never crossed the handoff byte budget');}
  await r.record('workload-manifest',{repository:'https://github.com/charioxai/chariox.git',readOnlyTask:'audit context-handoff cancellation',normalization:'completed semicolon suffix; sha256 label prefix; NFC',providers:['Codex official app-server','Claude official CLI'],models:['gpt-6-luna','claude-haiku-5-5']});
  web=await webClients(r,remote);
  if(mode==='faults'||mode==='worker'){
@@ -54,7 +55,7 @@ try{
   let n=0,nextSwitch=since+20*60*1000,switches=0,provider='claude-p';const end=since+3*60*60*1000;
   while(Date.now()<end||switches<9){
    const resources=JSON.parse(execFileSync('python3',['-c',"import json,shutil; m=dict(line.split(':',1) for line in open('/proc/meminfo')); print(json.dumps({'diskFreeGiB':shutil.disk_usage('/').free/2**30,'memAvailableGiB':int(m['MemAvailable'].split()[0])/2**20}))"],{encoding:'utf8'}));await r.record('resources-'+n,resources);if(resources.diskFreeGiB<40||resources.memAvailableGiB<12)throw Error('Measured resource floor reached');
-   if(Date.now()>=nextSwitch){provider=provider==='claude-p'?'codex':'claude-p';const model=provider==='codex'?'gpt-6-luna':'claude-haiku-5-5';await cell('CX-02-switch-'+switches,async()=>cycle(provider,model,{client:web[switches%2]}));switches++;nextSwitch+=20*60*1000;if(!ten){await r.turn("Add one accepted user decision: tenth_decision is exactly 'validate queue once'. Preserve all prior audit records. Reply briefly without tools.",'CTXVAL_R4_TENTH');ten=true}await r.record('long-checkpoint',{elapsedMs:Date.now()-since,switches,nextSwitch});
+   if(Date.now()>=nextSwitch){if(process.env.CTXVAL_CODEX_PAUSE_FILE){let held=false;try{await access(process.env.CTXVAL_CODEX_PAUSE_FILE);held=true}catch{}if(held){nextSwitch=Date.now()+90000;await r.record('codex-short-cell-gate',{held:true,sourceAuditContinues:true});continue;}}provider=provider==='claude-p'?'codex':'claude-p';const model=provider==='codex'?'gpt-6-luna':'claude-haiku-5-5';await cell('CX-02-switch-'+switches,async()=>cycle(provider,model,{client:web[switches%2]}));switches++;nextSwitch=Date.now()+20*60*1000;if(switches===4&&worker){await cell('CX-LEASE-worker-only-restart',async()=>{const before=await r.binding(),restart=await worker.restart();await remote.refresh();await probe(facts,ten);for(const c of web)await c.probe(facts,ten);return {before,after:await r.binding(),restart,recall:ten?10:9,homeKernelRestarted:false};});}if(!ten){await r.turn("Add one accepted user decision: tenth_decision is exactly 'validate queue once'. Preserve all prior audit records. Reply briefly without tools.",'CTXVAL_R4_TENTH');ten=true}await r.record('long-checkpoint',{elapsedMs:Date.now()-since,switches,nextSwitch});
    }else{
     await cell('CX-02-work-'+n,async()=>{const turn=await audit(n);return {elapsedMs:turn.elapsedMs}});n++;
     const deadline=Math.min(nextSwitch,Date.now()+90*1000);while(Date.now()<deadline){await sleep(Math.min(15000,deadline-Date.now()));const s=await r.tui.send('snapshot');if(s.daemonDisconnected)throw Error('TUI disconnected during long-session stability interval')}

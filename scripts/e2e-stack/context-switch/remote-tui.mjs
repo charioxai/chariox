@@ -48,7 +48,7 @@ export async function shapedRemoteTui(run,{useTui=true}={}){
   function configure(pairing,joined){
    if(!useTui)return;
    if(receivingCloud){run.setRemote({clientId,prefix:['nsenter','--net='+nsnet,'--mount='+nsmount,'--'],connectionArgs:['--terminal-pairing-link',pairing.pairing_link],secret:pairing.pairing_link});return;}
-   run.setRemote({clientId:joined.pairing.subject_id,prefix:['nsenter','--net='+nsnet,'--mount='+nsmount,'--'],connectionArgs:['--relay-url',pairing.relay_url,'--relay-token-env','CTXVAL_TERMINAL_TOKEN','--target-daemon-id',pairing.target_daemon_id],env:{CTXVAL_TERMINAL_TOKEN:joined.relay_token},secret:joined.relay_token});
+   run.setRemote({clientId:joined.pairing.subject_id,prefix:['nsenter','--net='+nsnet,'--mount='+nsmount,'--'],connectionArgs:['--relay-url',pairing.relay_url,'--relay-token-env','CTXVAL_TERMINAL_TOKEN','--target-daemon-id',pairing.target_daemon_id],env:{CTXVAL_TERMINAL_TOKEN:joined.relay_token??(joined.kernel_pairing?bootstrapToken:undefined)},secret:joined.relay_token??bootstrapToken});
   }
   configure(pairing,joined);
   async function refresh(){if(!useTui)return;const next=(await run.client.send({CreateTerminalPairingLink:{terminal_type:'cli',alias:'ctxval-remote',expires_in_ms:15*60*1000}})).TerminalPairingLinkCreated.pairing;if(receivingCloud){configure(next);return;}const opts=parseArgs(['--terminal-pairing-link',next.pairing_link]);const c=new LocalIpcClient(next.relay_url,{relayAuthToken:opts.relayToken,targetDaemonId:opts.targetDaemonId,relayIdentity:identity});try{const current=await joinKernelTerminalPairingLink(c,next.pairing_link,clientId,identity.publicKeyThumbprint);configure(next,current)}finally{await c.close()}}
