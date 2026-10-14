@@ -59,7 +59,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
         attachments: Vec<crate::session::PromptAttachment>,
     ) -> Result<(String, String, Vec<crate::session::PromptAttachment>), DaemonError> {
         self.room_secret_observations
-            .scrub(session_id, (prompt, hidden, attachments))
+            .scrub_prompt_inputs(session_id, (prompt, hidden, attachments))
     }
 
     fn rejected(
@@ -138,7 +138,7 @@ impl KernelRuntimeOwnedState {
         DaemonError,
     > {
         let mut protected = dispatch.clone();
-        let (prompt, hidden, attachments) = self.room_secret_observations.scrub(
+        let (prompt, hidden, attachments) = self.room_secret_observations.scrub_prompt_inputs(
             &dispatch.session_id,
             (
                 protected.prompt,
