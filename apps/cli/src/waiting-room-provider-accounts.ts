@@ -50,6 +50,9 @@ export function normalizeProviderAccountProfileId(
   provider: string,
   profileId: string | null | undefined,
 ): string {
+  // MP-08/MP-11: preserve follow-default intent across background discovery.
+  // Concrete IDs belong to explicit choices; resolve the default at use time.
+  if (!profileId || profileId === "default") return "default"
   const accounts = providerAccountsForProvider(profiles, provider)
   return accounts.some((profile) => profile.profile_id === profileId)
     ? profileId!

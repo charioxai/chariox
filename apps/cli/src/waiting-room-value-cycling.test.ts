@@ -4,7 +4,7 @@ import test from "node:test"
 import type { SliceRecord } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
-import { cycleWaitingRoomFocusedValue } from "./waiting-room-value-cycling.js"
+import { cycleWaitingRoomFocusedValue, cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
   createWaitingRoomState,
   normalizeWaitingRoomState,
@@ -155,6 +155,26 @@ test("MP-08 waiting room provider cycling offers only kernel-installed harnesses
     normalizeState: (next) => next,
   })
   assert.equal(olderKernel.providerId, "opencode", "a kernel that reports nothing keeps every provider")
+})
+
+test("MP-08/MP-10/MP-11 Account cycling starts at the resolved default and makes an explicit choice", () => {
+  const catalog = fallbackProviderCatalog()
+  const account = (profileId: string, isDefault: boolean) => ({
+    owner_user_id: "local", provider: "codex", profile_id: profileId, label: profileId, origin: "default" as const,
+    is_default: isDefault, auth_state: "authenticated" as const,
+    usage: { profile_id: profileId, provider: "codex", availability: "unavailable" as const, source: "test" },
+  })
+  const remote = { providerAccounts: [account("first", false), account("second", true)], installedProviders: ["codex"] }
+  const initial = normalizeWaitingRoomState({
+    ...createWaitingRoomState([], catalog, "codex", "default", ""), focus: "account",
+  }, [], catalog, undefined, remote)
+  assert.equal(initial.accountProfileId, "default")
+  const next = cycleWaitingRoomValue(initial, [], catalog, 1, undefined, remote)
+  assert.equal(next.accountAddSelected, true, "the add value follows the displayed second account")
+  const explicit = cycleWaitingRoomValue(next, [], catalog, -1, undefined, remote)
+  assert.equal(explicit.accountProfileId, "second", "returning to the default is an explicit choice")
+  const promoted = { ...remote, providerAccounts: remote.providerAccounts.map(profile => ({ ...profile, is_default: profile.profile_id === "first" })) }
+  assert.equal(normalizeWaitingRoomState(explicit, [], catalog, undefined, promoted).accountProfileId, "second")
 })
 
 test("MP-08 Account row cycling ends with an add-new-account value that never becomes the launch account", () => {

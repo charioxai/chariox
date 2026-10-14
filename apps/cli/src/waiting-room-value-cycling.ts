@@ -35,7 +35,7 @@ import {
   toggleManagedRepositorySelection,
   toggleManagedProviderAccountSelection,
 } from "./waiting-room-managed-environments.js"
-import { waitingRoomOfferedBackendProviderIds, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { waitingRoomOfferedBackendProviderIds, providerAccountsForProvider, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
@@ -88,9 +88,10 @@ export function cycleWaitingRoomFocusedValue(
   if (state.focus === "account") {
     // MP-08: the accounts, then a trailing "Add new <provider> account" value.
     const profiles = providerAccountsForProvider(remote.providerAccounts, state.providerId)
+    const selected = selectedProviderAccount(remote.providerAccounts, state.providerId, state.accountProfileId)
     const current = state.accountAddSelected
       ? profiles.length
-      : Math.max(0, profiles.findIndex((profile) => profile.profile_id === state.accountProfileId))
+      : Math.max(0, profiles.findIndex((profile) => profile.profile_id === selected?.profile_id))
     const next = modulo(current + delta, profiles.length + 1)
     return context.normalizeState({
       ...state,

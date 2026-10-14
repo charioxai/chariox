@@ -17,7 +17,9 @@ import {
   waitingRoomSessionLifecycleActionForEvent,
 } from "./waiting-room-controller.js"
 import type { SessionListEntry } from "./sessions.js"
-import { createWaitingRoomState } from "./waiting-room-state.js"
+import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
+import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { NEW_MANAGED_MACHINE_REF, managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
@@ -25,6 +27,49 @@ import {
   __setWaitingRoomWorktreeInventoryForTest,
   resolvePendingWaitingRoomWorktreePath,
 } from "./waiting-room-worktrees.js"
+
+test("MP-08/MP-10/MP-11 untouched launch follows native default promotion across inventories", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace", currentWorktreePath: "/workspace",
+    options: [{ id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true }],
+  })
+  try {
+    const catalog = fallbackProviderCatalog()
+    const before = { providerAccounts: [
+      { provider: "codex", profile_id: "managed", label: "Managed", is_default: true, auth_state: "not_configured", usage: { availability: "unavailable" } },
+      { provider: "codex", profile_id: "native", label: "Native", is_default: false, auth_state: "unknown", usage: { availability: "unavailable" } },
+    ] as ProviderAccountProfile[] }
+    const after = { providerAccounts: before.providerAccounts.map(profile => ({
+      ...profile, is_default: profile.profile_id === "native",
+      auth_state: profile.profile_id === "native" ? "authenticated" as const : "not_configured" as const,
+    })) }
+    const initial = normalizeWaitingRoomState({
+      ...createWaitingRoomState([], catalog, "codex", "gpt-5.4", "low"),
+      worktreeSelectionId: "existing:/workspace",
+    }, [], catalog, undefined, before)
+    assert.equal(selectedProviderAccount(before.providerAccounts, "codex", initial.accountProfileId)?.profile_id, "managed")
+    const refreshed = normalizeWaitingRoomState(initial, [], catalog, undefined, after)
+    assert.equal(selectedProviderAccount(after.providerAccounts, "codex", refreshed.accountProfileId)?.profile_id, "native")
+    const options = { state: refreshed, catalog, currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: after }
+    for (const decision of [deriveWaitingRoomCreateSessionDecision(options), deriveWaitingRoomActivationDecision({ ...options, sessions: [] })]) {
+      assert.equal(decision.action, "create")
+      if (decision.action === "create") assert.equal(decision.launch.accountProfile, "native")
+    }
+    const accountAction = deriveWaitingRoomControlActivationDecision({
+      state: { ...refreshed, focus: "account" }, remote: after, workspacePath: "/workspace", worktreePath: "/workspace",
+    })
+    assert.equal(accountAction.action, "info")
+    if (accountAction.action === "info") assert.match(accountAction.message, /Native: authenticated/)
+    // Cycling back to the displayed default is an explicit user choice.
+    const next = cycleWaitingRoomValue({ ...initial, focus: "account" }, [], catalog, 1, undefined, before)
+    const explicit = cycleWaitingRoomValue(next, [], catalog, -1, undefined, before)
+    const retained = normalizeWaitingRoomState(explicit, [], catalog, undefined, after)
+    assert.equal(retained.accountProfileId, "managed")
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: retained }).action, "error")
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
 
 test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in account", () => {
   __setWaitingRoomWorktreeInventoryForTest({

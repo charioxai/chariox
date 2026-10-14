@@ -223,7 +223,7 @@ export function createProviderSelectionController(
       deps.reconcileWaitingRoom({
         ...deps.waitingRoomState(),
         providerId,
-        accountProfileId: accountProfile,
+        accountProfileId: "default",
         modelId: nextDefaults.model,
         effort: nextDefaults.effort,
       })
