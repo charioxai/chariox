@@ -43,7 +43,8 @@ test("MP-08 MP-10 MP-11 changing Project discards a late plan acknowledgement",a
 })
 test("MP-08 MP-10 MP-11 reopening an active Apply resumes one status watch",async()=>{
   const running={operation_id:"other-client",local_project_id:"project",phase:"running",kind:"apply",attempt:1,updated_at_ms:1,per_item_results:[],receipts:[]} as unknown as EnvironmentOperation
-  let snapshot={...env,operations:[running]}, reads=0
+  let snapshot: ProjectEnvironment={...env,operations:[running]}
+  let reads=0
   const controller=createEnvironmentApplyController({current:()=>snapshot,snapshot:value=>{snapshot=value},render:()=>{},send:async request=>{
     if("GetEnvironmentOperation" in (request as object)){reads++;return {EnvironmentOperation:{operation:{...running,phase:"ready",updated_at_ms:2}}}}
     return {ProjectEnvironment:{environment:{...env,operations:[{...running,phase:"ready",updated_at_ms:2}]}}}
