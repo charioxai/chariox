@@ -980,3 +980,15 @@ fn md_capture_observations_reenter_live_protection_instead_of_replaying_pixels()
     })).unwrap();
     assert!(!super::request_is_cacheable(&request));
 }
+
+#[test]
+fn mp08_room_display_resume_and_open_recheck_live_authority_instead_of_cached_grants() {
+    for value in [
+        serde_json::json!({"GetSliceDisplayEndpoint":{"slice_ref":"slice-1","session_id":"room-1","attachment_id":"attachment-1","viewer_public_key":"key","shared_display":{"codecs":["avc1.420033"],"bitrate":8000000,"device_scale_factor":2}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"display_suspend","subscription_id":"room-display-one","generation":1}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"display_resume","subscription_id":"room-display-one","generation":1}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
+}

@@ -252,7 +252,7 @@ export type SliceDisplayBackend = "novnc" | "selkies"
 
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: SliceDisplayBackend | "chariox_viewer" | "external"
+  kind: SliceDisplayBackend | "chariox_viewer" | "external" | "shared"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null
@@ -260,6 +260,7 @@ export type SliceDisplayEndpoint = {
   stream_protocol?: string | null
   stream_id?: string | null
   peer_public_key?: string | null
+  shared_display?: RoomDisplayBinding | null
 }
 
 export type PairedClientRecord = {
@@ -486,3 +487,7 @@ export type WorkspacePullRequestRecord = {
   draft: boolean
   generated_at_ms: number
 }
+
+// MP-08/MP-10/MP-11: protocol 525 Room viewer, no input authority.
+export type RoomDisplayBinding={generation:number;subscription_id:string;codec:string;bitrate:number;device_scale_factor:1|2;source:{kind:"desktop";surface_id:string;generation:string;width:number;height:number};resumed?:boolean}
+export type RoomDisplayOffer={codecs:readonly string[];bitrate:number;device_scale_factor:1|2;resume_hint?:string}

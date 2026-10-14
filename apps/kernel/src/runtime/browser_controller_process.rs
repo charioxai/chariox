@@ -337,7 +337,7 @@ impl BrowserControllerProcessStdioBackend {
             }
         }
         #[cfg(all(feature = "native-display", target_os = "linux"))]
-        if self.host {
+        {
             // Production uses this exact kernel ELF. Test harnesses provide the
             // separately built production ELF because libtest owns their entry.
             let executable = if cfg!(test) {
@@ -350,7 +350,7 @@ impl BrowserControllerProcessStdioBackend {
             }
         }
         // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
-        let display_packets = if self.host && cfg!(unix) {
+        let display_packets = if cfg!(unix) {
             Some(Arc::new(display_packets::DisplayPackets::create()?))
         } else {
             None

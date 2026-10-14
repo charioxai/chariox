@@ -592,3 +592,53 @@ with fill targets and applies only their measured boxes before encoding.
 Legacy subscriptions clear stale frames and await a fresh protected capture.
 These source regressions do not establish hosted Vault/provider/Web/TUI
 acceptance; the live conjunction remains a separate MP-10 gate.
+
+## MP-08/MP-10/MP-11 Room carry (allocated local 525 / peer 133)
+
+A Room viewer requests `GetSliceDisplayEndpoint.shared_display` with its codec
+and density offer. The home reuses the Room display admission chain: local or
+key-bound remote client, attachment in the Room, attachment owner, exact bound
+Running slice and worker. `RoomDisplayLease` records that binding. The home
+resolves the existing native surface using the ordinary Room controller and
+observation protocols, then sends `OpenRoomSharedDisplay` to that bound worker.
+The worker checks the configured home key/Room/slice and the observed desktop
+reference before ordinary `display_subscribe` with `observed_by = lease_id`.
+The Room adapter reuses `DesktopDisplay`, `DesktopSource` and `DisplaySessions`;
+it never starts another desktop or Chromium. Room Actions remain the only input
+and takeover authority. The initial Room View target is the complete desktop;
+Browser/Region references do not grant access to an unbound worker host browser.
+
+The worker protects capture under the Room observation and credential-input
+barriers, encodes the ordinary CXD1 event and encrypts it to the admitted viewer
+key. The existing home `kernel_browser_display` subscription/ACK pump carries
+that worker ciphertext through the existing bound peer path. A home-scoped
+viewer token never becomes a worker terminal grant. Cloud pins the worker key
+for this display while retaining its home transport target and identity.
+
+On a network change, the shared presenter's 525 resume hint is the only
+resumption mechanism. Fresh home admission precedes the worker's bounded 5 s
+`DisplaySessions` resume; delivery/observer IDs rotate, old credits retire, and
+the producer survives. Idle streams expire after 60 s. Open/resume grants are
+not served from the command cache or automatically replayed after an uncertain
+write. Cloud keeps the painted frame while resuming; it does not request a
+replacement opening as a network recovery strategy. An explicit new target or
+user reconnect performs a new admitted open.
+
+The 525/133 hash fixture is `room-shared-display-525.json` beside the protocol
+shape tests. Source regressions are supplementary. Acceptance requires the
+actual Room View on the integrated shared producer: four window/density network
+changes to a painted frame within 1 s, takeover/release, protected desktop and
+a 2-hour hosted soak on a quiet host or KVM guest. No result from the legacy
+Room/Selkies comparator establishes acceptance of this carry.
+
+Run the focused network drill with
+`node apps/cli/scripts/live-room-shared-display-drill.mjs`. It requires an
+explicit hosted `CHARIOX_ROOM_DISPLAY_DRILL_VIEW_URL`, a lane-owned browser
+`CHARIOX_ROOM_DISPLAY_DRILL_PROFILE` authenticated/selected through normal UI,
+external `CHARIOX_ROOM_DISPLAY_DRILL_EVIDENCE`, an installed `PLAYWRIGHT_MODULE`
+and `CHARIOX_ROOM_DISPLAY_NETWORK_CHANGE_HELPER`. That executable changes the
+real link and returns only `{wire_rtt_ms,uplink_bits_per_second}`. The drill
+records all four window/density cells, requires an actual socket retirement,
+captures video/screenshots and checks three network changes per cell. It never
+automatically labels the feature accepted: review the recordings, the normal
+public-site/control/protection tasks and the separate 2-hour soak first.

@@ -45,7 +45,7 @@ export class DesktopSource {
       try{return await measureBrowserProtection(browser,this.policy);}finally{this.timing('desktop_gate_measure',measured);}
     });
   }
-  valid() { return !this.closed; }
+  valid() { return !this.closed && this.binding.isCurrent?.() !== false; }
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
   async scope() {

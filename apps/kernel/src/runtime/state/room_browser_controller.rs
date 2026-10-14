@@ -29,7 +29,9 @@ impl KernelRuntimeState {
             RelayPeerRequest::ObserveRoomComputer { slice_id, .. }
             | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
             | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
-            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. } => Some(slice_id),
+            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. }
+            | RelayPeerRequest::OpenRoomSharedDisplay { slice_id, .. }
+            | RelayPeerRequest::RoomSharedDisplay { slice_id, .. } => Some(slice_id),
             _ => None,
         };
         if let Some(slice_id) = slice_id {

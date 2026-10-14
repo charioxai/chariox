@@ -151,6 +151,22 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if let KernelBrowserCommand::Unsubscribe {
+            subscription_id,
+            generation,
+        } = &command
+        {
+            if self.is_room_display(subscription_id) {
+                return self
+                    .room_display_control(
+                        &caller.caller,
+                        subscription_id,
+                        *generation,
+                        crate::transport::room_shared_display::RoomDisplayCommand::Close,
+                    )
+                    .await;
+            }
+        }
         if let KernelBrowserCommand::Computer { command } = command {
             return self.kernel_computer_terminal_request(caller, command).await;
         }
@@ -236,7 +252,9 @@ impl KernelRuntimeState {
                 self.refresh_user_domain_grants();
                 match &command {
                     KernelBrowserCommand::GrantLeasedComputer { agent_id, target } => {
-                        return self.grant_leased_computer(&user, agent_id, target.clone()).await;
+                        return self
+                            .grant_leased_computer(&user, agent_id, target.clone())
+                            .await;
                     }
                     KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
                         self.revoke_leased_computer(&user, agent_id).await?;
@@ -252,8 +270,11 @@ impl KernelRuntimeState {
                         }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
                             self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
-                            self.owned.kernel_browser_host.revoke_grants(&user, agent_id.as_deref());
-                            self.revoke_user_leased_computer(&user, agent_id.as_deref()).await?;
+                            self.owned
+                                .kernel_browser_host
+                                .revoke_grants(&user, agent_id.as_deref());
+                            self.revoke_user_leased_computer(&user, agent_id.as_deref())
+                                .await?;
                             self.owned
                                 .kernel_browser_host
                                 .revoke_grants(&user, agent_id.as_deref());
@@ -323,7 +344,17 @@ impl KernelRuntimeState {
                 return Ok(result);
             }
         };
-        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
+        let room_control = match &request {
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id, ..
+            }
+            | KernelBrowserDisplayRequest::Resume {
+                subscription_id, ..
+            } => self.is_room_display(subscription_id),
+            _ => false,
+        };
+        if !room_control
+            && std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
             && !(std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() == Ok("1")
                 && matches!(
                     &request,
@@ -393,6 +424,40 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
+        let room_control = match &request {
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Attach,
+            )),
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Suspend,
+            )),
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Resume,
+            )),
+            _ => None,
+        };
+        if let Some((id, generation, command)) = room_control {
+            if self.is_room_display(id) {
+                return self
+                    .room_display_control(&caller.caller, id, generation, command)
+                    .await;
+            }
+        }
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
         // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
         let input_at = matches!(&request, KernelBrowserDisplayRequest::Input { .. })
@@ -889,7 +954,8 @@ mod document_tests {
         for op in ["display_suspend", "display_resume"] {
             assert!(browser_tool_params(serde_json::json!({"command":{
                 "op":op,"subscription_id":"human-display","generation":7
-            }})).is_err());
+            }}))
+            .is_err());
         }
     }
 }

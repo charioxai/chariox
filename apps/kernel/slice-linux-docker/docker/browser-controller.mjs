@@ -18,6 +18,8 @@ import {
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 
+import {hostErrorLabel} from './kernel-browser-error-label.mjs';
+import {RoomSharedDisplay} from './room-shared-display.mjs';
 import {RoomNativeAccessibility} from "./room-native-accessibility.mjs";
 import {UserDomainRefusal} from "./kernel-browser-refusal.mjs";
 let browserImportModule;
@@ -29,6 +31,9 @@ export async function handleBrowserControllerRequest(request, options = {}) {
     if (typeof value === "string" && value) browser.protectedValues?.add(value);
   }
   const result = await handleBrowserControllerRequestInner(request, { ...options, browser });
+  // MP-08/MP-11: this adapter returns only shared protected frame packets and
+  // opaque identities. Treating compressed bytes as text corrupts their codec.
+  if(request.method==='room.display'&&result.ok)return result;
   return redactObservation(result, browser.protectedValues ?? []);
 }
 
@@ -48,6 +53,12 @@ async function handleBrowserControllerRequestInner(
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
   try {
+    if (request.method === "room.display") {
+      browser.roomComputer ??= new RoomNativeAccessibility();
+      browser.roomDisplay ??= new RoomSharedDisplay({binding:viewport=>browser.roomComputer.displayBinding(viewport,browser)});
+      try{return successResponse(request.id,await browser.roomDisplay.request(request.params,{signal}));}
+      catch(error){if(error instanceof UserDomainRefusal)throw error;return errorResponse(request.id,'room_display_unavailable',hostErrorLabel(error));}
+    }
     if (["computer.snapshot", "computer.target_action"].includes(request.method)) {
       browser.roomComputer ??= new RoomNativeAccessibility();
       return successResponse(request.id, await browser.roomComputer.request({...request.params,op:request.method.slice(9)},{signal}));
@@ -173,6 +184,7 @@ async function handleBrowserControllerRequestInner(
       return successResponse(request.id,await recoverProductionBrowserImport({controller:browser,params:request.params}));
     }
     if (request.method === "shutdown") {
+      await browser.roomDisplay?.close();
       await browser.close();
       return successResponse(request.id, {
         state: "stopped",
@@ -431,6 +443,7 @@ export class BrowserControllerStdioServer {
 
 function classifyScheduling(request, browser) {
   const method = request?.method;
+  if (method === "room.display") return {kind:"read",targetId:"room-shared-display"};
   if (["browser.app.calls", "browser.app.respond"].includes(method)) return { kind: "bridge" };
   if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport, {
     browserBarVisible: request.params?.browser_bar_visible,

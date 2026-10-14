@@ -148,11 +148,17 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
+    {
+        return false;
+    }
     if matches!(
         request,
         LocalDaemonRequest::CaptureVisibleRegion(_)
             | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
                 command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplaySuspend { .. }
+                    | crate::local::KernelBrowserCommand::DisplayResume { .. }
                     | crate::local::KernelBrowserCommand::DisplayAck { .. }
                     | crate::local::KernelBrowserCommand::ListGrants
                     | crate::local::KernelBrowserCommand::SubscribeGrants { .. }

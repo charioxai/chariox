@@ -220,23 +220,12 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             Gate::Open(credit) => credit,
         };
         let started = Instant::now();
-        let result = route
-            .router
-            .runtime_state()
-            .kernel_browser_display_request(
-                &route.caller,
-                KernelBrowserDisplayRequest::EncodedCapture {
-                    subscription_id: route.display_id.clone(),
-                    generation,
-                    after_sequence: last_sent,
-                    push: Some(credit),
-                },
-            )
-            .await;
-        let mut response = match result {
+        let result =
+            capture_frame(&route, &daemon_private_key, generation, last_sent, credit).await;
+        let captured = match result {
             Ok(result) => {
                 failures = 0;
-                serde_json::json!({"KernelBrowser":{"result":result}})
+                result
             }
             // A navigation between capture and commit refuses one credit as
             // a stale document; the next credit binds the new document.
@@ -261,11 +250,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 continue;
             }
         };
-        let Some((_, sequence, event)) =
-            crate::transport::kernel_browser_display::take_display_event(&mut response)
-        else {
-            // The host parks each credit on producer readiness; back off only
-            // sources (CDP fallback) that answer empty credits immediately.
+        let Some((sequence, encrypted_event)) = captured else {
             if started.elapsed() < Duration::from_millis(5) {
                 idle = (idle * 2).clamp(Duration::from_millis(8), Duration::from_millis(100));
                 let _ = timeout(idle, pump.wake.notified()).await;
@@ -274,22 +259,6 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         };
         idle = Duration::ZERO;
         let at = std::time::Instant::now();
-        let Some(encrypted_event) =
-            crate::transport::kernel_browser_display::encode_display_event(event)
-                .ok()
-                .and_then(|bytes| {
-                    relay_crypto::encrypt_payload_for_peer(
-                        &daemon_private_key,
-                        &route.public_key,
-                        &bytes,
-                    )
-                    .ok()
-                })
-        else {
-            pump.with(|state| state.failed = true);
-            return;
-        };
-        crate::transport::kernel_browser_display::timing("event_serialize_encrypt", at);
         pump.with(|state| state.sent.push_back((sequence, Instant::now())));
         last_sent = sequence;
         if route
@@ -306,6 +275,63 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         }
         crate::transport::kernel_browser_display::timing("event_queue_credit", at);
     }
+}
+
+// One ACK gate and event transport; Room placement supplies worker-sealed CXD1
+// rather than admitting a viewer as a terminal on the worker (MP-08/MP-11).
+async fn capture_frame(
+    route: &PumpRoute,
+    private_key: &str,
+    generation: u64,
+    after_sequence: u64,
+    credit: KernelBrowserPushCredit,
+) -> Result<Option<(u64, chariox_relay::protocol::EncryptedRelayPayload)>, DaemonError> {
+    let state = route.router.runtime_state();
+    if state.is_room_display(&route.display_id) {
+        return Ok(state
+            .room_display_frame(
+                &route.caller.caller,
+                &route.display_id,
+                generation,
+                after_sequence,
+                credit.reset,
+                credit.congested,
+            )
+            .await?
+            .map(|frame| (frame.sequence, frame.encrypted_event)));
+    }
+    let result = state
+        .kernel_browser_display_request(
+            &route.caller,
+            KernelBrowserDisplayRequest::EncodedCapture {
+                subscription_id: route.display_id.clone(),
+                generation,
+                after_sequence,
+                push: Some(credit),
+            },
+        )
+        .await?;
+    let mut response = serde_json::json!({"KernelBrowser":{"result":result}});
+    let Some((_, sequence, event)) =
+        crate::transport::kernel_browser_display::take_display_event(&mut response)
+    else {
+        return Ok(None);
+    };
+    let at = std::time::Instant::now();
+    let bytes =
+        crate::transport::kernel_browser_display::encode_display_event(event).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "display frame",
+                message: "invalid display frame".into(),
+            }
+        })?;
+    let encrypted = relay_crypto::encrypt_payload_for_peer(private_key, &route.public_key, &bytes)
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "display frame",
+            message: "display encryption failed".into(),
+        })?;
+    crate::transport::kernel_browser_display::timing("event_serialize_encrypt", at);
+    Ok(Some((sequence, encrypted)))
 }
 
 #[cfg(test)]

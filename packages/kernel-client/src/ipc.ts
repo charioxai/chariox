@@ -1628,6 +1628,7 @@ export class LocalIpcClient {
 
 function runsAgainOnReplay(request: unknown): boolean {
   if (request === null || typeof request !== "object") return false
+  if ((request as {GetSliceDisplayEndpoint?:{shared_display?:unknown}}).GetSliceDisplayEndpoint?.shared_display) return true
   if (Object.keys(request).some(kind => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))) return true
   // MD-3: reconnect creates another browser actor. Never repeat an uncertain
   // mutation on that connection; observations can be fetched again safely.

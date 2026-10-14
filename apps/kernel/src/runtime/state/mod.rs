@@ -155,6 +155,7 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_shared_display;
 mod runtime_tool_call_activity;
 mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
@@ -222,6 +223,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
@@ -903,6 +905,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
+                room_display_leases: Default::default(),
                 kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
                     config.private_runtime_state_root().join("kernel-browser/observations"),
                     BTreeSet::new(),

@@ -575,6 +575,10 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs" "$SLICE_NAME:/opt/chariox-slice/kernel-browser-refusal.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  for shared_display_asset in "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.mjs "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.py "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/room-shared-display.mjs; do
+    case "$shared_display_asset" in *.test.mjs) continue ;; esac
+    copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")" "MP-08/MP-10/MP-11 shared display dependency"
+  done
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs" "$SLICE_NAME:/opt/chariox-slice/room-native-accessibility.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-accessibility.mjs" "$SLICE_NAME:/opt/chariox-slice/native-accessibility.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-computer.mjs" "$SLICE_NAME:/opt/chariox-slice/native-computer.mjs" "MP-08/MP-10/MP-11 controller dependency"

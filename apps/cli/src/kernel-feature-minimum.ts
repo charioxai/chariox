@@ -54,7 +54,9 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
   const name = Object.keys(envelope)[0]!
   const payload = record(envelope[name])
   let feature = Object.hasOwn(features, name) ? features[name] : undefined
-  if (name === "KernelBrowser" && ["display_suspend", "display_resume"].includes(String(record(payload?.command)?.op))) {
+  if (name === "GetSliceDisplayEndpoint" && payload?.shared_display) {
+    feature = { feature: "Room shared display", minimum: requests.kernelDisplayResumeMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && ["display_suspend", "display_resume"].includes(String(record(payload?.command)?.op))) {
     feature = { feature: "Display resumption", minimum: requests.kernelDisplayResumeMinimumProtocolVersion }
   } else if (name === "KernelBrowser" && record(payload?.command)?.op === "computer") {
     feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }

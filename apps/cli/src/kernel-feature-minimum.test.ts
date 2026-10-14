@@ -118,3 +118,9 @@ test("MP-08/MP-10/MP-11 display resumption refuses unknown and pre-525 kernels",
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 525))
   }
 })
+
+test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel silently opens Selkies",()=>{
+ const request={GetSliceDisplayEndpoint:{slice_ref:"s",shared_display:{codecs:["avc1.420033"],bitrate:8000000,device_scale_factor:2}}}
+ assert.throws(()=>requireKernelFeatureProtocol(request,524),/Room shared display needs protocol ≥525/)
+ assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,525))
+})

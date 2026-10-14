@@ -673,6 +673,21 @@ pub enum RelayPeerRequest {
         slice_id: String,
         command: super::room_browser_controller::RoomBrowserControllerCommand,
     },
+    OpenRoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        viewer_public_key: String,
+        offer: crate::slice::RoomDisplayOffer,
+        viewport: crate::session::CanonicalViewport,
+        target: super::room_shared_display::RoomDisplayTarget,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        command: super::room_shared_display::RoomDisplayCommand,
+    },
     OpenRoomDisplay {
         session_id: String,
         slice_id: String,
@@ -1110,6 +1125,11 @@ pub enum RelayPeerResponse {
         session_id: String,
         slice_id: String,
         result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        result: super::room_shared_display::RoomDisplayResult,
     },
     RoomDisplayOpened {
         session_id: String,

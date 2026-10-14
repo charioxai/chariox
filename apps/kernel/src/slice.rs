@@ -1,3 +1,5 @@
+mod room_display;
+pub use room_display::{RoomDisplayBinding, RoomDisplayOffer, RoomDisplaySource};
 mod disk_quota_policy;
 mod display;
 mod local_docker;
