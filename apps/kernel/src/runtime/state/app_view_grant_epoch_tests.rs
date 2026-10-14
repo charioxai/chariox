@@ -556,7 +556,7 @@ async fn mp11_app_installation_budget_and_commit_remain_revoked_after_regrant() 
     );
     assert!(authority.check().is_err());
     assert!(authority
-        .commit(|| panic!("revoked reply must not commit"))
+        .commit::<()>(|| panic!("revoked reply must not commit"))
         .is_err());
     tokio::time::timeout(Duration::from_millis(100), authority.cancelled())
         .await
