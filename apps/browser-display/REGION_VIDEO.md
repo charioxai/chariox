@@ -76,3 +76,9 @@ before selecting it. Unobserved omnibox suggestions remain a failing UI cell.
 A native Chrome consumer must also keep the internal keepalive out of the user
 strip, enforce navigation/download/password policy and use the shared kernel
 input arbiter. These bindings are outside this private producer qualification.
+
+MP-11: native pointer and chord dispatch recheck the exact window dimensions
+before injection, including input that arrives before the next readback.
+Resize events retire the crop even when the window returns to its old size.
+Moving a window without resizing it retains its binding and updates the native
+pointer origin. A replacement crop requires a newly resolved kernel lease.

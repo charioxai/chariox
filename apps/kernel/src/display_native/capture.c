@@ -182,12 +182,27 @@ int cx_capture_inventory(unsigned long owner,int64_t *out,int limit){
 }
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }
+/* MP-11: readback and input use the same immutable window binding. Input
+ * can arrive before the next XDamage/readback after a resize. Once changed,
+ * the binding stays retired even if Chrome restores the previous size. */
+static int owned_window_current(struct Capture *c) {
+    unsigned w,h;
+    if(c->retired||window_pid(c->display,c->window)!=c->owner||
+        !dimensions(c->display,c->window,&w,&h)||
+        w!=(unsigned)c->window_width||h!=(unsigned)c->window_height){
+        c->retired=1;return 0;
+    }
+    return 1;
+}
 int cx_capture_damage(struct Capture *c) {
     int dirty=0;
     while (XPending(c->display)) {
         XEvent event; XNextEvent(c->display,&event);
         if(event.type==DestroyNotify&&event.xdestroywindow.window==c->window){c->retired=1;dirty=1;}
-        if(event.type==ConfigureNotify&&event.xconfigure.window==c->window)dirty=1;
+        if(event.type==ConfigureNotify&&event.xconfigure.window==c->window){
+            if(event.xconfigure.width!=c->window_width||event.xconfigure.height!=c->window_height)c->retired=1;
+            dirty=1;
+        }
         if (event.type==c->event) {
             XRectangle r=((XDamageNotifyEvent *)&event)->area;
             if (r.x<c->left+c->width && r.x+r.width>c->left && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
@@ -344,8 +359,7 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
-    unsigned w,h;
-    if (c->retired || window_pid(c->display,c->window)!=c->owner || !dimensions(c->display,c->window,&w,&h) || w!=(unsigned)c->window_width || h!=(unsigned)c->window_height || !XShmGetImage(c->display,c->pixmap,c->image,c->left,c->offset,AllPlanes)) return -1;
+    if (!owned_window_current(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->left,c->offset,AllPlanes)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
@@ -423,7 +437,7 @@ int cx_shift_plan(const uint8_t *raw,const uint8_t *base,int width,int height,in
  * 1: another top-level window covers it, -1: not owned/unknown). */
 static int pointer_target(struct Capture *c,int x,int y,int *px,int *py){
     if(x<0||y<0||x>=c->width||y>=c->height)return -1;
-    if(c->retired||window_pid(c->display,c->window)!=c->owner)return -1;
+    if(!owned_window_current(c))return -1;
     Window root=DefaultRootWindow(c->display),child;int rx,ry,ox,oy;
     if(!XTranslateCoordinates(c->display,c->window,root,0,0,&rx,&ry,&child))return -1;
     *px=rx+c->left+x;*py=ry+c->offset+y;
@@ -457,7 +471,7 @@ int cx_capture_click(struct Capture *c,int x,int y){
  * (no renderer acknowledgement round trip); the caller fenced document,
  * actor and text target. A keysym outside the private keymap is refused. */
 int cx_capture_key_modifiers(struct Capture *c,unsigned long keysym,int modifiers){
-    if(c->retired||modifiers<0||modifiers>15||window_pid(c->display,c->window)!=c->owner)return -1;
+    if(modifiers<0||modifiers>15||!owned_window_current(c))return -1;
     KeyCode code=XKeysymToKeycode(c->display,(KeySym)keysym),shifter=XKeysymToKeycode(c->display,XK_Shift_L);
     if(!code||!shifter)return -1;
     if(XkbKeycodeToKeysym(c->display,code,0,0)!=(KeySym)keysym){
