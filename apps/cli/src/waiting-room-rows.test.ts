@@ -62,3 +62,15 @@ test("waiting room rows expose local provider catalog fallback", () => {
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
+
+// MP-08 / MP-10 / MP-11: local inventory need not include itself in remote kernels.
+test("ENV-UX-03 current kernel name is visible without a peer directory entry", () => {
+  const catalog = fallbackProviderCatalog()
+  const state = createWaitingRoomState([], catalog, "codex", "gpt-6-luna", "low")
+  const remote = {
+    relay: { configured: true, connected: true, daemon_id: "kernel-local", daemon_alias: "My laptop" },
+    projects: [{ id: "project", owner_user_id: "owner", workspace_id: "/src", workspace_ids: ["/src"], name: "Source", kind: "default" as const, status: "active" as const, created_at_ms: 1, updated_at_ms: 1, archived_at_ms: null, session_count: 0, last_session_activity_at_ms: null, joined_collaborator_count: 0, pending_collaboration_invite_count: 0 }],
+  }
+  const rows = waitingRoomRows(state, [], catalog, remote)
+  assert.equal(rows.find(row => row.id === "project-kernel:project")?.title, "Kernel: My laptop")
+})
