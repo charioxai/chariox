@@ -75,7 +75,8 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         discovery_config.relay_token = Some(token.token);
     } else {
         discovery_config =
-            relay_discovery::ordinary_hosted_discovery_config(discovery_config).await?;
+            crate::runtime::cloud_api_client::relay_metadata_discovery_config(&discovery_config)
+                .await?;
     }
 
     let machine_ref =
