@@ -12,6 +12,7 @@ import { KernelBrowserHost, navigationUrl, scheduleHostRequest } from "./kernel-
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
 
 function fixture(root) {
   const pages = new Map();
@@ -767,7 +768,7 @@ test("MP-11: mirror reads and cleanup never start or recover Chromium", () => us
   }
 }));
 
-test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitization', () => using(async ({host,sent}) => {
+test('MP-11: only typed pre-dispatch refusals survive host error sanitization', () => using(async ({host,sent}) => {
   const opened=await host.request({op:'open',url:'about:blank'});
   const tab=host.tabs.get(opened.tab_id),scope='epoch-test';
   host.mirror.streams.set('epoch-test',{scope,tab_id:tab.tab_id,document_id:tab.document_id,expires:Date.now()+60000,policy:host.protection,epochs:[]});
@@ -778,11 +779,23 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
   assert.equal(refused.error.code,'kernel_browser_failed');
   assert.equal(refused.error.message,'MP-11: stale mirror input epoch');
   assert.equal(sent.length,before,'admission must not focus or dispatch');
-  for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
+  for(const error of [new Error('MP-11: stale mirror input epoch'),new Error(new PointerOutsideViewport().message),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
     host.request=async()=>{throw error};
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
     assert.equal(rejected.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
   }
+}));
+
+test('MP-08/MP-10/MP-11 an agent click outside the viewport says so, in CSS pixels, without dispatch', () => using(async ({host, sent}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],viewport=(await host.request({op:'state'})).viewport;
+ const before=sent.filter(x=>x.method==='Input.dispatchMouseEvent').length;
+ // A device-pixel guess from a DPR 2 screenshot lands beyond the CSS viewport.
+ const refused=await host.handle({id:'outside',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:viewport.css_width+158,y:355}}});
+ assert.equal(refused.ok,false);
+ assert.equal(refused.error.code,'kernel_browser_failed');
+ assert.equal(refused.error.message,'MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)');
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before,'nothing is dispatched');
+ assert.equal(host.browser?.connection!==undefined,true,'a refused coordinate does not stop the browser');
 }));
 
 test('private CDP pipe loss retires the browser generation even while child is live', () => using(async ({host,chromium,connection}) => {

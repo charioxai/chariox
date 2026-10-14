@@ -7,3 +7,7 @@ export class UserDomainRefusal extends Error {
     this.code = 'user_domain_'+reason;
   }
 }
+// MP-08/MP-10/MP-11: a fixed, pre-dispatch coordinate refusal an agent can act on.
+export class PointerOutsideViewport extends Error {
+  constructor() { super('MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)'); }
+}
