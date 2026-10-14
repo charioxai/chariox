@@ -20,7 +20,7 @@ def regression(failure):
         self.assertTrue(report['pointerLeaseRetired'])
         self.assertTrue(report['owned_window_closed'])
         self.assertTrue(all(row['passed'] for row in report['checks']))
-        self.assertEqual(len(self.warps), 401)
+        self.assertEqual(len(self.warps), 403)  # cover, jitter, two same-process warps
     return test
 
 for failure in ['focus', 'pointer', 'window', 'subprocess']:

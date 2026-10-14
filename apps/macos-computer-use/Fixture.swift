@@ -103,8 +103,9 @@ final class Fixture: NSObject, NSApplicationDelegate {
             }
         }
     }
-    // Same-process cover drill: SIGUSR1 toggles a non-key floating panel over the
-    // still-focused main window, so only the WindowServer stack fence can refuse it.
+    // Same-process cover drill: SIGUSR1 toggles a non-key, click-through floating panel over the
+    // still-focused main window. Focus and the app-scoped AX hit still land on the target, so only
+    // the WindowServer stack fence can refuse it.
     func armCoverPanel() {
         signal(SIGUSR1, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
@@ -113,6 +114,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
             let frame = NSRect(x: window.frame.minX + 170, y: window.frame.minY + 60, width: 200, height: 140)
             let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+            panel.ignoresMouseEvents = true
             panel.backgroundColor = .systemPurple; panel.isOpaque = true; panel.hasShadow = false
             panel.orderFrontRegardless(); coverPanel = panel
             print("coverPanelPID=\(getpid()) windowID=\(panel.windowNumber) mainWindowID=\(window.windowNumber) frame=\(panel.frame)"); fflush(stdout)

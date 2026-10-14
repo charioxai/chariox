@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import runpy
+import signal
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ class FenceLifecycleCase(unittest.TestCase):
         self.cover_identity_failure = None; self.cover_close_failure = None
         self.cover_signals = 0
         self.clock = 0; self.cover_process_reads = 0
+        self.panel_signals = 0; self.panel_failure = None
 
     def now(self):
         self.clock += .05
@@ -43,7 +45,7 @@ class FenceLifecycleCase(unittest.TestCase):
 
     def tearDown(self):
         inventory = list(self.root.rglob('*'))
-        assert all(not p.is_symlink() and (p.is_dir() or p.suffix in ['.json', '.out', '.err']) for p in inventory)
+        assert all(not p.is_symlink() and (p.is_dir() or p.suffix in ['.json', '.out', '.err', '.png']) for p in inventory)
         for p in sorted(inventory, key=lambda p: len(p.parts), reverse=True):
             p.rmdir() if p.is_dir() else p.unlink()
         self.root.rmdir()
@@ -77,7 +79,7 @@ class FenceLifecycleCase(unittest.TestCase):
                 if self.cover_identity_failure == 'process' or (self.cover_identity_failure == 'process-after' and self.cover_process_reads > 1):
                     command = '/unrelated/process'
                 return SimpleNamespace(stdout=command, returncode=0)
-            return SimpleNamespace(stdout=str(build / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill', returncode=0)
+            return SimpleNamespace(stdout=str(build / 'Chariox Computer Fixture.app/Contents/MacOS/fixture') + ' --unattended --text-drill --cover-panel', returncode=0)
         if args[0] == 'codesign': return SimpleNamespace(stderr='CDHash=' + 'a' * 40 + '\n', stdout='', returncode=0)
         if args[0] == 'osascript':
             output = json.dumps(self.state) if 'var screens = [];' in args[-1] else self.execute(args[-1])
@@ -92,6 +94,14 @@ class FenceLifecycleCase(unittest.TestCase):
             return SimpleNamespace(stdout='', stderr='', returncode=0)
         self.launches.append(label)
         receipt = 'accessibility=granted' if label == 'preflight' else ('refused: target (stale-pointer)' if label == 'stale-pointer' else 'refused: target (foreign-window-cover)')
+        fixture_out = path.with_name('fixture.out')
+        if label.startswith('same-process-outside'):
+            location = 125 if label.endswith('click') else 3
+            receipt = f'path=AXSelectedTextRange; observed AXSelectedTextRange location={location} length=0; point=1,1'
+            with fixture_out.open('a') as out: out.write(f'fixture selection location={location} length=0\n')
+        elif label == 'same-process-uncovered-capture':
+            receipt = 'frame 100x100 window=7'
+            Path(args[args.index('--capture') + 1]).write_bytes(b'png')
         failure = self.helper_failure if self.fail_label == label else None
         if failure:
             # A helper has observed takeover, but desktop facts have returned.
@@ -127,6 +137,22 @@ class FenceLifecycleCase(unittest.TestCase):
 
     def kill(self, pid, sig):
         self.assertIn(pid, [42, 43])
+        if sig == signal.SIGUSR1:
+            self.assertEqual(pid, 42)
+            self.panel_signals += 1
+            out = self.root / '.codex/evidence/browser-computer-use-macos/case/fixture.out'
+            if self.panel_failure == 'silent': return
+            panels = [w for w in self.state['windows'] if w['windowID'] == 10]
+            if panels:
+                if self.panel_failure != 'sticky': self.state['windows'].remove(panels[0])
+                line = 'coverPanel closed'
+            else:
+                panel = {'pid': 42, 'windowID': 10, 'bounds': {'X': 400, 'Y': 400, 'Width': 200, 'Height': 140}}
+                if self.panel_failure == 'below': self.state['windows'].append(panel)
+                else: self.state['windows'].insert(0, panel)
+                line = f'coverPanelPID={99 if self.panel_failure == "foreign-pid" else 42} windowID=10 mainWindowID=7 frame=(400.0, 400.0, 200.0, 140.0)'
+            with out.open('a') as handle: handle.write(line + '\n')
+            return
         if pid == 43:
             self.cover_signals += 1
             if self.cover_close_failure == 'permission': raise PermissionError('cover-signal-denied')
