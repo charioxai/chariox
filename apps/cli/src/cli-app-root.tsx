@@ -847,7 +847,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     applyResponseLayout,
   })
 
-  onCleanup(recordPaneFirstFrame(renderer, () => primaryTranscriptRuntimeStore.transcriptRenderables.size > 0,
+  onCleanup(recordPaneFirstFrame(renderer, () => primaryTranscriptRuntimeStore.transcriptRenderables.size > 0
+    || responseVisibleAgents().some(agent => (agentPaneRuntimeStore.entryRenderables.get(agent.id)?.size ?? 0) > 0),
     () => [...primaryTranscriptRuntimeStore.transcriptRenderables.values()].map(value => value.entry)))
   const {
     hydrateComposer, hydratePromptInputHistory, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
