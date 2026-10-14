@@ -47,14 +47,36 @@ try{
    const canvas=page.locator('[data-view-display-canvas]').first();
    await canvas.waitFor({state:'visible',timeout:30000});
    await page.waitForFunction(()=>document.querySelector('[data-view-display-canvas]')?.dataset.paintMode==='video',{},{timeout:30000});
+   // Observe the real viewer compositor. A native-track write/stream marker
+   // alone is not evidence that Chromium painted its first resumed frame.
+   await page.evaluate(()=>{
+    const paints=[],seen=new WeakSet();
+    const scan=()=>{for(const video of document.querySelectorAll('video[data-display-sink="track"]')){
+     if(seen.has(video)||!video.requestVideoFrameCallback)continue;
+     const canvas=document.querySelector('[data-view-display-canvas]');
+     if(video.parentElement!==canvas?.parentElement)continue;
+     seen.add(video);video.requestVideoFrameCallback(now=>{if(video.isConnected&&canvas.isConnected&&video.parentElement===canvas.parentElement)paints.push({now,stream:canvas.dataset.displayStreamId})});
+    }};
+    const observer=new MutationObserver(scan);observer.observe(document.body,{childList:true,subtree:true});scan();
+    window.__charioxRoomPaintProbe={paints,observer};
+   });
    assert.equal(await page.evaluate(()=>devicePixelRatio),deviceScaleFactor);
    await page.screenshot({path:path.join(directory,'before.png')});
    for(let index=0;index<3;index++){
-    const previous=await canvas.getAttribute('data-display-stream-id'),closedBefore=cell.closedSockets,started=performance.now();
+    const previous=await canvas.getAttribute('data-display-stream-id'),closedBefore=cell.closedSockets,started=await page.evaluate(()=>performance.now());
     const measurements=await changeNetwork();
     await page.waitForFunction(old=>{const canvas=document.querySelector('[data-view-display-canvas]');return canvas?.dataset.paintMode==='video'&&canvas.dataset.displayStreamId!==old},previous,{timeout:1000});
-    const painted_ms=performance.now()-started;
-    cell.changes.push({index,painted_ms,...measurements,socket_closed:cell.closedSockets>closedBefore});
+    const stream=await canvas.getAttribute('data-display-stream-id');
+    const track=await canvas.getAttribute('data-display-sink')==='track';
+    let painted_ms;
+    if(track){
+     await page.waitForFunction(({stream,started})=>window.__charioxRoomPaintProbe.paints.some(paint=>paint.stream===stream&&paint.now>=started),{stream,started},{timeout:1000});
+     painted_ms=await page.evaluate(({stream,started})=>window.__charioxRoomPaintProbe.paints.find(paint=>paint.stream===stream&&paint.now>=started).now-started,{stream,started});
+    }else{
+     // The canvas path commits in rAF; a second rAF bounds the next paint.
+     painted_ms=await page.evaluate(started=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(performance.now()-started)))),started);
+    }
+    cell.changes.push({index,painted_ms,paint_observer:track?'requestVideoFrameCallback':'two viewer animation frames',...measurements,socket_closed:cell.closedSockets>closedBefore});
     await page.screenshot({path:path.join(directory,`after-${index}.png`)});
     assert(cell.closedSockets>closedBefore,'MP-10: the network change did not retire the actual client socket');
     assert(painted_ms<=1000,`MP-10: network change to painted frame ${painted_ms.toFixed(1)}ms >1s`);
