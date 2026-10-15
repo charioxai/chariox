@@ -217,19 +217,7 @@ impl KernelRuntimeOwnedState {
                 .into_iter()
                 .find(|t| ledger::goals::is_check(t, prompt.id()))
             {
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        self.room_secret_observations
-                            .protect_transcript_entry(entry)
-                    })
-                    .collect::<Vec<_>>();
-                let result = super::agent_task_projection::task_public_outputs(
-                    &entries,
-                    prompt.id(),
-                    Some(answer_run),
-                )
-                .concat();
+                let result = self.take_private_assessment(room, agent, prompt.id(), answer_run);
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {

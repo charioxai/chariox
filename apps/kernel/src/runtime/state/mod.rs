@@ -282,6 +282,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    private_assessment_results: agent_assessment_result::AssessmentResults,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
@@ -964,6 +965,7 @@ impl KernelRuntimeState {
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                private_assessment_results: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
@@ -1295,6 +1297,7 @@ impl KernelRuntimeState {
 mod room_agent_admission;
 
 mod agent_delegation_runtime;
+mod agent_assessment_result;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;

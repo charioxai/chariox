@@ -1,5 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 private completion control (2026-10-15)
+
+Local official structured provider completion results are collected before the
+Room terminal-byte fence into bounded, zeroizing, ephemeral memory correlated
+with the admitted room, agent, completion prompt and provider run. The kernel
+runtime consumes that result once and parses the strict assessment grammar.
+Protected prose and evidence remain withheld before any ledger receipt or audit
+is written; waiting control retains only existing live task registration refs.
+The ledger still validates obligations, sources and deadlines. Room value scrubs
+and unknown-provenance fences apply before storage. Public terminal, history,
+replay and agent-facing
+projections retain their existing privacy fences; their withheld markers are
+never control input. Restart/missing private results cannot manufacture success.
+This source correction does not establish leased-result transfer, independent
+security review, real provider acceptance or the full ordinary/managed matrix.
+
 ## MP-08 / MP-10 / MP-11 historical workflow admission (2026-10-13)
 
 Allocated local513/peer121 carries paired display caller normalization and an

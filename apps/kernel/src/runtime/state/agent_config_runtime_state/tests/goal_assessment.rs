@@ -340,3 +340,140 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     assert!(context.contains("Do not request private tool traces from the owner solely because the public projection omits them"));
     assert!(context.contains("Do not invent verification"));
 }
+
+// MP-08/MP-10/MP-11: private completion control must survive the public byte fence.
+#[tokio::test]
+async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
+    assert!(
+        runtime.owned.config_projection.snapshot().room_agent_tools,
+        "MP-11 fixture must enable task settlement"
+    );
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    for op in [
+        Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "private-work".into(),
+            run: Some("run".into()),
+            now,
+        },
+        Operation::EnableCompletionCheck {
+            task: "private-work".into(),
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "private-work".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let id = task.pending_prompt_id.unwrap();
+    store
+        .agent_lifecycle(Operation::BeginContinuation {
+            task: task.task_id,
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: id.clone(),
+            run: Some("run".into()),
+            now,
+        })
+        .unwrap();
+    let prompt = crate::session::PromptQueueItem::new(
+        &id,
+        "attachment-1",
+        &agent,
+        "check",
+        crate::session::PromptStatus::Running,
+    )
+    .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck);
+    runtime
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &runtime.owned.session_store.get_session(&room).unwrap(),
+            &agent,
+            Some(prompt.clone()),
+        );
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&room, "synthetic-private-fill")
+        .unwrap();
+    let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, "check");
+    request.merge_key = Some(format!("prompt:{id}"));
+    runtime.owned.append_history_entries(&room, vec![request]);
+    let raw = r#"{"status":"achieved","final_answer":"Filled synthetic-private-fill; PRIVATE_COMPLETION_PROSE","evidence":["PRIVATE_COMPLETION_EVIDENCE"]}"#;
+    runtime.owned.fan_out_terminal_outputs(
+        &room,
+        vec![
+            crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                provider_run_id: "run".into(),
+                agent_id: Some(agent.clone()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assessment".into()),
+                bytes: raw.as_bytes().to_vec(),
+            },
+        ],
+    );
+    runtime.owned.append_history_entries(
+        &room,
+        vec![SessionHistoryEntry::provider_output(
+            &room,
+            "run",
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            Some("assessment".into()),
+            raw,
+        )],
+    );
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&room, Some(&agent))
+        .unwrap();
+    assert!(entries
+        .iter()
+        .any(|e| e.text == "[sensitive Room terminal stream withheld]"));
+    assert!(!entries
+        .iter()
+        .any(|e| e.text.contains("synthetic-private-fill")));
+    let (settled, _) = runtime
+        .owned
+        .settle_agent_task(&room, &agent, &prompt, "run", false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settled.state,
+        ExecutionState::Done,
+        "MP-11 withheld public marker must never be parsed as the private assessment"
+    );
+    let receipt = serde_json::to_string(&settled).unwrap();
+    assert!(
+        !receipt.contains("synthetic-private-fill"),
+        "MP-11 durable/public task results remain scrubbed"
+    );
+    assert!(!receipt.contains("terminal stream withheld"));
+    for private_detail in ["PRIVATE_COMPLETION_PROSE", "PRIVATE_COMPLETION_EVIDENCE"] {
+        assert!(
+            !receipt.contains(private_detail),
+            "MP-11 private assessment prose must not enter durable/public receipts"
+        );
+    }
+}
