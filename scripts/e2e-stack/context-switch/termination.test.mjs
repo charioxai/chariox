@@ -21,3 +21,13 @@ for(const signal of ['SIGINT','SIGTERM'])for(const phase of ['before-launch','af
   if(child&&child.exitCode===null&&child.signalCode===null)signalOwnedProcessGroup(child,'SIGKILL');await rm(root,{recursive:true,force:true});
  }
 });
+test('MP-08 / MP-10 / MP-11 pending reservation is settled before termination exits',async()=>{
+ const root=await mkdtemp(join(process.env.TMPDIR,'termination-pending-'));let child;
+ try{
+  child=spawnOwned(process.execPath,[new URL('./termination-acquisition-fixture.mjs',import.meta.url).pathname,root],{stdio:'ignore',detached:true});
+  let ready;for(let n=0;n<100;n++){try{ready=JSON.parse(await readFile(root+'/ready.json','utf8'));break;}catch{await sleep(50);}}
+  assert(ready&&Number.isInteger(ready.driver)&&ready.driver>1);const row=processSnapshot().find(p=>p.pid===ready.driver);assert(row);const guard=createOwnedSignalGuard();const handle=guard.record(ready.driver,{expectedStart:row.start});guard.pid(handle,'SIGTERM');
+  for(let n=0;n<100;n++){try{if(await readFile(root+'/cleaned','utf8')==='yes')break;}catch{}await sleep(50);}
+  assert.equal(await readFile(root+'/cleaned','utf8'),'yes');await assert.rejects(readFile(root+'/reservation'),{code:'ENOENT'});
+ }finally{if(child&&child.exitCode===null&&child.signalCode===null)signalOwnedProcessGroup(child,'SIGKILL');await rm(root,{recursive:true,force:true});}
+});
