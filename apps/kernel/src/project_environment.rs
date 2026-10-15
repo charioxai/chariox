@@ -23,6 +23,7 @@ mod check_selection;
 mod check_start;
 mod check_store;
 mod check_tools;
+mod check_workspace;
 mod dependency_graph;
 mod detect;
 mod detect_importers;

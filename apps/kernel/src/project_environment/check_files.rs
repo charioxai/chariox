@@ -1,4 +1,4 @@
-//! MP-08 / MP-10 / MP-11: mounted Files I/O runs under an owned process deadline.
+//! MP-08 / MP-10 / MP-11: mounted Files and workspace metadata share an owned I/O deadline.
 use super::*;
 use crate::error::DaemonError;
 use serde::{Deserialize, Serialize};
@@ -10,9 +10,20 @@ use std::time::{Duration, Instant};
 const METADATA_LIMIT: u64 = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request {
-    current: ProjectEnvironment,
-    draft: EnvironmentRevisionDraft,
+enum Request {
+    Files {
+        current: ProjectEnvironment,
+        draft: EnvironmentRevisionDraft,
+    },
+    Workspace {
+        current: ProjectEnvironment,
+        requirement: Requirement,
+    },
+}
+#[derive(Serialize, Deserialize)]
+enum Response {
+    Files(EnvironmentRevisionDraft),
+    Workspace(super::check_workspace::WorkspacePreflight),
 }
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -68,6 +79,46 @@ pub(super) fn measure(
     draft: &mut EnvironmentRevisionDraft,
     deadline: Instant,
 ) -> Result<(), DaemonError> {
+    match run(
+        config,
+        Request::Files {
+            current: current.clone(),
+            draft: draft.clone(),
+        },
+        deadline,
+    )? {
+        Response::Files(measured) => {
+            *draft = measured;
+            Ok(())
+        }
+        _ => Err(environment_error("Files Check worker result invalid")),
+    }
+}
+
+pub(super) fn workspace(
+    config: &crate::config::DaemonConfig,
+    current: &ProjectEnvironment,
+    requirement: &Requirement,
+    deadline: Instant,
+) -> Result<super::check_workspace::WorkspacePreflight, DaemonError> {
+    match run(
+        config,
+        Request::Workspace {
+            current: current.clone(),
+            requirement: requirement.clone(),
+        },
+        deadline,
+    )? {
+        Response::Workspace(measured) => Ok(measured),
+        _ => Err(environment_error("Workspace Check worker result invalid")),
+    }
+}
+
+fn run(
+    config: &crate::config::DaemonConfig,
+    input: Request,
+    deadline: Instant,
+) -> Result<Response, DaemonError> {
     let root = config.private_runtime_state_root();
     std::fs::create_dir_all(&root)
         .map_err(|_| environment_error("Files Check state unavailable"))?;
@@ -84,11 +135,8 @@ pub(super) fn measure(
     let scratch = Scratch(path);
     let request = scratch.0.join("request");
     let result = scratch.0.join("result");
-    let bytes = serde_json::to_vec(&Request {
-        current: current.clone(),
-        draft: draft.clone(),
-    })
-    .map_err(|_| environment_error("Files Check metadata invalid"))?;
+    let bytes = serde_json::to_vec(&input)
+        .map_err(|_| environment_error("Files Check metadata invalid"))?;
     if bytes.len() as u64 > METADATA_LIMIT {
         return Err(environment_error("Files Check metadata exceeds bounds"));
     }
@@ -126,13 +174,16 @@ pub(super) fn measure(
     if let Some(marker) = std::env::var_os("CHARIOX_FILES_CHECK_IO_STALL_MARKER") {
         command.env("CHARIOX_FILES_CHECK_IO_STALL_MARKER", marker);
     }
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("CHARIOX_WORKSPACE_CHECK_STALL_MARKER") {
+        command.env("CHARIOX_WORKSPACE_CHECK_STALL_MARKER", marker);
+    }
     let output = crate::local::provider_requests::capture_inventory_probe(command, left)
         .map_err(|_| environment_error("Files Check worker did not settle within its budget"))?;
     if !output.status.success() {
         return Err(environment_error("Files Check measurement unavailable"));
     }
-    *draft = read_metadata(&result)?;
-    Ok(())
+    read_metadata(&result)
 }
 
 /// Internal self-exec entry; runs before kernel credentials, logging or runtime initialization.
@@ -148,9 +199,17 @@ pub fn run_files_measurement_worker(
         ));
     }
     let deadline = Instant::now() + budget;
-    let Request { current, mut draft } = read_metadata(request)?;
-    super::manual_files::verify_check_files(&current, &mut draft, deadline)?;
-    let bytes = serde_json::to_vec(&draft)
+    let response = match read_metadata::<Request>(request)? {
+        Request::Files { current, mut draft } => {
+            super::manual_files::verify_check_files(&current, &mut draft, deadline)?;
+            Response::Files(draft)
+        }
+        Request::Workspace {
+            current,
+            requirement,
+        } => Response::Workspace(super::check_workspace::inspect(&current, &requirement)),
+    };
+    let bytes = serde_json::to_vec(&response)
         .map_err(|_| environment_error("Files Check metadata invalid"))?;
     if bytes.len() as u64 > METADATA_LIMIT {
         return Err(environment_error("Files Check metadata exceeds bounds"));

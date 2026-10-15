@@ -258,7 +258,7 @@ pub fn project_environment_protected_name(name: &str) -> bool {
         )
 }
 
-// MP-08 / MP-10 / MP-11: aliases cannot declassify a protected source name.
+// MP-08 / MP-10 / MP-11: a public alias cannot declassify its actual source.
 pub(crate) fn project_environment_public_source_protected(
     locator: &ProjectEnvironmentLocator,
 ) -> bool {
