@@ -1,0 +1,96 @@
+//! MP-08 / MP-10 / MP-11: Skills v2 wire regression checks; no live acceptance.
+use super::*;
+use crate::skill::v2::*;
+use crate::transport::relay_peer::{
+    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+};
+use sha2::{Digest, Sha256};
+
+#[test]
+fn skills_v2_protocol_allocation_and_contract_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
+    assert_eq!(SKILLS_MIN_LOCAL_PROTOCOL, 533);
+    assert_eq!(SKILLS_MIN_PEER_PROTOCOL, 141);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_str!("../../../../skill/v2.rs"))
+        ),
+        "69e2e80640b11297f537af9faf3dcf104aa49ed8d62412863d88d6c71ae9bd9b"
+    );
+}
+
+#[test]
+fn skills_v2_reset_to_inherited_batch_snapshot() {
+    let wire = serde_json::json!({"SkillsV2": {"action":"mutate", "mutation": {
+        "scope":{"kind":"project","project_id":"p1"}, "expected_revision":4,
+        "actions":[{"action":"set_state","skill_id":"s1","state":null}]
+    }}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let result = LocalDaemonResponse::SkillsV2 {
+        result: SkillsV2Response::Published {
+            revision: 5,
+            changed_skill_ids: vec!["s1".into()],
+            removed_skill_ids: vec![],
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        serde_json::json!({"SkillsV2":{"result":{
+            "kind":"published", "revision":5,"changed_skill_ids":["s1"],"removed_skill_ids":[]
+        }}})
+    );
+}
+
+#[test]
+fn skills_v2_native_references_reject_client_paths_and_unbound_references() {
+    let selection = serde_json::json!({"source":"native","entry_id":"n1","name":"review",
+        "provider":"codex","account_profile":"p1","execution_id":"lease1","inventory_revision":"r1"});
+    assert!(serde_json::from_value::<SkillSelection>(selection.clone()).is_ok());
+    let mut malicious = selection.clone();
+    malicious["path"] = serde_json::json!("/client/skill");
+    assert!(serde_json::from_value::<SkillSelection>(malicious).is_err());
+    for field in [
+        "entry_id",
+        "provider",
+        "account_profile",
+        "execution_id",
+        "inventory_revision",
+    ] {
+        let mut unbound = selection.clone();
+        unbound.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<SkillSelection>(unbound).is_err());
+    }
+}
+
+#[test]
+fn skills_v2_transfer_requires_revision_manifest_and_bound_receipt() {
+    let wire = serde_json::json!({"kind":"ensure_remote_skill_packages", "context": {
+        "home_kernel_id":"home","home_session_id":"s","home_agent_id":"a","leased_agent_id":"lease"
+    },"manifest":{"catalog_revision":8,"project_id":"p","skills":[{
+        "skill_id":"skill1","digest":"digest1","scope":{"kind":"chariox"},"state":"manual"
+    }]},"packages":[]});
+    let request: RelayPeerRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let mut old = wire.clone();
+    old.as_object_mut().unwrap().remove("manifest");
+    assert!(serde_json::from_value::<RelayPeerRequest>(old).is_err());
+    let response = serde_json::json!({"kind":"remote_skill_packages_ensured",
+        "context":wire["context"],"manifest":wire["manifest"],"materialized":[]});
+    assert_eq!(
+        serde_json::to_value(
+            serde_json::from_value::<RelayPeerResponse>(response.clone()).unwrap()
+        )
+        .unwrap(),
+        response
+    );
+}
+
+#[test]
+fn skills_v2_unknown_batch_fields_cannot_smuggle_grants() {
+    let wire = serde_json::json!({"scope":{"kind":"chariox"},"expected_revision":1,
+        "actions":[{"action":"set_state","skill_id":"s","state":"auto","grant":true}]});
+    assert!(serde_json::from_value::<SkillCatalogMutation>(wire).is_err());
+}

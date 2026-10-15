@@ -261,6 +261,7 @@ response_policies! {
         SkillUninstalled,
         SkillsImported,
         SkillsListed,
+        SkillsV2,
         RelayStatus,
         RelayConfigured,
         CloudSessionInviteRevoked,

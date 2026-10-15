@@ -40,6 +40,7 @@ impl KernelRuntimeState {
             daemon_alias: None,
         };
         let request = RelayPeerRequest::EnsureRemoteSkillPackages {
+            manifest: Default::default(),
             context: crate::transport::relay_peer::RemoteSkillSyncContext {
                 home_kernel_id: relay_config.daemon_id.clone(),
                 home_session_id: agent.session_id().to_string(),
@@ -68,7 +69,7 @@ impl KernelRuntimeState {
             }
         }?;
         match response {
-            RelayPeerResponse::RemoteSkillPackagesEnsured { materialized } => Ok(materialized),
+            RelayPeerResponse::RemoteSkillPackagesEnsured { materialized, .. } => Ok(materialized),
             other => Err(DaemonError::LocalTransport {
                 operation: "ensure remote skill packages",
                 message: format!("unexpected remote skill sync response: {other:?}"),

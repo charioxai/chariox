@@ -3649,3 +3649,44 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+
+
+### Skills v2 wire contract — MP-08 / MP-10 / MP-11
+
+Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
+catalog contract. `SkillsV2` wraps a tagged `action` request and a tagged `kind`
+result. The canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+bindings mirror them. Skills are instructions, never Extension grants.
+
+`catalog`, `get`, `native_inventory` and `loads` supply management projections.
+`preview` and `mutate` take the same reviewed action batch, typed scope
+(`chariox` or a kernel Project ID) and expected home-wide revision. A batch
+publishes one revision or no change. A null state removes the override.
+`list` and `load` are the model discovery/load surface; the kernel, rather than
+caller-supplied flags, records explicit Manual selections. `submit` carries
+source-bound selections alongside the ordinary prompt/attachment identities.
+A native selection includes kernel entry ID, provider, account, execution place
+and inventory revision; no client skill path or body is accepted.
+
+`SkillProjection.delivery` distinguishes Chariox delivery, verified native
+provision, content conflict and unverified native exposure. Equal complete
+content and compatible exposure produce one Chariox picker row with
+`also_in_provider`; clients omit that native row. Conflicting content retains
+the Chariox revision for Chariox selection. Native availability is not a load
+receipt. `skills_changed` is session-scoped and carries catalog revision
+invalidation or acknowledged load records. Every dispatch must still compare
+the durable catalog revision after a missed event.
+
+`EnsureRemoteSkillPackages` requires a revision/Project/state/digest manifest.
+Its receipt echoes the authenticated home/session/agent/lease context and exact
+manifest. The sender must reject mismatched receipts. Payload files include
+executable bits in their complete content identity. Old peers cannot omit the
+manifest: they require an upgrade before a v2 transfer or skill-using turn.
+Environment snapshots carry Project records, package membership, overrides and
+only their required Chariox dependencies separately from Extension grants.
+
+The wire foundation alone is not an implemented catalog, destructive reset,
+provider delivery path or acceptance claim. Runtime rollout removes the old
+skill-grant contracts without a compatibility decoder. Skills v2 clients gate
+these operations at 533/141; unrelated clients need no minimum bump solely for
+this feature.

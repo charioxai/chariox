@@ -19,6 +19,7 @@ pub struct CharioxSkillPackage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CharioxSkillPackageFile {
+    pub executable: bool,
     pub path: String,
     pub sha256: String,
     pub content_base64: String,
@@ -250,6 +251,7 @@ fn collect_skill_package_files(
             });
         }
         files.push(CharioxSkillPackageFile {
+            executable: false,
             path: relative_path.to_string_lossy().replace('\\', "/"),
             sha256: sha256_hex(&bytes),
             content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),

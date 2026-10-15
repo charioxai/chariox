@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    SkillsV2 { result: crate::skill::v2::SkillsV2Response },
     SshMachine { machine: SshMachineResult },
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },

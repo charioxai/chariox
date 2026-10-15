@@ -282,6 +282,7 @@ pub(super) fn validate(payload: &KernelContextPayload) -> Result<(), DaemonError
                     path,
                     content_base64,
                     sha256: _,
+                    executable: _,
                 } in files
                 {
                     encoded(path, content_base64)?;

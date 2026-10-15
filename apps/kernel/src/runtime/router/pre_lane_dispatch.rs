@@ -431,7 +431,8 @@ impl CommandRouter {
             | LocalDaemonRequest::UninstallSkill(_)
             | LocalDaemonRequest::ImportSkills(_)
             | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => {
+            | LocalDaemonRequest::ListSkills(_)
+            | LocalDaemonRequest::SkillsV2(_)) => {
                 let credential_vault = self
                     .config_projection
                     .snapshot()

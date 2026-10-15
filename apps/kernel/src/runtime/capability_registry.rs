@@ -104,6 +104,10 @@ pub(crate) async fn execute_capability_registry_request(
         LocalDaemonRequest::ImportSkills(request) => execute_import_skills_request(request),
         LocalDaemonRequest::GetSkill(request) => execute_get_skill_request(request),
         LocalDaemonRequest::ListSkills(request) => execute_list_skills_request(request),
+        LocalDaemonRequest::SkillsV2(_) => Err(DaemonError::LocalTransport {
+            operation: "skills.v2",
+            message: "Skills v2 catalog service is not available in this protocol foundation build".into(),
+        }),
         _ => Err(DaemonError::LocalTransport {
             operation: "capability registry request",
             message: "unsupported capability registry request".to_string(),

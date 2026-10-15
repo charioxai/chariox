@@ -2856,6 +2856,7 @@ mod tests {
                 },
                 version_hash: format!("{:x}", skill_hasher.finalize()),
                 files: vec![crate::skill::CharioxSkillPackageFile {
+                    executable: false,
                     path: "SKILL.md".to_string(),
                     sha256: skill_sha256,
                     content_base64: base64::engine::general_purpose::STANDARD.encode(skill_bytes),

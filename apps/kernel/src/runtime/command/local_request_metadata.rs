@@ -767,6 +767,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ImportSkills(_) => "skill.import",
         LocalDaemonRequest::GetSkill(_) => "skill.get",
         LocalDaemonRequest::ListSkills(_) => "skill.list",
+        LocalDaemonRequest::SkillsV2(_) => "skills.v2",
         LocalDaemonRequest::RelayStatus(_) => "relay.status",
         LocalDaemonRequest::ConfigureRelay(_) => "relay.configure",
         LocalDaemonRequest::CloudRelayStatus(_) => "cloud_relay.status",

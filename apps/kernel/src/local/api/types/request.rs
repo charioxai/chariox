@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    SkillsV2(crate::skill::v2::SkillsV2Request),
     AddSshMachine(AddSshMachineRequest),
     RemoveSshMachine(RemoveSshMachineRequest),
     RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),

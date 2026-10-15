@@ -1870,12 +1870,12 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages, manifest } => {
             let ensured = router
-                .relay_ensure_remote_skill_packages(context, packages)
+                .relay_ensure_remote_skill_packages(context.clone(), packages)
                 .await;
             match ensured {
-                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { context, manifest, materialized },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

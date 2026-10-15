@@ -8,6 +8,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "skills_changed"; session_id: string; change: import("./kernel-types-skills-v2.js").SkillCatalogEvent }
   | {
     event: "terminal_output"
     records: Array<Record<string, unknown>>

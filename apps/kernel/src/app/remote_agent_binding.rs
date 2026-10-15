@@ -1539,6 +1539,7 @@ impl DaemonApp {
                 daemon_alias: None,
             },
             RelayPeerRequest::EnsureRemoteSkillPackages {
+                manifest: Default::default(),
                 context: crate::transport::relay_peer::RemoteSkillSyncContext {
                     home_kernel_id: self.config.daemon_id.clone(),
                     home_session_id: agent.session_id().to_string(),
@@ -2034,6 +2035,7 @@ async fn ensure_remote_skill_packages_off_lock(
             daemon_alias: None,
         },
         RelayPeerRequest::EnsureRemoteSkillPackages {
+            manifest: Default::default(),
             context: crate::transport::relay_peer::RemoteSkillSyncContext {
                 home_kernel_id: plan.config.daemon_id.clone(),
                 home_session_id: plan.agent.session_id().to_string(),

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
+pub mod v2;
 mod package;
 mod provider_import;
 #[cfg(test)]

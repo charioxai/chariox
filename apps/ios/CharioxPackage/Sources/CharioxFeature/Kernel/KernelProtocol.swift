@@ -128,6 +128,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case providerLoggedOut(String)
     case mcpServersListed([CharioxMcpServerConfig])
     case skillsListed([CharioxSkillMetadata])
+    case skillsV2(SkillsV2Response)
     case promptSubmitted(RuntimeSession)
     case promptCancelled
     case interactionResponded(interactionID: String, session: RuntimeSession)
@@ -204,6 +205,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         if let key = container.allKeys.first(where: { $0.stringValue == "McpServersListed" }) {
             let payload = try container.decode(McpServersListedPayload.self, forKey: key)
             self = .mcpServersListed(payload.mcps)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "SkillsV2" }) {
+            let payload = try container.decode(SkillsV2Payload.self, forKey: key)
+            self = .skillsV2(payload.result)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "SkillsListed" }) {
@@ -495,3 +501,5 @@ struct DynamicCodingKey: CodingKey {
         self.intValue = intValue
     }
 }
+
+private struct SkillsV2Payload: Decodable { let result: SkillsV2Response }

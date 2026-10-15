@@ -698,6 +698,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ImportSkills(_)
         | LocalDaemonRequest::GetSkill(_)
         | LocalDaemonRequest::ListSkills(_)
+        | LocalDaemonRequest::SkillsV2(_)
         | LocalDaemonRequest::RelayStatus(_)
         | LocalDaemonRequest::ConfigureRelay(_)
         | LocalDaemonRequest::CloudRelayStatus(_)
