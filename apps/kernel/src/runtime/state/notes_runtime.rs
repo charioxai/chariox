@@ -338,7 +338,18 @@ impl KernelRuntimeState {
         | NoteWindow::Terminal { session_id, .. } = window
         {
             let session = self.owned.session_snapshot(session_id)?;
-            if !session.has_member(user) {
+            // MP-11: notes use the account owner's canonical identity, while a
+            // Room can retain the configured Cloud identity of that same owner.
+            // Normalize both sides with the existing owner alias; collaborators
+            // keep their independent identities and still require membership.
+            let config = self.owned.config_projection.snapshot();
+            let owner =
+                crate::account_profile::provider_account_authority_owner_user_id(&config, user);
+            if !session.members().iter().any(|member| {
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &config, member.user_id(),
+                ) == owner
+            }) {
                 return Err(host_error("MD-N2: Room membership required".into()));
             }
         }
@@ -396,5 +407,65 @@ impl KernelRuntimeState {
         };
         observation.validate(None, None).map_err(host_error)?;
         Ok(observation)
+    }
+}
+
+#[cfg(test)]
+mod owner_alias_tests {
+    use super::*;
+    use crate::runtime::router::CommandRouter;
+    use crate::session::RuntimeSession;
+
+    #[tokio::test]
+    async fn mp08_mp10_mp11_notes_room_membership_uses_only_the_configured_owner_alias() {
+        for (configured_owner, room_owner, caller, allowed) in [
+            (Some("cloud-owner"), "cloud-owner", "local", true),
+            (Some("cloud-owner"), "local", "cloud-owner", true),
+            (Some("cloud-owner"), "cloud-owner", "collaborator", false),
+            (Some("cloud-owner"), "collaborator", "local", false),
+            (Some("cloud-owner"), "collaborator", "collaborator", true),
+            (None, "cloud-owner", "local", false),
+            (None, "local", "local", true),
+        ] {
+            let mut config = crate::config::DaemonConfig::for_tests();
+            config.cloud_relay = configured_owner.map(|owner| {
+                crate::config::PersistedCloudRelayProfile {
+                    user_id: owner.into(),
+                    ..Default::default()
+                }
+            });
+            let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+            let mut room = RuntimeSession::new(
+                format!("notes-alias-{:016x}", rand::random::<u64>()),
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel",
+            );
+            room.set_owner_user_id(room_owner);
+            let session_id = room.id().to_owned();
+            app.sessions_mut().restore_session(room);
+            let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+            for window in [
+                NoteWindow::RoomBrowser {
+                    session_id: session_id.clone(),
+                    tab_id: "tab".into(),
+                },
+                NoteWindow::Terminal {
+                    session_id: session_id.clone(),
+                    window_id: "terminal".into(),
+                },
+            ] {
+                assert_eq!(
+                    router
+                        .runtime_state()
+                        .check_note_window(caller, &window)
+                        .is_ok(),
+                    allowed,
+                    "configured={configured_owner:?}, Room={room_owner}, caller={caller}, window={window:?}",
+                );
+            }
+        }
     }
 }
