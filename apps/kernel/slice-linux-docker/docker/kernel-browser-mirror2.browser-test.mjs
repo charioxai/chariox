@@ -1340,6 +1340,16 @@ test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still con
  '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(600)+'</main>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Visible heading'),'viewport heading precedes continuation');
- assert(JSON.stringify(first).length<200*1024,'a sub-10k-element page cannot put megabytes into its reset');
+ assert(JSON.stringify(first).length<3*1024*1024,'an ordinary reset stops at 2 MiB plus at most one bounded record');
  const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
+}));
+
+// MP-08/MP-10/MP-11: ordinary GitHub-sized navigation is one complete reset.
+test('MP-10 M2: ordinary navigation includes the form after a byte-heavy body header atomically',()=>mirrored(
+ '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(80)+'</header><form><h1>Sign in to the destination</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Sign in to the destination'),'the complete ordinary document reaches the viewer before replacing its prior paint');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation leaves no unfinished body');
+ assert(JSON.stringify(first).length<3*1024*1024,'ordinary resets retain a size cap');
 }));

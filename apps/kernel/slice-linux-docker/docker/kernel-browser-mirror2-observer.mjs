@@ -403,23 +403,24 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
       return mirrored(node) ?? null;
     };
-    // Continuations run only when a viewer gives a credit, never in a background
-    // loop. Yield to Chrome/other Tabs after 8 ms, 4096 visits or 128 KiB.
-    // The head's style sheets precede the viewport: until the body is serialized (bounded by HEAD_BYTES)
-    // they do not count, so a site's large style sheets cannot leave a reset with nothing visible.
+    // MP-08/MP-10: ordinary documents stay atomic up to 2 MiB of records. A
+    // head/header prefix is not a usable navigation. Large documents keep the
+    // bounded viewport prefix and viewer-driven continuations. The 532 transport
+    // interleaves every reply in 16 KiB frames; atomic here never means one wire write.
     const chunk = (visits = 4096, minimum = 256) => {
+      const atomic = !progressive, limit = atomic ? 2 * 1024 * 1024 : 128 * 1024;
       const out = [], end = performance.now() + 8; let bytes = budget.bytes;
-      for (let i = 0; continuation && i < (progressive ? visits : 40000); i++) {
+      for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
-        if (budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
-        // Keep ordinary small pages atomic. The backstop also catches a huge
-        // open shadow tree absent from the document's native element count.
-        // A medium page can have few elements and megabytes of text/attributes.
-        // It needs the same continuation bound as a large element tree.
-        if (budget.nodes >= 20000 || budget.bytes - bytes >= 128 * 1024) progressive = true;
-        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= 128 * 1024) break;
+        // Carry bounded head CSS with the first large-document viewport prefix
+        // (browserux 91599e472); ordinary resets count it inside their 2 MiB cap.
+        if (!atomic && budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
+        // Open shadow trees are absent from the native element count. The node
+        // backstop and byte cap switch those documents to bounded continuation too.
+        if (budget.nodes >= 20000 || budget.bytes - bytes >= limit) progressive = true;
+        if (!atomic && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= limit || atomic && budget.nodes >= 20000) break;
       }
       return out;
     };

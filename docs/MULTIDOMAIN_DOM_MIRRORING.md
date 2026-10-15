@@ -38,7 +38,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   suppression and frame slots are retired before rebuilding. Cancellation
   keeps the fence ahead of the published sequence, forcing the next credit
   to rebuild a full base. Resource keys retain their document lifetime.
-  A small document has a 20,000-record/4 MiB
+  An ordinary document has a 20,000-record/2 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
   continuation records. A same-document reset preserves an active root wheel
   target and submits that position through normal input under the newly applied
@@ -683,3 +683,21 @@ flow with an installed signed or unsigned Todo or Docs App:
 Retain fail-first baseline and final-head screenshots, console/log captures,
 per-key timings, exact source/binary identities, shaping calibration and cleanup.
 Controller fixtures supplement these drills and do not close their acceptance.
+
+### MP-08 / MP-10 / MP-11: ordinary first-snapshot cap (2026-10-15)
+
+Ordinary documents (at most 10,000 native elements) serialize atomically until
+completion or 2 MiB of record data. This keeps a site's header/templates from
+replacing the previous page before its form or file list arrives. The cap is
+evaluated between records: one record is bounded at 1 MiB, so this is not a
+strict 2 MiB serialized-message limit. An open shadow tree also switches to
+continuation at 20,000 records. Larger documents retain the existing 1,024-visit
+first prefix and bounded, viewer-credited continuation. Browserux 91599e472's
+bounded head-CSS exception remains on that large-document path.
+
+Atomic observation uses the existing protocol 532 chunks-v2 transport, whose
+16 KiB frames share a 64 KiB acknowledged window and fairly interleave display
+events with replies; it adds no unchunked bypass or new wire flag. The client
+still stages incomplete documents from the capped/large path and fences input
+from the held prior document. Same-document protection resets remain immediate.
+This internal snapshot budget changes no serialized shape or client floor.
