@@ -135,7 +135,7 @@ test("session-scoped Unix requests never probe global RelayStatus for a protocol
     requests.push(frame.request)
     socket.send(JSON.stringify({ type: "response", request_id: frame.request_id,
       response: "RelayStatus" in frame.request ? null : { ok: true },
-      error: "RelayStatus" in frame.request ? "Unix peer has no live authority for this request" : null }))
+      error: "RelayStatus" in frame.request ? "This process has no access. Only the agent you approved, and the programs it starts, are covered." : null }))
   }))
   const path = join(root, "kernel.sock")
   await new Promise<void>(resolve => server.listen(path, resolve))

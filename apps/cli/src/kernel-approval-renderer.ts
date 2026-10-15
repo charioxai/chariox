@@ -2,7 +2,6 @@ import { BoxRenderable, ScrollBoxRenderable, TextRenderable, MouseButton, TextAt
 import type { KernelApprovalView } from "./kernel-approval-controller.js"
 import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { theme } from "./theme.js"
-import { requesterLabels } from "./kernel-access-requester-label.js"
 
 export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
   show(): void
@@ -96,9 +95,6 @@ export function createKernelApprovalRenderer(renderer: CliRenderer, actions: {
       })
       panel.add(body)
       text(body, view.interaction.title || "Kernel approval")
-      if (view.interaction.requester) {
-        for (const label of requesterLabels(view.interaction.requester)) text(body, label)
-      }
       text(body, view.interaction.message)
       if (view.interaction.choices.some(choice => choice.requires_passkey)) {
         text(body, "Critical — passkey needed. Select an approval choice to enter your passkey.", true)
