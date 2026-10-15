@@ -1365,6 +1365,10 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   let current = true;
   host.chromeWindows.bound = { tabbed: { window_generation: 7, isCurrent: () => current }, auxiliary: [] };
   host.tabGroups = { active: async () => host.tabs.get(b.tab_id).target_id };
+  // MP-11: without the managed lockdown a page can enter same-size fullscreen and its pixels reach the band crop.
+  host.chromium.policy = 'unavailable';
+  assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no band without the managed lockdown');
+  host.chromium.policy = 'managed';
   assert.deepEqual((await host.request({ op: 'state' })).chrome_window, { window_generation: 7, active_tab_id: b.tab_id });
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '0';
   assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no band is offered when display is disabled');

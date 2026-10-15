@@ -32,6 +32,8 @@ export const managedPolicy = Object.freeze({
   // Its icon is never pinned in the native toolbar (Chrome for Testing pins it by default).
   ExtensionSettings: { [TAB_GROUPS_EXTENSION_ID]: { toolbar_pin: "default_unpinned" } },
   IncognitoModeAvailability: 1,
+  // MP-11: a same-size fullscreen window would put page pixels in the band crop.
+  FullscreenAllowed: false,
   BrowserGuestModeEnabled: false,
   BrowserAddPersonEnabled: false,
   PrintingEnabled: false,
