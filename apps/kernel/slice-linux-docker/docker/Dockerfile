@@ -234,6 +234,13 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs /opt/chariox-slice/browser-controller-response-bodies.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-owned-desktop.mjs /opt/chariox-slice/linux-owned-desktop.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs \
+     apps/kernel/slice-linux-docker/docker/desktop-applications.mjs \
+     apps/kernel/slice-linux-docker/docker/desktop-applications.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs \
+     /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs /opt/chariox-slice/browser-controller-cookie-fence.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs /opt/chariox-slice/browser-controller-dialogs.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
@@ -399,3 +406,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.test.py \
      apps/kernel/slice-linux-docker/docker/room-shared-display.mjs \
      /opt/chariox-slice/
+
+# MP-08/MP-10/MP-11: resolve the installed dependency graph, not the source tree.
+# Missing transitive modules otherwise surface only when a user starts a Room.
+RUN node --input-type=module -e 'await import("/opt/chariox-slice/browser-controller.mjs"); await import("/opt/chariox-slice/kernel-browser-host.mjs")'

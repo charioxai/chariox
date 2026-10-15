@@ -30,7 +30,7 @@ async function bundleInputs(root, target) {
   const libexec = target === 'linux-x64' ? ['chariox-app-storage', 'chariox-app-runtime-install'] : ['chariox-app-runtime-install'];
   for (const name of libexec) await put(join(executables, 'libexec', name), `#!/bin/sh\necho ${name}\n`, 0o755);
   const source = join(root, 'source-root');
-  for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
+  for (const name of ['install-browser-dependencies.sh', 'install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
   for (const name of ['chariox-kernel.service', 'chariox-app-bwrap.apparmor']) await put(join(source, 'deploy/local-linux', name), name);
   await put(join(source, 'deploy/managed-kernel/chariox-app-storage.service'), '[Unit]\n');
   await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
@@ -79,7 +79,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   assert.equal(manifest.macosSigning, null);
   assert.deepEqual(manifest.files.map(file => file.path), [
     'LICENSE', 'bin/chariox', 'bin/chariox-app-package', 'bin/chariox-kernel', 'bin/chariox-relay',
-    'deploy/local-linux/chariox-app-bwrap.apparmor', 'deploy/local-linux/chariox-kernel.service', 'deploy/local-linux/install-root.sh',
+    'deploy/local-linux/chariox-app-bwrap.apparmor', 'deploy/local-linux/chariox-kernel.service', 'deploy/local-linux/install-browser-dependencies.sh', 'deploy/local-linux/install-root.sh',
     'deploy/local-linux/install-user.sh', 'deploy/local-linux/start-kernel.sh', 'deploy/managed-kernel/chariox-app-storage.service',
     'install.sh', 'libexec/chariox-app-runtime-install', 'libexec/chariox-app-storage',
     'runtime/.runtime-lease', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'runtime/runtime-inventory.json',

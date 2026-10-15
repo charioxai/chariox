@@ -215,7 +215,7 @@ export async function assemble(options) {
   const installer = [];
   if (platform.linuxInstaller) {
     const local = join(sourceRoot, 'deploy/local-linux');
-    for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh', 'chariox-kernel.service', 'chariox-app-bwrap.apparmor'])
+    for (const name of ['install-browser-dependencies.sh', 'install-root.sh', 'install-user.sh', 'start-kernel.sh', 'chariox-kernel.service', 'chariox-app-bwrap.apparmor'])
       await regularFile(join(local, name), `deploy/local-linux/${name}`);
     for (const path of await files(local)) installer.push([join(local, path), `deploy/local-linux/${path}`]);
     // install-root.sh installs these units from ../managed-kernel.
