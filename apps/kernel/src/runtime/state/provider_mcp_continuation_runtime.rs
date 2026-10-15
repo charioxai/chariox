@@ -385,32 +385,13 @@ impl KernelRuntimeState {
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
         if self.owned.config_projection.snapshot().room_agent_tools {
-            // Only the exact source task's committed intent can replay a turn.
-            // Refreshing a catalog never clears an owner-visible blocked task.
-            let task = self
-                .owned
-                .durable_state_store
-                .agent_tasks(Some(session_id), Some(agent_id))?
-                .into_iter()
-                .find(|task| {
-                    continuation.source_prompt_id.as_deref() == Some(task.prompt_id.as_str())
-                        && task.state
-                            == crate::durable_state::agent_lifecycle::ExecutionState::Working
-                        && task.wait.is_none()
-                        && task.pending_prompt_id.as_deref()
-                            == Some(format!("task-catalog:{}", task.prompt_id).as_str())
-                });
-            if let Some(task) = task {
-                let attachment = self.ensure_mcp_continuation_attachment(&continuation)?;
-                self.dispatch_task_continuation_with_context(
-                    &task,
-                    &attachment,
-                    continuation.previous_prompt,
-                    Some(hidden_system_context),
+            return self
+                .dispatch_catalog_task_continuation(
+                    continuation,
+                    previous_provider_run_id,
+                    hidden_system_context,
                 )
-                .await?;
-            }
-            return Ok(());
+                .await;
         }
         let prompt = crate::session::PromptQueueItem::new(
             format!(

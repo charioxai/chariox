@@ -174,5 +174,145 @@ fn catalog_handoff_has_a_bounded_fresh_executor_window_after_long_work() {
         false
     ));
     assert_eq!(task.progress_sequence, 0);
-    assert_eq!(task.no_progress_wakes, 0);
+    assert_eq!(task.no_progress_wakes, 1);
+}
+
+// MP-08 / MP-10 / MP-11: tool reloads cannot evade the existing no-progress bound.
+#[test]
+fn catalog_reload_chain_blocks_without_real_progress() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    for _ in 0..NO_PROGRESS_LIMIT {
+        let prompt = f.task().prompt_id;
+        f.apply(prepare("room", "parent", &prompt, "run"));
+        let next = f.task().pending_prompt_id.unwrap();
+        f.begin(&next);
+    }
+    let prompt = f.task().prompt_id;
+    f.apply(prepare("room", "parent", &prompt, "run"));
+    let stopped = f.task();
+    assert_eq!(stopped.state, ExecutionState::Blocked);
+    assert!(stopped.pending_prompt_id.is_none());
+    assert!(stopped.reason.contains("resume or cancel"));
+    assert_eq!(stopped.blocked_revision, stopped.revision);
+    f.apply(prepare("room", "parent", &stopped.prompt_id, "run"));
+    assert_eq!(
+        f.task(),
+        stopped,
+        "a blocked chain keeps one owner decision"
+    );
+    assert_eq!(stopped.completion_check.unwrap().check_count, 0);
+}
+
+#[test]
+fn catalog_begin_rechecks_owner_disposition_and_exact_scope() {
+    for disposition in [
+        "block",
+        "cancel",
+        "room",
+        "agent",
+        "task",
+        "prompt",
+        "duplicate",
+    ] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(prepare("room", "parent", "p", "run"));
+        let mut room = "room";
+        let mut agent = "parent";
+        let mut task = "p";
+        let mut prompt = "task-catalog:p";
+        match disposition {
+            "block" => {
+                f.apply(Operation::Block {
+                    task: "p".into(),
+                    prompt: "p".into(),
+                    reason: "owner action".into(),
+                });
+            }
+            "cancel" => {
+                f.apply(Operation::CancelTask {
+                    task: "p".into(),
+                    owner: "owner".into(),
+                    revision: f.task().revision,
+                });
+            }
+            "room" => room = "foreign",
+            "agent" => agent = "foreign",
+            "task" => task = "foreign",
+            "prompt" => prompt = "task-catalog:foreign",
+            _ => f.begin("task-catalog:p"),
+        }
+        let before = f.task();
+        let result = f.store.agent_lifecycle(Operation::BeginContinuation {
+            task: task.into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: Some("run".into()),
+            now: 5,
+        });
+        if disposition == "duplicate" {
+            // Admission and the later provider dispatch both validate the same
+            // prompt; the second validation must be idempotent, not a new turn.
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err(), "{disposition} must retire admission");
+        }
+        assert_eq!(f.task(), before);
+    }
+}
+
+#[test]
+fn handled_progress_renews_catalog_wake_budget_without_spending_completion_checks() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    for _ in 0..NO_PROGRESS_LIMIT {
+        let prompt = f.task().prompt_id;
+        f.apply(prepare("room", "parent", &prompt, "run"));
+        f.begin(&f.task().pending_prompt_id.unwrap());
+    }
+    let prompt = f.task().prompt_id;
+    f.apply(Operation::Progress {
+        task: "p".into(),
+        prompt: prompt.clone(),
+        receipt: "handled-public-result".into(),
+        now: 5,
+    });
+    f.apply(prepare("room", "parent", &prompt, "run"));
+    let task = f.task();
+    assert_eq!(task.state, ExecutionState::Working);
+    assert!(task.pending_prompt_id.is_some());
+    assert_eq!(task.no_progress_wakes, 1);
+    assert_eq!(task.progress_sequence, 1);
+    assert_eq!(task.completion_check.unwrap().check_count, 0);
+}
+
+#[test]
+fn catalog_handoff_cannot_replace_a_wait_or_another_pending_intent() {
+    for wait in [true, false] {
+        let f = Fixture::new();
+        f.begin("p");
+        if wait {
+            f.register();
+            f.subscribe();
+            f.apply(Operation::Yield {
+                task: "p".into(),
+                prompt: "p".into(),
+                registrations: vec!["reg".into()],
+                cursor: 0,
+                deadline: 60_000,
+                reason: "source result".into(),
+                now: 2,
+            });
+        } else {
+            f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+            f.settle("p", true);
+        }
+        let before = f.task();
+        f.apply(prepare("room", "parent", "p", "run"));
+        assert_eq!(f.task(), before);
+    }
 }

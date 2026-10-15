@@ -455,6 +455,7 @@ pub(in crate::runtime) use provider_login_state::{
     PROVIDER_LOGIN_TIMEOUT_MS,
 };
 mod provider_mcp_continuation_runtime;
+mod provider_mcp_task_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;

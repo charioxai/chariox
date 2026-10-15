@@ -191,8 +191,9 @@ impl KernelRuntimeOwnedState {
                         now: crate::session::unix_epoch_ms(),
                     },
                 )? {
-                    if task.state == ExecutionState::Working
-                        && task.pending_prompt_id.as_ref() == Some(&next_prompt)
+                    if task.state == ExecutionState::Blocked
+                        || (task.state == ExecutionState::Working
+                            && task.pending_prompt_id.as_ref() == Some(&next_prompt))
                     {
                         return Ok(Some((task, false)));
                     }

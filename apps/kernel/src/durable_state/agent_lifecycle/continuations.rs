@@ -26,13 +26,25 @@ pub(super) fn prepare_catalog(
     if next_prompt != format!("task-catalog:{prompt}") {
         return Err(error("catalog continuation must bind its source prompt"));
     }
+    // Reloading tools is another wake, not handled task progress. Reuse the
+    // durable budget so repeated catalog changes cannot keep a task alive forever.
+    if task.no_progress_wakes >= NO_PROGRESS_LIMIT {
+        goals::blocked(
+            &mut task,
+            "Tools changed repeatedly without task progress; finish updating tools, then resume or cancel",
+        );
+        task.revision += 1;
+        save(tx, &task)?;
+        return Ok(Outcome::Task(task));
+    }
+    task.no_progress_wakes += 1;
     if let Some(evaluation) = completion::evaluation_mut(&mut task) {
         if evaluation.prompt_id == prompt && evaluation.result.is_none() {
             evaluation.prompt_id = next_prompt.clone();
         }
     }
     // This newly committed dispatch has its own bounded executor admission
-    // window. It spends neither completion checks nor no-progress wake budget.
+    // window. Completion checks remain separate from the no-progress wake budget.
     task.last_progress_at_ms = task.last_progress_at_ms.max(now);
     task.pending_prompt_id = Some(next_prompt);
     task.revision += 1;
