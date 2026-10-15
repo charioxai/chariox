@@ -80,8 +80,9 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,pageRect,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,pageRect,occluded,...options}){
   super(options);
+  if(surface==='page'&&typeof occluded==='function')this.occluded=occluded;
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect,inWindow===true);
@@ -137,7 +138,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.pageOverlay)await this.attestOverlay();
+   if(this.pageOverlay){
+    await this.attestOverlay();
+    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
+    if(!this.latest)throw Error('MP-08: native region readback unavailable');
+   }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){if(this.pageOverlay)this.timing(`native_overlay_refused ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,80)}`,performance.timeOrigin+performance.now());await this.close();throw error;}
@@ -158,7 +163,8 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   for(let attempt=0;;attempt++){
    const raw=this.latest?.raw;
    try{const {scrim,inliers,dx,dy}=overlayAttestation(reference,raw,masked,this.scale);
-    this.regions=regionProtection(this,-dx,-dy);await this.regions.refresh();
+    // Review #1016 P1: the readbacks so far were masked at the zero offset; none may be admitted.
+    this.retireFrames();this.regions=regionProtection(this,-dx,-dy);await this.regions.refresh();this.wake(true);
     this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${dx},${dy} ${attempt}`,performance.timeOrigin+performance.now());break;}
    catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${error.dx},${error.dy} ${reference.width}x${reference.height} ${raw?.width}x${raw?.height}`,performance.timeOrigin+performance.now());
     if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}

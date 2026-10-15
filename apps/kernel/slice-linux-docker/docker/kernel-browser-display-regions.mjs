@@ -62,6 +62,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
     rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
     attestationState:lease.attestationState,
     isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
+   args.occluded=()=>host.chromeWindows?.inWindowOver?.(args.rect)===true;
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();

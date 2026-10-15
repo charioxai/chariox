@@ -167,3 +167,30 @@ test('MP-11 an in-window popup over the page masks the active Tab\'s protected f
   assert.equal(fenced,1,'the active Tab\'s navigation retires the popup frames');
  }finally{NativeRegionProtection.prototype.measure=measure;}
 });
+
+// Review #1016 @53ad3e893 P1: the overlay's first readbacks are masked at the zero offset. When the attestation finds
+// the page inside Chrome's window frame (here 4 px), none of them may be admitted, nor any readback still in flight.
+test('MP-11 a dialog overlay retires its zero-offset frames when the attestation shifts the masks',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const {encodePng}=await import('./kernel-browser-pixels.mjs');
+ const width=320,height=200,frame=4,W=width+2*frame,reference=Buffer.alloc(width*height*4),native=Buffer.alloc(W*height*4,60);
+ let seed=11;for(let i=0;i<reference.length;i+=4){for(let c=0;c<3;c++){seed=(seed*1103515245+12345)>>>0;reference[i+c]=40+(seed>>>24)%200;}reference[i+3]=255;}
+ for(let y=0;y<height;y++)for(let x=0;x<width;x++)for(let c=0;c<3;c++)native[(y*W+x+frame)*4+2-c]=Math.round(reference[(y*width+x)*4+c]*0.4);
+ const measure=NativeRegionProtection.prototype.measure;
+ NativeRegionProtection.prototype.measure=async()=>[[100,40,80,30]];// a Vault-filled field, page raster px
+ try{
+  const source=new NativeWindowRegionCapture({surface:'browser_auxiliary',inWindow:true,pageOverlay:true,pageDocument:'doc-a',
+   window:{id:42,width:W,height:300},contentHeight:213,rect:{left:0,top:87,width:W,height:200},isCurrent:()=>true,
+   display:{},pid:7,connection:{send:async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'doc-a'}}}:{}},sessionId:'s',
+   tab:{tab_id:'t',target_id:'x',document_id:'chrome-window-1-1'},scale:1,hostScale:1,policy:{targets:[],values:[]},browser:{},allowed:()=>true,timing:()=>{}});
+  source.screenshot=async()=>({data_base64:encodePng(width,height,reference)});
+  source.regions=source.protection();await source.regions.refresh();
+  let released=0;source.latest={raw:{width:W,height,pixels:native,serial:1,captured_ms:0,release(){released++;}},serial:1};
+  const revision=source.regionRevision;
+  await source.attestOverlay();
+  assert.equal(source.sample(),null,'no frame masked at the zero offset is admitted');
+  assert.equal(released,1,'the cached zero-offset raster is released');
+  assert.ok(source.regionRevision>revision,'a readback in flight under the old projection is rejected');
+  assert.deepEqual(await source.regions.regions({captured_ms:performance.timeOrigin+performance.now()+1}),[{x:104,y:40,width:80,height:30}],'the field at the attested offset');
+ }finally{NativeRegionProtection.prototype.measure=measure;}
+});

@@ -61,10 +61,14 @@ export class LinuxCapture {
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
-   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
-   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
-   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
+   this.retireFrames();
   }
+ }
+ // Retire every published, queued and in-flight pixel of the current mask projection.
+ retireFrames(){
+  if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
+  this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
+  this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
  }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
@@ -121,7 +125,11 @@ export class LinuxCapture {
    // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
    // Refuse a readback before any mask, encoder offer or delivery can consume it.
    if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
-   let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   // A retire during that await took the readback (r10: it threw and fenced the source).
+   let raw=this.pending;if(!raw)continue;this.pending=null;this.publishingRaw=raw;
+   // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
+   // last frame, never Chrome's pixels; its popup stream shows them over the page.
+   if(this.occluded?.()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
    }
