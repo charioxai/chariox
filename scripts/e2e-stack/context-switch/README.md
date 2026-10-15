@@ -155,3 +155,13 @@ approval, with zero provider turns. The receiving profile in
 a coordinator account action, while primary-thread continuity is checked.
 
 MP-08 / MP-10 / MP-11: `draft-config-live.mjs` replays the real ANSI editor with Python `pyte`; set `CTXVAL_PYTHON` to an interpreter with that dependency installed. The general screenshots use Python Pillow. Provider account commands take the public profile label, while RPCs use stable profile IDs.
+
+MP-08 / MP-10 / MP-11: `handoff-config-live.mjs <build-label> <run-name>`
+is the focused local527 wire drill. It needs matching built client/kernel/relay
+assets and a hosted origin but no provider credential or turn. It writes both
+brief-model keys using the real TUI over the shaped hosted relay, checks populated
+`UserConfig` / `UserConfigUpdated` values and their canonical handoff hash, verifies
+client and kernel advertisements, then restarts and checks persistence. The base
+491 build must fail the advertisement assertion after successfully setting values.
+This proves the config seam only; it does not classify startup, latency, provider
+handoff, multi-hour or Path-1 acceptance.
