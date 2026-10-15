@@ -17,6 +17,7 @@ use crate::session::{
 };
 use crate::terminal::TerminalOutputKind;
 
+mod admission;
 mod attachments;
 mod permission;
 #[cfg(test)]
@@ -401,7 +402,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .get("hook_event_name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if event_name == "UserPromptSubmit" {
+            if event_name == "UserPromptContextRequest" {
+                self.respond_to_prompt_context_request(
+                    session_id,
+                    provider_run_id,
+                    &agent_id,
+                    context_file,
+                    &event,
+                )?;
+                continue;
+            } else if event_name == "UserPromptSubmitRejected" {
+                self.reject_hook_prompt(
+                    session_id,
+                    provider_run_id,
+                    &agent_id,
+                    context_file,
+                    &event,
+                )?;
+                continue;
+            } else if event_name == "UserPromptSubmit" {
                 clear_claude_hook_permission_tombstone(context_file);
                 let Some(prompt) = event
                     .get("prompt")
@@ -457,25 +476,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         continue;
                     }
                 }
-                if event
-                    .get("hook_context_request_id")
-                    .and_then(Value::as_str)
-                    .is_some()
-                {
-                    // MP-08 / MP-10 / MP-11: retired grants add no hidden context.
-                    let context = String::new();
-                    crate::provider::ensure_claude_native_hidden_context_fits(
-                        provider_run_id,
-                        &context,
-                    )?;
-                    fs::write(context_file, &context).map_err(|error| {
-                        DaemonError::ProviderProtocol {
-                            provider_run_id: provider_run_id.to_string(),
-                            operation: "claude_hidden_context_write",
-                            message: error.to_string(),
-                        }
-                    })?;
-                }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
                 };
@@ -505,12 +505,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         },
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
-                }
-                if let Some(request_id) =
-                    event.get("hook_context_request_id").and_then(Value::as_str)
-                {
-                    let context = fs::read_to_string(context_file).unwrap_or_default();
-                    write_claude_hook_context_response(context_file, request_id, &context);
                 }
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);

@@ -50,6 +50,8 @@ pub(crate) use account_credential::{
     resolve_provider_account_credentials_for_launch, store_provider_account_credential,
     validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
+#[cfg(test)]
+pub(crate) use claude::claude_native_hook_handler;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
     claude_provider_catalog_with_environment, prepare_vaulted_claude_native_onboarding,

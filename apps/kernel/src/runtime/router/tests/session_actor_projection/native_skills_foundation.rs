@@ -28,6 +28,8 @@ async fn native_skills_foundation_refusal_does_not_block_ordinary_prompt_admissi
         "claude-code",
         "sonnet",
     );
+    assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .contains(&crate::local::SKILLS_V2_RUNTIME_CAPABILITY));
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     let request = LocalDaemonRequest::SkillsV2(crate::skill::v2::SkillsV2Request::Catalog {
         project_id: None,
@@ -46,20 +48,29 @@ async fn native_skills_foundation_refusal_does_not_block_ordinary_prompt_admissi
     );
     // This serialized request is exactly the ordinary native client's existing
     // prompt path. No v2 submission was attempted or retried.
-    let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
-        session_id: session_id.clone(),
-        attachment_id: attachment.id().to_string(),
-        target_agent_id: Some(agent_id.clone()),
-        prompt: "explain this code\n".into(),
-        attachments: Vec::new(),
-    });
-    let command =
-        KernelCommand::from_local_request("native-foundation-submit", None, None, &request);
-    let response = router.dispatch(command, request).await.unwrap();
-    assert!(matches!(
-        response,
-        LocalDaemonResponse::PromptSubmitted { .. }
-    ));
+    for (index, prompt) in ["explain this code\n", "$review inspect source\n"]
+        .into_iter()
+        .enumerate()
+    {
+        let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: prompt.into(),
+            attachments: Vec::new(),
+        });
+        let command = KernelCommand::from_local_request(
+            &format!("native-foundation-submit-{index}"),
+            None,
+            None,
+            &request,
+        );
+        let response = router.dispatch(command, request).await.unwrap();
+        assert!(matches!(
+            response,
+            LocalDaemonResponse::PromptSubmitted { .. }
+        ));
+    }
     assert!(router
         .agent_runtime_projection
         .get(&agent_id)
