@@ -127,10 +127,18 @@ export class InputArbiter {
   async input({stream, command, signal}) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
-    const current = async () => {
+    // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
+    // pixels): they need the admitted active Tab, not its document, so a strip click while the
+    // page loads is not dropped. Text and other keys may reach the page: document fenced too.
+    const activeAdmitted = async () => {
       if (signal?.aborted || source?.surface !== 'browser_chrome' || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
       const tab = await this.activeTab();
-      if (!tab || tab.tab_id !== command.tab_id || tab.document_id !== command.document_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      return tab;
+    };
+    const current = async () => {
+      const tab = await activeAdmitted();
+      if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       return {connection, sessionId, tab};
@@ -152,14 +160,14 @@ export class InputArbiter {
     };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
-      if (bandChord(keysym, modifiers)) await current(); else await textTarget();
+      if (bandChord(keysym, modifiers)) await activeAdmitted(); else await textTarget();
       return dispatched(() => source.chord(keysym, modifiers));
     };
-    if (input.kind === 'click') { await current(); return dispatched(() => source.click(input.x, input.y)); }
+    if (input.kind === 'click') { await activeAdmitted(); return dispatched(() => source.click(input.x, input.y)); }
     if (input.kind === 'scroll') {
       const nx = notches(input.delta_x), ny = notches(input.delta_y);
       if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
-      await current(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
+      await activeAdmitted(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
     }
     if (input.kind === 'key') {
       const key = typeof input.key === 'string' ? input.key : '';

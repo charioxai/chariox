@@ -104,8 +104,15 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "scroll", x: 10, y: 10, delta_x: 0, delta_y: 120 }), { dispatched: true });
   await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { tab_id: "host-tab-a" }), { code: "user_domain_stale_reference" }, "another Tab became active after admission");
+  // Live drill r4band1: a strip click while the active Tab loads was dropped. Band clicks,
+  // wheel and browser shortcuts reach only Chrome's UI (the crop holds no page pixels);
+  // text and other keys may reach the page and keep the document fence.
   document = "dc";
-  await assert.rejects(send({ kind: "click", x: 1, y: 1 }), { code: "stale_document_reference" }, "the active Tab navigated after admission");
+  assert.deepEqual(await send({ kind: "click", x: 1, y: 1 }), { dispatched: true }, "a strip click while the active Tab navigates");
+  assert.deepEqual(await send({ kind: "scroll", x: 10, y: 10, delta_x: 0, delta_y: 120 }), { dispatched: true });
+  assert.deepEqual(await send({ kind: "key", key: "t", modifiers: 2 }), { dispatched: true }, "Ctrl+T while the active Tab navigates");
+  await assert.rejects(send({ kind: "text", text: "x" }), { code: "stale_document_reference" }, "text may reach the page: the active Tab navigated after admission");
+  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "stale_document_reference" });
   document = "db";
   await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { _agent_input: true }), { code: "user_domain_not_granted" });
   const retired = { ...source, click: async () => false };
@@ -113,7 +120,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const uncertain = { ...source, click: async () => { throw Object.assign(Error("x"), { code: "native_input_uncertain" }); } };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: uncertain }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "click", x: 1, y: 1 } } }), { dispatched: true }, "uncertain native input counts as dispatched, never replayed");
   await assert.rejects(send({ kind: "text", text: "é" }), /unsupported text/);
-  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel"]);
+  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel", "click", "wheel", 0x74]);
 });
 
 test("MP-08 browser chords and refused chords", () => {
