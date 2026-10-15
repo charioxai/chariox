@@ -1326,3 +1326,11 @@ test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<i
  const result=await connection.send('Runtime.evaluate',{contextId:world.contextId,expression:"__shapeMaps.filter(m=>[...m.values()].every(v=>v==='text'||v===false)).map(m=>m.size)",returnByValue:true},sessionId);
  assert(!result.exceptionDetails);assert.deepEqual(result.result.value,[2],'only the current input and select ids remain');
 }));
+
+test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still continue in bounded packets',()=>mirrored(
+ '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(600)+'</main>',async({next})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Visible heading'),'viewport heading precedes continuation');
+ assert(JSON.stringify(first).length<200*1024,'a sub-10k-element page cannot put megabytes into its reset');
+ const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
+}));

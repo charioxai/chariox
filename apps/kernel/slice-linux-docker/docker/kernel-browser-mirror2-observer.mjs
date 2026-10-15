@@ -413,8 +413,10 @@ export function installMirror2(sanitizeMirrorCss) {
         if (item.value) out.push(item.value);
         // Keep ordinary small pages atomic. The backstop also catches a huge
         // open shadow tree absent from the document's native element count.
-        if (budget.nodes >= 20000) progressive = true;
-        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= (progressive ? 128 * 1024 : 4 * 1024 * 1024)) break;
+        // A medium page can have few elements and megabytes of text/attributes.
+        // It needs the same continuation bound as a large element tree.
+        if (budget.nodes >= 20000 || budget.bytes - bytes >= 128 * 1024) progressive = true;
+        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= 128 * 1024) break;
       }
       return out;
     };
