@@ -119,6 +119,18 @@ export class LinuxOwnedDesktop {
   }
   async create() {
     desktopEnvironment(this.source, this.root, this.uid);
+    // MP-08/MP-10/MP-11: the Python supervisor otherwise hides a missing
+    // executable behind a child-readiness exit. Name only fixed prerequisites,
+    // never the operator's command overrides or private PATH entries.
+    for (const name of ['bwrap', 'Xvfb', 'dbus-daemon', 'openbox', 'setxkbmap']) {
+      const binary = this.commands[name] ?? name;
+      const candidates = binary.includes('/') ? [binary] : (this.source.PATH ?? '/bin:/usr/bin').split(path.delimiter).map(root => path.join(root || '.', binary));
+      let available = false;
+      for (const candidate of candidates) {
+        try { await access(candidate, 1); available = true; break; } catch {}
+      }
+      if (!available) throw new Error(`MP-08: owned desktop prerequisite unavailable (${name})`);
+    }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     this.runtime = await mkdtemp(path.join(this.root, 'desktop-'));
     try {

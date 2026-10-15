@@ -139,3 +139,14 @@ test('MP-08 / MP-11 Xvfb uses owned private tmp without global socket or keymap 
     await assert.rejects(stat(launched.runtime), { code: 'ENOENT' });
   } finally { await desktop.stop(); await rm(root, { recursive: true, force: true }); }
 });
+
+// MP-08/MP-10/MP-11 fresh real host: identify missing desktop programs without exposing PATH entries.
+test('missing owned-desktop prerequisites name the fixed program before spawning',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mdmain-desktop-prereq-'));
+ try{for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap']){
+  const commands=Object.fromEntries(['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'].map(n=>[n,process.execPath]));commands[name]='/private-canary/missing';
+  const desktop=new LinuxOwnedDesktop(root,{commands});desktop.uid=1000;
+  await assert.rejects(desktop.start(),error=>{assert.equal(error.message,`MP-08: owned desktop prerequisite unavailable (${name})`);assert(!error.message.includes('private-canary'));return true});
+  assert.equal(desktop.children.length,0);assert.equal(desktop.binding(),null);await desktop.stop();
+ }}finally{await rm(root,{recursive:true,force:true})}
+});

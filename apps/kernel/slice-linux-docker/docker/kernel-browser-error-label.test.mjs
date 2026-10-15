@@ -78,3 +78,12 @@ test('MP-08/MP-10/MP-11 normalized controller failures retain declared public co
  }
  assert.match(hostFailureMessage({message:'MD-N2: frame changed during capture'}),/note_frame_changed/);
 });
+
+// MP-08/MP-10/MP-11 the real private desktop failed before Chromium existed on the fresh host.
+test('owned desktop failures retain fixed prerequisite and readiness causes privately',()=>{
+ for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])assert.match(hostFailureMessage({message:`MP-08: owned desktop prerequisite unavailable (${name})`}),new RegExp('desktop_prerequisite_'+name.toLowerCase().replaceAll('-','_')+'_unavailable'));
+ assert.match(hostFailureMessage({message:'MP-08: desktop child exited before readiness'}),/desktop_child_exited_before_readiness/);
+ assert.match(hostFailureMessage({message:'MP-08: AT-SPI bus configuration unavailable'}),/desktop_at_spi_configuration_unavailable/);
+ assert.match(hostFailureMessage({message:'MP-08: desktop failed to become ready (openbox, exit 1)'}),/desktop_openbox_failed_to_start/);
+ for(const message of ['MP-08: owned desktop prerequisite unavailable (private-canary)','MP-08: desktop failed to become ready (private-canary, exit 1)'])assert(!hostFailureMessage({message}).includes('private-canary'));
+});
