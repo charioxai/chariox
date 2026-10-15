@@ -98,6 +98,22 @@ test("settleAttachProviderRun keeps the TUI attachable when the credential vault
   assert.equal(result.targetAgent?.id, "agent-vault")
 })
 
+test("MP-08/MP-10 attaching to an existing unlock does not launch the agent twice", async () => {
+  let launches = 0
+  const result = await settleAttachProviderRun({ ...session, active_interactions: [{
+    id: "vault-unlock-existing", agent_id: "agent-vault", kind: "choice", level: "critical",
+    title: "Unlock Chariox Vault", message: "Enter the passphrase.", requested_at_ms: 1,
+    choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
+  }] }, { provider: "claude-p", model: "claude-haiku-5-5", effort: "low" }, "work", false, {
+    deferLaunch: true,
+    launchProviderRun: async () => { launches++; return {} as never },
+    getSessionState: async () => session,
+    tryGetProviderRun: async () => null,
+  })
+  assert.equal(result.action, "skipped")
+  assert.equal(launches, 0)
+})
+
 test("settleAttachProviderRun recognizes the structured vault-locked error code", async () => {
   const result = await settleAttachProviderRun(
     session,

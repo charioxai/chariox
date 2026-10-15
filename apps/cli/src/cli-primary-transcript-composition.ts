@@ -328,7 +328,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     focusedAgentId: () => deps.sessionState()?.focused_agent_id ?? null,
     setProviderRun: deps.setProviderRunState,
-    providerLaunchFailed: deps.flashFooter,
+    providerLaunchFailed: message => deps.flashFooter(message, "error"),
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
