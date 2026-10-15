@@ -520,8 +520,21 @@ async fn sudo_busy_authorization_is_memory_only_and_revoke_all_prevents_dispatch
             .await
     });
     let prompt = popup(&f.state).await;
-    assert!(prompt.message.contains("protected task"));
-    assert!(prompt.message.contains(&running_turn.agent_id));
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed sudo presentation");
+    assert_eq!(presentation.task, "protected task");
+    let target = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(&running_turn.agent_id)
+        .unwrap();
+    assert_eq!(
+        presentation.agent_name,
+        target.alias().unwrap_or(target.agent_ref())
+    );
     assert!(f
         .state
         .answer_terminal_runtime_interaction(
@@ -988,10 +1001,12 @@ async fn external_sudo_submit_prompt_whitespace_is_refusable(text: &str) {
     let router = f.router.clone();
     let task = tokio::spawn(async move { router.dispatch(command, request).await });
     let prompt = popup(&f.state).await;
-    assert!(prompt
-        .message
-        .ends_with("Requester-supplied prompt:\nprotected task\nfull second line"));
-    assert!(prompt.message.contains("External agent"));
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed external sudo presentation");
+    assert_eq!(presentation.task, "protected task\nfull second line");
+    assert_eq!(presentation.requester_name, "An external agent");
     f.state
         .answer_sudo_entry_from_terminal(
             "local",
