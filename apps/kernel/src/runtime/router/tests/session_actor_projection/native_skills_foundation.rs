@@ -18,13 +18,15 @@ async fn native_skills_foundation_refusal_does_not_block_ordinary_prompt_admissi
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
+    // Reuse the adjacent router tests' DevStub fixture. The real Codex
+    // account gate is outside this provider-independent dispatcher contract.
     launch_test_provider(
         &mut app,
         &session_id,
         &agent_id,
         "dev-stub",
-        "codex",
-        "gpt-6-luna",
+        "claude-code",
+        "sonnet",
     );
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     let request = LocalDaemonRequest::SkillsV2(crate::skill::v2::SkillsV2Request::Catalog {
