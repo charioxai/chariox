@@ -32,6 +32,10 @@ fn review0821_absent_excluded_files_and_dependents_are_not_ready() {
         slice_ref: None,
     };
     let op = operation(&env, &target, vec![]);
+    // MP-08 / MP-10 / MP-11: use the admitted journal path, as runtime does.
+    let mut checks = store.load_checks(project.id()).unwrap();
+    checks.operations.push(op.clone());
+    store.save_checks(project.id(), &checks).unwrap();
     store
         .run_check(
             context(root.path()),
