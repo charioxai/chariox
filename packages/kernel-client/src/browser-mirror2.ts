@@ -598,7 +598,7 @@ export class BrowserMirror2Renderer {
     const rootScroll = packet.reset && packet.document_id === this.documentId && this.rootScrolling()
       ? this.wheel.rootTarget(this.doc) ?? [this.frame.contentWindow!.scrollX, this.frame.contentWindow!.scrollY] : null
     if (packet.reset && packet.document_id !== this.documentId) { this.localRootScrollAt = -Infinity; this.releasePointer() }
-    const savedRange = packet.reset && packet.document_id === this.documentId ? rememberMirror2Range(this.doc, node => this.ids.has(node)) : null
+    const savedRange = packet.reset && packet.document_id === this.documentId && (this.pointerDown || this.selectionHold) ? rememberMirror2Range(this.doc, node => this.ids.has(node)) : null
     let rangeRestored = false
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []

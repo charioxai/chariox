@@ -949,3 +949,13 @@ test('MP-11: a refused final selection cannot silently authorize an older Notes 
   assert.equal(result,'MP-10: mirror selection refused');
  }finally{await page.close()}
 });
+
+test('MP-11: same-document reset cannot resurrect a range the kernel cleared',async()=>{
+ const page=await viewer();try{
+  const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Native selection'}]);
+  await apply(page,snapshot(nodes));await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:6}}));await frames();
+  await apply(page,{...snapshot(nodes),sequence:3});await frames();
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'');
+  assert.equal(await page.evaluate(()=>window.sent.filter(a=>a.kind==='selection').length),0);
+ }finally{await page.close()}
+});
