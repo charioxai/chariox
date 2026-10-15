@@ -33,8 +33,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: agent.lease_id.clone(),
             })?;
-        if crate::session::unix_epoch_ms().saturating_sub(lease.created_at_ms)
-            >= super::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+        // Ordinary worker kernels keep the normal session lifetime. The
+        // existing absolute ceiling belongs only to dedicated lease workers.
+        if self.app.config.kernel_runtime_role
+            == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && crate::session::unix_epoch_ms().saturating_sub(lease.created_at_ms)
+                >= super::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
         {
             return Err(crate::transport::native_provider_socket::error(
                 "native execution lease expired",
