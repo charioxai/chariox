@@ -13,6 +13,71 @@ pub(super) struct DisplaySubscription {
     pub(super) resume: Option<u64>,
 }
 
+// Room admission makes a peer round trip. Queue it in the connection's existing
+// subscription registry so its reader can receive that response; unsubscribe and
+// connection teardown can cancel an admission before it registers delivery.
+pub(super) async fn enqueue_subscribe(
+    router: &Arc<CommandRouter>,
+    outgoing: &RelayOutgoingSender,
+    tasks: &RelaySubscriptionTasks,
+    events: &Arc<RelayEventRuntime>,
+    subscription: DisplaySubscription,
+) -> Result<(), DaemonError> {
+    let router = Arc::clone(router);
+    let writer = outgoing.clone();
+    let owned_tasks = Arc::clone(tasks);
+    let events = Arc::clone(events);
+    let request_id = subscription.request_id.clone();
+    let queued = super::display_admission::enqueue(
+        tasks,
+        subscription.relay_id.clone(),
+        subscription.public_key.clone(),
+        async move {
+            if super::subscriptions::handle_relay_subscribe(
+                &router,
+                &writer,
+                &owned_tasks,
+                &events,
+                subscription.request_id,
+                subscription.relay_id,
+                subscription.display_id,
+                subscription.generation,
+                subscription.identity,
+                subscription.public_key,
+                Some("kernel_browser_display".into()),
+                subscription.resume,
+            )
+            .await
+            .is_err()
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "display admission response could not be delivered",
+                    serde_json::json!({}),
+                );
+            }
+        },
+    )
+    .await;
+    if !queued {
+        return send_outgoing_envelope(
+            outgoing,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: request_id,
+                encrypted_response: None,
+                error: Some(super::request_errors::map_relay_error(
+                    &DaemonError::LocalTransport {
+                        operation: "kernel_browser",
+                        message: "MD-DISPLAY: display admission is already pending or at capacity"
+                            .into(),
+                    },
+                )),
+            },
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn handle_subscribe(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,

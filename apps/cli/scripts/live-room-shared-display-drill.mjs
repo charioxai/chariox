@@ -38,7 +38,7 @@ try{
  for(const [width,height,deviceScaleFactor]of cells){
   const name=`${width}x${height}-dpr${deviceScaleFactor}`,directory=path.join(evidence,name);await mkdir(directory,{recursive:true});
   const cell={name,width,height,deviceScaleFactor,status:'FAIL',changes:[],pageErrors:0,consoleErrors:0,closedSockets:0};report.cells.push(cell);
-  const context=await chromium.launchPersistentContext(profile,{headless:false,executablePath:process.env.VALENV_CHROMIUM??'/opt/google/chrome/chrome',viewport:{width,height},deviceScaleFactor,recordVideo:{dir:directory,size:{width,height}},args:['--no-sandbox']});
+  const context=await chromium.launchPersistentContext(profile,{headless:false,executablePath:process.env.VALENV_CHROMIUM??'/opt/google/chrome/chrome',viewport:{width,height},deviceScaleFactor,recordVideo:{dir:directory,size:{width,height}},args:['--no-sandbox',`--force-device-scale-factor=${deviceScaleFactor}`,`--window-size=${width},${height+87}`]});
   try{
    const page=context.pages()[0]??await context.newPage();
    page.on('pageerror',()=>{cell.pageErrors++});page.on('console',message=>{if(message.type()==='error')cell.consoleErrors++});

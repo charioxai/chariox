@@ -430,6 +430,17 @@ pub(super) async fn handle_incoming_envelope(
             subscription_scope,
             resume_from_event_id,
         } => {
+            if subscription_scope.as_deref() == Some("kernel_browser_display") {
+                return super::browser_display::enqueue_subscribe(
+                    router, outgoing_tx, subscription_tasks, event_runtime,
+                    super::browser_display::DisplaySubscription {
+                        request_id: relay_request_id, relay_id: relay_subscription_id,
+                        display_id: session_id, generation: attachment_id,
+                        identity: caller_identity, public_key: client_public_key,
+                        resume: resume_from_event_id,
+                    },
+                ).await;
+            }
             handle_relay_subscribe(
                 router,
                 outgoing_tx,
