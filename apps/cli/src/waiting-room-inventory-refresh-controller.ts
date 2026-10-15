@@ -77,7 +77,7 @@ export type WaitingRoomInventoryRefreshController = {
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
   refreshNow(): Promise<void>
   refresh(): Promise<void>
-  invalidate(): void
+  invalidate(connectedSnapshot?: WaitingRoomInventory): void
 }
 
 export function createWaitingRoomInventoryRefreshController(
@@ -266,12 +266,13 @@ export function createWaitingRoomInventoryRefreshController(
     options.setExternalProviderSessionsPage?.(externalProviderSessionPageState(externalProviderSessionsPage))
   }
 
-  const refreshProjectionScope = () => {
+  const refreshProjectionScope = (connectedSnapshot?: WaitingRoomInventory) => {
     const nextScopeKey = options.getCacheScopeKey?.() ?? null
     const nextDirectTargetKernelId = currentDirectTargetKernelId(options)
     const cacheScopeChanged = nextScopeKey !== cacheScopeKey
     const directTargetChanged = nextDirectTargetKernelId !== directTargetKernelId
-    if (!cacheScopeChanged && !directTargetChanged) {
+    const verifiedTarget = connectedSnapshot?.kernelId === nextDirectTargetKernelId ? connectedSnapshot : undefined
+    if (!cacheScopeChanged && !directTargetChanged && !verifiedTarget) {
       return
     }
     if (cacheScopeChanged) {
@@ -282,6 +283,11 @@ export function createWaitingRoomInventoryRefreshController(
         inventoriesByKernel.set(inventory.kernelId, inventory)
         lastPresenceByKernel.set(inventory.kernelId, nowMs())
       }
+    }
+    if (verifiedTarget) {
+      rememberInventory(verifiedTarget)
+      lastPresenceByKernel.set(verifiedTarget.kernelId, nowMs())
+      options.persistInventory?.(verifiedTarget)
     }
     directTargetKernelId = nextDirectTargetKernelId
     activeKernelId = null
@@ -406,8 +412,8 @@ export function createWaitingRoomInventoryRefreshController(
       })
       return pendingRefresh
     },
-    invalidate() {
-      refreshProjectionScope()
+    invalidate(connectedSnapshot) {
+      refreshProjectionScope(connectedSnapshot)
       inventoryVersion = null
       inventoryInvalidated = true
     },

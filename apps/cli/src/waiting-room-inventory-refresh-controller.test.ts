@@ -938,3 +938,15 @@ test("review0440 cached direct target retains its identity without online or lea
   assert.equal(harness.remoteMachines().find(m => m.machine_id === "machine-b")?.online, false)
   assert.equal(harness.remoteKernels().find(k => k.kernel_id === "kernel-b")?.accepting_remote_leases, false)
 })
+
+// MP-02 / MP-08 / MP-10 / MP-11: the verified connection is admitted before the first directory refresh.
+test("review0440 fresh pivot retains its verified target before any refreshed snapshot", () => {
+  let target = "kernel-a"
+  let scope = "owner-a"
+  const harness = createHarness({ cachedInventories: [inventory("home", { kernelId: "kernel-a", machineId: "machine-a" })], getDirectTargetKernelId: () => target, getCacheScopeKey: () => scope, loadCachedInventories: () => [] })
+  target = "kernel-b"; scope = "owner-b"
+  harness.controller.invalidate(inventory("connected-peer", { kernelId: "kernel-b", machineId: "machine-b" }))
+  assert(harness.remoteMachines().some(row => row.machine_id === "machine-b"), "the newly verified target must not disappear while its first refresh is pending")
+  assert(harness.remoteKernels().some(row => row.kernel_id === "kernel-b"))
+  assert.equal(harness.remoteMachines().find(row => row.machine_id === "machine-b")?.online, false, "the restored row stays explicitly refreshing until the live snapshot is applied")
+})
