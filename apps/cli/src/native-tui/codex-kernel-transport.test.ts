@@ -43,7 +43,7 @@ test("MP-08 old owning kernel gets an actionable scoped transport upgrade", asyn
   } finally { socket.close(); await transport.close() }
 })
 
-test("MP-08 lost exchange reply retries the identical acknowledged operation", async () => {
+for (const code of ["target_disconnected", "target_not_connected"]) test(`MP-08 ${code} retries the identical acknowledged operation`, async () => {
   let inputWrites = 0
   let lost = false
   let retained: { sequence: number; frames: string[] } | null = null
@@ -54,7 +54,7 @@ test("MP-08 lost exchange reply retries the identical acknowledged operation", a
         inputWrites += 1
         retained = { sequence: op.sequence!, frames: [JSON.stringify({ id: 17, result: { recovered: true } })] }
       }
-      if (!lost) { lost = true; throw new LocalIpcError("exchange", "target disconnected after forwarding", "target_disconnected", true) }
+      if (!lost) { lost = true; throw new LocalIpcError("exchange", "scoped relay gap", code, true) }
       assert.deepEqual(op.frames, [JSON.stringify({ id: 17, method: "model/list" })])
       return { NativeProviderTransport: { result: { connection_id: "owning", ...retained, closed: false } } }
     }

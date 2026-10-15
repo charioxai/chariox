@@ -77,6 +77,30 @@ fn validate_owning_run(
     Ok(())
 }
 
+// MP-08 / MP-10 / MP-11: disabling the home relay is a bounded transport gap,
+// after owning-run admission, never a reason to discard a worker receipt.
+fn require_native_relay_configuration(
+    config: &crate::config::DaemonConfig,
+) -> Result<(), DaemonError> {
+    if config
+        .relay_url
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        || config
+            .relay_token
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(DaemonError::RelayTransport {
+            operation: "native provider transport",
+            code: "target_not_connected".into(),
+            message: "native transport is waiting for the owning relay to reconnect".into(),
+            retryable: true,
+        });
+    }
+    Ok(())
+}
+
 impl CommandRouter {
     pub(super) async fn native_provider_transport(
         &self,
@@ -153,6 +177,7 @@ impl CommandRouter {
             }
         };
         if let Some((config, worker_id, leased_agent_id, provider_run_id)) = remote {
+            require_native_relay_configuration(&config)?;
             let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(worker_id),
                 daemon_alias: None,
@@ -231,6 +256,25 @@ impl CommandRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp08_native_relay_configuration_gap_is_a_typed_transient_before_forwarding() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        for (url, admission) in [
+            (None, None),
+            (Some("wss://relay.example.test"), None),
+            (None, Some("fixture-admission")),
+        ] {
+            config.relay_url = url.map(str::to_owned);
+            config.relay_token = admission.map(str::to_owned);
+            assert!(
+                matches!(require_native_relay_configuration(&config), Err(DaemonError::RelayTransport { code, retryable: true, .. }) if code == "target_not_connected")
+            );
+        }
+        config.relay_url = Some("wss://relay.example.test".into());
+        config.relay_token = Some("fixture-admission".into());
+        assert!(require_native_relay_configuration(&config).is_ok());
+    }
+
     #[test]
     fn mp08_native_transport_rejects_other_session_agent_run_and_endpoint() {
         use crate::provider::{

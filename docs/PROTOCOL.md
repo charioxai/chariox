@@ -290,7 +290,10 @@ next sequence acknowledges it. An identical repeated sequence returns that reply
 without re-enqueueing input or draining later output. Conflicting, older and skipped
 sequences are rejected. The client retries only the same receipted Open or Exchange
 through a transient relay outage, for at most 15 seconds; authorization is rechecked
-on replay. A full input queue is rejected before any batch frame is enqueued.
+on replay. After owning-run admission, missing home relay configuration returns
+retryable `target_not_connected` before forwarding; the same bounded receipt retry
+can span normal relay disable/reconnect without closing the native upstream.
+A full input queue is rejected before any batch frame is enqueued.
 Generic IPC replay remains disabled. Provider frames are excluded from the
 in-memory command cache and persistent command-result history.
 This is a display/read/control transport: prompt start/steer/interrupt, arbitrary
