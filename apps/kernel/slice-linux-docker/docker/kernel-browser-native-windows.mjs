@@ -15,16 +15,20 @@ export async function nativeWindowInventory({display,pid,isCurrent}){
    child.once('close',code=>{try{if(code!==0||bytes.length>32768)throw Error();resolve(JSON.parse(bytes))}catch{refuse()}});
    child.stdin.end(JSON.stringify({pid}));
   });
-  if(!current()||!Array.isArray(rows)||rows.length>32||rows.some(r=>!r||
-   Object.keys(r).sort().join(',')!=='focused,height,id,override_redirect,transient_for,visible,width,x,y'||
-   ![r.id,r.width,r.height,r.x,r.y,r.transient_for].every(Number.isSafeInteger)||r.id<=1||r.id>0xffffffff||
-   r.width<1||r.width>8192||r.height<1||r.height>8192||r.transient_for<0||r.transient_for>0xffffffff||
-   ![r.visible,r.override_redirect,r.focused].every(v=>typeof v==='boolean')))throw Error('MP-11: native window inventory binding');
-  return rows.map(r=>Object.freeze(r));
+  if(!current())throw Error('MP-11: native window inventory binding');
+  return checkedInventory(rows);
  }finally{
   clearTimeout(timer);
   if(child.pid!==undefined){if(!Number.isSafeInteger(child.pid)||child.pid<=1)throw Error('MP-11: unsafe native inventory PID');
    if(child.exitCode===null&&child.signalCode===null){const exited=new Promise(r=>child.once('exit',r));child.kill('SIGTERM');await Promise.race([exited,new Promise(r=>setTimeout(r,1000))]);if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exited;}}
   }
  }
+}
+export function checkedInventory(rows){
+ if(!Array.isArray(rows)||rows.length>32||rows.some(r=>!r||
+  Object.keys(r).sort().join(',')!=='focused,height,id,override_redirect,transient_for,visible,width,x,y'||
+  ![r.id,r.width,r.height,r.x,r.y,r.transient_for].every(Number.isSafeInteger)||r.id<=1||r.id>0xffffffff||
+  r.width<1||r.width>8192||r.height<1||r.height>8192||r.transient_for<0||r.transient_for>0xffffffff||
+  ![r.visible,r.override_redirect,r.focused].every(v=>typeof v==='boolean')))throw Error('MP-11: native window inventory binding');
+ return rows.map(r=>Object.freeze(r));
 }

@@ -1,7 +1,9 @@
 import type { KernelBrowserMirrorAction } from "./browser-mirror-types.js"
 // MD-2: protocol 417; user identity comes from transport admission, never this payload.
 export type KernelBrowserInput =
-  | { kind: "click"; x: number; y: number }
+  // Protocol 530: middle/right buttons and the drag reach only the browser_chrome band.
+  | { kind: "click"; x: number; y: number; button?: "middle" | "right" }
+  | { kind: "drag"; x: number; y: number; to_x: number; to_y: number }
   | { kind: "text"; text: string }
   | { kind: "key"; key: string; modifiers?: number }
   | { kind: "scroll"; x: number; y: number; delta_x: number; delta_y: number }
@@ -9,6 +11,8 @@ export type KernelBrowserInput =
 export type KernelBrowserDisplayTarget =
   | { kind: "region"; mirror_subscription_id: string; document_id: string; sequence: number; region_id: string }
   | { kind: "browser_chrome"; window_generation: number }
+  // Protocol 530: a popup of the band's window, by its id in the state's chrome_window.auxiliary.
+  | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
 export type KernelBrowserCommand =
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }

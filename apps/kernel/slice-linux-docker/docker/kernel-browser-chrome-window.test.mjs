@@ -172,3 +172,70 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   await send({ kind: "click", x: 300, y: 20 }); // a Tab in the strip: the page keeps its focus
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
 });
+
+// Protocol 530 (BROWSER-UX-14): the band behaves like Chromium's own strip: middle-click closes a Tab,
+// right-click opens Chrome's context menu, a drag inside the strip reorders Tabs. Popup windows (menus,
+// the omnibox dropdown, extension popups) take clicks, wheel and keys; only the band takes buttons/drags.
+test("MP-08/MP-11 band middle/right click and strip drag; popups take primary input only", async () => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const arbiter = new InputArbiter(host, {}), calls = [];
+  const source = surface => ({ surface, isCurrent: () => true, click: async (...a) => (calls.push([surface, "click", ...a]), true),
+    drag: async (...a) => (calls.push([surface, "drag", ...a]), true), wheel: async (...a) => (calls.push([surface, "wheel", ...a]), true), chord: async (...a) => (calls.push([surface, "chord", ...a]), true) });
+  const send = (surface, input, extra = {}) => arbiter.input({ stream: { regionSource: source(surface) }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input, ...extra } });
+  assert.deepEqual(await send("browser_chrome", { kind: "click", x: 120, y: 20, button: "middle" }), { dispatched: true });
+  assert.deepEqual(await send("browser_chrome", { kind: "click", x: 120, y: 20, button: "right" }), { dispatched: true });
+  assert.deepEqual(await send("browser_chrome", { kind: "drag", x: 120, y: 20, to_x: 380, to_y: 22 }), { dispatched: true });
+  await assert.rejects(send("browser_chrome", { kind: "drag", x: 120, y: 20, to_x: 380, to_y: 60 }), /unsupported input/, "leaving the strip would tear the Tab into a new window");
+  await assert.rejects(send("browser_chrome", { kind: "drag", x: 120, y: 60, to_x: 380, to_y: 20 }), /unsupported input/);
+  await assert.rejects(send("browser_chrome", { kind: "click", x: 1, y: 1, button: "left" }), /unsupported input/);
+  await assert.rejects(send("browser_chrome", { kind: "click", x: 1, y: 1, button: "middle" }, { _agent_input: true }), { code: "user_domain_not_granted" });
+  assert.deepEqual(await send("browser_auxiliary", { kind: "click", x: 30, y: 40 }), { dispatched: true }, "a menu item");
+  assert.deepEqual(await send("browser_auxiliary", { kind: "scroll", x: 30, y: 40, delta_x: 0, delta_y: 120 }), { dispatched: true });
+  assert.deepEqual(await send("browser_auxiliary", { kind: "key", key: "Escape" }), { dispatched: true });
+  await assert.rejects(send("browser_auxiliary", { kind: "click", x: 30, y: 40, button: "right" }), /unsupported input/);
+  await assert.rejects(send("browser_auxiliary", { kind: "drag", x: 1, y: 1, to_x: 2, to_y: 2 }), /unsupported input/);
+  await assert.rejects(send("page", { kind: "click", x: 1, y: 1 }), { code: "user_domain_stale_reference" }, "a page region is not Chrome's UI");
+  assert.deepEqual(calls.map(c => c.slice(0, 2).concat(c[1] === "click" ? [c[4]] : [])), [["browser_chrome", "click", 2], ["browser_chrome", "click", 3], ["browser_chrome", "drag"],
+    ["browser_auxiliary", "click", 1], ["browser_auxiliary", "wheel"], ["browser_auxiliary", "chord"]]);
+});
+
+test("MP-08/MP-11 popups of the band's window get kernel ids, follow the band's inventory and retire", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    const bound = await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const [dropdown] = bound.auxiliary;
+    assert.deepEqual(windows.auxiliaryState(), [{ auxiliary_id: dropdown.auxiliary_id, x: 100, y: 80, width: 800, height: 200 }], "CSS px from the window's top-left");
+    const menu = { id: 0x600070, x: 2000, y: 140, width: 497, height: 801, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+    const foreign = { id: 0x700001, x: 2600, y: 0, width: 50, height: 50, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+    windows.refreshAuxiliary([tabbed, { id: 0x600050, x: 200, y: 160, width: 1600, height: 401, visible: true, focused: false, override_redirect: true, transient_for: 0 }, menu, foreign]);
+    const state = windows.auxiliaryState();
+    assert.equal(state[0].auxiliary_id, dropdown.auxiliary_id, "an unchanged popup keeps its id");
+    assert.deepEqual(state[1], { auxiliary_id: state[1].auxiliary_id, x: 1000, y: 70, width: 248, height: 400 });
+    assert.equal(state.length, 2, "a window outside the band's window is not its popup");
+    const binding = windows.auxiliary(state[1].auxiliary_id);
+    assert.deepEqual(windows.auxiliaryRegion(binding).rect, { left: 0, top: 0, width: 496, height: 800 });
+    windows.refreshAuxiliary([tabbed, { ...menu, height: 900 }]);
+    assert.equal(binding.isCurrent(), false, "a resized popup retires its stream (fixed-size video)");
+    assert.notEqual(windows.auxiliaryState()[0].auxiliary_id, state[1].auxiliary_id);
+    assert.equal(dropdown.isCurrent(), false, "a closed popup is retired");
+    assert.throws(() => windows.auxiliary(state[1].auxiliary_id), { code: "user_domain_stale_reference" });
+    windows.refreshAuxiliary([{ ...tabbed, width: 2000 }]);
+    assert.equal(windows.auxiliaryState().length, 1, "a changed tabbed window waits for the kernel's own rebind");
+    let reads = 0;
+    const stop = windows.watch(async () => (reads++, [tabbed]), 5);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    stop();
+    assert(reads >= 2 && windows.auxiliaryState().length === 0, "a watched band follows its popups");
+    const after = reads; await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(reads, after, "the last viewer stops the watch");
+    host.generation = 4;
+    assert.deepEqual(windows.auxiliaryState(), [], "no popups without a current band window");
+  } finally { await real.close(); }
+});

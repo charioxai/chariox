@@ -8,9 +8,12 @@ import {DisplayStream, PortableEncoder} from './kernel-browser-display.mjs';
 import {inputHostTab} from './kernel-browser-input.mjs';
 
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+// The kernel Chrome's own UI (band, popups): window leases, not page regions.
+const chromeUi=target=>target?.kind==='browser_chrome'||target?.kind==='browser_auxiliary';
 function checkedTarget(target) {
  const keys=target?.kind==='region'?['kind','mirror_subscription_id','document_id','sequence','region_id']:
-  target?.kind==='browser_chrome'?['kind','window_generation']:[];
+  target?.kind==='browser_chrome'?['kind','window_generation']:
+  target?.kind==='browser_auxiliary'?['kind','window_generation','auxiliary_id']:[];
  if(!keys.length||Object.keys(target).some(key=>!keys.includes(key))||keys.some(key=>!(key in target)))refuse();
  return target;
 }
@@ -20,7 +23,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
  // State advertisement is not admission: a terminal can guess a window epoch.
  // Only managed lockdown proves Chrome cannot replace this unmasked band
  // with same-size fullscreen page pixels.
- if(target.kind==='browser_chrome'&&host.chromium?.policy!=='managed')refuse();
+ if(chromeUi(target)&&host.chromium?.policy!=='managed')refuse();
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
@@ -52,10 +55,12 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();
-  const current=()=>host.chromium.policy==='managed'&&window.isCurrent();
-  args={...host.chromeWindows.band(window),isCurrent:current};
+  // Protocol 530: one of the band window's own popups (menu, dropdown, extension popup, bubble).
+  const popup=target.kind==='browser_auxiliary'?host.chromeWindows.auxiliary(target.auxiliary_id):null;
+  const current=()=>host.chromium.policy==='managed'&&window.isCurrent()&&(!popup||popup.isCurrent());
+  args={...(popup?host.chromeWindows.auxiliaryRegion(popup):host.chromeWindows.band(window)),isCurrent:current};
   const binding_id=`host-chrome-region-${randomUUID()}`;
-  lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}`,sequence:window.window_generation,
+  lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}${popup?`-${popup.auxiliary_id}`:''}`,sequence:window.window_generation,
    isAlive:current,isCurrent:async()=>current(),close:async()=>{}};
  }
  let source,stream;
@@ -63,7 +68,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
   const scale=window.scale;
   // Browser UI survives page navigation; the frame document is its window epoch.
-  const sourceTab=target.kind==='browser_chrome'?{...tab,document_id:lease.document_id}:tab;
+  const sourceTab=chromeUi(target)?{...tab,document_id:lease.document_id}:tab;
   source=new Capture({...args,display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
@@ -82,7 +87,9 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const close=stream.close.bind(stream);let closing,offRetire;
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
-  offRetire=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});
+  const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows()):null;
+  const offWindow=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});
+  offRetire=()=>{unwatch?.();offWindow?.();};
   host.armDisplayExpiry(stream);return result;
  }catch(error){if(stream)await stream.close();else{await source?.close();await lease.close();}throw error;}
 }
@@ -90,7 +97,7 @@ function inputStream(host,command,scope) {
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  const stream=[...host.displays.values()].find(s=>s.binding_id===command.binding_id);
  if(!stream||stream.observed_by!==scope||
-  (stream.tab_id!==command.tab_id&&!(stream.regionTarget.kind==='browser_chrome'&&command.region_document_id&&host.tabs.has(command.tab_id)))||stream.expires<=Date.now()||
+  (stream.tab_id!==command.tab_id&&!(chromeUi(stream.regionTarget)&&command.region_document_id&&host.tabs.has(command.tab_id)))||stream.expires<=Date.now()||
   stream.regionLease.document_id!==(command.region_document_id??command.document_id)||stream.regionLease.sequence!==command.sequence||
   !stream.regionLease.isAlive()||!stream.regionWindow.isCurrent())refuse();
  return stream;
@@ -111,12 +118,12 @@ export async function regionInputTarget(host,command,scope,signal) {
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  if(!await stream.regionCurrent())refuse();
- if(stream.regionTarget.kind==='browser_chrome') {
+ if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();
   return host.arbiter.input({stream,command,scope,signal});
  }
  const input=command.input;
- if(!['click','scroll'].includes(input?.kind)||!Number.isInteger(input.x)||!Number.isInteger(input.y)||input.x<0||input.y<0||input.x>=stream.css_width||input.y>=stream.css_height)refuse();
+ if(!['click','scroll'].includes(input?.kind)||input.button!==undefined||!Number.isInteger(input.x)||!Number.isInteger(input.y)||input.x<0||input.y<0||input.x>=stream.css_width||input.y>=stream.css_height)refuse();
  const resolved=await stream.regionLease.resolveInput({...input,sequence:command.sequence,x:input.x+stream.regionOffset.x,y:input.y+stream.regionOffset.y},scope,{signal});
  const guard=resolved.guard;
  resolved.guard=async()=>{if(!await stream.regionCurrent())refuse();await guard?.();};

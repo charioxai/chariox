@@ -307,6 +307,9 @@ test("MD-2: text input uses isolated focus checks and rejects secret fields", ()
   await host.request({ op: "input", ...binding, input: { kind: "text", text: "fixture" } });
   assert(sent.some(call => call.method === "Input.insertText"));
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
+  // Protocol 530: middle/right buttons and drags are the band's (Chrome's own UI), never a page click.
+  for (const input of [{ kind: "click", x: 1, y: 1, button: "right" }, { kind: "click", x: 1, y: 1, button: "middle" }, { kind: "drag", x: 1, y: 1, to_x: 5, to_y: 5 }])
+    await assert.rejects(host.request({ op: "input", ...binding, input }), /unsupported input/);
 }));
 
 test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and reserves a background replacement", () => using(async ({ host, chromium, sent, pages }) => {
@@ -1369,7 +1372,10 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   host.chromium.policy = 'unavailable';
   assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no band without the managed lockdown');
   host.chromium.policy = 'managed';
-  assert.deepEqual((await host.request({ op: 'state' })).chrome_window, { window_generation: 7, active_tab_id: b.tab_id });
+  assert.deepEqual((await host.request({ op: 'state' })).chrome_window, { window_generation: 7, active_tab_id: b.tab_id, auxiliary: [] });
+  host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 4, x: 1000, y: 70, width: 248, height: 400 }];
+  assert.deepEqual((await host.request({ op: 'state' })).chrome_window.auxiliary, [{ auxiliary_id: 4, x: 1000, y: 70, width: 248, height: 400 }], 'protocol 530: the band window\'s popups');
+  delete host.chromeWindows.auxiliaryState;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '0';
   assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no band is offered when display is disabled');
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
@@ -1427,10 +1433,10 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
   await assert.rejects(host.handle({ id: 4, method: 'host.browser', params: { op: 'input', tab_id: mine.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'click', x: 10, y: 10 }, ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused, 'an agent cannot click Add to Chrome');
 }));
 
-// MP-08/MP-10/MP-11 (protocol 528/136): the public Browser state keys are the hashed
+// MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 528 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-state-528.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1441,6 +1447,9 @@ test('MP-08 public Browser state keys match the protocol 528 fixture', () => usi
     const state = await host.request({ op: 'state' });
     assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
     assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
+    host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 1, x: 0, y: 0, width: 2, height: 2 }];
+    assert.deepEqual(Object.keys((await host.request({ op: 'state' })).chrome_window.auxiliary[0]).sort(), fixture.auxiliary_keys);
+    delete host.chromeWindows.auxiliaryState;
     assert(fixture.browser_lockdown.includes(state.browser_lockdown));
   } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
 }));

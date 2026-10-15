@@ -536,14 +536,35 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
     XFlush(c->display);return 0;
 }
 
-/* MP-08/MP-10: a primary-button click into the owned window (no renderer
- * acknowledgement round trip); the caller fenced document and actor first. */
-int cx_capture_click(struct Capture *c,int x,int y){
-    if(c->desktop)return -1; /* MP-11: desktop input keeps its own admission. */
+/* MP-08/MP-10: a click into the owned window (no renderer acknowledgement
+ * round trip); the caller fenced document and actor first. Protocol 530:
+ * button 2 (middle) and 3 (right) where the caller admitted them. */
+int cx_capture_button(struct Capture *c,int x,int y,int button){
+    if(c->desktop||button<1||button>3)return -1; /* MP-11: desktop input keeps its own admission. */
     int px,py,target=pointer_target(c,x,y,&px,&py);
     if(target)return target;
     if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
-    XTestFakeButtonEvent(c->display,1,True,CurrentTime);XTestFakeButtonEvent(c->display,1,False,CurrentTime);
+    XTestFakeButtonEvent(c->display,button,True,CurrentTime);XTestFakeButtonEvent(c->display,button,False,CurrentTime);
+    XFlush(c->display);return 0;
+}
+int cx_capture_click(struct Capture *c,int x,int y){return cx_capture_button(c,x,y,1);}
+
+/* Protocol 530: a primary-button drag between two points of the owned window
+ * (the band's Tab reorder). Both ends must reach the owned window; the motion
+ * is stepped (~130 ms) so Chrome's drag threshold and tab animation follow. */
+int cx_capture_drag(struct Capture *c,int x,int y,int tx,int ty){
+    if(c->desktop)return -1;
+    int px,py,qx,qy,target=pointer_target(c,x,y,&px,&py);
+    if(target)return target;
+    if((target=pointer_target(c,tx,ty,&qx,&qy)))return target;
+    if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
+    XTestFakeButtonEvent(c->display,1,True,CurrentTime);XFlush(c->display);
+    for(int i=1;i<=8;i++){
+        struct timespec step={0,16*1000*1000};nanosleep(&step,NULL);
+        XTestFakeMotionEvent(c->display,-1,px+(qx-px)*i/8,py+(qy-py)*i/8,CurrentTime);XFlush(c->display);
+    }
+    struct timespec settle={0,16*1000*1000};nanosleep(&settle,NULL);
+    XTestFakeButtonEvent(c->display,1,False,CurrentTime);
     XFlush(c->display);return 0;
 }
 

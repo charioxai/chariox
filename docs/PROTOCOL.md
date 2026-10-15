@@ -4001,3 +4001,30 @@ the second case. Clients feature-detect both fields, so no client floor moves.
 `mp08_mp10_mp11_browser_chrome_state_528_snapshot`; the host's Node test
 compares its real state keys to the fixture). The focused drill is the native
 band section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+
+## MP-08 / MP-10 / MP-11 Browser chrome gestures and popups (530 / peer 138)
+
+Allocated local530/peer138 lets the band behave like Chromium's own strip.
+`KernelBrowserInput` `click` takes an optional `button: "middle" | "right"`
+(absent is the primary button, so pre-530 clicks keep their shape) and a new
+`{kind:"drag",x,y,to_x,to_y}` is a primary-button drag. Both reach only the
+`browser_chrome` band: middle-click closes a Tab, right-click opens Chrome's
+context menu, and a drag must start and end in the tab strip (Tab reorder; a
+Tab is never torn into a new window). Page input, page regions and popups
+refuse them. Agents remain refused on every band and popup path.
+
+`display_subscribe` accepts `{kind:"browser_auxiliary",window_generation,
+auxiliary_id}` for one popup of the band's window: Chrome's menus, the omnibox
+dropdown, extension popups and bubbles (same browser PID, transient for or
+anchored inside the tabbed window). The kernel issues `auxiliary_id`; the
+Browser state's `chrome_window.auxiliary` lists the current popups as
+`{auxiliary_id,x,y,width,height}` in CSS px from the window's top-left so a
+viewer paints each one where Chrome shows it. An id is new whenever its
+window or size changes, and the popup's stream retires when it closes. While
+a band stream is live the kernel follows the window's popups from the band's
+own native worker inventory. Popups take primary clicks, wheel, keys and text
+through the same arbiter and fences as the band, under the managed lockdown
+only. `browser-chrome-ui-530.json` pins the new requests and state keys (Rust
+hash test `mp08_mp10_mp11_browser_chrome_ui_530_snapshot`; the host's Node
+test compares its state keys to the fixture). Clients feature-detect 530; no
+client floor moves.

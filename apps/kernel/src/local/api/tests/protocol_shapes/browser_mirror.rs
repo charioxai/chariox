@@ -125,7 +125,11 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             selected_index: None,
         }),
         binding(A::Coordinate {
-            input: KernelBrowserInput::Click { x: 1, y: 2 },
+            input: KernelBrowserInput::Click {
+                x: 1,
+                y: 2,
+                button: None,
+            },
         }),
     ];
     let values: Vec<_> = commands

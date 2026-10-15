@@ -371,7 +371,8 @@ export class KernelBrowserHost {
     // MP-11: only the managed lockdown refuses fullscreen; without it no band is offered.
     if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !tabbed?.isCurrent()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
-    return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null };
+    // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
+    return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
   async reconcile() {
     const observation = ++this.observations;
@@ -717,7 +718,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
-      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && stream.regionTarget?.kind !== 'browser_chrome') { await stream.close(); this.displays.delete(id); }
+      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);

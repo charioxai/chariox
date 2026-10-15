@@ -113,3 +113,35 @@ test('MP-11 page region refuses a missing or changed owner native active-tab fen
  const s=[...g.host.displays.values()][0];g.host.arbiter.isActiveTab=async()=>false;
  assert.equal(await s.regionCurrent(),false);await assert.rejects(regionInput(g.host,{op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a'));await s.close();
 });
+// Protocol 530: a popup of the band's window (menu, omnibox dropdown, extension popup) by its kernel id.
+test('MP-08/MP-11 a band popup subscribes by kernel id, retires with the popup and takes input through the arbiter',async()=>{
+ const f=fixture('browser_auxiliary');let listed=true,watched=0;
+ const popup={auxiliary_id:4,role:'auxiliary',xid:77,parent_xid:42,bounds:{x:2000,y:140,width:496,height:800},isCurrent:()=>listed};
+ Object.assign(f.host.chromeWindows,{auxiliary:id=>{if(id!==4)throw Object.assign(Error('x'),{code:'user_domain_stale_reference'});return popup;},
+  auxiliaryRegion:()=>({surface:'browser_auxiliary',window:{id:77,width:496,height:800},rect:{left:0,top:0,width:496,height:800},isCurrent:()=>listed}),
+  watch:()=>(watched++,()=>{})});
+ f.command.target.auxiliary_id=4;
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert.equal(r.css_width,248);assert.equal(r.css_height,400);assert.equal(watched,0,'only a band watches its window');
+ const s=[...f.host.displays.values()][0];assert.equal(s.regionSource.options.surface,'browser_auxiliary');assert.equal(s.regionSource.options.contentHeight,undefined);
+ const inputs=[];f.host.arbiter={input:async({stream,command})=>(inputs.push([stream.regionSource.options.surface,command.input.kind]),{dispatched:true})};
+ const command={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'click',x:3,y:4}};
+ assert.deepEqual(await regionInput(f.host,command,'terminal:a'),{dispatched:true});assert.deepEqual(inputs,[['browser_auxiliary','click']]);
+ listed=false;assert.equal(s.regionLease.isAlive(),false,'a closed popup retires its stream');
+ await assert.rejects(regionInput(f.host,command,'terminal:a'));await s.close();
+ for(const target of [{kind:'browser_auxiliary',window_generation:7,auxiliary_id:5},{kind:'browser_auxiliary',window_generation:6,auxiliary_id:4},{kind:'browser_auxiliary',window_generation:7}]){
+  const g=fixture('browser_auxiliary');Object.assign(g.host.chromeWindows,f.host.chromeWindows);listed=true;g.command.target=target;
+  await assert.rejects(subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture}));assert.equal(g.host.displays.size,0);
+ }
+ const band=fixture('browser_chrome');band.host.chromeWindows.watch=()=>(watched++,()=>{});
+ class Watched extends band.Capture{windows(){return [];}}
+ const b=await subscribeRegion(band.host,band.command,'terminal:a',undefined,{Capture:Watched});assert.equal(watched,1,'a live band follows its popups');
+ await [...band.host.displays.values()][0].close();assert(b.binding_id);
+});
+test('MP-11 page regions never take middle/right buttons or drags',async()=>{
+ const f=fixture();await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ let dispatch=0;f.host.dispatchRegionInput=async()=>{dispatch++;};
+ const command={op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3};
+ for(const input of [{kind:'click',x:1,y:2,button:'right'},{kind:'click',x:1,y:2,button:'middle'},{kind:'drag',x:1,y:2,to_x:3,to_y:4}])await assert.rejects(regionInput(f.host,{...command,input},'terminal:a'));
+ assert.equal(dispatch,0);await [...f.host.displays.values()][0].close();
+});

@@ -559,7 +559,11 @@ async fn live_check() {
             .unwrap()
             .to_string();
         for input in [
-            KernelBrowserInput::Click { x: 80, y: 40 },
+            KernelBrowserInput::Click {
+                x: 80,
+                y: 40,
+                button: None,
+            },
             KernelBrowserInput::Text {
                 text: "MD-4 MCP typed".into(),
             },

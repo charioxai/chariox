@@ -175,14 +175,24 @@ export class LinuxCapture {
    this.timing?.('native_input_uncertain',performance.timeOrigin+performance.now());this.fence();
    throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'});
   }
-  return reply?.[operation==='wheel'?'wheeled':'clicked']===true;
+  return reply?.[{wheel:'wheeled',drag:'dragged'}[operation]??'clicked']===true;
  }
- // MP-08/MP-10: primary click on the owned display (CSS coordinates).
- click(x,y){
-  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+ // MP-08/MP-10: click on the owned display (CSS coordinates); protocol 530
+ // buttons 2 (middle) and 3 (right) only where the caller admitted them.
+ devicePoint(x,y){
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
-  if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
-  return this.pointer('click',{point:[px,py]});
+  return [px,py].every(Number.isSafeInteger)&&px>=0&&py>=0&&px<geometry.width*this.scale&&py<geometry.height*this.scale?[px,py]:null;
+ }
+ click(x,y,button=1){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed||![1,2,3].includes(button))return false;
+  const point=this.devicePoint(x,y);
+  return point?this.pointer('click',{point,...(button===1?{}:{button})}):false;
+ }
+ // Protocol 530: primary-button drag between two owned points.
+ drag(x,y,toX,toY){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  const point=this.devicePoint(x,y),to=this.devicePoint(toX,toY);
+  return point&&to?this.pointer('drag',{point,to}):false;
  }
  // MP-08/MP-10: one key press/release on the owned display (X keysym:
  // printable ASCII or a named editing key); callers fence the text target.

@@ -7,6 +7,7 @@ import {startNativeReadback} from './kernel-browser-native-readback.mjs';
 import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {checkedInventory} from './kernel-browser-native-windows.mjs';
 
 export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
  const {width,height}=rect,top=rect.top,left=rect.left;
@@ -100,10 +101,19 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  }
  point(x,y){return Number.isInteger(x)&&Number.isInteger(y)&&x>=0&&y>=0&&
   x<this.region.css_width&&y<this.region.css_height;}
- click(x,y){return this.point(x,y)?super.click(x,y):false;}
+ click(x,y,button=1){return this.point(x,y)&&(button===1||this.surface==='browser_chrome')?super.click(x,y,button):false;}
  wheel(x,y,dx,dy){return this.point(x,y)?super.wheel(x,y,dx,dy):false;}
+ // Protocol 530: a primary-button drag inside the band (Tab reorder).
+ drag(x,y,toX,toY){return this.surface==='browser_chrome'&&this.point(x,y)&&this.point(toX,toY)?super.drag(x,y,toX,toY):false;}
+ // Protocol 530: the band's worker reads the owned display's window inventory (no extra process).
+ async windows(){
+  if(this.surface!=='browser_chrome'||!this.nativeWorker||!this.valid())throw Error('MP-11: native window inventory lease');
+  const reply=await this.nativeWorker.request('windows',{pid:this.pid});
+  if(!this.valid()||!Array.isArray(reply?.windows))throw Error('MP-11: native window inventory lease');
+  return checkedInventory(reply.windows);
+ }
  chord(keysym,modifiers=0){
-  if(this.surface!=='browser_chrome'||!this.attested||!this.valid()||
+  if(!['browser_chrome','browser_auxiliary'].includes(this.surface)||!this.attested||!this.valid()||
    !Number.isSafeInteger(keysym)||!(keysym>=0x20&&keysym<=0x7e||keysym>=0xff08&&keysym<=0xffff)||
    !Number.isSafeInteger(modifiers)||modifiers<0||modifiers>15)return false;
   return this.control({key_chord:[keysym,modifiers]},true);

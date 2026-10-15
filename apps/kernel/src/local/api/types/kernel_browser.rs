@@ -177,6 +177,21 @@ pub enum KernelBrowserDisplayTarget {
     BrowserChrome {
         window_generation: u64,
     },
+    /// MP-08/MP-10/MP-11 protocol 530: one popup of the band's window (menu,
+    /// omnibox dropdown, extension popup, bubble) by its kernel-issued id from
+    /// the Browser state's `chrome_window.auxiliary`.
+    BrowserAuxiliary {
+        window_generation: u64,
+        auxiliary_id: u64,
+    },
+}
+
+/// MP-08/MP-10/MP-11 protocol 530: non-primary buttons reach only Chrome's own UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelBrowserButton {
+    Middle,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +200,16 @@ pub enum KernelBrowserInput {
     Click {
         x: u32,
         y: u32,
+        /// Protocol 530: absent means the primary button.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<KernelBrowserButton>,
+    },
+    /// Protocol 530: a primary-button drag (the band's Tab reorder).
+    Drag {
+        x: u32,
+        y: u32,
+        to_x: u32,
+        to_y: u32,
     },
     Text {
         text: String,
