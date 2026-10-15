@@ -135,8 +135,21 @@ async fn envp05a_setup_admission_rechecks_project_owner_and_folder_bindings() {
 }
 
 #[cfg(target_os = "linux")]
+#[tokio::test]
+async fn review1356_setup_public_file_read_is_cancellable_before_admission() {
+    setup_retry_regression(SetupScenario::PublicReadCancel).await;
+}
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn review1356_setup_source_read_is_cancellable_before_admission() {
+    setup_retry_regression(SetupScenario::SourceReadCancel).await;
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 enum SetupScenario {
+    PublicReadCancel,
+    SourceReadCancel,
     SlowPlan,
     Retry,
     LockedSecret,
@@ -155,7 +168,8 @@ enum SetupScenario {
 async fn setup_retry_regression(scenario: SetupScenario) {
     let locked_secret = !matches!(
         scenario,
-        SetupScenario::Retry
+        SetupScenario::SourceReadCancel
+            | SetupScenario::Retry
             | SetupScenario::PlatformGap
             | SetupScenario::FolderGap
             | SetupScenario::FailedReadiness
@@ -247,6 +261,18 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         required: true,
         legacy_entry: None,
     };
+    if matches!(scenario, SetupScenario::SourceReadCancel) {
+        std::fs::write(workspace.join("public-setup.sh"), "reviewed source").unwrap();
+        if let RequirementSpec::SetupChecks {
+            source_path,
+            source_digest,
+            ..
+        } = &mut requirement.spec
+        {
+            *source_path = Some("public-setup.sh".into());
+            *source_digest = Some(format!("{:x}", Sha256::digest(b"reviewed source")));
+        }
+    }
     env.project_requirements = vec![requirement.clone()];
     if locked_secret {
         let mut public = requirement.clone();
@@ -617,6 +643,64 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             },
         )
         .unwrap();
+    if matches!(
+        scenario,
+        SetupScenario::PublicReadCancel | SetupScenario::SourceReadCancel
+    ) {
+        let key = if matches!(scenario, SetupScenario::PublicReadCancel) {
+            "CHARIOX_SETUP_PUBLIC_STALL_MARKER"
+        } else {
+            "CHARIOX_SETUP_SOURCE_STALL_MARKER"
+        };
+        let marker = root.path().join("setup-io-stall");
+        std::env::set_var(key, &marker);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = cancelled.clone();
+        let (run_state, run_config, run_env, run_requirement, run_operation) = (
+            state.clone(),
+            config.clone(),
+            env.clone(),
+            requirement.clone(),
+            operation.clone(),
+        );
+        let running = tokio::task::spawn_blocking(move || {
+            apply_setup_requirement(
+                &run_state,
+                &run_config,
+                &run_env,
+                &run_requirement,
+                &run_operation,
+                || cancel.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        });
+        let start = Instant::now();
+        while !marker.exists() {
+            assert!(!running.is_finished(), "fresh setup read must be reached");
+            assert!(start.elapsed() < Duration::from_secs(10));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let began = Instant::now();
+        cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = running.await.unwrap();
+        std::env::remove_var(key);
+        assert!(result.is_err());
+        assert!(
+            began.elapsed() < Duration::from_millis(900),
+            "fresh Setup I/O escaped owned cancellation"
+        );
+        assert!(
+            !workspace.join("successful-count").exists(),
+            "cancelled preparation admits no command"
+        );
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup")
+                .copied(),
+            Some(0)
+        );
+        return;
+    }
     if matches!(scenario, SetupScenario::AuthorityChanged) {
         for changed in [
             crate::session::RuntimeProject::new(

@@ -57,6 +57,11 @@ pub(crate) fn command(
         if !file.metadata().is_ok_and(|m| m.is_file()) {
             return Err("untrusted_executable");
         }
+        #[cfg(test)]
+        if let Some(marker) = std::env::var_os("CHARIOX_NAMED_EXECUTABLE_STALL_MARKER") {
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(12));
+        }
         let mut bytes = Vec::new();
         file.take(4096)
             .read_to_end(&mut bytes)

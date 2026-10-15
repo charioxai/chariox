@@ -21,6 +21,15 @@ impl EnvironmentChecks {
         target: &EnvironmentTargetBinding,
         now: u64,
     ) {
+        self.invalidate_observations_for_operation(env, target, now, None);
+    }
+    pub(super) fn invalidate_observations_for_operation(
+        &mut self,
+        env: &ProjectEnvironment,
+        target: &EnvironmentTargetBinding,
+        now: u64,
+        operation: Option<&str>,
+    ) {
         let bindings = folder_bindings_digest(env);
         for observation in &mut self.observations {
             observation.stale |= observation.target != *target
@@ -31,7 +40,7 @@ impl EnvironmentChecks {
                     checked > now || now.saturating_sub(checked) > OBSERVATION_TTL_MS
                 });
         }
-        super::check::invalidate_check_dependencies(env, &mut self.observations, target, None);
+        super::check::invalidate_check_dependencies(env, &mut self.observations, target, operation);
     }
     pub(crate) fn record_observation(&mut self, observation: MachineObservation) {
         self.observations.retain(|prior| {
