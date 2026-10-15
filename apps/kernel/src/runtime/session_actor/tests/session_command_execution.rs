@@ -397,7 +397,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nreconcile\nhealth\nsnapshot\nreconcile\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 

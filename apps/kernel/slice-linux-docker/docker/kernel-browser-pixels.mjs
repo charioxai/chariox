@@ -1,6 +1,7 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
-// MP-08/MP-11: shared Vault fill-target masks; unavailable geometry retries.
-import { deflateSync, inflateSync, crc32 } from 'node:zlib';
+// MP-08/MP-11: exact Vault fill masks through the shared trusted collector.
+// Unavailable/racing geometry refuses capture for retry. No generic masks.
+import { deflateSync, inflateSync, crc32 } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 // MP-11: preserve the complete viewport policy across protected crop merges.

@@ -10,6 +10,8 @@ export function regionBindingCurrent(binding) {
   (css_width*scale)%2===0&&(css_height*scale)%2===0;
 }
 export function displayGeometryMatches(binding,frame) {
+ const source=binding.source;
+ if(source?.kind==='desktop')return frame.document_id===source.generation&&frame.device_scale_factor===binding.device_scale_factor&&frame.width===source.width&&frame.height===source.height&&frame.css_width===source.width/frame.device_scale_factor&&frame.css_height===source.height/frame.device_scale_factor;
  if(binding.source_kind==='region')return regionBindingCurrent(binding)&&
   frame.css_width===binding.css_width&&frame.css_height===binding.css_height&&
   frame.device_scale_factor===binding.device_scale_factor&&frame.document_id===binding.document_id;

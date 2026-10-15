@@ -28,6 +28,12 @@ test('MP-08/MP-10/MP-11: kernel-owned mirror fences have fixed diagnostic names'
  assert.equal(hostErrorLabel({message:'MP-11: changed mirror input target private-canary'}),'host_error Error');
 });
 
+test('MP-08/MP-11 native capture failures retain fixed diagnostic codes and public positions',()=>{
+ const error={name:'Error',code:'NATIVE_PROTECTION_CHANGED',message:'private native value',stack:'Error: private native value\n at f (/private/profile/native-computer.mjs:59:20)'};
+ assert.equal(hostErrorLabel(error),'host_error Error NATIVE_PROTECTION_CHANGED native-computer.mjs:59:20');
+ error.code='private-native-value';
+ assert.equal(hostErrorLabel(error),'host_error Error native-computer.mjs:59:20');
+});
 // MP-08/MP-10/MP-11: the public error uses the same safe classifier as diagnostics.
 test('public Browser failures distinguish timeout, stale target, observer refusal and unexpected source',()=>{
  const timeout={code:'browser_cdp_timeout',message:'browser CDP method Page.captureScreenshot timed out after 5000ms'};

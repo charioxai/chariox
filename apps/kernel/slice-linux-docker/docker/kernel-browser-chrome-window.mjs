@@ -27,16 +27,16 @@ export class ChromeWindows {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
     return this.bound;
   }
-  /** Resolve (or re-resolve) the tabbed window and its auxiliary windows, one at a time. */
+  /** Resolve the owned window set serially on the host mutation lane. */
   resolve() {
     const run = (this.resolving ?? Promise.resolve()).catch(() => {}).then(() => this.resolveNow());
     this.resolving = run;
     return run;
   }
   async resolveNow() {
-    const host = this.host, chromium = host.chromium, display = chromium.display, pid = chromium.child?.pid, scale = chromium.scale;
+    const host = this.host, chromium = host.chromium, display = chromium.display, pid = chromium.browserPid ?? chromium.child?.pid, scale = chromium.scale;
     const browserGeneration = host.generation;
-    const live = () => host.generation === browserGeneration && ownsDisplay(display) && chromium.child?.pid === pid;
+    const live = () => host.generation === browserGeneration && ownsDisplay(display) && (chromium.browserPid ?? chromium.child?.pid) === pid;
     if (!live() || !Number.isSafeInteger(pid) || pid <= 1) throw new UserDomainRefusal('stale_reference');
     const connection = host.browser.connection;
     const page = [...host.tabs.values()][0];

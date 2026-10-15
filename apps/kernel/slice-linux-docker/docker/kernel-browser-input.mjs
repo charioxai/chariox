@@ -124,9 +124,11 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
-        if (!printable && !/^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key) && !/^Ctrl\+(Backspace|Delete)$/.test(input.key) && !["Tab", "Shift+Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
-        const shift = !printable && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
-        const ctrl = !printable && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
+        // Shift only with focus/selection keys: Shift+Tab moves focus back, Shift+Arrow/Home/End extend the selection.
+        const shift = !printable && typeof input.key === "string" && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
+        // Ctrl only with word deletion (CDP only: the native path presses no Ctrl).
+        const ctrl = !printable && typeof input.key === "string" && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
+        if (!printable && !shift && !ctrl && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const modifiers = (input.modifiers ?? 0) | (shift ? 8 : ctrl ? 2 : 0);
         const chord = (modifiers & 7) !== 0;
         const name = shift ? input.key.slice(6) : ctrl ? input.key.slice(5) : input.key;

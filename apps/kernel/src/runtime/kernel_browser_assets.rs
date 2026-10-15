@@ -3,6 +3,26 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "room-shared-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/room-shared-display.mjs"),
+    ),
+    (
+        "browser-capture-presentation.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-capture-presentation.mjs"),
+    ),
+    (
+        "kernel-desktop-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-display.mjs"),
+    ),
+    (
+        "kernel-desktop-source.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-source.mjs"),
+    ),
+    (
+        "kernel-desktop-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/kernel-desktop-protection.py"),
+    ),
+    (
         "kernel-browser-display-document.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-document.mjs"),
     ),
@@ -27,14 +47,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-openh264.py"),
     ),
     (
-        "browser-controller-image.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
-    ),
-    (
-        "browser-controller-artifacts.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
-    ),
-    (
         "kernel-browser-stripes.py",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-stripes.py"),
     ),
@@ -53,6 +65,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-owned-display.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-owned-display.mjs"),
+    ),
+    (
+        "kernel-browser-native-viewport.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-viewport.mjs"),
     ),
     (
         "kernel-browser-native-windows.mjs",
@@ -109,6 +125,78 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-sample-lane.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-sample-lane.mjs"),
+    ),
+    (
+        "native-x11.py",
+        include_bytes!("../../slice-linux-docker/docker/native-x11.py"),
+    ),
+    (
+        "native-clipboard.py",
+        include_bytes!("../../slice-linux-docker/docker/native-clipboard.py"),
+    ),
+    (
+        "room-native-protection.py",
+        include_bytes!("../../slice-linux-docker/docker/room-native-protection.py"),
+    ),
+    (
+        "room-native-accessibility.mjs",
+        include_bytes!("../../slice-linux-docker/docker/room-native-accessibility.mjs"),
+    ),
+    (
+        "native-keyboard-channel.mjs",
+        include_bytes!("../../slice-linux-docker/docker/native-keyboard-channel.mjs"),
+    ),
+    (
+        "native-accessibility.mjs",
+        include_bytes!("../../slice-linux-docker/docker/native-accessibility.mjs"),
+    ),
+    (
+        "native-accessibility.py",
+        include_bytes!("../../slice-linux-docker/docker/native-accessibility.py"),
+    ),
+    (
+        "native-computer.mjs",
+        include_bytes!("../../slice-linux-docker/docker/native-computer.mjs"),
+    ),
+    (
+        "native-computer.py",
+        include_bytes!("../../slice-linux-docker/docker/native-computer.py"),
+    ),
+    (
+        "x11-keymap-fence.py",
+        include_bytes!("../../slice-linux-docker/docker/x11-keymap-fence.py"),
+    ),
+    (
+        "x11-text-keyboard.py",
+        include_bytes!("../../slice-linux-docker/docker/x11-text-keyboard.py"),
+    ),
+    (
+        "slice-keyboard.py",
+        include_bytes!("../../slice-linux-docker/docker/slice-keyboard.py"),
+    ),
+    (
+        "slice-text-finder.py",
+        include_bytes!("../../slice-linux-docker/docker/slice-text-finder.py"),
+    ),
+    (
+        "desktop-applications.mjs",
+        include_bytes!("../../slice-linux-docker/docker/desktop-applications.mjs"),
+    ),
+    (
+        "desktop-applications.py",
+        include_bytes!("../../slice-linux-docker/docker/desktop-applications.py"),
+    ),
+    (
+        "linux-owned-desktop.mjs",
+        include_bytes!("../../slice-linux-docker/docker/linux-owned-desktop.mjs"),
+    ),
+    (
+        "linux-owned-process.mjs",
+        include_bytes!("../../slice-linux-docker/docker/linux-owned-process.mjs"),
+    ),
+    (
+        "linux-desktop-session.py",
+        include_bytes!("../../slice-linux-docker/docker/linux-desktop-session.py"),
     ),
     (
         "kernel-browser-foreground.mjs",
@@ -185,6 +273,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-display.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display.mjs"),
+    ),
+    (
+        "kernel-display-resumption.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-display-resumption.mjs"),
     ),
     (
         "kernel-browser-encoder.py",
@@ -426,6 +518,14 @@ mod tests {
                 for part in text.split(&format!("{quote}./")).skip(1) {
                     let import = part.split(quote).next().unwrap_or_default();
                     if import.ends_with(".mjs") {
+                        assert!(names.contains(&import), "{name} imports missing {import}");
+                    }
+                }
+            }
+            for quote in ['"', '\''] {
+                for part in text.split(&format!("with_name({quote}")).skip(1) {
+                    let import = part.split(quote).next().unwrap_or_default();
+                    if import.ends_with(".py") {
                         assert!(names.contains(&import), "{name} imports missing {import}");
                     }
                 }

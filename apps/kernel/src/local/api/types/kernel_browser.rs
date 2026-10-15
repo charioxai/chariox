@@ -4,6 +4,23 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// MP-08/MP-11 local500: human grants only the leased worker's observed desktop.
+    GrantLeasedComputer {
+        agent_id: String,
+        target: KernelDesktopTarget,
+    },
+    RevokeLeasedComputer {
+        agent_id: String,
+    },
+    Computer {
+        command: KernelComputerCommand,
+    },
+    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
+    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
+    GrantRoomComputer {
+        #[serde(deserialize_with = "Option::deserialize")]
+        agent_id: Option<String>,
+    },
     ListGrants,
     SubscribeGrants {
         after: u64,
@@ -75,6 +92,16 @@ pub enum KernelBrowserCommand {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+    },
+    /// MP-08/MP-10/MP-11: protocol 525. A resume hint does not carry authority;
+    /// current terminal/source admission is repeated before a fresh stream ID.
+    DisplaySuspend {
+        subscription_id: String,
+        generation: u64,
+    },
+    DisplayResume {
+        subscription_id: String,
+        generation: u64,
     },
     /// MP-08/MP-10: protocol 491 pushed display. Acknowledges the newest
     /// presented sequence on a relay display subscription (the first ack

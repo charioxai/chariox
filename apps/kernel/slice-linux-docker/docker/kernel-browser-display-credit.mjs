@@ -167,7 +167,7 @@ export async function displayCredit(host, stream, command, signal) {
 // MP-08/MP-10: a push credit returns a frame or, after a bounded wait on
 // encoder/refiner/source readiness, nothing. The kernel pump re-issues it.
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
-  if (command.push.reset) stream.invalidate();
+  if (command.push.reset) stream.resetForDelivery();
   const deadline = now() + budgetMs;
   for (;;) {
     const reply = await displayCredit(host, stream, command, signal);

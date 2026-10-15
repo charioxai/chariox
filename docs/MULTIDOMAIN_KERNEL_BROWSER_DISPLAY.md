@@ -1,8 +1,12 @@
 # MD-DISPLAY-02/04: kernel browser display implementation and history
 
-MD-DISPLAY-02/04: current transport uses reserved local 441 / relay 84; dependent
-video requires the explicit `chariox-video-dependencies-v1` codec capability.
-Legacy offers retain independent frames. The client minimum is 441.
+MD-DISPLAY-02/04: the current kernel speaks local protocol 507 and relay peer
+protocol 115. The presenter requires local protocol 466 with CXD1
+binary display events (474 for desktop display, 491 for push); relay peer 96
+additionally enables binary relay
+frames (`chariox-relay-binary-v96`). Dependent video requires the explicit
+`chariox-video-dependencies-v1` codec capability; legacy offers retain
+independent frames.
 
 Current Phase 10 native motion prefers negotiated H.264, with realtime VP9 fallback,
 three default display credits, bounded reference recovery and exact PNG damage
@@ -11,8 +15,14 @@ can attempt VAAPI, falling back on actual failure. Builder evidence is software
 only. The portable [Linux LAN kit](../apps/browser-display/LAN_KIT.md) supplies the
 coordinator-run laptop matrix, still unmeasured here. Sparse native damage piping
 and reduced software motion scale are implemented; exact settled pixels stay
-native DPR. Current results remain RED and the flag stays off. See the source-bound
-Phase 10 matrix and integration limits in the performance doc.
+native DPR. Current results remain RED and the flag stays off; source-bound
+measurement receipts stay outside the repository.
+
+The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
+Xcomposite and Xtst. x264 and libavcodec/libavutil are loaded at runtime;
+libyuv and libwebp are static (SharpYUV only where WebP ships that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
+`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
+the CDP capture and portable encoder path.
 
 MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
@@ -80,8 +90,6 @@ other deltas stay on CDP. Wheel dispatch does not wait for the renderer's
 frame-aligned ack. x264 runs on its own worker thread, and capture plans are
 requested only while a viewer canvas is exact and unprotected.
 
-The historical427/74 configuration, pipeline, client and Phase7 evidence are
-in [MULTIDOMAIN_DISPLAY_PERFORMANCE.md](MULTIDOMAIN_DISPLAY_PERFORMANCE.md).
 The sections below record earlier419-era implementation and receipts; their
 codec, source, pacing and credit descriptions are historical, not current
 configuration. Their source identities and limitations remain unchanged.
@@ -460,10 +468,10 @@ cursor/IME/file-chooser coverage, and criteria for Room desktop migration. Until
 those decisions and independent review, keep the flag off by default.
 
 
-## MD-DISPLAY-02/04: current Cloud integration handoff,427/74
+## MD-DISPLAY-02/04: current Cloud integration handoff, 466/474
 
-Copy `apps/browser-display/presenter.mjs`, `decoder-worker.mjs`, `tile-cache.mjs`
-and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
+Copy `apps/browser-display/presenter.mjs`, `stripe-presenter.mjs`,
+`decoder-worker.mjs` and `scroll-prediction.mjs` together at their relative URLs. Serve worker modules
 with the application's restrictive CSP and correct JavaScript MIME; no page
 scripts or provider/account state are added to the client. The self-contained
 `harness.html` demonstrates the transport adapter; coordinator wires private
@@ -473,12 +481,13 @@ Cloud separately. Do not use the historical419 instructions as a version bump.
 existing encrypted kernel `request`, event listener and scoped
 `subscribeDisplay`/`unsubscribeDisplay` adapter. Preserve shared-client sender
 pinning, display-next no-replay and durable session replay-cursor separation.
-Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:4`;
+Use native `deviceScaleFactor`, negotiated bitrate and default `creditWindow:3`;
 `start()` maintains bounded continuous credits and `stop()` awaits them. For
 manual polls use `next()` while stopped. Input/takeover/release/actors route
 through the same kernel actor/document seam; `close()` releases local presenter,
 scoped relay registration and kernel subscription. Polling unchanged frames
-still renews display admission. Default-off feature and minimum427 remain.
+still renews display admission. Default-off feature and minimum 466 (474 for
+desktop display) remain.
 
 Worker decode adds no jitter buffer; authoritative frames retain dependency
 order. Keep `scrollPredictionRegion` unset unless product geometry is explicitly
@@ -486,8 +495,7 @@ trusted; prediction does not count as source acknowledgement. Surface stream
 errors and actor takeover to users through existing flows. The presenter canvas
 is an image surface, so IME/clipboard/file chooser/drag-drop remain existing
 kernel input capability questions rather than DOM replay inferred from pixels.
-See `MULTIDOMAIN_DISPLAY_PERFORMANCE.md` for RED performance targets and exact
-execution/binary evidence; this module is reviewable, not rollout acceptance.
+Performance remains RED; this module is reviewable, not rollout acceptance.
 
 ## MD-DISPLAY-04: protocol441 dependent-video compatibility
 
@@ -529,7 +537,7 @@ base64 byte accounting and pacing.
 The relay applies the existing daemon/realm/subscription route and backpressure
 cleanup to both encodings. A receiver that did not negotiate binary events gets
 the original JSON/base64 envelope. A peer-94 relay therefore continues to work,
-and an older client can attach to a newer kernel and relay. The existing peer90
+and an older client can attach to a newer kernel and relay. The peer92
 runtime/security admission floor remains unchanged: advertising optional
 transport96 does not revoke compatible peer94 workers. Binary-event routing
 never decrypts ciphertext or parses a display payload. Kernel and browser bounds,
@@ -547,7 +555,8 @@ Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
 version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
 The presenter refuses missing/older versions and JSON-only adapters before any
 subscription request. These are adapter properties, not serialized protocol
-fields; the local protocol remains 466. Peer-96 negotiation is independent.
+fields; the presenter minimum remains 466 (474 for desktop display). Peer-96
+negotiation is independent.
 
 Only the kernel-admitted human display input path with a live caller-owned
 viewer lease may use asynchronous or native wheel dispatch. Agent wheel calls
@@ -583,3 +592,69 @@ with fill targets and applies only their measured boxes before encoding.
 Legacy subscriptions clear stale frames and await a fresh protected capture.
 These source regressions do not establish hosted Vault/provider/Web/TUI
 acceptance; the live conjunction remains a separate MP-10 gate.
+
+## MP-08/MP-10/MP-11 Room carry (allocated local 525 / peer 133)
+
+A Room viewer requests `GetSliceDisplayEndpoint.shared_display` with its codec
+and density offer. The home reuses the Room display admission chain: local or
+key-bound remote client, attachment in the Room, attachment owner, exact bound
+Running slice and worker. `RoomDisplayLease` records that binding. The home
+resolves the existing native surface using the ordinary Room controller and
+observation protocols, then sends `OpenRoomSharedDisplay` to that bound worker.
+The worker checks the configured home key/Room/slice and the observed desktop
+reference before ordinary `display_subscribe` with `observed_by = lease_id`.
+The Room adapter reuses `DesktopDisplay`, `DesktopSource` and `DisplaySessions`;
+it never starts another desktop or Chromium. Room Actions remain the only input
+and takeover authority. The initial Room View target is the complete desktop;
+Browser/Region references do not grant access to an unbound worker host browser.
+
+The worker protects capture under the Room observation and credential-input
+barriers, encodes the ordinary CXD1 event and encrypts it to the admitted viewer
+key. The existing home `kernel_browser_display` subscription/ACK pump carries
+that worker ciphertext through the existing bound peer path. A home-scoped
+viewer token never becomes a worker terminal grant. Cloud pins the worker key
+for this display while retaining its home transport target and identity.
+
+On a network change, the shared presenter's 525 resume hint is the only
+resumption mechanism. Fresh home admission precedes the worker's bounded 5 s
+`DisplaySessions` resume; delivery/observer IDs rotate, old credits retire, and
+the producer survives. Idle streams expire after 60 s. Open/resume grants are
+not served from the command cache or automatically replayed after an uncertain
+write. Cloud keeps the painted frame while resuming; it does not request a
+replacement opening as a network recovery strategy. An explicit new target or
+user reconnect performs a new admitted open.
+
+The 525/133 hash fixture is `room-shared-display-525.json` beside the protocol
+shape tests. Source regressions are supplementary. Acceptance requires the
+actual Room View on the integrated shared producer: four window/density network
+changes to a painted frame within 1 s, takeover/release, protected desktop and
+a 2-hour hosted soak on a quiet host or KVM guest. No result from the legacy
+Room/Selkies comparator establishes acceptance of this carry.
+
+Run the focused network drill with
+`node apps/cli/scripts/live-room-shared-display-drill.mjs`. It requires an
+explicit hosted `CHARIOX_ROOM_DISPLAY_DRILL_VIEW_URL`, a lane-owned browser
+`CHARIOX_ROOM_DISPLAY_DRILL_PROFILE` authenticated/selected through normal UI,
+external `CHARIOX_ROOM_DISPLAY_DRILL_EVIDENCE`, an installed `PLAYWRIGHT_MODULE`
+and `CHARIOX_ROOM_DISPLAY_NETWORK_CHANGE_HELPER`. That executable changes the
+real link and returns only `{wire_rtt_ms,uplink_bits_per_second}`. The drill
+records all four window/density cells, requires an actual socket retirement,
+captures video/screenshots and checks three network changes per cell. It never
+automatically labels the feature accepted: review the recordings, the normal
+public-site/control/protection tasks and the separate 2-hour soak first.
+
+MP-08/MP-10/MP-11 519→525 integration: region and native Chrome streams use
+the same `DisplaySessions` lifetime. Resume rechecks the owner lease, native
+source, current geometry/window epoch and protection, retains the encoder, and
+returns the original region input binding/epoch with a fresh delivery ID.
+The 517 mirror/modifier and 519 region snapshots remain independently pinned.
+
+Headed Docker slices build the native worker against Bookworm's codec ABI.
+At runtime installation, `install-display-codec.py` downloads Cisco OpenH264
+2.6 directly over HTTPS into kernel-owned private state, checks compressed and
+library SHA-256 pins, then reuses only a verified cache. The binary is excluded
+from source kits and images. amd64 and arm64 public downloads are pinned; an
+amd64 ABI probe does not establish arm64 runtime acceptance. No automatic x264
+fallback is introduced. Ordinary/managed host packaging can call this same
+installer; their target-specific library provisioning remains independently
+validated by those installation lanes.

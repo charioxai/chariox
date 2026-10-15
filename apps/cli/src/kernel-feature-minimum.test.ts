@@ -107,3 +107,20 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
 test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
   for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
 })
+
+// MP-08/MP-10/MP-11: only the allocated resume contract may cross transport.
+test("MP-08/MP-10/MP-11 display resumption refuses unknown and pre-525 kernels", () => {
+  for (const op of ["display_suspend", "display_resume"]) {
+    const request = { KernelBrowser: { command: { op, subscription_id: "old", generation: 7 } } }
+    for (const version of [undefined, 0, NaN, 524.5, 517, 519, 524]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /Display resumption needs protocol ≥525/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 525))
+  }
+})
+
+test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel silently opens Selkies",()=>{
+ const request={GetSliceDisplayEndpoint:{slice_ref:"s",shared_display:{codecs:["avc1.420033"],bitrate:8000000,device_scale_factor:2}}}
+ assert.throws(()=>requireKernelFeatureProtocol(request,524),/Room shared display needs protocol ≥525/)
+ assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,525))
+})

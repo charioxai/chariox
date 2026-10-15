@@ -59,7 +59,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const scale=window.scale;
   // Browser UI survives page navigation; the frame document is its window epoch.
   const sourceTab=target.kind==='browser_chrome'?{...tab,document_id:lease.document_id}:tab;
-  source=new Capture({...args,display:host.chromium.display,pid:host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
+  source=new Capture({...args,display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
   await source.start();assertNotCancelled(signal);

@@ -65,7 +65,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     this.regions=protection;
    }
    await this.regions.refresh();
-   this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-region-'));
+   this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');

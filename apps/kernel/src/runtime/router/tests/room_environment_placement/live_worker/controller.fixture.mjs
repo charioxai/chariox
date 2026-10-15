@@ -47,6 +47,18 @@ const chromium = {
   },
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
+    // MP-08 / MP-10 / MP-11: native navigation happens independently of reads.
+    const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
+    if (existsSync(externalNavigation)) {
+      const url = readFileSync(externalNavigation, "utf8").trim();
+      unlinkSync(externalNavigation);
+      if (url.startsWith("https://")) state.url = url;
+      state.documentId = `worker-document-${++state.documentSequence}`;
+      persist();
+      emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
+        id: "worker-frame", loaderId: state.documentId, url: state.url,
+      } } });
+    }
     switch (method) {
       case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
@@ -58,15 +70,6 @@ const chromium = {
           state.documentId = `worker-document-${++state.documentSequence}`;
           state.focusedTarget = "worker-tab";
           persist();
-        }
-        const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
-        if (existsSync(externalNavigation)) {
-          unlinkSync(externalNavigation);
-          state.documentId = `worker-document-${++state.documentSequence}`;
-          persist();
-          emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
-            id: "worker-frame", loaderId: state.documentId, url: state.url,
-          } } });
         }
         // External browser fault: the user can close every page while a
         // browser-owned download continues in the background.

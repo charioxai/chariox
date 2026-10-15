@@ -1,3 +1,4 @@
+mod tool_errors;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -244,7 +245,11 @@ async fn handle_proxy_json_rpc_request(
         .await
     {
         Ok(response) => Ok(json_response(StatusCode::OK, response)),
-        Err(error) => Ok(json_rpc_error_response(id, -32000, &error.to_string())),
+        Err(error) => Ok(json_rpc_error_response(
+            id,
+            -32000,
+            &tool_errors::message(&error),
+        )),
     }
 }
 
@@ -457,21 +462,11 @@ async fn handle_json_rpc_value(
                 Err(error) => Ok(json_rpc_error_response(
                     id,
                     -32000,
-                    &tool_error_message(&error),
+                    &tool_errors::message(&error),
                 )),
             }
         }
         _ => Ok(json_rpc_error_response(id, -32601, "method not found")),
-    }
-}
-
-/// MP-08/MP-11: a typed user-domain refusal keeps its code for the provider.
-fn tool_error_message(error: &crate::error::DaemonError) -> String {
-    match error {
-        crate::error::DaemonError::UserDomainRefused { reason } => {
-            format!("{error}: {}", reason.code())
-        }
-        _ => error.to_string(),
     }
 }
 

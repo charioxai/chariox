@@ -2,6 +2,8 @@ use super::*;
 
 pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
+        RuntimeToolSpec { name: SLICE_ACCESSIBILITY_TOOL.into(), description: "MP-08: bounded native AT-SPI desktop snapshot. Prefer showing actionable nodes. Opaque target_id and tree_revision are observer-bound; fallback OCR if text is absent. Windows without accessibility (e.g. terminals) are black in captures and listed in masked as [x,y,w,h], yet still take input.".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) },
+        RuntimeToolSpec { name: SLICE_TARGET_ACTION_TOOL.into(), description: "MP-08 / MP-11: perform one advertised native action using target_id/tree_revision from slice_accessibility. Room takeover, membership and Computer revocation apply. Handles expire after action or tree/protection change.".into(), input_schema: serde_json::json!({"type":"object","properties":{"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":64}},"required":["tree_revision","target_id","action"],"additionalProperties":false}) },
         RuntimeToolSpec {
             name: SLICE_SCREEN_STATUS_TOOL.to_string(),
             description: "Return availability and display dimensions for the shared Chariox Computer. A local slice may also return its private viewer URL; a Room agent receives canonical Room dimensions and a client-attachment marker instead of worker connection details.".to_string(),
@@ -358,6 +360,8 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_SCREEN_STATUS_TOOL => SLICE_SCREEN_STATUS_TOOL_ALIAS,
         SLICE_SCREENSHOT_TOOL => SLICE_SCREENSHOT_TOOL_ALIAS,
         SLICE_OCR_TOOL => SLICE_OCR_TOOL_ALIAS,
+        SLICE_ACCESSIBILITY_TOOL => "slice_accessibility",
+        SLICE_TARGET_ACTION_TOOL => "slice_target_action",
         SLICE_FIND_TEXT_TOOL => SLICE_FIND_TEXT_TOOL_ALIAS,
         SLICE_MOUSE_TOOL => SLICE_MOUSE_TOOL_ALIAS,
         SLICE_KEYBOARD_TOOL => SLICE_KEYBOARD_TOOL_ALIAS,
@@ -409,6 +413,16 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_slice_ocr"
         | "mcp__chariox__slice_ocr"
         | "mcp__chariox__chariox_slice_ocr" => Some(SLICE_OCR_TOOL),
+        SLICE_ACCESSIBILITY_TOOL
+        | "slice_accessibility"
+        | "chariox_slice_accessibility"
+        | "mcp__chariox__slice_accessibility"
+        | "mcp__chariox__chariox_slice_accessibility" => Some(SLICE_ACCESSIBILITY_TOOL),
+        SLICE_TARGET_ACTION_TOOL
+        | "slice_target_action"
+        | "chariox_slice_target_action"
+        | "mcp__chariox__slice_target_action"
+        | "mcp__chariox__chariox_slice_target_action" => Some(SLICE_TARGET_ACTION_TOOL),
         SLICE_FIND_TEXT_TOOL
         | SLICE_FIND_TEXT_TOOL_ALIAS
         | "chariox_slice_find_text"

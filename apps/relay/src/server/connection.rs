@@ -265,6 +265,7 @@ pub(crate) async fn handle_connection(
                 break;
             };
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
+            crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
             match message {
                 Message::Text(text) => {

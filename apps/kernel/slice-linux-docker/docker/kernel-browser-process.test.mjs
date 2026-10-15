@@ -3,8 +3,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
+test('MP-08/MP-11 native window ownership selects the CDP browser only from verified descendants',async()=>{
+ const {ownedBrowserPid}=await import('./kernel-browser-process.mjs');
+ assert.equal(typeof ownedBrowserPid,'function');
+ const processInfo=[{type:'browser',id:42},{type:'renderer',id:43}],owned=[{pid:41},{pid:42},{pid:43}];
+ assert.equal(ownedBrowserPid(processInfo,owned),42,'the supervisor PID41 owns no Chromium window');
+ for(const candidates of [[],[{type:'browser',id:99}],[{type:'browser',id:1}],[{type:'browser',id:42},{type:'browser',id:43}]])
+  assert.throws(()=>ownedBrowserPid(candidates,owned),/owned browser PID/);
+});
+test('MP-08/MP-10 production Chromium exposes its shared desktop to native capture',async()=>{
+ const root=await mkdtemp(tmpdir()+'/chariox-desktop-native-binding-'),getuid=process.getuid;
+ process.getuid=()=>1000;
+ const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
+ let linked=false;
+ const desktop={runtime:root,binding:()=>({environment:{PATH:process.env.PATH}}),start:async()=>({environment:{PATH:process.env.PATH}}),
+  recordOwned:async()=>{linked=host.display===desktop},stop:async()=>{},close:async()=>{}};
+ host.desktop=desktop;
+ try{await assert.rejects(host.start(),/did not become ready/);assert(linked,'native capture must use the desktop that launched Chromium');}
+ finally{process.getuid=getuid;await host.stop();await rm(root,{recursive:true,force:true});}
+});
 test('MD-DISPLAY recovering an exited browser closes the previous X server before a failed restart',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-md-recovery-');
  const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
@@ -50,19 +70,20 @@ test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordi
 test('MP-10 host display renders at the geometry density for negotiated DPR1/2 pages',async()=>{
  const {launchArguments,HostChromium}=await import('./kernel-browser-process.mjs');
  const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
- assert.equal(new HostChromium('/private').scale,displayGeometry.dpr);
- assert(launchArguments('/private',false,true,2).includes('--force-device-scale-factor=2'));
+ const chromium=new HostChromium('/private');
+ assert.equal(chromium.scale,chromium.desktop?1:displayGeometry.dpr);
+ assert(launchArguments('/private',false,true,false,2).includes('--force-device-scale-factor=2'));
 });
 
 // MP-08/MP-10/MP-11 review #1001 P2: an ambient desktop cannot replace a failed private renderer.
 test('MP-11 headed mirror refuses an unavailable private display before spawning Chromium', async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-md-display-refusal-');
- const start=OwnedDisplay.prototype.start,uid=process.getuid;
+ const start=LinuxOwnedDesktop.prototype.start,uid=process.getuid;
  process.getuid=()=>2100; // Supplementary policy seam; no real browser is launched.
- OwnedDisplay.prototype.start=async()=>{throw Error('MD-DISPLAY: owned X server unavailable')};
+ LinuxOwnedDesktop.prototype.start=async()=>{throw Error('MD-DISPLAY: owned X server unavailable')};
  const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
  try{await assert.rejects(host.start(),/owned X server unavailable/);assert.equal(host.child,null,'ambient display must not launch a browser');assert.equal(host.display,null);}
- finally{OwnedDisplay.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
+ finally{LinuxOwnedDesktop.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
 });
 // MP-08/MP-10/MP-11 (BROWSER-UX-14): the native band shows no dead-end sign-in chip
 // (sign-in is policy-blocked); evidence r4/strip a-ExplicitBrowserSigninUIOnDesktop.png.

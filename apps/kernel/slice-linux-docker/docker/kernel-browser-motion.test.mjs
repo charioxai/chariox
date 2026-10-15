@@ -189,6 +189,22 @@ test('MP-08/MP-10/MP-11 rejected native codec carries indexed exact PNG through 
   assert.equal(exactCalls,1);assert.equal(frame.kind,'png');assert.equal(frame.data_base64,indexed);assert.equal(stream.exact,true);assert.equal(exact.raw,undefined);
  }finally{await motion.close();await stream.close()}
 });
+test('MP-11 an exact encode overlapping the producer skips one sample instead of failing motion',async()=>{
+ const {BrowserEncoder}=await import('./kernel-browser-webcodecs.mjs');
+ let latest,offer,release;const held=new Promise(r=>release=r),calls=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder=new BrowserEncoder({},'target',{async encode(image,b,key){calls.push([image,key]);if(image==='exact')await held;return {key,data_base64:'AA=='}},close:async()=>{}});
+ encoder.fallbackOnly=true;
+ const m=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000});
+ try{
+  const exact=encoder.encode('exact',8000000,true,'avc1.420033');
+  latest={serial:1,data_base64:'1'};offer(latest);await m.active;
+  assert.equal(m.take(),null);assert.equal(m.failure,undefined,'busy is transient');
+  release();await exact;
+  latest={serial:2,data_base64:'2'};offer(latest);await m.active;
+  assert.equal(m.take().encoded.key,true);assert.deepEqual(calls.map(c=>c[0]),['exact','2']);
+ }finally{await m.close();await encoder.close()}
+});
 // MP-08/MP-10: native x264 retunes rate live; only other encoders re-key.
 for(const native of [true,false])test('MP-08/MP-10 congestion rate change keeps the native reference chain '+native,async()=>{
  let offer,latest,now=0;const calls=[];
@@ -202,4 +218,31 @@ for(const native of [true,false])test('MP-08/MP-10 congestion rate change keeps 
   latest=sample(2);offer(latest);await m.active;
   assert.ok(calls[1].bitrate<8000000,'congestion lowers the rate');assert.equal(calls[1].key,!native);
  }finally{await m.close()}
+});
+
+test('MP-08/MP-10/MP-11 small protected bootstrap is exact once, then motion remains video',async()=>{
+ let latest,offer,exact=0,encoded=0,held=0;
+ const raw=serial=>({serial,width:16,height:16,retain(){held++},release(){held--},nativeExact:async()=>{exact++;return{native_exact:true,width:16,height:16,data_base64:'iVBORw0KGgo='}}});
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const encoder={nativeSession:'owned',encode:async()=>{encoded++;return{key:true,data_base64:'AAAA'}}};
+ const m=new MotionEncoder(source,encoder,{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ try{
+  latest={serial:1,width:16,height:16,raw:raw(1)};offer(latest);await m.active;
+  const first=m.take();assert.equal(first.force_lossless,true);assert.equal(first.native_exact,true);assert.equal(encoded,0);
+  latest={serial:2,width:16,height:16,raw:raw(2)};offer(latest);await m.active;
+  assert.equal(m.take().encoded.key,true);assert.equal(exact,1);assert.equal(encoded,1);
+ }finally{await m.close();assert.equal(held,0)}
+});
+
+test('MP-08/MP-10/MP-11 oversized bootstrap retains the video path',async()=>{
+ let latest,offer;const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const raw={width:16,height:16,retain(){},release(){},nativeExact:async()=>({native_exact:true,width:16,height:16,data_base64:'x'.repeat(64*1024+1)})};
+ const m=new MotionEncoder(source,{nativeSession:'owned',encode:async()=>({key:true,data_base64:'AAAA'})},{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ try{latest={serial:1,width:16,height:16,raw};offer(latest);await m.active;assert.equal(m.take().encoded.key,true)}finally{await m.close()}
+});
+test('MP-11 bootstrap cancelled during native exact preparation publishes no pixels',async()=>{
+ let latest,offer,resolve,held=0;const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+ const raw={width:16,height:16,retain(){held++},release(){held--},nativeExact:()=>new Promise(r=>{resolve=r})};
+ const m=new MotionEncoder(source,{nativeSession:'owned',encode:async()=>{throw Error('unexpected codec')}},{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
+ latest={serial:1,width:16,height:16,raw};offer(latest);const closed=m.close();resolve({native_exact:true,width:16,height:16,data_base64:'AAAA'});await closed;assert.equal(m.take(),null);assert.equal(held,0);
 });

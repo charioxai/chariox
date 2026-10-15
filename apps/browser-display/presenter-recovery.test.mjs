@@ -17,3 +17,22 @@ test('MP-08/MP-10 failed replacement registration preserves previous paint',asyn
  await assert.rejects(attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:1}),/relay disconnected/);
  assert.deepEqual([canvas.width,canvas.height],[1280,800]);
 });
+test('MP-08/MP-10 protocol 525 transient teardown parks the producer and returns a bounded resume hint',async()=>{
+ const commands=[],hints=[],canvas={width:1280,height:800};
+ const transport={kernelProtocolVersion:525,displayEventEncoding:'CXD1',subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{commands.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'old',generation:7}:{push:'running'}}}}};
+ const display=await attachBrowserDisplay(canvas,transport,{tab_id:'tab',generation:7},{onResumeHint:hint=>hints.push(hint)});
+ await display.close({preserveFrame:true});
+ try{
+  assert(commands.some(c=>c.op==='display_suspend'));assert(!commands.some(c=>c.op==='unsubscribe'));
+  assert.equal(hints.at(-1).subscription_id,'old');assert.equal(hints.at(-1).generation,7);
+  assert(hints.at(-1).expiresAt>performance.now()&&hints.at(-1).expiresAt<=performance.now()+5000);
+  assert.deepEqual([canvas.width,canvas.height],[1280,800]);
+ }finally{await display.close()}
+});
+test('MP-08/MP-11 replacement delivery repeats admission instead of replaying an opening grant',async()=>{
+ const commands=[],registered=[],canvas={width:1280,height:800};
+ const transport={kernelProtocolVersion:525,displayEventEncoding:'CXD1',subscribeDisplay:async binding=>registered.push(binding.subscription_id),unsubscribeDisplay:async()=>{},onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{commands.push(command);return {KernelBrowser:{result:command.op==='display_resume'?{subscription_id:'fresh',generation:7,resumed:true}:{push:'running'}}}}};
+ const display=await attachBrowserDisplay(canvas,transport,{tab_id:'tab',generation:7},{resumeHint:{subscription_id:'old',generation:7,targetKey:JSON.stringify(['tab',7]),desktop:false,device_scale_factor:1,expiresAt:performance.now()+5000}});
+ try{assert.equal(commands[0].op,'display_resume');assert.equal(commands[0].subscription_id,'old');
+ assert.deepEqual(registered,['fresh']);}finally{await display.close()}
+});

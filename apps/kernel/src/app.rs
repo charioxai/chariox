@@ -156,6 +156,9 @@ pub struct DaemonApp {
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
+    // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
+    pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -204,6 +207,8 @@ pub struct DaemonApp {
     completed_execution_lease_deletions: VecDeque<String>,
     #[cfg(test)]
     leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
+    #[cfg(test)]
+    leased_projection_after_output_drain: Option<Box<dyn FnOnce(&mut DaemonApp) + Send>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
@@ -366,6 +371,10 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
+            kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
+                config.private_runtime_state_root(),
+            ),
+            room_computer_revoked: Default::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
@@ -416,6 +425,8 @@ impl DaemonApp {
             completed_execution_lease_deletions: VecDeque::new(),
             #[cfg(test)]
             leased_runtime_projection_pauses: BTreeMap::new(),
+            #[cfg(test)]
+            leased_projection_after_output_drain: None,
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),

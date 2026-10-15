@@ -17,10 +17,10 @@ and disposable runtime state outside the checkout.
    on that public snapshot only. A truncated result that prevents verification
    fails the provider cell even when the field appears cleared.
 5. Verify unmodified text, Shift+Tab, and trusted paste still work. Modified
-   key events must not insert text. A client below protocol 517 must refuse
+   key events must not insert text. A client below protocol 498 must refuse
    modifier-bearing keys rather than silently dropping the modifiers.
 
-These steps exercise local protocol 517 / relay peer 125. Regression checks
+These steps exercise local protocol 498 / relay peer 107. Regression checks
 must also cover out-of-range modifiers, stale documents, cancelled input,
 protected focus, and paired key release. Never use internal IPC to perform
 the user-visible actions or replace the real provider with a fixture.

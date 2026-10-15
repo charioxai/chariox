@@ -988,8 +988,8 @@ fn capability_tool_refusal_keeps_its_typed_code() {
         reason: crate::error::UserDomainRefusalReason::NotRequested,
     };
     assert_eq!(
-        super::tool_error_message(&refused),
-        "User-domain request refused: user_domain_not_requested"
+        super::tool_errors::message(&refused),
+        "user_domain_not_requested: User-domain request refused"
     );
 }
 

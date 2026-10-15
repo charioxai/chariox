@@ -5,15 +5,15 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
 import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
-import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
+import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 export function startNativeReadback(capture,config){
  if(!ownsDisplay(capture.display)||!capture.valid()||!Number.isSafeInteger(capture.pid)||capture.pid<=1)
   throw Error('MP-11: native readback source not owned');
- if(config.window_region&&!process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER)
+ if(config.window_region&&!nativeWorkerResource())
   throw Error('MP-08: cropped native worker unavailable');
  config=Object.freeze({...config,...(config.window_region?{window_region:Object.freeze({...config.window_region})}:{})});
-   capture.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
+   capture.phase='readback';const executable=nativeWorkerResource()?.executable;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...capture.display.environment},stdio:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
    const fail=()=>capture.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.

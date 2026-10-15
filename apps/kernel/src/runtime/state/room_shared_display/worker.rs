@@ -1,0 +1,240 @@
+//! MP-08/MP-10/MP-11: exact bound-worker capture and viewer-key sealing.
+use super::*;
+impl KernelRuntimeState {
+    async fn room_producer_request(
+        &self,
+        session_id: &str,
+        mut params: serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        params["policy"] = serde_json::from_str(
+            &self
+                .owned
+                .room_secret_observations
+                .capture_policy(session_id)?,
+        )
+        .map_err(|_| error())?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let room = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            processes.room_computer_request(&room, "room.display", params)
+        })
+        .await
+        .map_err(|_| error())?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "Room shared display producer",
+            message,
+        })
+    }
+    pub(crate) async fn execute_bound_room_shared_display_open(
+        &self,
+        home: &str,
+        key: &str,
+        session_id: &str,
+        slice_id: &str,
+        lease_id: &str,
+        viewer_public_key: String,
+        offer: RoomDisplayOffer,
+        viewport: crate::session::CanonicalViewport,
+        target: RoomDisplayTarget,
+    ) -> Result<RoomDisplayResult, DaemonError> {
+        let config = self.authorize_bound_room_computer_read(home, key, session_id, slice_id)?;
+        crate::transport::relay_crypto::decode_public_key(&viewer_public_key)
+            .map_err(|_| error())?;
+        if lease_id
+            .strip_prefix("room-display-")
+            .is_none_or(|id| id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            || offer.resume_hint.is_some()
+            || offer.codecs.is_empty()
+            || offer.codecs.len() > 8
+        {
+            return Err(error());
+        }
+        {
+            let mut leases = self
+                .owned
+                .room_display_leases
+                .worker
+                .lock()
+                .map_err(|_| error())?;
+            leases.retain(|_, lease| {
+                lease
+                    .try_lock()
+                    .map_or(true, |lease| lease.used.elapsed() < Duration::from_secs(60))
+            });
+            if leases.contains_key(lease_id) || leases.len() >= 32 {
+                return Err(error());
+            }
+        }
+        if !matches!(&target,RoomDisplayTarget::Desktop{surface_id,..} if surface_id==&format!("slice:{slice_id}"))
+        {
+            return Err(error());
+        }
+        let _barrier = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .read_owned()
+            .await;
+        self.owned
+            .room_secret_observations
+            .require(session_id, true)?;
+        let _capture = self
+            .owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(|_| error())?;
+        let result=self.room_producer_request(session_id,serde_json::json!({"op":"display_subscribe","lease_id":lease_id,"observed_by":lease_id,"codecs":offer.codecs,"bitrate":offer.bitrate,"device_scale_factor":offer.device_scale_factor,"viewport":viewport,"target":target})).await?;
+        let binding: RoomDisplayBinding = serde_json::from_value(result).map_err(|_| error())?;
+        if binding.subscription_id != lease_id
+            || binding.source.kind != "desktop"
+            || binding.source.surface_id != format!("slice:{slice_id}")
+        {
+            return Err(error());
+        }
+        let lease = WorkerLease {
+            home: home.into(),
+            home_key: key.into(),
+            session_id: session_id.into(),
+            slice_id: slice_id.into(),
+            viewer_public_key,
+            binding: binding.clone(),
+            viewport,
+            used: Instant::now(),
+        };
+        let mut leases = self
+            .owned
+            .room_display_leases
+            .worker
+            .lock()
+            .map_err(|_| error())?;
+        leases.retain(|_, lease| {
+            lease
+                .try_lock()
+                .map_or(true, |lease| lease.used.elapsed() < Duration::from_secs(60))
+        });
+        leases.insert(lease_id.into(), Arc::new(Mutex::new(lease)));
+        Ok(RoomDisplayResult::Opened {
+            binding,
+            peer_public_key: config.relay_public_key,
+        })
+    }
+    pub(crate) async fn execute_bound_room_shared_display(
+        &self,
+        home: &str,
+        key: &str,
+        session_id: &str,
+        slice_id: &str,
+        lease_id: &str,
+        command: RoomDisplayCommand,
+    ) -> Result<RoomDisplayResult, DaemonError> {
+        let config = self.authorize_bound_room_computer_read(home, key, session_id, slice_id)?;
+        let lease = self
+            .owned
+            .room_display_leases
+            .worker
+            .lock()
+            .map_err(|_| error())?
+            .get(lease_id)
+            .cloned()
+            .ok_or_else(error)?;
+        let mut lease = lease.lock().await;
+        if lease.home != home
+            || lease.home_key != key
+            || lease.session_id != session_id
+            || lease.slice_id != slice_id
+            || lease.used.elapsed() >= Duration::from_secs(60)
+        {
+            return Err(error());
+        }
+        let _barrier = self
+            .owned
+            .room_secret_observations
+            .barrier(session_id)?
+            .read_owned()
+            .await;
+        self.owned
+            .room_secret_observations
+            .require(session_id, true)?;
+        let _capture = self
+            .owned
+            .computer_input_executions
+            .capture_guard()
+            .map_err(|_| error())?;
+        let op = match &command {
+            RoomDisplayCommand::Attach {} => "display_attach",
+            RoomDisplayCommand::Capture { .. } => "screenshot",
+            RoomDisplayCommand::Suspend {} => "display_suspend",
+            RoomDisplayCommand::Resume {} => "display_resume",
+            RoomDisplayCommand::Close {} => "unsubscribe",
+        };
+        let mut params = serde_json::json!({"op":op,"subscription_id":lease_id,"observed_by":lease_id,"generation":lease.binding.generation,"viewport":lease.viewport});
+        if let RoomDisplayCommand::Capture {
+            after_sequence,
+            reset,
+            congested,
+        } = &command
+        {
+            params["after_sequence"] = (*after_sequence).into();
+            params["push"] = serde_json::json!({"reset":reset,"congested":congested});
+        }
+        let mut result = self.room_producer_request(session_id, params).await?;
+        lease.used = Instant::now();
+        match command {
+            RoomDisplayCommand::Resume {} => {
+                let binding: RoomDisplayBinding =
+                    serde_json::from_value(result).map_err(|_| error())?;
+                if binding.subscription_id == lease_id || binding.source != lease.binding.source {
+                    return Err(error());
+                }
+                lease.binding = binding.clone();
+                let mut leases = self
+                    .owned
+                    .room_display_leases
+                    .worker
+                    .lock()
+                    .map_err(|_| error())?;
+                let current = leases.remove(lease_id).ok_or_else(error)?;
+                leases.insert(binding.subscription_id.clone(), current);
+                Ok(RoomDisplayResult::Updated { binding })
+            }
+            RoomDisplayCommand::Capture { .. } => {
+                if result["display_frame"].is_null() {
+                    return Ok(RoomDisplayResult::Frame { frame: None });
+                }
+                if result["display_frame"]["subscription_id"] != lease_id
+                    || result["display_frame"]["generation"] != lease.binding.generation
+                {
+                    return Err(error());
+                }
+                let mut response = serde_json::json!({"KernelBrowser":{"result":result.take()}});
+                let (_, sequence, event) =
+                    crate::transport::kernel_browser_display::take_display_event(&mut response)
+                        .ok_or_else(error)?;
+                let bytes = crate::transport::kernel_browser_display::encode_display_event(event)
+                    .map_err(|_| error())?;
+                let encrypted_event = crate::transport::relay_crypto::encrypt_payload_for_peer(
+                    &config.relay_private_key,
+                    &lease.viewer_public_key,
+                    &bytes,
+                )
+                .map_err(|_| error())?;
+                Ok(RoomDisplayResult::Frame {
+                    frame: Some(SealedRoomDisplayFrame {
+                        sequence,
+                        encrypted_event,
+                    }),
+                })
+            }
+            RoomDisplayCommand::Close {} => {
+                self.owned
+                    .room_display_leases
+                    .worker
+                    .lock()
+                    .map_err(|_| error())?
+                    .remove(lease_id);
+                Ok(RoomDisplayResult::Settled {})
+            }
+            _ => Ok(RoomDisplayResult::Settled {}),
+        }
+    }
+}

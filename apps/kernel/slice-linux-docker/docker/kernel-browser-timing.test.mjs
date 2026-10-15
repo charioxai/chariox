@@ -32,6 +32,11 @@ test('MP-08/MP-10/MP-11 scheduler attribution records only input waiting time',(
  const events=[],handled=[],host={timing:(...args)=>events.push(args),handle:(...args)=>(handled.push(args),'result')};
  const adapter=timedHostRequests(host,()=>({kind:'barrier'}));
  const input={method:'host.browser',params:{op:'input',input:{kind:'text',text:'must never be logged'},document_id:'private-binding'}};
+ const native={method:'host.computer',params:{op:'input',input:{kind:'text',text:'must never be logged'},surface_id:'private-binding'}};
+ const read={method:'host.browser',params:{op:'state'}};
+ assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);adapter.scheduleRequest(native);
+ assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});adapter.handleRequest(native,{});
+ assert.equal(events.length,2);for(const event of events){assert.equal(event.length,2);assert.equal(event[0],'host_input_queue');assert(Number.isFinite(event[1]));}assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
  const read={method:'host.browser',params:{op:'state'}};
  assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);
  assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});

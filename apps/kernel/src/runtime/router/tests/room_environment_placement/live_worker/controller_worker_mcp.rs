@@ -1203,7 +1203,9 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
     }
 }
 
-async fn prepare_cross_worker_room_display(fixture: &LiveWorker) -> (String, String, String) {
+pub(super) async fn prepare_cross_worker_room_display(
+    fixture: &LiveWorker,
+) -> (String, String, String) {
     dispatch_json(
         &fixture.home,
         json!({"CreateSlice": {
@@ -2292,6 +2294,9 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
+    // MP-11 (#904 R2 and review @61b0a4ac6): the approved native secret above
+    // stays registered for this Room, so agent text and clicks (which can
+    // Paste it elsewhere) are refused below; pointer moves and scrolls forward.
     let input_cases = [
         (
             "slice_mouse",
@@ -2300,38 +2305,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         ),
         (
             "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
-            "pointer_drag",
-        ),
-        (
-            "slice_mouse",
             json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
             "pointer_scroll",
-        ),
-        (
-            "slice_clipboard_write",
-            json!({"text":"Clipboard Grüße 世界"}),
-            "clipboard_write",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-            "keyboard_text",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
-            "keyboard_key",
         ),
     ];
     let mut action_ids = Vec::new();
@@ -2356,6 +2331,64 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
                 .as_str()
                 .expect("Computer tool result should identify its Room Action")
                 .to_string(),
+        );
+    }
+
+    // MP-11 R1/R2: agent mutations with no protection fence are refused on
+    // the real home/worker route; approved Vault above and ordinary input remain.
+    for (tool, arguments) in [
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
+        ),
+        (
+            "slice_clipboard_write",
+            json!({"text":"Clipboard Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"hold","key":"a","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"hold","x":120,"y":160,"button":"left","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":120,"y":160,"button":"middle"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"CTRL+v","repeat":2}),
+        ),
+    ] {
+        let error = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments)
+            .await
+            .expect_err("protected agent mutation must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("user_domain_sensitive_requires_focus"),
+            "{error}"
         );
     }
 
@@ -2393,16 +2426,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         action_count_before_invalid,
         "rejected provider input must not enter the home Action ledger"
     );
-    for (action_id, expected_kind) in action_ids.iter().zip([
-        "pointer_move",
-        "pointer_click",
-        "pointer_click",
-        "pointer_drag",
-        "pointer_scroll",
-        "clipboard_write",
-        "keyboard_text",
-        "keyboard_key",
-    ]) {
+    assert_eq!(action_ids.len(), 2);
+    for (action_id, expected_kind) in action_ids.iter().zip(["pointer_move", "pointer_scroll"]) {
         let action = home_environment
             .actions
             .iter()
@@ -2418,39 +2443,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             crate::session::EnvironmentActionState::Completed
         );
     }
-    let keyboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[6])
-        .expect("keyboard text Action");
-    assert_eq!(
-        keyboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardText {
-            utf8_byte_count: 14,
-            character_count: 8,
-        })
-    );
-    let key = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[7])
-        .expect("keyboard key Action");
-    assert_eq!(
-        key.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
-    );
-    let clipboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[5])
-        .expect("clipboard write Action");
-    assert_eq!(
-        clipboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::ClipboardWrite {
-            utf8_byte_count: 24,
-            character_count: 18,
-        })
-    );
     let environment_debug = format!("{home_environment:?}");
     assert!(
         !environment_debug.contains("Grüße 世界")
@@ -2472,13 +2464,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         concat!(
             "computer-secret-input-ok\n",
             "move 120 160\n",
-            "pointer-click 220 260 right 1\n",
-            "pointer-click 320 360 left 2\n",
-            "pointer-drag 120 160 720 560 middle\n",
             "pointer-scroll 640 400 -3 5\n",
-            "computer-clipboard-write-stdin|Clipboard Grüße 世界\n",
-            "computer-type-stdin|Grüße 世界\n",
-            "computer-key-stdin 3|ctrl+shift+p\n",
         ),
         "provider Computer tools must use the shared physical input adapter",
     );

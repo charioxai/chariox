@@ -55,6 +55,8 @@ pub struct GetSliceDisplayEndpointRequest {
     pub attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewer_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_display: Option<crate::slice::RoomDisplayOffer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -721,7 +721,14 @@ export class BrowserCdpClient {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          try { return await performBrowserAction(options); } finally { finishBrowserFill(connection, target); }
+          // MP-11: bind the completed value before releasing in-flight coverage.
+          // A failed action still fingerprints whatever it inserted; an
+          // unprovable completion keeps the fill pending (covered).
+          let result;
+          try { result = await performBrowserAction(options); }
+          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+          await finishBrowserFill(connection, target);
+          return result;
         }
         return performBrowserAction(options);
       });

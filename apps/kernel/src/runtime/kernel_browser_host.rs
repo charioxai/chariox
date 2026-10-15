@@ -39,6 +39,7 @@ struct HostState {
 pub(crate) enum KernelBrowserCapability {
     Browser,
     Notes,
+    Computer,
 }
 
 /// Internal admission bound to one user, agent and retained grant epoch.
@@ -402,6 +403,9 @@ impl KernelBrowserHost {
         params: Value,
         policy: Value,
     ) -> Result<Value, crate::error::HostFailure> {
+        if method == "host.computer" {
+            return self.computer_request(user, admission, params, policy);
+        }
         if admission.is_some_and(|admission| admission.user != user) {
             return Err("MD-3: browser admission belongs to another user".into());
         }
@@ -538,6 +542,24 @@ impl KernelBrowserHost {
         backend.protect_host(policy)?;
         self.check_admission(admission)?;
         let model = self.actor_model(user)?;
+        // MP-08/MP-11: display requests on a desktop video subscription renew
+        // its viewer lease; an unsubscribe ends it (ownership then retires).
+        if method == "host.browser" {
+            let subscription = params["display_subscription_id"]
+                .as_str()
+                .or_else(|| params["subscription_id"].as_str());
+            if let Some(subscription) = subscription {
+                let now = std::time::Instant::now();
+                let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+                match params["op"].as_str() {
+                    Some("unsubscribe") => model.end_desktop_viewer(subscription, now),
+                    Some("screenshot" | "display_attach") => {
+                        model.renew_desktop_viewer(subscription, now)
+                    }
+                    _ => {}
+                }
+            }
+        }
         if method == "host.browser" && params["op"] == "input" && params["binding_id"].is_string() {
             // MP-11: resolve the owner-issued crop before the SAME actor ledger.
             // Chrome's owner arbiter observes the active page; no client Tab
@@ -740,6 +762,27 @@ impl KernelBrowserHost {
             if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }
+            // MP-08/MP-10/MP-11: update the existing desktop owner lease only
+            // after protected host admission succeeds; Browser streams have
+            // no desktop owner lease. Never retire ownership between IDs.
+            if method == "host.browser" {
+                if let (Some(actor), Some(old)) = (
+                    request_params["observed_by"].as_str(),
+                    request_params["subscription_id"].as_str(),
+                ) {
+                    let now = std::time::Instant::now();
+                    if request_params["op"] == "display_suspend" {
+                        ledger.suspend_desktop_viewer(actor, old, now)?;
+                    } else if request_params["op"] == "display_resume"
+                        && payload["source"]["kind"] == "desktop"
+                    {
+                        let new = payload["subscription_id"]
+                            .as_str()
+                            .ok_or("MP-11: invalid resumed desktop binding")?;
+                        ledger.resume_desktop_viewer(actor, old, new, now)?;
+                    }
+                }
+            }
             if request_params["op"] == "open" {
                 if let Some(tab) = payload["tab_id"].as_str() {
                     ledger.opened_tab(browser_actor(admission, &request_params), tab);
@@ -889,11 +932,10 @@ impl KernelBrowserHost {
             .release(actor_id, tab, generation)
     }
     pub(crate) fn actor_snapshot(&self, user: &str) -> Result<Value, String> {
-        Ok(self
-            .actor_model(user)?
-            .lock()
-            .map_err(|_| "MD-3: actor lock poisoned")?
-            .snapshot())
+        let model = self.actor_model(user)?;
+        let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        Ok(model.snapshot())
     }
 
     pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {
@@ -909,6 +951,26 @@ impl KernelBrowserHost {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .disconnect(actor);
+        }
+        // Retire only this terminal's persistent native input/targets. Cleanup
+        // is serialized behind any cancelled request and never starts a desktop.
+        let backend = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .browsers
+            .get(user)
+            .cloned();
+        let actor = actor.to_string();
+        if let Some(backend) = backend {
+            std::thread::spawn(move || {
+                if let Ok(mut backend) = backend.lock() {
+                    let _ = backend.host_request(
+                        "host.computer.retire",
+                        serde_json::json!({"observer":actor}),
+                    );
+                }
+            });
         }
     }
 
@@ -1155,6 +1217,42 @@ mod tests {
             .is_err());
     }
     #[test]
+    fn mp11_explicit_desktop_grant_preserves_focus_and_cancels_admissions() {
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/leased-computer"));
+        host.set_focus("owner", Some("local-agent"));
+        host.grant_desktop("owner", "leased-agent", "desktop");
+        assert_eq!(host.focused_agent("owner").as_deref(), Some("local-agent"));
+        assert!(!host.is_loaded("owner", "leased-agent"));
+        assert!(host.load("owner", "leased-agent").is_err());
+        let admission = host
+            .admit_for("owner", "leased-agent", KernelBrowserCapability::Computer)
+            .unwrap();
+        assert!(host
+            .claim_resource(
+                Some(&admission),
+                UserDomainResource::Desktop {
+                    surface_id: "desktop".into()
+                },
+                false
+            )
+            .is_ok());
+        assert!(host
+            .claim_resource(
+                Some(&admission),
+                UserDomainResource::Desktop {
+                    surface_id: "foreign".into()
+                },
+                false
+            )
+            .is_err());
+        host.revoke_agent("leased-agent");
+        host.grant_desktop("owner", "leased-agent", "desktop");
+        assert!(
+            host.check_admission(Some(&admission)).is_err(),
+            "MP-11: regrant cannot revive a queued old action"
+        );
+    }
+    #[test]
     fn mdaccess_focus_switch_keeps_existing_grant_and_admission() {
         let host = KernelBrowserHost::new(PathBuf::from("/unused/mdaccess"));
         host.set_focus("owner", Some("waiting-agent"));
@@ -1305,3 +1403,8 @@ mod native_input_tests;
 mod access;
 #[cfg(test)]
 mod tabs_tests;
+
+#[cfg(test)]
+mod computer_tests;
+
+mod computer;

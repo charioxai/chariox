@@ -48,6 +48,8 @@ const connection = {
       if(params.expression.includes('installMirrorObserver'))return {result:{value:true}};
       return { result: { value: false } };
     }
+    // MP-08/MP-11: popup creation evidence installs its isolated observer.
+    if (['Runtime.enable', 'Runtime.addBinding', 'Page.addScriptToEvaluateOnNewDocument'].includes(method)) return {};
     if (method === 'Input.dispatchKeyEvent') return {};
     if (method === 'Input.insertText') return {};
     throw new Error(`MD-N5: unexpected fixture CDP method ${method}`);
@@ -60,6 +62,7 @@ const host = new KernelBrowserHost(process.argv[3], {
     reconcile: async () => ({ tabs: [...pages].map(([target_id, tab]) => ({ target_id, title: 'MD-N5 fixture', ...tab })) }),
     navigate: async ({ target_id, url }) => pages.set(target_id, { url, document_id: `doc-${++revision}` }),
     resolvePageTarget: async target => ({ connection, sessionId: target }),
+    ensureTargetSession: async (_connection, target) => target,
     ensureFocusWorld: async () => ({contextId:42}),
     inputCapture: { hold: async () => async () => {}, run: async (_, __, operation) => operation() },
   }),

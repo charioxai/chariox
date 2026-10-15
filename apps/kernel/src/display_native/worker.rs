@@ -20,6 +20,10 @@ struct Config {
     width: i32,
     height: i32,
     pool: PathBuf,
+    /// MP-08/MP-11: read the kernel-owned desktop root instead of an owned
+    /// browser window; the kernel masks every frame before encode.
+    #[serde(default)]
+    desktop: bool,
     /// MP-08/MP-10/MP-11: private kernel-resolved owned-window crop.
     #[serde(default)]
     window_region: Option<WindowRegion>,
@@ -36,7 +40,8 @@ struct WindowRegion {
 }
 impl Config {
     fn valid(&self) -> bool {
-        if self.pid <= 1 || !self.pool.is_absolute() {
+        if self.pid <= 1 || !self.pool.is_absolute() || self.desktop && self.window_region.is_some()
+        {
             return false;
         }
         match &self.window_region {
@@ -301,6 +306,9 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
+    let owner = if config.desktop { 0 } else { config.pid };
+    // MP-08/MP-10: the existing owned-desktop environment presents the root.
+    let automatic = i32::from(std::env::var("CHARIOX_OWNED_VIRTUAL_DISPLAY").as_deref() == Ok("1"));
     super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
@@ -330,7 +338,7 @@ pub(super) fn run() -> Result<(), String> {
                     w,
                     h,
                 ),
-                None => ffi::cx_capture_open(config.pid as libc::c_ulong, w, h),
+                None => ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic),
             }
         });
         if !capture.0.is_null() {
@@ -628,9 +636,15 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
-                    codec_tx
-                        .try_send((q, slot.codec_lease(), epoch()))
-                        .map_err(|_| "MP-11: native codec queue unavailable")?;
+                    // MP-10 (#933 review 7): a full codec queue refuses this
+                    // encode softly (Node skips one sample); never fatal.
+                    match codec_tx.try_send((q, slot.codec_lease(), epoch())) {
+                        Ok(()) => {}
+                        Err(std::sync::mpsc::TrySendError::Full((q, _, _))) => {
+                            reply(q.id, json!({"busy": true}))?
+                        }
+                        Err(_) => return Err("MP-11: native codec queue unavailable".into()),
+                    }
                 }
                 Command::Exact { exact: q } => {
                     let id = q.id;
@@ -647,7 +661,7 @@ pub(super) fn run() -> Result<(), String> {
                             |reason: String| json!({"shift_refused": true, "reason": reason});
                         match locked()?.shift(q, slot) {
                             Ok(job) => {
-                                if exact.submit_job(id, job).is_err() {
+                                if !matches!(exact.submit_job(id, job), Ok(true)) {
                                     reply(id, refused("MP-10: native exact queue busy".into()))?;
                                 }
                             }
@@ -662,8 +676,8 @@ pub(super) fn run() -> Result<(), String> {
                                 |_| json!({"error":"MP-11: exact preparation failed"}),
                             );
                             reply(id, value)?;
-                        } else {
-                            exact.submit(id, plan)?;
+                        } else if !exact.submit(id, plan)? {
+                            reply(id, json!({"busy": true}))?;
                         }
                     }
                 }

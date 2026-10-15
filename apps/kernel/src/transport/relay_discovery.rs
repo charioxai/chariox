@@ -685,6 +685,11 @@ async fn query_relay_once_body(
                         request_id: response_id,
                         ..
                     } if response_id == &request_id => Ok(response),
+                    // MP-08/MP-11: the relay closes refused metadata admission.
+                    RelayEnvelope::Close { reason } => Err(DaemonError::LocalTransport {
+                        operation: "relay metadata admission",
+                        message: format!("relay refused metadata request: {reason}"),
+                    }),
                     _ => Err(DaemonError::LocalTransport {
                         operation: "decode relay metadata response",
                         message: "relay metadata response does not match request".to_string(),
@@ -764,6 +769,40 @@ mod tests {
 
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn metadata_query_reports_the_relay_refusal_reason() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::Close {
+                        reason: "relay token action not allowed".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let _ = timeout(Duration::from_secs(1), socket.next()).await;
+        });
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+            .await
+            .expect_err("a refused metadata request is an error");
+        server.await.unwrap();
+        assert!(
+            error.to_string().contains("relay token action not allowed"),
+            "MP-08: the relay refusal must not be reported as a mismatched reply: {error}"
+        );
+    }
 
     #[tokio::test]
     async fn metadata_query_rejects_response_for_another_request() {
