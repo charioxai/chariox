@@ -43,6 +43,7 @@ impl KernelRuntimeOwnedState {
         expected_provider_run_id: Option<&str>,
         allow_queue: bool,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let source_attachment =
@@ -165,6 +166,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
+        timing.mark("validate_and_mutate");
         self.mirror_prompt_owner_agent_state(
             &session_id,
             &outcome_agent_id,
@@ -172,6 +174,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
 
+        timing.mark("durable_commit");
         let prompt_sent_at_ms =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
                 self.append_started_user_prompt_history(
@@ -180,6 +183,7 @@ impl KernelRuntimeOwnedState {
                     prompt,
                     started_at_ms,
                 )?;
+                timing.mark("history");
                 let provider_run_id =
                     provider_run_id
                         .as_deref()
@@ -199,6 +203,7 @@ impl KernelRuntimeOwnedState {
             } else {
                 None
             };
+        timing.mark("git_snapshot");
         let mut dispatch = None;
         match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => {
@@ -258,6 +263,8 @@ impl KernelRuntimeOwnedState {
         } else {
             self.session_snapshot_without_projection_update(&session_id)?
         };
+        timing.mark("projection");
+        timing.finish("prompt_admission", &outcome_agent_id);
         Ok(Some(crate::app::KernelPromptSubmission {
             outcome,
             session,

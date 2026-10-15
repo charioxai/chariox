@@ -179,7 +179,9 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
         // writer acknowledgement, making that ordering cancellation-safe. The streams
         // mutex is deliberately released before persistence and bounded retries so
         // replay and unrelated stream inspection do not stall on storage failures.
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
+        timing.mark("order_wait");
         let write_permit = persistence
             .write_tx
             .reserve()
@@ -209,6 +211,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             reply_tx,
         });
         drop(streams);
+        timing.mark("prepare");
 
         let (result, append_order_guard) = match reply_rx.await {
             Ok(reply) => reply,
@@ -227,6 +230,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             }
         };
 
+        timing.mark("writer_wait");
         let mut streams = self.streams.lock().await;
         persistence.reconcile_completed_events(&mut streams);
         if let Err(error) = result {
@@ -235,14 +239,18 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             return Err(error);
         }
         let dropped = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        timing.mark("retention");
         // Rate-limited compaction only captures the retained ids under the guard;
         // the file is filtered into a side file off the append path.
         if !dropped.is_empty() && persistence.should_compact_now() {
             persistence.start_compaction(retained_event_ids(&streams));
         }
+        timing.mark("compaction_snapshot");
         drop(streams);
         drop(append_order_guard);
         release_dropped_events(dropped);
+        timing.mark("release");
+        timing.finish("event_append", &event_id.to_string());
         Ok(logged)
     }
 
@@ -752,13 +760,17 @@ impl EventFileWriter {
     }
 
     fn append(&mut self, payload: &[u8]) -> io::Result<()> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         self.open()?;
+        timing.mark("open");
         let complete_bytes = self.file_bytes.load(Ordering::Acquire);
         let file = self.file.as_mut().expect("event file is open");
         match file.write_all(payload) {
             Ok(()) => {
                 self.file_bytes
                     .store(complete_bytes + payload.len() as u64, Ordering::Release);
+                timing.mark("write");
+                timing.finish("event_file_append", "");
                 Ok(())
             }
             Err(error) => {
@@ -770,6 +782,7 @@ impl EventFileWriter {
     }
 
     fn swap_compacted(&mut self, side_path: &Path, compacted_prefix_bytes: u64) -> io::Result<()> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let complete_bytes = self.file_bytes.load(Ordering::Acquire);
         if complete_bytes < compacted_prefix_bytes {
             return Err(io::Error::other("event file shrank during compaction"));
@@ -782,9 +795,13 @@ impl EventFileWriter {
             &mut side,
         )?;
         let compacted_bytes = side.metadata()?.len();
+        timing.mark("copy_tail");
         fs::rename(side_path, &self.path)?;
+        timing.mark("rename");
         self.file = None;
+        timing.mark("close_old_file");
         self.file_bytes.store(compacted_bytes, Ordering::Release);
+        timing.finish("event_file_swap", "");
         Ok(())
     }
 }

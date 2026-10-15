@@ -54,3 +54,40 @@ pub(crate) fn record_durable_commit(records: usize, batch_wait_us: u128, commit_
             "committed_at_ms": crate::session::unix_epoch_ms()}),
     );
 }
+
+/// Phase clocks are dormant unless performance diagnostics are enabled.
+/// Callers supply only fixed labels and public operation/event identifiers.
+pub(crate) struct Phases {
+    previous: Option<std::time::Instant>,
+    phases: Vec<(&'static str, u128)>,
+}
+
+impl Phases {
+    pub(crate) fn new() -> Self {
+        Self {
+            previous: enabled().then(std::time::Instant::now),
+            phases: Vec::new(),
+        }
+    }
+
+    pub(crate) fn mark(&mut self, phase: &'static str) {
+        if let Some(previous) = self.previous.as_mut() {
+            let now = std::time::Instant::now();
+            self.phases
+                .push((phase, now.duration_since(*previous).as_micros()));
+            *previous = now;
+        }
+    }
+
+    pub(crate) fn finish(self, scope: &'static str, operation_id: &str) {
+        if self.previous.is_none() {
+            return;
+        }
+        let phases: std::collections::BTreeMap<_, _> = self.phases.into_iter().collect();
+        crate::logging::info_with_fields(
+            "daemon.phase_timing",
+            "kernel path phases",
+            serde_json::json!({"scope": scope, "operation_id": operation_id, "phases_us": phases}),
+        );
+    }
+}

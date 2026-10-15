@@ -847,3 +847,54 @@ async fn persistent_event_store_compaction_does_not_block_appends() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn persistent_event_file_is_open_before_first_append() {
+    let root = scratch_root("warm-event-file");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let log =
+        EventLog::<String>::new_with_persistent_event_store(16, root.join("counter.json"), &path)
+            .unwrap();
+    assert!(
+        path.is_file(),
+        "startup must open the event file before admission begins"
+    );
+    // Renaming an already opened file must not force the first append to do
+    // path lookup, directory creation or torn-tail recovery.
+    let moved = root.join("opened.jsonl");
+    std::fs::rename(&path, &moved).unwrap();
+    log.append("a", "first".to_string()).await.unwrap();
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_to_string(&moved).unwrap().lines().count(), 1);
+    drop(log);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
+    use std::sync::{atomic::AtomicU64, Arc};
+    let root = scratch_root("retire-event-inode");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut writer = super::EventFileWriter {
+        path: path.clone(),
+        file: None,
+        file_bytes: Arc::new(AtomicU64::new(0)),
+    };
+    writer.append(b"first\nsecond\n").unwrap();
+    std::fs::write(&side, b"second\n").unwrap();
+    let retired = writer.swap_compacted(&side, 13).unwrap();
+    assert!(
+        writer.file.is_some(),
+        "the next append must reuse the replacement descriptor"
+    );
+    writer.append(b"third\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second\nthird\n");
+    // On the fixed path, this owns the unlinked inode until the compactor
+    // retires it; the writer never performs its last close on an append.
+    drop(retired);
+    drop(writer);
+    let _ = std::fs::remove_dir_all(root);
+}
