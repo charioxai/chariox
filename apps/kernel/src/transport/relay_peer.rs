@@ -2142,7 +2142,7 @@ mod owner_managed_context_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);

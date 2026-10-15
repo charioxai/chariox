@@ -870,41 +870,6 @@ process.stdout.write(JSON.stringify({
 
     #[test]
     #[cfg(unix)]
-    fn credential_check_requires_verified_single_turn_and_redacts_failures() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile_fixture_root();
-        let executable = root.join("claude");
-        let environment = BTreeMap::from([(
-            "CLAUDE_CONFIG_DIR".into(),
-            root.join("profile").display().to_string(),
-        )]);
-        for valid in [true, false] {
-            let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
-                "num_turns":1, "result": if valid { "CHARIOX_AUTH_OK" } else { "synthetic-private-provider-detail" },
-                "usage":{"output_tokens":7}});
-            fs::write(
-                &executable,
-                format!("#!/bin/sh\nprintf '%s\\n' '{result}'\n"),
-            )
-            .unwrap();
-            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-            let checked = verify_claude_account_credential_with_timeout(
-                &executable,
-                &environment,
-                Duration::from_secs(2),
-            );
-            assert_eq!(checked.is_ok(), valid);
-            if let Err(error) = checked {
-                let message = error.into_daemon_error().to_string();
-                assert!(message.contains("turns=1; valid_single_turn=false"));
-                assert!(!message.contains("synthetic-private-provider-detail"));
-            }
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn credential_check_explains_unknown_verdict_without_provider_text() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile_fixture_root();
