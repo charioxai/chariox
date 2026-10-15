@@ -275,6 +275,23 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
+    /// Client projections omit the kernel's completion assessment prompt.
+    pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
+        let internal = |prompt: &PromptQueueItem| {
+            prompt.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+        };
+        for state in self.prompt_states.values_mut() {
+            if state.active_prompt.as_ref().is_some_and(internal) {
+                state.active_prompt = None;
+            }
+            state.queued_prompts.retain(|prompt| !internal(prompt));
+        }
+        self.prompt_states
+            .retain(|_, state| state.active_prompt.is_some() || !state.queued_prompts.is_empty());
+        // Scheduling stays as the kernel computed it; only the projection changes.
+        self.refresh_prompt_projection(focused_agent_id);
+    }
+
     pub(in crate::session) fn retain_agent_ids(
         &mut self,
         agent_ids: &std::collections::BTreeSet<String>,
@@ -384,6 +401,39 @@ mod tests {
 
     fn prompt(id: &str, agent_id: &str, status: PromptStatus) -> PromptQueueItem {
         PromptQueueItem::new(id, "attachment-1", agent_id, "prompt", status)
+    }
+
+    // MP-08 / MP-10 / MP-11: client projections never carry the kernel's own
+    // completion assessment prompt (internal protocol text).
+    #[test]
+    fn client_projection_hides_only_the_completion_assessment_prompt() {
+        let mut runtime = PromptRuntimeState::default();
+        let check = prompt("goal-check-1", "agent-1", PromptStatus::Running)
+            .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck);
+        runtime.mirror_agent_prompt_state(
+            "agent-1",
+            Some(check),
+            VecDeque::from([prompt("prompt-queued", "agent-1", PromptStatus::Queued)]),
+            Some("agent-1"),
+        );
+        runtime.mirror_agent_prompt_state(
+            "agent-2",
+            Some(
+                prompt("goal-check-2", "agent-2", PromptStatus::Running)
+                    .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck),
+            ),
+            VecDeque::new(),
+            Some("agent-1"),
+        );
+        runtime.hide_internal_prompts(Some("agent-1"));
+
+        assert!(runtime.active_prompt_for_agent("agent-1").is_none());
+        assert!(runtime.active_prompt().is_none());
+        assert_eq!(runtime.queued_prompts().len(), 1);
+        assert_eq!(runtime.queued_prompts()[0].id(), "prompt-queued");
+        assert!(runtime.prompt_states().get("agent-2").is_none());
+        // Scheduling is unchanged: the kernel still knows the agent is busy.
+        assert_eq!(runtime.scheduler_state(), SchedulerState::Waiting);
     }
 
     #[test]
