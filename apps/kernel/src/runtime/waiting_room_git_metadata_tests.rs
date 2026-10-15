@@ -136,3 +136,42 @@ fn waiting_room_metadata_retains_labels_and_coalesces_a_stalled_refresh() {
     );
     std::env::remove_var("CHARIOX_WORKSPACE_METADATA_STALL_MARKER");
 }
+
+// MP-08 / MP-10: exercise both real public projection cache fast paths.
+#[cfg(unix)]
+#[test]
+fn review2018_cached_snapshots_retry_initial_timeouts_and_capacity_skips() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    use crate::runtime::waiting_room_public_projection::{build_waiting_room_public_snapshot_from_cached_shared, WaitingRoomSessionSummaryProjectionStore};
+    let root = repository();
+    let state = crate::test_support::TestWorktree::new("review2018-label-state");
+    let path = root.path().to_str().unwrap();
+    let session = Arc::new(crate::session::RuntimeSession::new("session", None, path, path, "machine", "daemon"));
+    let store = WaitingRoomSessionSummaryProjectionStore::default();
+    let events = crate::runtime::metaagent_event::MetaagentEventStore::default();
+    let snapshot = || build_waiting_room_public_snapshot_from_cached_shared(
+        &[session.clone()], 1, &store, &events, 0, &Default::default(), &[], &[], vec![], false, None,
+        crate::local::RelayStatus { runtime_process_identity: None, capabilities: vec![], configured: false, connected: false, relay_url: None, relay_token_configured: false, daemon_id: "daemon".into(), daemon_alias: None, machine_id: "machine".into(), machine_alias: None }, vec![], vec![], vec![], 1, crate::session::DEFAULT_LOCAL_USER_ID).unwrap();
+    let marker = state.path().join("worker.pid");
+    std::env::set_var("CHARIOX_WORKSPACE_METADATA_STALL_MARKER", &marker);
+    let first = snapshot();
+    assert_eq!(first.sessions[0].workspace_label, None);
+    let until = Instant::now() + Duration::from_secs(8);
+    loop {
+        if marker.exists() && cache().entries.lock().unwrap().values().all(|e| !e.refreshing) { break; }
+        assert!(Instant::now() < until, "initial owned workers did not settle");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The real worker has timed out. Advance only the cache TTL, then poll
+    // exactly the same sessions/revisions/auxiliary data as an idle client.
+    std::env::remove_var("CHARIOX_WORKSPACE_METADATA_STALL_MARKER");
+    for e in cache().entries.lock().unwrap().values_mut() { e.expires = Instant::now(); }
+    let until = Instant::now() + Duration::from_secs(8);
+    loop {
+        let current = snapshot();
+        if current.sessions[0].workspace_label.as_deref() == Some("charioxai/chariox") && current.sessions[0].worktree_label.as_deref() == Some("main") && current.launch_target.is_some() { break; }
+        assert!(Instant::now() < until, "cached project_snapshot stranded expired or capacity-skipped labels");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

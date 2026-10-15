@@ -293,6 +293,8 @@ fn review0634_python_manifest_constraints_reach_save_and_check() {
             EnvironmentObservationStatus::Conflict,
         ),
         (format!("=={minor}.*"), EnvironmentObservationStatus::Ready),
+        (format!(">{minor}"), EnvironmentObservationStatus::Ready),
+        (format!("<={minor}"), EnvironmentObservationStatus::Conflict),
         ("==2.7.*".to_owned(), EnvironmentObservationStatus::Conflict),
         (
             "~=3.12".to_owned(),
