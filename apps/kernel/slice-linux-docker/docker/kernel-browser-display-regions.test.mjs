@@ -6,7 +6,7 @@ function fixture(kind='region') {
  const tab={tab_id:'t',target_id:'target',document_id:'doc'},calls=[];
  let alive=true;
  const lease={binding_id:'opaque',tab_id:'t',generation:2,document_id:'doc',sequence:3,input_epoch:3,
-  rect:{x:10,y:20,width:100,height:50},device_scale_factor:2,
+  rect:{x:10,y:20,width:100,height:50},element_offset:{x:0,y:0},device_scale_factor:2,
   isAlive:()=>alive,isCurrent:async()=>{calls.push('live');return alive;},close:async()=>{alive=false;},
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
  const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,scale:2,isCurrent:()=>alive};
@@ -112,4 +112,34 @@ test('MP-11 page region refuses a missing or changed owner native active-tab fen
  const g=fixture();await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture});
  const s=[...g.host.displays.values()][0];g.host.arbiter.isActiveTab=async()=>false;
  assert.equal(await s.regionCurrent(),false);await assert.rejects(regionInput(g.host,{op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a'));await s.close();
+});
+
+for (const scale of [1,2]) test(`MP-08/MP-10/MP-11 clipped page placement includes inward rounding at DPR${scale}`,async()=>{
+ const f=fixture();f.binding.scale=scale;f.lease.device_scale_factor=scale;
+ f.lease.rect={x:10.2,y:20.2,width:100.1,height:50.1};f.lease.element_offset={x:12.25,y:30.5};
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=[...f.host.displays.values()][0];
+ try{
+  assert.deepEqual(r.region_offset,{x:12.25+Math.ceil(10.2*scale)/scale-10.2,y:30.5+Math.ceil(20.2*scale)/scale-20.2});
+  assert.deepEqual(stream.regionPlacement,r.region_offset);
+  // Placement is captured at admission, never taken from later lease mutation.
+  f.lease.element_offset.x=999;assert.equal(r.region_offset.x,stream.regionPlacement.x);assert(r.region_offset.x<14);
+  let point;f.lease.resolveInput=async p=>{point=p;return {guard:async()=>{}}};
+  f.host.dispatchRegionInput=async()=>{};
+  await regionInput(f.host,{tab_id:'t',generation:2,document_id:'doc',binding_id:r.binding_id,sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a');
+  assert.equal(point.x,1+stream.regionOffset.x,'element clipping must not be added twice to input');
+  assert.equal(point.y,2+stream.regionOffset.y);
+ }finally{await stream.close();}
+});
+test('MP-08/MP-10/MP-11 unclipped page emits zero placement; Chrome band has none',async()=>{
+ for(const kind of ['region','browser_chrome']){
+  const f=fixture(kind),r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+  try{if(kind==='region')assert.deepEqual(r.region_offset,{x:0,y:0});else assert(!Object.hasOwn(r,'region_offset'));}
+  finally{await [...f.host.displays.values()][0].close();}
+ }
+});
+for(const value of [undefined,{x:-1,y:0},{x:0,y:NaN},{x:Infinity,y:0}])test(`MP-11 invalid private element offset refuses before native capture ${JSON.stringify(value)}`,async()=>{
+ const f=fixture();f.lease.element_offset=value;
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));
+ assert.equal(f.host.displays.size,0);assert(!f.calls.some(x=>x?.surface));assert.equal(f.lease.isAlive(),false);
 });

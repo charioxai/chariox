@@ -57,6 +57,7 @@ export class DisplaySessions {
         generation:source.generation,width:source.width,height:source.height}}:{}),
       ...(stream.source_kind==='region'?{source_kind:'region',binding_id:stream.binding_id,
         document_id:stream.regionLease.document_id,sequence:stream.regionLease.sequence,
-        css_width:stream.css_width,css_height:stream.css_height}:{})};
+        css_width:stream.css_width,css_height:stream.css_height,
+        ...(stream.regionPlacement?{region_offset:stream.regionPlacement}:{})}:{})};
   }
 }
