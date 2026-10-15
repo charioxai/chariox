@@ -91,7 +91,10 @@ pub fn submit_codex_prompt(
             }
         }
     }
-    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
+    let mut input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
+    if let Some(delivery) = &envelope.skill_delivery {
+        input.extend(delivery.codex_input.iter().cloned());
+    }
     let active_steering_turn_id = envelope.steering.then(|| {
         state
             .active_turn_id

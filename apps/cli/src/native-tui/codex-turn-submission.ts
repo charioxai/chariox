@@ -2,10 +2,12 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
-import { cancelActivePromptRequest, submitPromptRequest } from "../ipc-requests.js"
+import { cancelActivePromptRequest } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
-import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+import { extractCodexAttachments, extractCodexPrompt, extractCodexSkillNames } from "./codex-prompt.js"
+import { skillsV2Request } from "@chariox/kernel-client/ipc-skills-v2-requests"
+import { codexSkillSelections, nativeSkillCatalog } from "./skills-v2.js"
 import { bindCodexDisplayTurn } from "./codex-conversation-controls.js"
 
 export type CodexNativeBindingState = {
@@ -39,12 +41,16 @@ export async function handleCodexNativeTurnStart(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    const response = await options.client.send<{ PromptSubmitted: { outcome: {
+    const names = extractCodexSkillNames(message.params)
+    const selections = names.length ? codexSkillSelections(names,
+      await nativeSkillCatalog(options.client, options.sessionId, options.agentId)) : []
+    const response = await options.client.send<{ SkillsV2: { result: { kind: string, outcome: {
       Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } },
-    } } }>(
-      submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
+    } } } }>(
+      skillsV2Request({ action: "submit", session_id: options.sessionId, attachment_id: options.attachmentId,
+        target_agent_id: options.agentId, prompt, attachments, selections }),
     )
-    const outcome = response.PromptSubmitted?.outcome
+    const outcome = response.SkillsV2?.result.kind === "submitted" ? response.SkillsV2.result.outcome : undefined
     const promptId = (outcome?.Started ?? outcome?.Queued)?.prompt.id
     const threadId = message.params?.threadId
     if (!promptId || typeof threadId !== "string") throw new Error("kernel did not return a native prompt identity")

@@ -52,6 +52,9 @@ pub struct RuntimeProviderRun {
     #[serde(skip)]
     requested_provider_env_remove: Option<Vec<String>>,
     working_directory: Option<PathBuf>,
+    /// MP-08 / MP-10 / MP-11: actual launch discovery inputs, never auth or wire.
+    #[serde(skip)]
+    native_skill_discovery_environment: BTreeMap<String, String>,
     structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_mcp_server_url: Option<String>,
@@ -144,6 +147,11 @@ impl RuntimeProviderRun {
     ) -> Self {
         let now = unix_epoch_ms();
         let preparation_base_path = provider_preparation_base_path(&launch_result);
+        let native_skill_discovery_environment =
+            super::skill_inventory::capture_launch_skill_environment(
+                &launch_result.pty_env,
+                &launch_result.pty_env_remove,
+            );
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -168,6 +176,7 @@ impl RuntimeProviderRun {
             pty_env_remove: launch_result.pty_env_remove,
             requested_provider_env_remove: Some(request.provider_env_remove.clone()),
             working_directory: launch_result.working_directory,
+            native_skill_discovery_environment,
             structured_endpoint: launch_result.structured_endpoint,
             runtime_mcp_server_url: request
                 .runtime_mcp_binding
@@ -246,6 +255,7 @@ impl RuntimeProviderRun {
             pty_env_remove: Vec::new(),
             requested_provider_env_remove: None,
             working_directory: None,
+            native_skill_discovery_environment: BTreeMap::new(),
             structured_endpoint: None,
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
@@ -384,6 +394,10 @@ impl RuntimeProviderRun {
     pub fn pty_env_remove(&self) -> &[String] {
         &self.pty_env_remove
     }
+    pub(crate) fn native_skill_discovery_environment(&self) -> &BTreeMap<String, String> {
+        &self.native_skill_discovery_environment
+    }
+
     pub fn working_directory(&self) -> Option<&PathBuf> {
         self.working_directory.as_ref()
     }
@@ -569,6 +583,8 @@ impl RuntimeProviderRun {
             &path,
         )?;
         self.pty_args = pty_args;
+        self.native_skill_discovery_environment
+            .insert("HOME".to_string(), home.clone());
         self.pty_env.insert("HOME".to_string(), home);
         self.pty_env.insert("PATH".to_string(), path);
         self.touch_activity();

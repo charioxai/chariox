@@ -101,6 +101,10 @@ pub(crate) struct PromptEnvelope {
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) manifest: PromptManifest,
     pub(crate) steering: bool,
+    /// MP-08 / MP-10 / MP-11: execution-validated native items are runtime-only.
+    /// Clients/peers cannot deserialize provider skill paths into an envelope.
+    #[serde(skip)]
+    pub(crate) skill_delivery: Option<crate::provider::skill_delivery::ProviderSkillDelivery>,
 }
 
 impl PromptEnvelope {
@@ -116,7 +120,24 @@ impl PromptEnvelope {
             attachments,
             manifest,
             steering: false,
+            skill_delivery: None,
         }
+    }
+
+    pub(crate) fn with_skill_delivery(
+        mut self,
+        delivery: crate::provider::skill_delivery::ProviderSkillDelivery,
+    ) -> Self {
+        self.visible_user_prompt = delivery.visible_prompt.clone();
+        if !delivery.hidden_context.is_empty() {
+            if !self.hidden_system_context.is_empty() {
+                self.hidden_system_context.push_str("\n\n");
+            }
+            self.hidden_system_context
+                .push_str(&delivery.hidden_context);
+        }
+        self.skill_delivery = Some(delivery);
+        self
     }
 
     pub(crate) fn with_steering(mut self, steering: bool) -> Self {
