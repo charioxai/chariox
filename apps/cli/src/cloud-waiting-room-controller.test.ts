@@ -110,3 +110,36 @@ test("automatic hydration activity expires when user selection supersedes it", a
   attached = true; assert.equal(guard?.(), false)
   release(); await result
 })
+
+test("BY-03: a directory refusal that ended the login shows the signed-out room, not a directory error", async () => {
+  let signedOut = false, machines: unknown[] = ["stale"], kernels: unknown[] = ["stale"], status = "", reconciled = 0
+  const client = {
+    profile: async () => signedOut ? null : {accountId: "account"},
+    directory: async () => { signedOut = true; throw new Error("signed_out") },
+  } as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => false, setMachines: rows => {machines = rows}, setKernels: rows => {kernels = rows}, setStatus: value => {status = value}, reconcile: () => {reconciled++}})
+  await refresh()
+  assert.deepEqual([machines, kernels, status], [[], [], "ready"])
+  assert.equal(reconciled, 1)
+})
+
+test("a directory failure with the login intact is still a directory error", async () => {
+  let status = ""
+  const client = {profile: async () => ({accountId: "account"}), directory: async () => { throw new Error("offline") }} as unknown as CloudClient
+  const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => false, setMachines: () => {}, setKernels: () => {}, setStatus: value => {status = value}, reconcile: () => {}})
+  await refresh()
+  assert.equal(status, "error")
+})
+
+test("a kernel pivot completing during the error-path profile read leaves the attached kernel's directory alone", async () => {
+  for (const second of [null, {accountId: "account"}]) {
+    let release!: () => void, connected = false, writes = 0, reads = 0
+    const pending = new Promise<void>(resolve => {release = resolve})
+    const client = {profile: async () => { if (++reads === 1) return {accountId: "account"}; await pending; return second }, directory: async () => { throw new Error("signed_out") }} as unknown as CloudClient
+    const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => connected, setMachines: () => {writes++}, setKernels: () => {writes++}, setStatus: value => { if (value !== "loading") writes++ }, reconcile: () => {writes++}})
+    const result = refresh()
+    while (reads < 2) await new Promise(resolve => setTimeout(resolve, 1))
+    connected = true; release(); await result
+    assert.equal(writes, 0)
+  }
+})
