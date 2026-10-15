@@ -436,6 +436,12 @@ export type SessionBinding = {
 }
 
 export type BootstrapDeferredState = {
+  providerLaunch?: {
+    sessionId: string
+    agentId: string | null
+    isPending: () => boolean
+    start: () => Promise<{ providerRun: RuntimeProviderRun | null }>
+  }
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
