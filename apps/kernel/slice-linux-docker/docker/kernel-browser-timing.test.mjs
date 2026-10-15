@@ -63,3 +63,15 @@ test('MP-08/MP-10/MP-11 target attribution preserves sync results and failures',
  assert.equal(events.length,3);for(const e of events){assert.equal(e[0],'host_input_target');assert.equal(e.length,2);assert(Number.isFinite(e[1]))}
  assert(!JSON.stringify(events).includes('private-'));
 });
+
+test('MP-08/MP-10/MP-11 display attribution exposes only a fixed numeric source kind',async()=>{
+ const events=[],gate=Promise.withResolvers(),timing=(...args)=>events.push(args);
+ timing.event=(stage,fields)=>events.push([stage,fields]);
+ const query={method:'host.browser',params:{op:'screenshot',display_subscription_id:'private-binding'}};
+ const host={timing,displays:new Map([['private-binding',{regionTarget:{kind:'region'}}]]),handle:()=>gate.promise};
+ const adapter=timedHostRequests(host,()=>({kind:'bridge'}));
+ adapter.scheduleRequest(query);const result=adapter.handleRequest(query,{});
+ assert.equal(events[0][0],'host_display_queue');gate.resolve('frame');assert.equal(await result,'frame');
+ assert.equal(events[1][0],'host_display');assert.equal(events[1][1].source_kind,2);assert(Number.isFinite(events[1][1].at));
+ assert(!JSON.stringify(events).includes('private-'));
+});
