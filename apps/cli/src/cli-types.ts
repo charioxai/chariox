@@ -428,7 +428,6 @@ export type SessionBinding = {
   session: RuntimeSession
   attachment: RuntimeAttachment
   providerRun: RuntimeProviderRun | null
-  providerLaunchIssue?: "credential_vault_locked" | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]
@@ -448,6 +447,7 @@ export type BootstrapDeferredState = {
     promptHistoryEntries: string[]
     nextHistoryCursor: SessionHistoryCursorState
   }>
+  attachedProviderRun?: Promise<{ sessionId: string; providerRun: RuntimeProviderRun | null; statusLine: string | null }>
 }
 
 export type BootstrapState = {

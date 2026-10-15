@@ -181,8 +181,11 @@ export async function bootstrapSession(
   }
 
   const attachment = await deps.attachToSession(client, session.id, options.clientId)
-  let attachedSession = await deps.getSessionState(client, session.id)
-  const providerSettlement = await settleAttachProviderRun(
+  const attachedSession = await deps.getSessionState(client, session.id)
+  // The kernel may hold the attach-time launch on its own prompt: after a restart a locked
+  // Vault asks for its passphrase. The TUI renders and shows that prompt, so the launch settles after mount.
+  const sessionId = session.id
+  const attachedProviderRun = settleAttachProviderRun(
     attachedSession,
     {
       provider: options.provider ?? "opencode",
@@ -197,39 +200,46 @@ export async function bootstrapSession(
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
       tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
     },
-  )
-  attachedSession = providerSettlement.session
-  const providerRun: RuntimeProviderRun | null = providerSettlement.providerRun
-  if (providerSettlement.action === "skipped") {
-    if (providerSettlement.recoveredRemotePlacement) {
-      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "no_visible_agents") {
-      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "missing_focused_agent") {
-      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "remote_backed_agent") {
-      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "credential_vault_locked") {
-      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-      })
+  ).then((providerSettlement) => {
+    let statusLine: string | null = null
+    if (providerSettlement.action === "skipped") {
+      if (providerSettlement.recoveredRemotePlacement) {
+        deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
+          session_id: sessionId,
+          agent_id: providerSettlement.targetAgent?.id ?? null,
+          worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+        })
+      } else if (providerSettlement.reason === "no_visible_agents") {
+        deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+          session_id: sessionId,
+          focused_agent_id: attachedSession.focused_agent_id,
+        })
+      } else if (providerSettlement.reason === "missing_focused_agent") {
+        deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+          session_id: sessionId,
+          focused_agent_id: attachedSession.focused_agent_id,
+        })
+      } else if (providerSettlement.reason === "remote_backed_agent") {
+        deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+          session_id: sessionId,
+          agent_id: providerSettlement.targetAgent?.id ?? null,
+          worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+        })
+      } else if (providerSettlement.reason === "credential_vault_locked") {
+        deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
+          session_id: sessionId,
+          agent_id: providerSettlement.targetAgent?.id ?? null,
+        })
+        statusLine = "Chariox vault locked. Run /credential vault manage."
+      }
     }
-  }
+    return { sessionId, providerRun: providerSettlement.providerRun, statusLine }
+  }, (error: unknown) => {
+    // A refused or timed-out unlock leaves the session attached; the agent can be relaunched.
+    const message = error instanceof Error ? error.message : String(error)
+    deps.logger?.warn("attach-time provider launch failed", { session_id: sessionId, error: message })
+    return { sessionId, providerRun: null, statusLine: `Agent launch failed: ${message}` }
+  })
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
@@ -249,11 +259,7 @@ export async function bootstrapSession(
     binding: {
       session: hydratedSession,
       attachment,
-      providerRun,
-      providerLaunchIssue: providerSettlement.action === "skipped"
-        && providerSettlement.reason === "credential_vault_locked"
-        ? "credential_vault_locked"
-        : null,
+      providerRun: null,
       createdSession,
       historyEntries: [],
       promptHistoryEntries: [],
@@ -270,6 +276,7 @@ export async function bootstrapSession(
       providerCommandCatalogs: providerCommandCatalogsPromise,
       terminalCommandCatalog: terminalCommandCatalogPromise,
       attachedHistory: attachedHistoryPromise,
+      attachedProviderRun,
     },
   }
 }
