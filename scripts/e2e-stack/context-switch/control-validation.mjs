@@ -13,3 +13,15 @@ export function validateAccountNativeSwitch({before,target,after,primary,seconda
  if(target.accountProfile!==secondary||after.accountProfile!==primary)throw Error('Independent account did not roundtrip');
  if(!before.nativeId||!target.nativeId||!after.nativeId||new Set([before.nativeId,target.nativeId,after.nativeId]).size!==3)throw Error('Independent account transitions must create fresh native sessions');
 }
+
+// MP-08 / MP-10 / MP-11: one dispatch, one new timeout, and the kernel's own clock.
+export function validateBriefDeadline({baseline,events,elapsedMs,submittedAtMs,sessionId,agentId,targetRunId}){
+ if(!sessionId||!agentId||!targetRunId||!Number.isFinite(submittedAtMs))throw Error('Brief dispatch identity is missing');
+ if(events.length<baseline.length||baseline.some((event,index)=>JSON.stringify(event)!==JSON.stringify(events[index])))throw Error('Brief log baseline changed');
+ const matching=events.slice(baseline.length).filter(event=>event.message==="failed to update the agent's handoff brief; the handoff keeps the stored brief"&&event.errorClass==='timeout'&&Number.isFinite(event.atMs)&&event.atMs>=submittedAtMs&&event.fields?.session_id===sessionId&&event.fields?.agent_id===agentId&&event.fields?.target_provider_run_id===targetRunId);
+ if(matching.length!==1)throw Error('Expected one new matching brief timeout for this dispatch');
+ const event=matching[0],elapsed=event.fields.elapsed_ms;
+ if(!Number.isFinite(elapsed)||elapsed<119000||elapsed>125000)throw Error('Brief deadline elapsed evidence must be approximately120s');
+ if(!Number.isFinite(elapsedMs)||elapsedMs<elapsed||elapsedMs>150000)throw Error('Brief did not settle within120s plus the bounded provider recovery/response budget');
+ return event;
+}

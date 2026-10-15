@@ -167,3 +167,13 @@ client and kernel advertisements, then restarts and checks persistence. The base
 491 build must fail the advertisement assertion after successfully setting values.
 This proves the config seam only; it does not classify startup, latency, provider
 handoff, multi-hour or Path-1 acceptance.
+
+MP-08 / MP-10 / MP-11: the standalone self-test gives child tests an owned temporary
+directory under `TMPDIR`, or `~/.chariox/dev/context-switch/tmp` when unset, and
+removes it after the run. Repository-local temporary roots are rejected.
+The 120 s brief-outage oracle captures the log baseline before the visible prompt,
+then requires one new brief-update timeout matching the session, agent, target run
+and submission time. Kernel elapsed time must be 119–125 s; visible settlement
+must be within 150 s, including the 130 s provider outage/recovery. The outage timer
+alone cannot establish the deadline, and final recovery probes do not inflate the
+settlement clock.
