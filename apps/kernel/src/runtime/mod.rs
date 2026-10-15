@@ -144,6 +144,7 @@ pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
+pub(crate) mod waiting_room_git_metadata;
 pub(crate) mod waiting_room_public_projection;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;

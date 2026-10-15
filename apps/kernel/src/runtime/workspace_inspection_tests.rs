@@ -29,7 +29,8 @@ fn workspace_metadata_stalls_keep_the_runtime_live_and_reap_the_owned_child() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("workspace-metadata-budget");
-    let marker = root.path().join("worker.pid");
+    let state = crate::test_support::TestWorktree::new("workspace-private-state");
+    let marker = state.path().join("worker.pid");
     std::env::set_var("CHARIOX_WORKSPACE_METADATA_STALL_MARKER", &marker);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -43,7 +44,7 @@ fn workspace_metadata_stalls_keep_the_runtime_live_and_reap_the_owned_child() {
                 Instant::now()
             });
             let result =
-                inspect_until(root.path().into(), request, began + Duration::from_secs(5)).await;
+                inspect_until(state.path().into(), request, began + Duration::from_secs(5)).await;
             assert!(
                 result.is_err(),
                 "an unreachable metadata query must settle its deadline"
@@ -68,7 +69,7 @@ fn workspace_metadata_stalls_keep_the_runtime_live_and_reap_the_owned_child() {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
-        assert!(!std::fs::read_dir(root.path()).unwrap().any(|e| e
+        assert!(!std::fs::read_dir(state.path()).unwrap().any(|e| e
             .unwrap()
             .file_name()
             .to_string_lossy()
@@ -80,6 +81,7 @@ fn workspace_metadata_stalls_keep_the_runtime_live_and_reap_the_owned_child() {
 #[test]
 fn workspace_metadata_workers_preserve_real_git_views() {
     let root = crate::test_support::TestWorktree::new("workspace-metadata-git");
+    let state = crate::test_support::TestWorktree::new("workspace-metadata-private-state");
     let git = |args: &[&str]| {
         assert!(std::process::Command::new("git")
             .args(args)
@@ -109,7 +111,7 @@ fn workspace_metadata_workers_preserve_real_git_views() {
         .unwrap();
     for request in queries(root.path()) {
         match runtime
-            .block_on(inspect(root.path().into(), request))
+            .block_on(inspect(state.path().into(), request))
             .unwrap()
         {
             LocalDaemonResponse::WorkspaceWorktreesListed { worktrees, .. } => {

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 // Metadata only. File contents and mutating Git commands never enter this worker.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Inspection {
+    Labels(super::waiting_room_git_metadata::Query),
     Worktrees {
         workspace: String,
         current: Option<String>,
@@ -18,8 +19,9 @@ pub(crate) enum Inspection {
     GitOverview(GetWorkspaceGitOverviewRequest),
     Files(ListWorkspaceFilesRequest),
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Metadata {
+    Labels(super::waiting_room_git_metadata::Value),
     Worktrees {
         workspace: String,
         worktrees: Vec<WorkspaceWorktreeRecord>,
@@ -54,6 +56,7 @@ async fn inspect_until(
         },
         Metadata::GitOverview(overview) => LocalDaemonResponse::WorkspaceGitOverview { overview },
         Metadata::Files(listing) => LocalDaemonResponse::WorkspaceFilesListed { listing },
+        Metadata::Labels(_) => return Err(unavailable()),
     })
 }
 pub(crate) fn unavailable() -> DaemonError {
@@ -70,6 +73,9 @@ pub(crate) fn measure(inspection: Inspection) -> Result<Metadata, DaemonError> {
         std::thread::sleep(Duration::from_secs(12));
     }
     match inspection {
+        Inspection::Labels(query) => {
+            super::waiting_room_git_metadata::measure(query).map(Metadata::Labels)
+        }
         Inspection::Worktrees { workspace, current } => {
             let worktrees = super::workspace_worktrees::list_workspace_worktrees(
                 &workspace,
