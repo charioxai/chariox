@@ -485,3 +485,19 @@ for(const focus of ['chrome','page','unavailable','other-tab','window','generati
   assert(marks.includes('native_chrome_ui_document_changed'),'only the finite transition label is logged');
  }else{await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'no character reaches an unproved target');}
 });
+
+// MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
+for (const physical of [false,true]) test(`MP-11 a document retired during physical focus verification is refused (${physical})`,async()=>{
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ const connection={send:async(method,p)=>{
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:tab.document_id}}};
+  if(method==='Runtime.evaluate'&&p.expression==='document.hasFocus()'){tab.document_id='later';return {result:{value:physical}};}
+  return {result:{value:false}};
+ }};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{inputCapture:{physicalFocus:async(_c,_s,read)=>read()},resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true)},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});sent.length=0;
+ await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});
+ assert.deepEqual(sent,[],'no key uses a retired physical focus proof');
+});

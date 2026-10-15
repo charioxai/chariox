@@ -353,12 +353,18 @@ export class InputArbiter {
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      const tab = await activeAdmitted(), sameDocument = tab.document_id === command.document_id;
+      const tab = await activeAdmitted(), documentId = tab.document_id, sameDocument = documentId === command.document_id;
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
       if (!sameDocument && !ownsUiFocus) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      const currentProof = async () => {
+        const active = await activeAdmitted();
+        if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
+        await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
+        if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
+      };
+      await currentProof();
       const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
       const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
@@ -368,8 +374,10 @@ export class InputArbiter {
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
       if (ownsUiFocus) {
         const capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') { if (!sameDocument) throw new UserDomainRefusal('stale_reference'); return; }
-        if (!await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true)) {
+        if (typeof capture?.physicalFocus !== 'function') { if (!sameDocument) throw new UserDomainRefusal('stale_reference'); await currentProof(); return; }
+        const pageFocused = await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
+        await currentProof();
+        if (!pageFocused) {
           if (!sameDocument) this.host.timing?.('native_chrome_ui_document_changed', performance.timeOrigin + performance.now());
           return;
         }
@@ -377,6 +385,7 @@ export class InputArbiter {
       }
       if (!sameDocument) throw new UserDomainRefusal('stale_reference');
       const {result} = await evaluate(sensitiveFocusExpression(false));
+      await currentProof();
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
