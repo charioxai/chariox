@@ -1193,7 +1193,7 @@ fn retained_events_jsonl_payload<E: Serialize>(
 ) -> io::Result<Vec<u8>> {
     let mut events = streams
         .values()
-        .flat_map(|stream| stream.retained.iter())
+        .flat_map(|stream| stream.retained.iter().map(Box::as_ref))
         .collect::<Vec<_>>();
     events.sort_unstable_by_key(|event| event.event_id);
     logged_events_jsonl_payload(&events)
