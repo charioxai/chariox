@@ -60,7 +60,15 @@ export class CloudClientCredentialStore {
       await this.write(current)
     })
   }
-  async clear(): Promise<void> { await this.lock(() => rm(this.filePath, { force: true })) }
+  /** Unconditional, or (with `only`) just the login that made the failed request: a newer login of this profile stays. Returns whether the stored login is gone. */
+  async clear(only?: { loginId: string | undefined }): Promise<boolean> {
+    return this.lock(async () => {
+      const current = await this.load()
+      if (only && current && current.loginId !== only.loginId) return false
+      await rm(this.filePath, { force: true })
+      return true
+    })
+  }
   async session(publicKeyThumbprint: string, force = false, rejectedAccessToken?: string): Promise<CloudClientCredential> {
     return this.lock(async () => {
       let value = await this.load()

@@ -52,3 +52,16 @@ test("a directory failure with the login intact is still a directory error", asy
   await refresh()
   assert.equal(status, "error")
 })
+
+test("a kernel pivot completing during the error-path profile read leaves the attached kernel's directory alone", async () => {
+  for (const second of [null, {accountId: "account"}]) {
+    let release!: () => void, connected = false, writes = 0, reads = 0
+    const pending = new Promise<void>(resolve => {release = resolve})
+    const client = {profile: async () => { if (++reads === 1) return {accountId: "account"}; await pending; return second }, directory: async () => { throw new Error("signed_out") }} as unknown as CloudClient
+    const refresh = createCloudWaitingRoomController({client, isKernelConnected: () => connected, setMachines: () => {writes++}, setKernels: () => {writes++}, setStatus: value => { if (value !== "loading") writes++ }, reconcile: () => {writes++}})
+    const result = refresh()
+    while (reads < 2) await new Promise(resolve => setTimeout(resolve, 1))
+    connected = true; release(); await result
+    assert.equal(writes, 0)
+  }
+})

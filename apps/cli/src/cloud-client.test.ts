@@ -31,7 +31,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
   const streams = new Set<ReturnType<typeof setInterval>>()
   const metrics = { starts: 0, refreshes: 0, grants: 0, connections: 0, subscriptions: 0, logouts: 0, requests: 0 }
   const paths: string[] = [], errors: unknown[] = []
-  let sequence = 0, wrongKey = false, failLogout = false, invalidEnrollment = false, signedOut = false
+  let sequence = 0, wrongKey = false, failLogout = false, invalidEnrollment = false, signedOut = false, holdSignedOut: Promise<void> | undefined
   const targets = [
     { daemonId: "remote-a", daemonAlias: "Work", machineId: "host-a", machineAlias: "Laptop", status: "ONLINE" as const },
     { daemonId: "remote-b", daemonAlias: "Build", machineId: "host-b", machineAlias: "Builder", status: "ONLINE" as const },
@@ -76,7 +76,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
         metrics.refreshes++; rotate(family)
         send({ refreshCredential: family.refresh, cloudSessionToken: family.access, cloudSessionExpiresAt: new Date(Date.now()+accessLifetimeMs).toISOString() })
       } else if (path === "/relay/targets") {
-        if (signedOut) return send({ error: { code: "identity_revoked", message: "Session access has been deactivated", details: { reason: "signed_out" } } }, 401)
+        if (signedOut) { await holdSignedOut; return send({ error: { code: "identity_revoked", message: "Session access has been deactivated", details: { reason: "signed_out" } } }, 401) }
         if (!active(request.headers.authorization?.slice("Bearer ".length))) return deny("session_invalid")
         send({ targets })
       } else if (path === "/relay/token") {
@@ -131,7 +131,7 @@ async function fixture(options: { accessLifetimeMs?: number; grantLifetimeMs?: n
     })
   })
   return { apiUrl: `http://127.0.0.1:${apiAddress.port}`, metrics, paths, families,
-    setInvalidEnrollment: () => { invalidEnrollment = true }, setWrongKey: () => { wrongKey = true }, setFailLogout: (value: boolean) => { failLogout = value }, setSignedOut: () => { signedOut = true }, revoke,
+    setInvalidEnrollment: () => { invalidEnrollment = true }, setWrongKey: () => { wrongKey = true }, setFailLogout: (value: boolean) => { failLogout = value }, setSignedOut: () => { signedOut = true }, holdSignedOutAnswers: () => { let release!: () => void; holdSignedOut = new Promise<void>(resolve => { release = resolve }); return release }, revoke,
     async close() {
       for (const timer of expiries.values()) clearTimeout(timer)
       for (const timer of streams) clearInterval(timer)
@@ -232,6 +232,32 @@ test("MP-08 / MP-11 BY-03: a Cloud answer that the login ended signs this termin
     assert.equal(revoked, 1)
     await assert.rejects(terminal.client.directory(), error => error instanceof CloudClientAuthError)
     assert.equal(revoked, 1)
+  } finally {
+    terminal.client.stop()
+    await cloud.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("MP-08 / MP-11 BY-03: a late signed-out answer for an old login cannot clear or invalidate the login that replaced it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kauth-signed-out-stale-")), cloud = await fixture()
+  const terminal = profile(root)
+  let revoked = 0
+  try {
+    await terminal.client.login(cloud.apiUrl, () => {})
+    await terminal.client.resume(() => { revoked++ })
+    const old = (await terminal.store.load())!
+    cloud.setSignedOut(); const release = cloud.holdSignedOutAnswers()
+    const stale = terminal.client.directory(); const rejected = assert.rejects(stale, authCode("signed_out"))
+    while (!cloud.paths.includes("/relay/targets")) await new Promise(resolve => setTimeout(resolve, 5))
+    // Another terminal signs this profile out and completes a fresh login while the old request is in flight.
+    await terminal.store.clear(); await terminal.store.saveLogin({...old, accessToken: "synthetic-fresh-access", refreshCredential: "synthetic-fresh-refresh", expiresAtMs: Date.now() + 600_000})
+    release(); await rejected
+    assert.equal((await terminal.store.load())?.accessToken, "synthetic-fresh-access")
+    assert.ok(await terminal.client.profile())
+    assert.equal(revoked, 0)
+    await terminal.store.clear({ loginId: old.loginId })
+    assert.equal((await terminal.store.load())?.accessToken, "synthetic-fresh-access", "a clear bound to the old login leaves the new one")
   } finally {
     terminal.client.stop()
     await cloud.close()

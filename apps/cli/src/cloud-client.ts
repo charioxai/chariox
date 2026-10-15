@@ -166,13 +166,14 @@ export class CloudClient {
   }
   private async authenticated<T>(request: (credential: CloudClientCredential) => Promise<T>): Promise<T> {
     if (this.revoked) throw new CloudClientAuthError("client_revoked")
+    let used: CloudClientCredential | undefined
     try {
-      let credential = await this.store.session(this.identity().publicKeyThumbprint)
+      let credential = used = await this.store.session(this.identity().publicKeyThumbprint)
       try { return await request(credential) }
       catch (error) {
         if (!(error instanceof CloudClientAuthError) || error.code !== "session_invalid") throw error
         // A different profile process may have rotated between load and request.
-        credential = await this.store.session(this.identity().publicKeyThumbprint, false, credential.accessToken)
+        credential = used = await this.store.session(this.identity().publicKeyThumbprint, false, credential.accessToken)
         return await request(credential)
       }
     } catch (error) {
@@ -181,9 +182,10 @@ export class CloudClient {
       const authError = error instanceof CloudClientAuthError && error.code === "login_required" && (this.renewal || this.revoked)
         ? new CloudClientAuthError("client_revoked") : error
       if (authError instanceof CloudClientAuthError && endsCloudLogin(authError.code)) {
-        // BY-03: a signed-out answer ends the stored login like a revoked client.
-        if (authError.code === "signed_out") await this.store.clear()
-        this.invalidate(authError)
+        // BY-03: a signed-out answer ends the stored login like a revoked client, but only the login that
+        // made the request: a late answer must not end a newer login of this profile.
+        const ended = authError.code === "signed_out" && used ? await this.store.clear({ loginId: used.loginId }) : true
+        if (ended) this.invalidate(authError)
       }
       throw authError
     }
