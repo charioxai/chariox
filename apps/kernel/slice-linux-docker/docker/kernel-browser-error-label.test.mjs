@@ -104,3 +104,10 @@ test('native region refusals and v2 module positions survive the public Browser 
  }
  assert(!hostFailureMessage({message:'MP-11: native region attestation mismatch private-canary'}).includes('private-canary'));
 });
+test('MP-08/MP-10/MP-11 Notes observer causes and bounded code positions survive the host envelope',()=>{
+ const reply=hostFailureMessage(Object.assign(Error('MD-N2: selection observation failed'),{code:'note_observer_type_error',noteObserverLine:42}));
+ assert.match(reply,/note_observer_type_error note_observer:42/);
+ assert.match(hostFailureMessage({code:'note_shadow_root_limit',message:'MD-N2: selection observation failed'}),/note_shadow_root_limit/);
+ for(const noteObserverLine of [-1,0,257,NaN,'private-canary'])assert(!hostFailureMessage({code:'note_observer_type_error',noteObserverLine}).includes('note_observer:'));
+ assert(!hostFailureMessage({code:'private-canary',noteObserverLine:42,message:'private-canary'}).includes('private-canary'));
+});

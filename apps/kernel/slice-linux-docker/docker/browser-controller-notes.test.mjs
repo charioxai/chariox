@@ -12,7 +12,7 @@ function fixture({contextId=42,after='d',exception=false}={}) {
     if (method==='Page.getFrameTree') return {frameTree:{frame:{id:'f',loaderId:++frames>1?after:'d',url:'https://fixture.test/'}}};
     if (method==='Runtime.evaluate') {
       if (params.expression===NOTE_OBSERVER_EXPRESSION) return {result:{value:true}};
-      if (exception) return {exceptionDetails:{text:'page exception must not escape'}};
+      if (exception) return {exceptionDetails:exception===true?{text:'page exception must not escape'}:exception};
       return {result:{value:{quote:{exact:'selected',prefix:'before',suffix:'after'},box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
     }
   }};
@@ -160,4 +160,16 @@ test('MP-08/MP-11 a selected document URL change still retires its captured anch
  }};
  const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
  await assert.rejects(observeBrowserNote(browser,{target_id:'tab',document_id:'doc'}),/MD-N2: frame changed during capture/);
+});
+
+// MP-08/MP-10/MP-11: preserve public observer causes, never exception/page data.
+test('MP-08/MP-10/MP-11 Notes observation retains a closed exception class and observer source line',async()=>{
+ const f=fixture({exception:{exception:{className:'TypeError',description:'TypeError: private-canary https://private.invalid/'},stackTrace:{callFrames:[{functionName:'capture',lineNumber:41,columnNumber:123,url:'private-canary'}]}}});
+ await assert.rejects(()=>observeBrowserNote(f.browser,{target_id:'t',document_id:'d'}),error=>{
+  assert.equal(error.code,'note_observer_type_error');assert.equal(error.noteObserverLine,42);assert(!error.message.includes('private-canary'));return true;
+ });
+});
+test('MP-11 Notes observation rejects arbitrary exception labels and source positions',async()=>{
+ const f=fixture({exception:{exception:{className:'private-canary',description:'private-canary'},stackTrace:{callFrames:[{functionName:'private-canary',lineNumber:41,url:'private-canary'}]}}});
+ await assert.rejects(()=>observeBrowserNote(f.browser,{target_id:'t',document_id:'d'}),error=>{assert.equal(error.code,'note_observer_exception');assert.equal(error.noteObserverLine,undefined);assert(!error.message.includes('private-canary'));return true});
 });
