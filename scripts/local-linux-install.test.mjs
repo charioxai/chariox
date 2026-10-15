@@ -41,6 +41,15 @@ async function harness() {
   await writeFile(join(root, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"), "1\n")
   await writeFile(join(root, "sys/kernel/security/apparmor/profiles"), "")
   const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${groups[name]}::/home/${name}:/bin/bash`)
+  await mkdir(join(root, "usr/bin"), { recursive: true })
+  await script(join(root, "usr/bin/python3"), `#!/bin/sh
+[ "\${HARNESS_NATIVE_PYTHON:-ready}" = ready ] || test -e "$HARNESS_STATE/native-python-ready"
+`)
+  await script(join(root, "usr/bin/apt-get"), `#!/bin/sh
+echo "$*" >> "$HARNESS_STATE/native-apt"
+[ "\${HARNESS_NATIVE_APT_FAIL:-0}" = 0 ] || exit 42
+case "$1" in install) [ "\${HARNESS_NATIVE_STAYS_BROKEN:-0}" = 1 ] || touch "$HARNESS_STATE/native-python-ready" ;; esac
+`)
   await script(join(bin, "id"), `#!/bin/sh
 case "$*" in
   -u) echo "\${HARNESS_UID:-0}" ;;
@@ -476,5 +485,33 @@ test("a pinned Chromium whose bytes differ from the pin is refused before anythi
     assert.equal(existsSync(p(h, "etc/chariox/app-storage.json")), false, "refused before the first change")
   } finally {
     await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+// MP-08/MP-10/MP-11: native keyboard startup uses the SYSTEM Python, not a user venv.
+test("local Linux Setup installs and verifies missing native keyboard dependencies", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    const preview = h.install(["alice"], ["--dry-run"], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(preview.status, 0, preview.out)
+    assert.equal(await h.log("native-apt"), "", "dry-run cannot install host packages")
+    const result = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("native-apt"), "update\ninstall -y --no-install-recommends python3-xlib python3-pil\n")
+    await h.reset("native-apt")
+    const again = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(again.status, 0, again.out)
+    assert.equal(await h.log("native-apt"), "", "already-importable system modules need no package operation")
+  } finally { await rm(h.base, { recursive: true, force: true }) }
+})
+
+test("local Linux Setup refuses failed or unverifiable native dependencies", { skip: !linux }, async () => {
+  for (const failure of [{ HARNESS_NATIVE_APT_FAIL: "1" }, { HARNESS_NATIVE_STAYS_BROKEN: "1" }]) {
+    const h = await harness()
+    try {
+      const result = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing", ...failure })
+      assert.notEqual(result.status, 0, result.out)
+      assert.match(result.out, /browser dependenc/i)
+    } finally { await rm(h.base, { recursive: true, force: true }) }
   }
 })
