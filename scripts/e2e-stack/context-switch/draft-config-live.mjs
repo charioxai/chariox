@@ -13,13 +13,18 @@ try{
  if(!selected)throw Error('Unsigned account selection did not commit');
  const note=r.root+'/user-note.txt';await writeFile(note,'The audit note says preserve the user draft.\n');await r.command('attach '+note);
  const prompt='Read the attached user note and report its one audit rule. End with CX13_DRAFT_RETRY.';
- await r.tui.type('\x15'+prompt);await r.capture('typed-draft-with-file');await r.tui.type('\r');await sleep(1500);const rejected=await r.capture('account-block-restored-draft');
+ await r.tui.type(' '+prompt);await r.capture('typed-draft-with-file');await r.tui.type('\r');await sleep(1500);const rejected=await r.capture('account-block-restored-draft');
  if(rejected.footer?.tone!=='error'||!/sign.in|signed.in|not.*authenticated|needs.*login/i.test(rejected.footer.message??''))throw Error('Expected visible account-readiness rejection');
  const ansi=r.out+'/account-block-restored-draft.ansi';
  const screen=execFileSync(process.env.CTXVAL_PYTHON??'python3',['-c',"import pyte,sys; s=pyte.Screen(160,48); pyte.Stream(s).feed(open(sys.argv[1]).read()); print('\\n'.join(s.display))",ansi],{encoding:'utf8'});
  await r.record('restored-editor-proof',{promptVisible:screen.includes('Read the attached user note'),attachmentVisible:screen.includes('[file 1]')||screen.includes('user-note.txt'),noAcceptedUserRows:!(rejected.agentPanes[agentId]??[]).some(x=>x.role==='user'&&x.text?.includes('CX13_DRAFT_RETRY')),footer:rejected.footer});
  if(!screen.includes('Read the attached user note')||(!screen.includes('[file 1]')&&!screen.includes('user-note.txt')))throw Error('Real cleared editor or attachment was not restored');
- const primaryLabel=listed.ProviderAccountProfilesListed.profiles.find(p=>p.profile_id===primary)?.label;if(!primaryLabel)throw Error('Primary account label missing');await r.command('agent account '+agentId+' '+primaryLabel);await r.turn(prompt,'CX13_DRAFT_RETRY',240000);result.draftRetry='Same real editor/attachment after selecting the signed-in account; one provider turn on gpt-6-luna low';
+ // Use the visible account-readiness popup so commands never erase the restored draft/file.
+ await r.tui.type('\x1b[B\r');let switched=false;
+ for(let n=0;n<120;n++){const current=await r.tui.send('snapshot');if(current.session.agents.find(a=>a.id===agentId)?.accountProfile===primary){switched=true;break;}await sleep(250);}
+ if(!switched)throw Error('Visible signed-in-account popup did not switch to the primary');
+ await r.capture('signed-in-account-restored-editor');await r.tui.type('\r');await r.turn('','CX13_DRAFT_RETRY',240000,false);
+ result.draftRetry='Same real editor/attachment after selecting the signed-in account; one provider turn on gpt-6-luna low';
  // The UI writes both newly serialized settings; only allowlisted keys are recorded.
  const models={codex_brief_model:'gpt-6-luna',claude_brief_model:'claude-haiku-5-5'};
  for(const [key,value]of Object.entries(models))await r.command('config set history.handoff.'+key+' '+value);
