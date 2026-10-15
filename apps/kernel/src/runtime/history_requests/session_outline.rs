@@ -161,6 +161,7 @@ fn load_scoped_agent_outline(
     )?;
     prompts.retain(|prompt| {
         !prompt.is_completion_check_turn()
+            && !prompt.is_internal_correction_prompt()
             && !external_observed_tool_call_prompt(prompt)
             && !external_recovery_envelope_prompt(prompt)
     });
@@ -210,7 +211,9 @@ fn load_scoped_agent_outline(
                 }
             }
         }
-        events.retain(|event| !event.is_completion_check_turn());
+        events.retain(|event| {
+            !event.is_completion_check_turn() && !event.is_internal_correction_prompt()
+        });
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())

@@ -211,6 +211,12 @@ const COMPLETION_CHECK_PROMPT_PREFIX: &str = "goal-check-";
 pub(crate) fn is_completion_check_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(COMPLETION_CHECK_PROMPT_PREFIX)
 }
+pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
+/// The kernel's single correction instruction is internal protocol text; the
+/// agent's answer to it stays visible, the instruction itself does not.
+pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(CORRECTION_PROMPT_PREFIX)
+}
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
     completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }
@@ -336,7 +342,7 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
         t.correction_used = true;
         t.wait = None;
         t.reason = reason.into();
-        t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+        t.pending_prompt_id = Some(format!("{CORRECTION_PROMPT_PREFIX}{}", t.task_id));
         return true;
     }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {

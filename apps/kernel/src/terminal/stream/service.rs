@@ -396,9 +396,16 @@ impl TerminalStreamService {
     }
 
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
-        // The kernel's completion assessment turn is internal; no client sees it.
+        // The kernel's completion assessment turn and its correction instruction
+        // are internal; no client sees them (the agent's answers stay visible).
+        let internal_echo = record.kind == TerminalOutputKind::PromptEcho
+            && record
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id);
         if record.pending_recipient_attachment_ids.is_empty()
             || record.prompt_origin == Some(PromptOrigin::CompletionCheck)
+            || internal_echo
         {
             return;
         }

@@ -338,6 +338,15 @@ impl HistoryEvent {
             )
     }
 
+    /// The prompt event of the kernel's own correction instruction.
+    pub fn is_internal_correction_prompt(&self) -> bool {
+        self.kind == HistoryEventKind::UserPrompt
+            && self
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id)
+    }
+
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
         let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
         let session_id = self.session_id.clone()?;

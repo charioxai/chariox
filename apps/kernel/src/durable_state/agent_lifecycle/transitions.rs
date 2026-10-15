@@ -499,7 +499,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
-                    t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+                    t.pending_prompt_id = Some(format!(
+                        "{}{}",
+                        super::goals::CORRECTION_PROMPT_PREFIX,
+                        t.task_id
+                    ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
                 } else {
                     t.state = ExecutionState::Blocked;

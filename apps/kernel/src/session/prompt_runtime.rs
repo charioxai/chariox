@@ -279,6 +279,9 @@ impl PromptRuntimeState {
     pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
         let internal = |prompt: &PromptQueueItem| {
             prompt.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+                || crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id(
+                    prompt.id(),
+                )
         };
         for state in self.prompt_states.values_mut() {
             if state.active_prompt.as_ref().is_some_and(internal) {
@@ -434,6 +437,24 @@ mod tests {
         assert!(runtime.prompt_states().get("agent-2").is_none());
         // Scheduling is unchanged: the kernel still knows the agent is busy.
         assert_eq!(runtime.scheduler_state(), SchedulerState::Waiting);
+    }
+
+    #[test]
+    fn client_projection_hides_the_correction_prompt() {
+        let mut runtime = PromptRuntimeState::default();
+        runtime.mirror_agent_prompt_state(
+            "agent-1",
+            Some(prompt(
+                "task-correction-prompt-1",
+                "agent-1",
+                PromptStatus::Running,
+            )),
+            VecDeque::new(),
+            Some("agent-1"),
+        );
+        runtime.hide_internal_prompts(Some("agent-1"));
+        assert!(runtime.active_prompt_for_agent("agent-1").is_none());
+        assert!(runtime.prompt_states().is_empty());
     }
 
     #[test]
