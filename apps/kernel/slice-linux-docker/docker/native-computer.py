@@ -59,11 +59,21 @@ def input_action(action, processes=None, connection=None):
         # MP-11: any agent key, text or click may reach a Paste control
         # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
-        admit_clipboard=load('native-clipboard').input_admission(processes,accessibility)
+        clipboard=load('native-clipboard')
+        admit_clipboard=clipboard.input_admission(processes,accessibility)
         admit_focus=accessibility.input_guard(processes) if kind!='click' else lambda:None
         def guard():
             admit_focus()
             admit_clipboard()
+            # MP-11: an empty clipboard does not authorize a popup-free extension
+            # action. Query the recipient after pointer motion, before the press.
+            if kind=='click':
+                connection.sync()
+                load('native-input-destination').input_destination(connection,processes,accessibility,(action['x'],action['y']))
+            else:
+                destination=load('native-x11').open_display(display)
+                try:load('native-input-destination').input_destination(destination,processes,accessibility)
+                finally:destination.close()
     if kind == 'text':
         # MP-08/MP-10/MP-11: committed human text is already bounded/ordered
         # by the owned channel. Unicode overlays still need the existing

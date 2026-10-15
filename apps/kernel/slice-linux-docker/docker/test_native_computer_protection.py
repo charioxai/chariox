@@ -8,6 +8,8 @@ spec=importlib.util.spec_from_file_location('native_computer',Path(__file__).wit
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 clipboard=module.load('native-clipboard')
 x11=module.load('native-x11')
+destination_policy=module.load('native-input-destination')
+destination_policy.owner_pid=clipboard.owner_pid
 # Real X11 opener (patched Display); every other helper is the given fake.
 helpers=lambda accessibility:(lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else clipboard)
 class ProtectionTests(unittest.TestCase):
@@ -90,17 +92,19 @@ class AgentInputClipboardTests(unittest.TestCase):
             'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True,'name':'[protected]'}]}
         accessibility=SimpleNamespace(snapshot=lambda *args:tree,alive=lambda process:True,input_guard=lambda processes:(lambda:None),NativeInputDenied=type('NativeInputDenied',(ValueError,),{}))
         owner=SimpleNamespace(id=99,get_full_property=lambda *args:None)
+        destination=SimpleNamespace(id=100,get_full_property=lambda *args:None,query_pointer=lambda:SimpleNamespace(child=0))
         connection=SimpleNamespace(intern_atom=lambda name:name,close=lambda:None,sync=lambda:None,
             get_selection_owner=lambda atom:(owners.pop(0) if owners else (owner if owner_pid else 0)),
             has_extension=lambda name:True,res_query_version=lambda:SimpleNamespace(server_major=1,server_minor=2),
-            res_query_client_ids=lambda specs:SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[owner_pid])]),
-            screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100))
+            res_query_client_ids=lambda specs:SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[77 if specs[0]['client']==100 else owner_pid])]),
+            get_input_focus=lambda:SimpleNamespace(focus=destination),
+            screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100,root=SimpleNamespace(query_pointer=lambda:SimpleNamespace(child=destination,root_x=5,root_y=5))))
         events=[]
         def press(kind,value,duration,*args,before_press=None):
             before_press();events.append((kind,value))
         def type_text(text,before_press=None):
             before_press();events.append(('text',text))
-        loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11}
+        loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11,'native-input-destination':destination_policy}
         with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),\
              patch.object(clipboard.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)),\
              patch.object(module.xtest,'fake_input',side_effect=lambda c,kind,*args,**kw:events.append(kind)),\
@@ -111,6 +115,23 @@ class AgentInputClipboardTests(unittest.TestCase):
 
     def test_empty_clipboard_admits_clicks_while_browser_and_popups_are_masked(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5}))
+
+    def test_mp11_empty_clipboard_does_not_authorize_popup_free_browser_toolbar_action(self):
+        # A popup-free extension runs on ButtonPress without creating a CDP page.
+        # The actual destination is Chrome even though another native app has focus.
+        node=SimpleNamespace(id=99,get_full_property=lambda *_:None,query_pointer=lambda:SimpleNamespace(child=0))
+        root=SimpleNamespace(query_pointer=lambda:SimpleNamespace(child=node,root_x=5,root_y=5))
+        connection=SimpleNamespace(intern_atom=lambda name:name,close=lambda:None,sync=lambda:None,get_input_focus=lambda:SimpleNamespace(focus=node),
+            get_selection_owner=lambda _:0,screen=lambda:SimpleNamespace(root=root,width_in_pixels=100,height_in_pixels=100),
+            has_extension=lambda _:True,res_query_version=lambda:SimpleNamespace(server_major=1,server_minor=2),
+            res_query_client_ids=lambda _:SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[77])]))
+        accessibility=SimpleNamespace(alive=lambda _:True,input_guard=lambda _:lambda:None,NativeInputDenied=type('NativeInputDenied',(ValueError,),{}))
+        def press(*args,before_press=None,**kwargs):before_press()
+        with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else destination_policy if name=='native-input-destination' else clipboard),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),patch.object(module.xtest,'fake_input') as event,patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=press):
+            for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'Return'},{'kind':'text','text':' '}]:
+                with self.subTest(action=action),self.assertRaisesRegex(ValueError,'Browser'):
+                    module.input_action(action,[{'pid':77,'started':'1','browser':True}])
+                self.assertFalse(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
 
     def test_proved_public_owner_admits_clicks_while_other_windows_are_masked(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5},owner_pid=77))
