@@ -5,6 +5,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
+use super::native_provider_buffer::{NativeBufferedFrame, NativeOutputBudget, OUTPUT_FRAME_BYTES};
+
 use crate::{
     error::DaemonError,
     local::{NativeProviderTransportOperation, NativeProviderTransportResult},
@@ -35,12 +37,15 @@ pub(crate) struct SocketScope {
 struct Connection {
     scope: SocketScope,
     sender: mpsc::Sender<String>,
-    receiver: Mutex<mpsc::Receiver<String>>,
+    receiver: Mutex<mpsc::Receiver<NativeBufferedFrame>>,
     touched: std::sync::Mutex<std::time::Instant>,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct NativeProviderSockets(Arc<Mutex<BTreeMap<String, Arc<Connection>>>>);
+pub(crate) struct NativeProviderSockets(
+    Arc<Mutex<BTreeMap<String, Arc<Connection>>>>,
+    NativeOutputBudget,
+);
 
 /// Display/control reads only. User turns, tool execution and approval replies
 /// continue through the kernel's normal native prompt/interaction adapters.
@@ -205,8 +210,8 @@ impl NativeProviderSockets {
                     ));
                 }
                 let config = WebSocketConfig::default()
-                    .max_message_size(Some(FRAME_BYTES))
-                    .max_frame_size(Some(FRAME_BYTES));
+                    .max_message_size(Some(OUTPUT_FRAME_BYTES))
+                    .max_frame_size(Some(OUTPUT_FRAME_BYTES));
                 let (socket, _) = tokio::time::timeout(
                     Duration::from_secs(5),
                     tokio_tungstenite::connect_async_with_config(
@@ -221,7 +226,8 @@ impl NativeProviderSockets {
                 authorize().await?;
                 let connection_id = format!("native-socket-{:032x}", rand::random::<u128>());
                 let (sender, mut outbound) = mpsc::channel::<String>(QUEUE_FRAMES);
-                let (inbound, receiver) = mpsc::channel::<String>(QUEUE_FRAMES);
+                let (inbound, receiver) = mpsc::channel::<NativeBufferedFrame>(QUEUE_FRAMES);
+                let output_budget = self.1.connection();
                 let entry = Arc::new(Connection {
                     scope,
                     sender,
@@ -237,7 +243,7 @@ impl NativeProviderSockets {
                     loop {
                         tokio::select! {
                             _ = interval.tick() => {
-                                let idle = entry.touched.lock().expect("native touch lock").elapsed() > Duration::from_secs(15);
+                                let idle = entry.touched.lock().expect("native touch lock").elapsed() > Duration::from_secs(120);
                                 if idle || authorize().await.is_err() { break; }
                             }
                             frame = outbound.recv() => {
@@ -246,7 +252,7 @@ impl NativeProviderSockets {
                             }
                             message = socket.next() => {
                                 match message {
-                                    Some(Ok(Message::Text(frame))) => { if inbound.try_send(frame.to_string()).is_err() { break; } }
+                                    Some(Ok(Message::Text(frame))) => { let Ok(frame) = output_budget.reserve(frame.to_string()) else { break; }; if inbound.try_send(frame).is_err() { break; } }
                                     Some(Ok(Message::Ping(data))) => { if tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Pong(data))).await.map_or(true, |result| result.is_err()) { break; } }
                                     Some(Ok(Message::Pong(_))) => {}
                                     _ => break,
@@ -319,7 +325,7 @@ impl NativeProviderSockets {
                 // A single bounded upstream frame per response keeps the relay envelope bounded.
                 if result.is_empty() {
                     if let Ok(frame) = receiver.try_recv() {
-                        result.push(frame);
+                        result.push(frame.data);
                     }
                 }
                 Ok(NativeProviderTransportResult {
@@ -336,7 +342,7 @@ impl NativeProviderSockets {
                     }
                     // Wake the socket actor immediately on close.
                     *entry.touched.lock().expect("native touch lock") =
-                        std::time::Instant::now() - Duration::from_secs(16);
+                        std::time::Instant::now() - Duration::from_secs(121);
                     entries.remove(&connection_id);
                 }
                 Ok(NativeProviderTransportResult {
@@ -417,6 +423,82 @@ mod tests {
             .unwrap()
             .push(serde_json::json!({"keyPath":"model","value":"other","mergeStrategy":"replace"}));
         assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
+    }
+
+    #[tokio::test]
+    async fn mp08_native_large_official_catalog_uses_shared_relay_sized_frames() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let catalog = serde_json::json!({"id":1,"result":{"catalog":"x".repeat(14 * 1024 * 1024)}})
+            .to_string();
+        let expected = catalog.len();
+        let upstream = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            socket.send(Message::Text(catalog.into())).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+        });
+        let scope = SocketScope {
+            session_id: "room".into(),
+            agent_id: "agent".into(),
+            attachment_id: "attachment".into(),
+            provider_run_id: "run".into(),
+            leased_agent_id: None,
+            endpoint: format!("ws://{address}"),
+            working_directory: Some("/workspace".into()),
+        };
+        let sockets = NativeProviderSockets::default();
+        let id = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Open,
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap()
+            .connection_id;
+        let mut received = false;
+        for _ in 0..500 {
+            let result = sockets
+                .execute(
+                    scope.clone(),
+                    NativeProviderTransportOperation::Exchange {
+                        connection_id: id.clone(),
+                        frames: vec![],
+                    },
+                    || async { Ok(()) },
+                )
+                .await
+                .unwrap();
+            if let Some(frame) = result.frames.first() {
+                assert_eq!(frame.len(), expected);
+                assert!(!result.closed);
+                received = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            received,
+            "native official 14 MiB catalog must arrive intact"
+        );
+        let closed = sockets
+            .execute(
+                scope,
+                NativeProviderTransportOperation::Close { connection_id: id },
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        assert!(closed.closed);
+        tokio::time::timeout(Duration::from_secs(3), upstream)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

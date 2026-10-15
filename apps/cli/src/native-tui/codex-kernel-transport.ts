@@ -8,6 +8,8 @@ import type { NativeProviderTransportOperation, NativeProviderTransportResult } 
 import { nativeProviderTransportRequest } from "../ipc-requests.js"
 
 const frameBytes = 256 * 1024
+const outputFrameBytes = 16 * 1024 * 1024
+const outputBufferBytes = 32 * 1024 * 1024
 const queueFrames = 32
 
 export async function startCodexKernelTransport(options: {
@@ -66,7 +68,7 @@ export async function startCodexKernelTransport(options: {
           if (result.connection_id !== connectionId) throw new Error("native connection identity changed")
           for (const frame of result.frames) {
             if (socket.readyState === WebSocket.OPEN) {
-              if (socket.bufferedAmount + Buffer.byteLength(frame) > frameBytes * queueFrames) { finished = true; socket.close(1013, "native output backpressure"); break }
+              if (Buffer.byteLength(frame) > outputFrameBytes || socket.bufferedAmount + Buffer.byteLength(frame) > outputBufferBytes) { finished = true; socket.close(1013, "native output backpressure"); break }
               socket.send(frame)
             }
           }

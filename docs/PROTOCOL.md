@@ -276,9 +276,12 @@ remote execution uses the existing authenticated leased-agent peer admission.
 The owning kernel selects its current official loopback WebSocket. Open returns
 an opaque connection ID; Exchange sends and drains bounded JSON frames; Close
 retires it. Every operation and socket heartbeat fences the attachment/run or
-lease/backing run. Connections expire after 15 seconds without exchange, are
+lease/backing run. Connections expire after 120 seconds without exchange, are
 limited to two per exact scope and 32 per kernel, and use 32-frame queues with
-256 KiB frame/batch limits. Backpressure closes or rejects without replay.
+256 KiB input frame/batch limits. Official catalog replies may reach 16 MiB
+and use the existing encrypted relay large-message framing (64 MiB envelope
+ceiling). Queued output has byte budgets of 32 MiB per connection and 256 MiB
+per kernel. Backpressure closes or rejects without replay.
 This is a display/read/control transport: prompt start/steer/interrupt, arbitrary
 tool execution, login mutation and provider approval replies still use the
 normal kernel-owned prompt and RuntimeInteraction paths. Unsupported methods
