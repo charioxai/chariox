@@ -1327,6 +1327,15 @@ test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<i
  assert(!result.exceptionDetails);assert.deepEqual(result.result.value,[2],'only the current input and select ids remain');
 }));
 
+// r9 hosted drill (GitHub): the site's head style sheets filled the first 128 KiB, so the reset reached the
+// viewer without a body and painted a white page until later credits. The head precedes the viewport.
+test('MP-08/MP-10 M2: large head style sheets do not push the visible viewport out of the reset',()=>mirrored(
+ '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style><style>'+'.d{margin:1px}\n'.repeat(8000)+'</style></head><body><h1>Visible heading</h1>'+'<p>content</p>'.repeat(200)+'</body>',async({next})=>{
+ const first=await next();assert(!first.fallback);
+ assert(JSON.stringify(first).length>128*1024,'the fixture head alone exceeds the prefix bound');
+ assert(texts(first).has('Visible heading'),'the viewport content travels with the head');
+}));
+
 test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still continue in bounded packets',()=>mirrored(
  '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(600)+'</main>',async({next})=>{
  const first=await next();assert(!first.fallback);

@@ -232,6 +232,13 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   a second script-free iframe and retires the prior frame only after continued
   visible content is available. A fresh attachment keeps its labelled loading
   state until then. Preparation work is bounded and stops after the first paint.
+  The producer also exempts head bytes from the 128 KiB chunk accounting until
+  the body is reached while cumulative observation bytes remain within 2 MiB.
+  This carries ordinary large CSS heads with their viewport. Node/time and the
+  64 MiB document bounds remain; the exemption is checked between records, not
+  a new wire-size limit. Larger or node-heavy heads can still need continuation,
+  so the client paint hold remains necessary. Quiet-host measurements qualify
+  first-packet cost separately; source tests do not establish that timing gate.
   MP-11: the held frame is inert; event forwarding also checks that the event's
   document belongs to the current painted iframe, because native keyboard focus
   can remain in an inert iframe. Same-document protection resets apply at once;
