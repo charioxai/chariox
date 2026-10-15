@@ -6,6 +6,63 @@ use crate::runtime::state::room_secret_observation::RoomSecretObservations;
 const SECRET: &str = "synthetic-handoff-observation";
 const FRESH: &str = "## Goal\nFresh fold amber\n## Next Steps\nContinue";
 
+// MP-08 / MP-10 / MP-11: newly retained earlier tool summaries share final protection.
+#[tokio::test]
+async fn fitting_earlier_tool_summary_is_reprotected_before_submission() {
+    let (fixture, _root) = protected_fixture(false).await;
+    let late_secret = "late-tool-observation";
+    fixture.append(
+        3,
+        crate::history::SessionHistoryEntry::provider_output(
+            &fixture.session_id,
+            "source",
+            Some(&fixture.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            None,
+            serde_json::json!({"id":"read-1","tool":"bash","status":"completed",
+                "input":{"command":"read public source"},
+                "output":format!("benign-tool-marker {late_secret}")})
+            .to_string(),
+        ),
+        Default::default(),
+        None,
+    );
+    fixture.user(4, "Continue the audit");
+    fixture.output(5, "source", "codex", Some("source-thread"), "Audited");
+    let target = fixture.run("new", "codex", None);
+    let handoff = fixture
+        .runtime
+        .owned
+        .context_handoff_for_dispatch(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &target,
+            "next",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!handoff.needs_brief());
+    assert!(handoff
+        .render(handoff.budget())
+        .unwrap()
+        .contains(late_secret));
+    fixture
+        .runtime
+        .owned
+        .room_secret_observations
+        .register(&fixture.session_id, late_secret)
+        .unwrap();
+    let replay = fixture
+        .runtime
+        .owned
+        .revalidate_context_handoff(handoff, &fixture.session_id, &fixture.agent_id, "next")
+        .unwrap();
+    let packet = replay.render(replay.budget()).unwrap();
+    assert!(packet.contains("benign-tool-marker"));
+    assert!(!packet.contains(late_secret));
+}
+
 async fn protected_fixture(recovered: bool) -> (DerivedHandoffFixture, TestRoot) {
     let mut fixture = DerivedHandoffFixture::new().await;
     let root = TestRoot::new();

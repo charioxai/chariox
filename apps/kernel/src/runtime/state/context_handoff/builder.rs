@@ -18,7 +18,7 @@ const RECENT_TAIL_TURNS: usize = 3;
 const MAX_RECENT_ASSISTANT_BYTES: usize = 3_000;
 const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
 const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
-const HANDOFF_PREAMBLE: &str = "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request. Prior turn bodies use JSON string escaping; decode escapes to recover exact line boundaries and spacing.";
+const HANDOFF_PREAMBLE: &str = "Kernel history after a provider switch: background, not a new request. Decode prior bodies' JSON escapes to recover exact lines and spacing. Copy named values and proposals verbatim from original turns; only explicit user changes revise them.";
 const BRIEF_HEADER: &str =
     "Handoff brief (written by a model from the conversation; turn excerpts below may be shortened):\n";
 const FACTS_HEADER: &str = "Recorded by the Chariox kernel:\n";
@@ -117,8 +117,8 @@ impl AgentConversation {
         self.turns.is_empty()
     }
 
-    /// Whether the deterministic packet keeps every turn without shortening
-    /// prompts, answers or hiding tool details. Prior bodies use JSON string escaping to preserve value boundaries.
+    /// Whether the deterministic packet keeps every prompt, answer and bounded
+    /// tool/status summary without shortening them. Prior bodies use JSON string escaping to preserve value boundaries.
     pub(super) fn fits_without_brief(&self, max_bytes: usize) -> bool {
         let Some(packet) = self.render(max_bytes) else {
             return self.is_empty();
@@ -138,12 +138,14 @@ impl AgentConversation {
             };
             contains(&turn.user_prompt)
                 && contains(&turn.answer())
-                && (turn.latest_details.is_empty()
-                    || (latest
-                        && turn
-                            .latest_details
-                            .iter()
-                            .all(|(_, detail)| packet.contains(detail))))
+                && turn.latest_details.iter().all(|(_, detail)| {
+                    let detail = if latest {
+                        detail.clone()
+                    } else {
+                        transcript_text(detail)
+                    };
+                    packet.contains(&detail)
+                })
         })
     }
 
@@ -453,8 +455,9 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
     turns
 }
 
-/// User prompts carry the requests, facts, and decisions, so every prior turn
-/// keeps its prompt before any keeps its answer; answers fill the rest from the
+/// Prefer complete turns, including their bounded tool/status summaries, so a
+/// fitting source transcript needs no lossy model brief. When it does not fit,
+/// every prior turn keeps its prompt before any keeps its answer; answers fill the rest from the
 /// newest turn back. Turns that do not fit stay reachable through recall. Every
 /// line is charged with its newline, and the omitted-turns line up front.
 fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
@@ -468,6 +471,11 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
             let answer = transcript_text(&turn.answer());
             std::iter::once(user)
                 .chain((!answer.is_empty()).then(|| format!("  Assistant: {answer}")))
+                .chain(
+                    turn.latest_details
+                        .iter()
+                        .map(|(_, detail)| format!("  Tool/status: {}", transcript_text(detail))),
+                )
         })
         .try_fold(String::new(), |mut packet, line| {
             let separator = usize::from(!packet.is_empty());
@@ -717,11 +725,75 @@ mod tests {
         assert!(!conversation.fits_without_brief(2_000));
     }
 
+    // MP-08 / MP-10 / MP-11: the restart-after-switch audit fits without a lossy fold.
+    #[test]
+    fn complete_source_audit_does_not_require_a_summary_in_place_of_exact_records() {
+        let proposal =
+            "Trace the cancellation path and confirm the handoff is re-offered on the next turn.";
+        let answer = format!(
+            "{} {{\"proposal\":\"{proposal}\"}}",
+            "source findings ".repeat(225)
+        );
+        let mut events = vec![
+            user_event(
+                1,
+                "session",
+                "agent",
+                "Audit the source; preserve your proposal verbatim.",
+            ),
+            tool_event(
+                2,
+                "session",
+                "agent",
+                "run",
+                "Read the native-session contract.",
+            ),
+            output_event(3, "session", "agent", "run", &answer),
+        ];
+        for index in 0..14 {
+            events.push(user_event(
+                index * 3 + 4,
+                "session",
+                "agent",
+                "Continue the source audit.",
+            ));
+            events.push(tool_event(
+                index * 3 + 5,
+                "session",
+                "agent",
+                "run",
+                "Read another source file.",
+            ));
+            events.push(output_event(
+                index * 3 + 6,
+                "session",
+                "agent",
+                "run",
+                "The existing policy agrees.",
+            ));
+        }
+        let conversation = AgentConversation::from_events(&events);
+        let packet = conversation.render(116_280).unwrap();
+        assert!(packet.contains(&transcript_text(&answer)));
+        assert!(
+            conversation.fits_without_brief(116_280),
+            "Full source history fits but a model summary is still required"
+        );
+        assert!(packet.contains("Read the native-session contract."));
+        assert!(packet.len() <= 116_280);
+    }
+
     #[test]
     fn older_tool_output_is_excluded_but_latest_tool_output_is_included() {
         let events = vec![
             user_event(1, "session", "agent", "older prompt"),
-            output_event(2, "session", "agent", "run-1", "older assistant answer"),
+            output_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                &format!("older assistant answer {}", "x".repeat(MAX_HANDOFF_BYTES)),
+            ),
             tool_event(3, "session", "agent", "run-1", "older secret tool output"),
             user_event(4, "session", "agent", "latest prompt"),
             output_event(5, "session", "agent", "run-1", "latest assistant answer"),
@@ -1126,7 +1198,7 @@ mod tests {
         let mut tool = small;
         tool.push(tool_event(3, "s", "a", "r", "edited parse.rs"));
         tool.push(user_event(4, "s", "a", "next request"));
-        assert!(!AgentConversation::from_events(&tool).fits_without_brief(MAX_HANDOFF_BYTES));
+        assert!(AgentConversation::from_events(&tool).fits_without_brief(MAX_HANDOFF_BYTES));
     }
 
     fn build_agent_context_handoff(events: &[HistoryEvent], max_bytes: usize) -> Option<String> {
