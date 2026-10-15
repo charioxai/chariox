@@ -229,6 +229,7 @@ impl PendingAgentContextHandoff {
                 "max_bytes": max_bytes,
                 "context_bytes": handoff.len(),
                 "brief_bytes": self.conversation.brief.as_ref().map(String::len),
+                "turn_bodies_complete": self.conversation.preserves_turn_bodies(&context),
             }),
         );
         Some(handoff)

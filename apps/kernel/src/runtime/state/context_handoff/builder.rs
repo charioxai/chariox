@@ -123,22 +123,21 @@ impl AgentConversation {
         let Some(packet) = self.render(max_bytes) else {
             return self.is_empty();
         };
-        if packet.contains("earlier turns omitted") || packet.contains("[truncated]") {
+        // Quoted source text is data, not a renderer omission/truncation marker.
+        if packet.contains(TRUNCATED)
+            || packet.lines().any(|line| {
+                line.starts_with("- (")
+                    && line.ends_with(
+                        " earlier turns omitted; find them with the chariox.search_recall tool.)",
+                    )
+            })
+        {
             return false;
         }
-        self.turns.iter().enumerate().all(|(index, turn)| {
-            let latest = index + 1 == self.turns.len();
-            let contains = |text: &str| {
-                let text = if latest {
-                    text.trim().to_string()
-                } else {
-                    transcript_text(text)
-                };
-                packet.contains(&text)
-            };
-            contains(&turn.user_prompt)
-                && contains(&turn.answer())
-                && turn.latest_details.iter().all(|(_, detail)| {
+        self.preserves_turn_bodies(&packet)
+            && self.turns.iter().enumerate().all(|(index, turn)| {
+                let latest = index + 1 == self.turns.len();
+                turn.latest_details.iter().all(|(_, detail)| {
                     let detail = if latest {
                         detail.clone()
                     } else {
@@ -146,6 +145,21 @@ impl AgentConversation {
                     };
                     packet.contains(&detail)
                 })
+            })
+    }
+
+    /// Diagnostic fidelity of protected source bodies, independent of tool-summary folds.
+    pub(super) fn preserves_turn_bodies(&self, packet: &str) -> bool {
+        self.turns.iter().enumerate().all(|(index, turn)| {
+            let latest = index + 1 == self.turns.len();
+            [&turn.user_prompt, &turn.answer()].iter().all(|text| {
+                let text = if latest {
+                    text.trim().to_string()
+                } else {
+                    transcript_text(text)
+                };
+                packet.contains(&text)
+            })
         })
     }
 
@@ -464,36 +478,42 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
     // MP-08 / MP-10 / MP-11: shortening is a budget fallback. A generous
     // target window must not replace a remembered filename or result with a
     // clipped copy while describing the transcript as verbatim.
-    let complete = turns
-        .iter()
-        .flat_map(|turn| {
-            let user = format!("- User: {}", transcript_text(&turn.user_prompt));
-            let answer = transcript_text(&turn.answer());
-            std::iter::once(user)
-                .chain((!answer.is_empty()).then(|| format!("  Assistant: {answer}")))
-                .chain(
-                    turn.latest_details
-                        .iter()
-                        .map(|(_, detail)| format!("  Tool/status: {}", transcript_text(detail))),
-                )
-        })
-        .try_fold(String::new(), |mut packet, line| {
-            let separator = usize::from(!packet.is_empty());
-            if packet
-                .len()
-                .saturating_add(separator)
-                .saturating_add(line.len())
-                > budget
-            {
-                return None;
-            }
-            if separator != 0 {
-                packet.push('\n');
-            }
-            packet.push_str(&line);
-            Some(packet)
-        });
-    if let Some(complete) = complete {
+    let complete = |include_details| {
+        turns
+            .iter()
+            .flat_map(move |turn| {
+                let user = format!("- User: {}", transcript_text(&turn.user_prompt));
+                let answer = transcript_text(&turn.answer());
+                std::iter::once(user)
+                    .chain((!answer.is_empty()).then(|| format!("  Assistant: {answer}")))
+                    .chain(
+                        turn.latest_details
+                            .iter()
+                            .filter(move |_| include_details)
+                            .map(|(_, detail)| {
+                                format!("  Tool/status: {}", transcript_text(detail))
+                            }),
+                    )
+            })
+            .try_fold(String::new(), |mut packet, line| {
+                let separator = usize::from(!packet.is_empty());
+                if packet
+                    .len()
+                    .saturating_add(separator)
+                    .saturating_add(line.len())
+                    > budget
+                {
+                    return None;
+                }
+                if separator != 0 {
+                    packet.push('\n');
+                }
+                packet.push_str(&line);
+                Some(packet)
+            })
+    };
+    // Bulk tools must not push a fitting original answer into the clipped fallback.
+    if let Some(complete) = complete(true).or_else(|| complete(false)) {
         return complete;
     }
     let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
@@ -781,6 +801,46 @@ mod tests {
         );
         assert!(packet.contains("Read the native-session contract."));
         assert!(packet.len() <= 116_280);
+    }
+
+    // MP-08 / MP-10 / MP-11: source-code marker literals must not force a model fold.
+    #[test]
+    fn quoted_source_markers_are_not_renderer_clipping() {
+        let source = "The source spells [truncated] and earlier turns omitted.\n- (3 earlier turns omitted; find them with the chariox.search_recall tool.)";
+        let events = vec![
+            user_event(1, "s", "a", source),
+            output_event(2, "s", "a", "r", "proposal=keep exact source"),
+            tool_event(3, "s", "a", "r", source),
+            user_event(4, "s", "a", "continue"),
+        ];
+        let conversation = AgentConversation::from_events(&events);
+        assert!(conversation.fits_without_brief(24_000));
+    }
+
+    #[test]
+    fn bulk_tools_do_not_displace_a_fitting_original_answer() {
+        let answer = format!(
+            "{} original_proposal=re-offered on the next turn",
+            "a".repeat(3300)
+        );
+        let mut events = vec![
+            user_event(1, "s", "a", "source audit"),
+            output_event(2, "s", "a", "r", &answer),
+        ];
+        for i in 0..40 {
+            events.push(tool_event(i + 3, "s", "a", "r", &"t".repeat(1500)));
+        }
+        for i in 0..4 {
+            events.push(user_event(i * 2 + 100, "s", "a", "continue audit"));
+            events.push(output_event(i * 2 + 101, "s", "a", "r", "checked"));
+        }
+        let mut conversation = AgentConversation::from_events(&events);
+        conversation.brief = Some("## Goal\nA model paraphrase\n## Next Steps\nContinue".into());
+        let packet = conversation.render(24_000).unwrap();
+        assert!(packet.contains(&transcript_text(&answer)));
+        assert!(conversation.preserves_turn_bodies(&packet));
+        assert!(!conversation.fits_without_brief(24_000));
+        assert!(packet.len() <= 24_000);
     }
 
     #[test]
