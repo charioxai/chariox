@@ -261,8 +261,13 @@ test("MP-08/MP-11 popups of the band's window get kernel ids, follow the band's 
     assert.notEqual(windows.auxiliaryState()[0].auxiliary_id, state[1].auxiliary_id);
     assert.equal(dropdown.isCurrent(), false, "a closed popup is retired");
     assert.throws(() => windows.auxiliary(state[1].auxiliary_id), { code: "user_domain_stale_reference" });
+    // r9 hosted drill: a native page capture fits Chrome's window (fitNativeViewport); the band kept the
+    // old geometry, so every band readback was refused ("native_region_readback_unavailable") for good.
+    const generation = windows.current().tabbed.window_generation;
     windows.refreshAuxiliary([{ ...tabbed, width: 2000 }]);
-    assert.equal(windows.auxiliaryState().length, 1, "a changed tabbed window waits for the kernel's own rebind");
+    assert.throws(() => windows.current(), { code: "user_domain_stale_reference" }, "a resized tabbed window retires the band at once");
+    await windows.resolving;
+    assert.notEqual(windows.current().tabbed.window_generation, generation, "...and is rebound at its real geometry");
     let reads = 0;
     const stop = windows.watch(async () => (reads++, [tabbed]), 5);
     await new Promise(resolve => setTimeout(resolve, 40));

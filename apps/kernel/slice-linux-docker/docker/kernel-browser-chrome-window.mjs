@@ -191,14 +191,18 @@ export class ChromeWindows {
       return JSON.parse(result.value);
     } catch { this.omniboxSession = null; return null; }
   }
-  /** Protocol 530: refresh only the auxiliary windows of the current tabbed binding (a live
-   * band polls its own worker's inventory); a changed tabbed window waits for resolve(). */
+  /** Protocol 530: refresh the auxiliary windows of the current tabbed binding (a live band polls
+   * its own worker's inventory). A moved or resized tabbed window (e.g. fitted for a native page
+   * capture) retires the band at once and is rebound at its real geometry. */
   refreshAuxiliary(rows) {
     const bound = this.bound, tabbed = bound?.tabbed;
     if (!tabbed?.isCurrent() || !Array.isArray(rows)) return;
     this.rows = rows;
     const row = rows.find(r => r.id === tabbed.xid);
-    if (!row || row.x !== tabbed.bounds.x || row.y !== tabbed.bounds.y || row.width !== tabbed.bounds.width || row.height !== tabbed.bounds.height) return;
+    if (!row) return;
+    if (row.x !== tabbed.bounds.x || row.y !== tabbed.bounds.y || row.width !== tabbed.bounds.width || row.height !== tabbed.bounds.height) {
+      this.retire('window_changed'); this.resolve().catch(() => {}); return;
+    }
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
