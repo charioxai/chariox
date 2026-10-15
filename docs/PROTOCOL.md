@@ -280,7 +280,9 @@ lease/backing run. Connections expire after 120 seconds without exchange, are
 limited to two per exact scope and 32 per kernel, and use 32-frame queues with
 256 KiB input frame/batch limits. Official catalog replies may reach 16 MiB
 and use the existing encrypted relay large-message framing (64 MiB envelope
-ceiling). Queued output has byte budgets of 32 MiB per connection and 256 MiB
+ceiling). Kernel-to-relay envelopes use bounded RFC 6455 continuation frames,
+so encryption/base64 expansion cannot exceed a peer WebSocket frame limit.
+Queued output has byte budgets of 32 MiB per connection and 256 MiB
 per kernel. Backpressure closes or rejects without replay. Native transport
 requests are never replayed after being written; a lost answer has an unknown
 outcome and requires reattachment. Provider frames are excluded from the

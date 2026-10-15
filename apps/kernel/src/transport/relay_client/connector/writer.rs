@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use chariox_relay::protocol::RelayEnvelope;
-use futures_util::{Sink, SinkExt};
+use futures_util::Sink;
 use tokio_tungstenite::tungstenite::Message;
 
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
@@ -22,7 +22,7 @@ where
     };
     let payload_len = payload.len();
     let started = Instant::now();
-    let sent = writer.send(Message::Text(payload.into())).await.is_ok();
+    let sent = chariox_relay::frame_transport::send_text(writer, payload).await;
     let elapsed_ms = started.elapsed().as_millis();
     if payload_len >= RELAY_LARGE_FRAME_LOG_BYTES || elapsed_ms >= RELAY_SLOW_WRITE_LOG_MS {
         crate::logging::warn_with_fields(

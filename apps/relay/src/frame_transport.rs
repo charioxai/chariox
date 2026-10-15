@@ -119,6 +119,50 @@ impl FrameReceiver {
     }
 }
 
+// MP-08 / MP-10 / MP-11: keep kernel-to-relay frames below the same wire bound.
+// RFC 6455 continuation frames preserve the exact envelope; they add no JSON
+// protocol or client-visible state and are reassembled by the WebSocket peer.
+pub async fn send_text<S>(writer: &mut S, text: String) -> bool
+where
+    S: futures_util::Sink<tokio_tungstenite::tungstenite::Message> + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::{
+        protocol::frame::{
+            coding::{OpCode, OpData},
+            Frame,
+        },
+        Message,
+    };
+    if text.len() > MAX_MESSAGE_BYTES {
+        return false;
+    }
+    if text.len() <= CHUNK_BYTES {
+        return writer.send(Message::Text(text.into())).await.is_ok();
+    }
+    for (index, chunk) in text.as_bytes().chunks(CHUNK_BYTES).enumerate() {
+        let opcode = OpCode::Data(if index == 0 {
+            OpData::Text
+        } else {
+            OpData::Continue
+        });
+        let final_frame = (index + 1) * CHUNK_BYTES >= text.len();
+        if writer
+            .send(Message::Frame(Frame::message(
+                chunk.to_vec(),
+                opcode,
+                final_frame,
+            )))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        tokio::task::yield_now().await;
+    }
+    true
+}
+
 /// Temporary peer/metadata connections share exactly the same reassembly seam.
 pub async fn read_message<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
@@ -158,6 +202,81 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 / MP-10 / MP-11: transport regression only; real hosted catalog
+    // failure/pass is recorded separately by the native-provider drill.
+    #[tokio::test]
+    async fn mp08_large_kernel_envelopes_use_bounded_websocket_frames() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = format!(
+            r#"{{"kind":"daemon_peer_response","ciphertext":"{}"}}"#,
+            "x".repeat(19 * 1024 * 1024)
+        );
+        let digest = expected.clone();
+        let received = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(CHUNK_BYTES))
+                .max_message_size(Some(MAX_MESSAGE_BYTES));
+            let mut socket = tokio_tungstenite::accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            let Message::Text(text) = socket
+                .next()
+                .await
+                .unwrap()
+                .expect("every wire frame is bounded")
+            else {
+                panic!("expected unchanged text envelope")
+            };
+            assert_eq!(text.as_str(), digest);
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert!(send_text(&mut socket, expected).await);
+        received.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mp08_fragmented_unicode_envelopes_preserve_utf8_and_small_messages() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = format!(
+            r#"{{"kind":"daemon_peer_response","public":"{}"}}"#,
+            "𝄞é".repeat(CHUNK_BYTES)
+        );
+        let digest = expected.clone();
+        let received = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(CHUNK_BYTES))
+                .max_message_size(Some(MAX_MESSAGE_BYTES));
+            let mut socket = tokio_tungstenite::accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                panic!("expected text")
+            };
+            assert_eq!(text.as_str(), digest);
+            let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                panic!("expected small message")
+            };
+            assert_eq!(text.as_str(), r#"{"kind":"daemon_heartbeat"}"#);
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        assert!(send_text(&mut socket, expected).await);
+        assert!(send_text(&mut socket, r#"{"kind":"daemon_heartbeat"}"#.into()).await);
+        received.await.unwrap();
+    }
+
     #[test]
     fn transport_urls_preserve_paths_and_normalize_empty_paths() {
         assert_eq!(
