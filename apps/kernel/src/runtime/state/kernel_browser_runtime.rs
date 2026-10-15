@@ -98,7 +98,7 @@ struct BrowserToolArguments {
 }
 fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
     let request: BrowserToolArguments = serde_json::from_value(arguments)
-        .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
+        .map_err(|error| host_error(super::kernel_browser_command_error::public_reason(&error)))?;
     if matches!(
         &request.command,
         KernelBrowserCommand::GrantLeasedComputer { .. }
@@ -986,6 +986,44 @@ mod document_tests {
             );
             assert_eq!(a.caller, retry.caller);
         });
+    }
+
+    #[test]
+    fn mcp_browser_command_errors_explain_safe_fields_without_reflecting_values() {
+        // MP-08/MP-10/MP-11: the provider schema lists shared parameters, but
+        // each strict command has its own required and accepted fields.
+        for (arguments, reason) in [
+            (
+                serde_json::json!({"command":{"op":"open","url":"https://example.com","generation":1}}),
+                "unexpected field generation",
+            ),
+            (
+                serde_json::json!({"command":{"op":"navigate","url":"https://example.com","tab_id":"tab"}}),
+                "missing required field generation",
+            ),
+            (
+                serde_json::json!({"command":{"op":"PRIVATE_VALUE"}}),
+                "unsupported operation or input kind",
+            ),
+            (
+                serde_json::json!({"command":{"op":"open","url":2}}),
+                "invalid parameter type",
+            ),
+            (
+                serde_json::json!({"command":{"op":"open","url":"https://example.com","PRIVATE_FIELD":"PRIVATE_VALUE"}}),
+                "unexpected parameter",
+            ),
+        ] {
+            let error = browser_tool_params(arguments).unwrap_err().to_string();
+            assert!(
+                error.contains(reason),
+                "MP-10: missing safe decode reason: {error}"
+            );
+            assert!(
+                !error.contains("PRIVATE"),
+                "MP-11: never reflect arbitrary parameters or values"
+            );
+        }
     }
 
     #[test]

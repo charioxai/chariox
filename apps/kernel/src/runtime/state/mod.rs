@@ -500,6 +500,7 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_command_error;
 mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
