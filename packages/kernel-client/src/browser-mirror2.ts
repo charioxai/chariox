@@ -62,6 +62,8 @@ export class BrowserMirror2Renderer {
   private sending = false
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
+  private localRootScrollAt = -Infinity
+  private rootScrollSending: string | null = null
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
@@ -114,7 +116,8 @@ export class BrowserMirror2Renderer {
         // A refused input (stale epoch, changed or protected target) is dropped:
         // the kernel stays authoritative and packets keep flowing (plan 4.3).
         const before = this.kernelFocus
-        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action, before) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs-- }
+        this.rootScrollSending = next.action.kind === 'scroll_to' && next.action.node_id === null ? next.epoch.document_id : null
+        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action, before) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs--; this.rootScrollSending = null }
       }
     } finally { this.sending = false }
     // A focus that packets moved while inputs were pending (an echo can overtake its input's reply) is taken now.
@@ -149,6 +152,7 @@ export class BrowserMirror2Renderer {
     this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
   }
   private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
+  private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || this.rootScrollSending === this.documentId || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
     return undefined
@@ -195,7 +199,17 @@ export class BrowserMirror2Renderer {
     on('dragstart', event => event.preventDefault())
     on('submit', event => event.preventDefault())
     // Local scrolling, eased per frame (MP-10); opaque regions (canvas, video, foreign stills) take the wheel themselves.
-    on('wheel', event => { const hit = element(event), wheel = event as WheelEvent; if (!hit || this.records.get(hit.id)?.kind !== 'tile') { if (this.wheel.take(wheel, target(event))) event.preventDefault(); this.localScrollAt = performance.now(); return } event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) }) })
+    on('wheel', event => {
+      const hit = element(event), wheel = event as WheelEvent
+      if (!hit || this.records.get(hit.id)?.kind !== 'tile') {
+        const view = doc.defaultView!, x = view.scrollX, y = view.scrollY
+        if (this.wheel.take(wheel, target(event))) event.preventDefault()
+        this.localScrollAt = performance.now()
+        if (doc === this.doc && (this.wheel.rootTarget(doc) || view.scrollX !== x || view.scrollY !== y)) this.localRootScrollAt = this.localScrollAt
+        return
+      }
+      event.preventDefault(); this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: Math.trunc(wheel.deltaX), delta_y: Math.trunc(wheel.deltaY) })
+    })
     on('scroll', this.scrolled)
     on('keydown', event => {
       const { key, shiftKey, ctrlKey, metaKey, altKey, isComposing, keyCode } = event as KeyboardEvent
@@ -259,6 +273,7 @@ export class BrowserMirror2Renderer {
     // The viewer's own scroll is the last writer of this scroller.
     this.deferred.delete(target); if (target.nodeType === 9) this.deferred.delete((target as Document).documentElement)
     this.localScrollAt = performance.now(); this.scrollTargets.add(target)
+    if (target === this.doc) this.localRootScrollAt = this.localScrollAt
     this.scrollFrame ||= requestAnimationFrame(() => {
       this.scrollFrame = 0; const targets = this.scrollTargets; this.scrollTargets = new Set()
       for (const target of targets) {
@@ -501,6 +516,11 @@ export class BrowserMirror2Renderer {
     const complete: Mirror2Resource[] = []
     for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
     if (this.disposed || !this.doc) throw Error('MP-08: mirror closed during validation')
+    // A bounded loading-document resnapshot changes node ids, not the user's
+    // root wheel intent. Preserve it and submit only under the new epoch.
+    const rootScroll = packet.reset && packet.document_id === this.documentId && this.rootScrolling()
+      ? this.wheel.rootTarget(this.doc) ?? [this.frame.contentWindow!.scrollX, this.frame.contentWindow!.scrollY] : null
+    if (packet.reset && packet.document_id !== this.documentId) this.localRootScrollAt = -Infinity
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
@@ -527,7 +547,7 @@ export class BrowserMirror2Renderer {
           if (element.scrollLeft !== x) element.scrollLeft = x; if (element.scrollTop !== y) element.scrollTop = y
           this.applied.set(element, [element.scrollLeft, element.scrollTop])
         }
-        const view = this.frame.contentWindow!; view.scrollTo(packet.scroll[0], packet.scroll[1]); this.applied.set(this.doc, [view.scrollX, view.scrollY])
+        const view = this.frame.contentWindow!, position = rootScroll ?? packet.scroll; view.scrollTo(position[0]!, position[1]!); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
@@ -546,6 +566,7 @@ export class BrowserMirror2Renderer {
         this.selectionDoc = doc
       }
     } finally { this.applying = false }
+    if (rootScroll && (rootScroll[0] !== packet.scroll[0] || rootScroll[1] !== packet.scroll[1])) this.enqueue({kind:'scroll_to',node_id:null,x:rootScroll[0]!,y:rootScroll[1]!})
     Object.assign(this.frame.dataset, { mirrorSequence: String(packet.sequence), mirrorRegions: String(this.counts.tile), mirrorMasks: String(this.counts.mask) })
     this.timed(packet.reset ? 'apply_reset' : 'apply_delta', started)
   }

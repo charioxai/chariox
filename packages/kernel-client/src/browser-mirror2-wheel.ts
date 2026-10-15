@@ -59,6 +59,11 @@ export class Mirror2Wheel {
     }
     return true
   }
+  // Preserve only the top document's remaining wheel intent across its reset.
+  rootTarget(doc: Document): [number, number] | null {
+    for (const glide of this.glides.values()) if (glide.el.ownerDocument === doc && root(glide.el)) return [glide.x + glide.rx, glide.y + glide.ry]
+    return null
+  }
   // A position the kernel set (or a reset) ends that scroller's glide.
   cancel(el?: Element): void { if (el) this.glides.delete(el); else this.glides.clear() }
   close(): void { this.glides.clear(); if (this.frame) this.cancelFrame(this.frame); this.frame = 0 }

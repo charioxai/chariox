@@ -704,6 +704,24 @@ test('MP-10: retiring a mirror preserves inert paint until replacement disposal'
  }finally{await page.close()}
 })
 
+for(const delay of [30,700])test(`MP-08/MP-10/MP-11 M2: a same-document reset preserves a wheel in progress under its new epoch (${delay}ms input)`,async()=>{
+ const page=await viewer();try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body',attrs:{style:'margin:0;height:6000px'}}];
+  await apply(page,snapshot(nodes));await frames();
+  await page.evaluate(()=>{window.epochs=[];window.r.send=async(action,epoch)=>{window.epochs.push({action,epoch});if(!window.released)await new Promise(resolve=>window.releaseInput=resolve)};});
+  await page.mouse.move(900,600);await page.mouse.wheel(0,500);
+  await page.waitForTimeout(delay);
+  await apply(page,{...snapshot(nodes),sequence:2});await frames();
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),500,'a resnapshot must not cancel the remaining wheel intent');
+  await page.evaluate(()=>{window.released=true;window.releaseInput?.()});await frames();
+  const sent=await page.evaluate(()=>window.epochs);
+  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&e.action.y===500&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path');
+  await apply(page,{...snapshot(nodes),sequence:3,document_id:'another-document'});await frames();
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),0,'navigation never inherits the previous document wheel');
+  assert(!(await page.evaluate(()=>window.epochs)).some(e=>e.epoch.document_id==='another-document'),'no previous-document gesture is replayed');
+ }finally{await page.evaluate(()=>{window.released=true;window.releaseInput?.()}).catch(()=>{});await page.close()}
+});
+
 test('MP-08/MP-10: delayed mirror layout cannot turn scroll anchoring into user input',async()=>{
   const page=await viewer();try{
     await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},

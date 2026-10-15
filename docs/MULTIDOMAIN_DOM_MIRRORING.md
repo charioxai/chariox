@@ -35,7 +35,11 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
   one record is bounded at 1 MiB. A small document has a 20,000-record/4 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
-  continuation records. A structural mutation or changed protection kind
+  continuation records. A same-document reset preserves an active root wheel
+  target and submits that position through normal input under the newly applied
+  sequence; navigation discards it. Node-targeted gestures are never replayed,
+  and kernel epoch, identity and protection checks are unchanged.
+  A structural mutation or changed protection kind
   restarts a bounded current prefix instead of resuming a stale traversal.
   Closed roots are discovered with bounded `DOM.describeNode` batches on
   serialized host identities, including open roots and same-origin frames;
