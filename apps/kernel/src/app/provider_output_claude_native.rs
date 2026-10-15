@@ -781,6 +781,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         mark_next_headless_prompt_ready: bool,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10 / MP-11: completion may synchronously promote and
+        // inject the next prompt. Retire the old marker before that dispatch;
+        // never erase the next prompt's context or injection acknowledgement.
+        let stopped_marker = claude_native_marker(context_file);
+        write_claude_native_marker(context_file, "");
         if let Some(prompt) = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
@@ -797,26 +802,39 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .providers
                 .get_run(provider_run_id)
                 .is_ok_and(|run| crate::provider::provider_run_is_claude_native_tui(&run));
-            if prompt.status() == crate::session::PromptStatus::Cancelling
+            let completion = if prompt.status() == crate::session::PromptStatus::Cancelling
                 && (!native_run || confirmed_native_interruption)
             {
-                self.app.finalize_active_prompt_cancellation(
-                    session_id,
-                    agent_id,
-                    Some(provider_run_id),
-                )?;
+                self.app
+                    .finalize_active_prompt_cancellation(
+                        session_id,
+                        agent_id,
+                        Some(provider_run_id),
+                    )
+                    .map(|_| ())
             } else {
                 self.app
-                    .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+                    .complete_active_prompt(session_id, agent_id, Some(provider_run_id))
+                    .map(|_| ())
+            };
+            if let Err(error) = completion {
+                if claude_native_marker(context_file).is_none() {
+                    write_claude_native_marker(
+                        context_file,
+                        stopped_marker.as_deref().unwrap_or_default(),
+                    );
+                }
+                return Err(error);
             }
         }
-        let _ = fs::write(context_file, "");
-        write_claude_native_marker(context_file, "");
-        if mark_next_headless_prompt_ready {
-            if let Some(next_prompt) = self
-                .app
-                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-            {
+        let next_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        if next_prompt.is_none() {
+            let _ = fs::write(context_file, "");
+            write_claude_native_marker(context_file, "");
+        } else if mark_next_headless_prompt_ready && claude_native_marker(context_file).is_none() {
+            if let Some(next_prompt) = next_prompt {
                 crate::logging::debug_with_fields(
                     "daemon.claude_headless",
                     "marked post-stop queued prompt ready",
