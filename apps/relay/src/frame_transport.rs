@@ -129,7 +129,7 @@ where
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::{
         protocol::frame::{
-            coding::{OpCode, OpData},
+            coding::{Data as OpData, OpCode},
             Frame,
         },
         Message,

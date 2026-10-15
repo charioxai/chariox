@@ -3479,3 +3479,108 @@ fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11: settlement promotes and dispatches the queued
+// prompt synchronously. Its new marker/context must survive the outer Stop.
+#[test]
+fn mp08_native_claude_stop_preserves_reentrant_queued_injection() {
+    let worktree = crate::test_support::TestWorktree::new("claude-stop-queue-once");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-queue-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-stop-queue-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("context");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "stopped turn context").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "stop-queue-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    let mut ready = serde_json::to_value(&run).unwrap();
+    ready["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(ready).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().into()))
+        .unwrap();
+    let first = app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "first native prompt",
+            Vec::new(),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt: first } = first else {
+        panic!("first prompt should start")
+    };
+    let next = app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "next unique queued prompt",
+            Vec::new(),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Queued { prompt: _next } = next else {
+        panic!("next prompt should queue")
+    };
+    let context = context_file.display().to_string();
+    write_claude_native_marker(
+        &context,
+        &format!(
+            "{CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX}{}:0",
+            first.id()
+        ),
+    );
+    let result = ProviderOutputClaudeNativeBridge::new(&mut app).complete_native_prompt_after_stop(
+        session.id(),
+        run.id(),
+        agent.id(),
+        &context,
+        true,
+    );
+    let marker = claude_native_marker(&context);
+    let active = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap();
+    let hidden = fs::read_to_string(&context_file).unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    result.unwrap();
+    let active = active.expect("queued prompt should activate");
+    assert!(
+        marker
+            .as_deref()
+            .is_some_and(|m| m.starts_with(&format!("submit-wait:{}:", active.id()))),
+        "synchronous injection marker must survive Stop: {marker:?}"
+    );
+    assert!(
+        !hidden.is_empty(),
+        "synchronous injection hidden context must survive Stop"
+    );
+}
