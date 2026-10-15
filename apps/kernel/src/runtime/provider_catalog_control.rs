@@ -78,11 +78,20 @@ pub(crate) async fn execute_get_provider_catalog_request(
         return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
     }
 
+    let _load_guard = provider_catalog_projection.lock_load().await;
+    // Another caller may have filled this scope while we waited.
+    if let Some(catalog) =
+        provider_catalog_projection.get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
+    {
+        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+    }
+
     let config = config_projection.snapshot();
     let registry = account_profiles.clone();
     let load_started = Instant::now();
+    let load_owner = owner_user_id.clone();
     let catalog = tokio::task::spawn_blocking(move || {
-        load_provider_catalog(config, registry, owner_user_id, request)
+        load_provider_catalog(config, registry, load_owner, request)
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -94,6 +103,7 @@ pub(crate) async fn execute_get_provider_catalog_request(
         "provider catalog loaded",
         serde_json::json!({
             "load_ms": load_started.elapsed().as_millis(),
+            "owner_user_id": owner_user_id,
             "provider_count": catalog.all.len(),
             "connected_provider_count": catalog.connected.len(),
         }),
@@ -114,6 +124,14 @@ fn refresh_provider_catalog_in_background(
         return;
     };
     tokio::spawn(async move {
+        let _load_guard = provider_catalog_projection.lock_load().await;
+        if provider_catalog_projection
+            .get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
+            .is_some()
+        {
+            provider_catalog_projection.finish_refresh();
+            return;
+        }
         let load_started = Instant::now();
         let result = tokio::task::spawn_blocking(move || {
             load_provider_catalog(config, registry, owner_user_id, request)
@@ -173,6 +191,10 @@ pub(crate) async fn provider_catalog_json_value(
     if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
         return serde_json::to_value(catalog).ok();
     }
+    let _load_guard = provider_catalog_projection.lock_load().await;
+    if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
+        return serde_json::to_value(catalog).ok();
+    }
     let config = config_projection.snapshot();
     let registry = account_profiles.clone();
     let load_started = Instant::now();
@@ -216,6 +238,54 @@ pub(crate) fn provider_catalog_cache_key(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    // MP-08 / MP-10 / MP-11: concurrent fresh clients share one native catalog load.
+    #[tokio::test]
+    async fn amfix_r18_catalog_coalesces_concurrent_initial_reads() {
+        crate::test_support::isolated_env_test!();
+        let capture = crate::logging::capture::start();
+        let root =
+            std::env::temp_dir().join(format!("amfix-catalog-flight-{}", rand::random::<u64>()));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let owner = format!("amfix-single-flight-{}", rand::random::<u64>());
+        let profile = registry
+            .create_managed(&owner, "claude", "Catalog")
+            .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.provider_catalog_read_delay_ms = 100;
+        let config = DaemonConfigProjectionStore::new(config);
+        let projection = ProviderCatalogProjectionStore::default();
+        let request = crate::local::GetProviderCatalogRequest {
+            provider: Some("claude".into()),
+            account_profiles: BTreeMap::from([("claude".into(), profile.profile_id)]),
+            ..Default::default()
+        };
+        let reads = (0..6).map(|_| {
+            execute_get_provider_catalog_request(
+                &projection,
+                &config,
+                &registry,
+                &owner,
+                request.clone(),
+            )
+        });
+        for result in futures_util::future::join_all(reads).await {
+            assert!(result.is_ok(), "{result:?}");
+        }
+        let loads = capture
+            .records()
+            .into_iter()
+            .filter(|line| line.contains("provider catalog loaded") && line.contains(&owner))
+            .count();
+        assert_eq!(
+            loads, 1,
+            "six clients must not launch six native catalog loads"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn amfix_r18_catalog_keeps_replica_and_home_cache_namespaces_distinct() {

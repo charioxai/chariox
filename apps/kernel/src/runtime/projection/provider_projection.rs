@@ -460,6 +460,7 @@ fn filter_provider_processes(
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
+    load_lock: Arc<tokio::sync::Mutex<()>>,
     catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
     refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
     generation: Arc<std::sync::atomic::AtomicU64>,
@@ -472,6 +473,11 @@ struct CachedProviderCatalogProjection {
 }
 
 impl ProviderCatalogProjectionStore {
+    // Native catalog initialization is expensive; cold clients must not flood it.
+    pub(crate) async fn lock_load(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.load_lock.lock().await
+    }
+
     pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
         self.get_scoped("", ttl)
     }

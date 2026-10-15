@@ -58,41 +58,37 @@ pub(crate) fn load_provider_catalog(
             "opencode",
             &opencode_profile.profile_id,
         )?;
-        match crate::provider::ensure_opencode_account_endpoint(
+        let result = crate::provider::ensure_opencode_account_endpoint(
             &opencode_profile.owner_user_id,
             &opencode_profile.profile_id,
             opencode_environment,
-        ) {
-            Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
-                Ok(client) => match client.provider_catalog() {
-                    Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
-                    Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
-                },
-                Err(error) => source_errors.push(format!("opencode client: {error}")),
-            },
-            Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
-        }
+        )
+        .and_then(|endpoint| OpenCodeClient::new("catalog", endpoint.as_str()))
+        .and_then(|client| client.provider_catalog())
+        .map(opencode_backend_catalog);
+        append_catalog_source(
+            "opencode",
+            &request,
+            result,
+            &mut catalogs,
+            &mut source_errors,
+        )?;
     }
+
     if let Some(codex_profile) = selected_profiles.get("codex") {
         let codex_environment = registry.resolve_environment(
             &codex_profile.owner_user_id,
             "codex",
             &codex_profile.profile_id,
         )?;
-        match crate::provider::ensure_codex_account_endpoint(
+        let result = crate::provider::ensure_codex_account_endpoint(
             &codex_profile.owner_user_id,
             &codex_profile.profile_id,
             codex_environment,
-        ) {
-            Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
-                Ok(client) => match client.provider_catalog() {
-                    Ok(catalog) => catalogs.push(catalog),
-                    Err(error) => source_errors.push(format!("codex catalog request: {error}")),
-                },
-                Err(error) => source_errors.push(format!("codex client: {error}")),
-            },
-            Err(error) => source_errors.push(format!("codex endpoint: {error}")),
-        }
+        )
+        .and_then(|endpoint| CodexClient::new("catalog", endpoint.as_str()))
+        .and_then(|client| client.provider_catalog());
+        append_catalog_source("codex", &request, result, &mut catalogs, &mut source_errors)?;
     }
 
     let remote_machines = if config.relay_url.is_some() && config.relay_token.is_some() {
@@ -151,6 +147,32 @@ pub(crate) fn load_provider_catalog(
         }),
     );
     Ok(catalog)
+}
+
+fn append_catalog_source(
+    provider: &str,
+    request: &GetProviderCatalogRequest,
+    result: Result<OpenCodeProviderCatalog, DaemonError>,
+    catalogs: &mut Vec<OpenCodeProviderCatalog>,
+    source_errors: &mut Vec<String>,
+) -> Result<(), DaemonError> {
+    match result {
+        Ok(catalog) => catalogs.push(catalog),
+        Err(error)
+            if request
+                .provider
+                .as_deref()
+                .and_then(crate::provider::canonical_provider_family)
+                == Some(provider) =>
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: format!("{provider} catalog is unavailable: {error}. Check the provider account and retry."),
+            });
+        }
+        Err(error) => source_errors.push(format!("{provider} catalog: {error}")),
+    }
+    Ok(())
 }
 
 fn resolve_catalog_profiles(
@@ -1475,6 +1497,50 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    // MP-08 / MP-10 / MP-11: selected-source failure cannot silently select another provider.
+    #[test]
+    fn amfix_r18_catalog_focused_source_failure_is_definitive() {
+        let request = GetProviderCatalogRequest {
+            provider: Some("opencode".into()),
+            ..Default::default()
+        };
+        let mut catalogs = vec![claude_provider_catalog()];
+        let mut errors = Vec::new();
+        let result = append_catalog_source(
+            "opencode",
+            &request,
+            Err(DaemonError::LocalTransport {
+                operation: "provider_catalog",
+                message: "native request timed out".into(),
+            }),
+            &mut catalogs,
+            &mut errors,
+        );
+        let error = result
+            .expect_err("an unrelated Claude catalog cannot satisfy selected OpenCode")
+            .to_string();
+        assert!(error.contains("opencode catalog is unavailable"), "{error}");
+    }
+
+    #[test]
+    fn amfix_r18_catalog_unfocused_read_keeps_available_sources() {
+        let mut catalogs = vec![claude_provider_catalog()];
+        let mut errors = Vec::new();
+        append_catalog_source(
+            "opencode",
+            &GetProviderCatalogRequest::default(),
+            Err(DaemonError::LocalTransport {
+                operation: "provider_catalog",
+                message: "native request timed out".into(),
+            }),
+            &mut catalogs,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(catalogs.len(), 1);
+        assert_eq!(errors.len(), 1);
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {

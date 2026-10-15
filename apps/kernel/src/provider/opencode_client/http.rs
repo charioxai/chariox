@@ -302,6 +302,7 @@ fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
 fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
         ("GET", "/global/health") => "health",
+        ("GET", "/provider") => "provider_catalog",
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
