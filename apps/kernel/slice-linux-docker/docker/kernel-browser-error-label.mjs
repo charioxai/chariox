@@ -84,6 +84,8 @@ const fixedReasons=new Map([
  ["MP-11: extensions are the person's own; an agent cannot open the Web Store or chrome://extensions or act on them",'extension_management_not_granted'],
 ]);
 for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReasons.set(`MP-08: owned desktop prerequisite unavailable (${name})`,'desktop_prerequisite_'+name.toLowerCase().replaceAll('-','_')+'_unavailable');
+// Worker stages come from the shipped native executable; admit exact public labels only.
+const nativeStages=new Set('native_codec_unavailable x_extensions desktop_geometry window_tree_bound window_ambiguous window_not_found window_retired composite_redirect composite_pixmap native_admission native_pool_metadata native_pool_owner native_packet_root native_root_owner native_capture_unavailable native_window_retired native_config native_config_pipe native_config_bound'.split(' '));
 export function hostErrorLabel(error) {
  const name=names.has(error?.name)?error.name:'Error';
  const frame=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].find(m=>files.has(m[1])):null;
@@ -92,7 +94,7 @@ export function hostErrorLabel(error) {
  const method=error?.code==='browser_cdp_timeout'?/^browser CDP method ([A-Za-z.]+) timed out after [0-9]+ms$/.exec(description)?.[1]:command?.[1];
  const desktopExit=/^MP-08: desktop failed to become ready \((bwrap|Xvfb|dbus-daemon|openbox), exit ([0-9]{1,3}|signal)\)$/.exec(description);
  const navigation=error?.code==='browser_navigation_failed'?/^browser navigation failed: net::([A-Z_]+)$/.exec(description)?.[1]:null;
- return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(desktopExit?' desktop_'+desktopExit[1].toLowerCase().replaceAll('-','_')+'_failed_to_start':'')+(fixedReasons.has(error?.message)?' '+fixedReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
+ return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(desktopExit?' desktop_'+desktopExit[1].toLowerCase().replaceAll('-','_')+'_failed_to_start':'')+(nativeStages.has(error?.nativeStage)?' native_worker_'+error.nativeStage:'')+(fixedReasons.has(error?.message)?' '+fixedReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
 }
 
 // MP-08/MP-10/MP-11: shared public reply and log classifier. Exception messages,

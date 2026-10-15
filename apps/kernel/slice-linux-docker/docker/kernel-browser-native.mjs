@@ -5,7 +5,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
-import {startNativeReadback} from './kernel-browser-native-readback.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
@@ -83,7 +83,7 @@ export class LinuxCapture {
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:geometry.width*this.scale,height:geometry.height*this.scale});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw Error('MD-DISPLAY: native readback unavailable');
+   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.

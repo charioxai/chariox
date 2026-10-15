@@ -1,6 +1,7 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage,browserLaunchFailureReason} from './kernel-browser-error-label.mjs';
+import {nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
  assert.equal(hostErrorLabel(error),'host_error TypeError ENOENT kernel-browser-native-worker.mjs:17:20');
@@ -103,4 +104,13 @@ test('native region refusals and v2 module positions survive the public Browser 
   assert(reply.includes(name+':95:13'));assert(!reply.includes('private'));
  }
  assert(!hostFailureMessage({message:'MP-11: native region attestation mismatch private-canary'}).includes('private-canary'));
+});
+
+// MP-08/MP-10/MP-11: the private native worker reports a fixed stage before it exits.
+test('MP-08/MP-10/MP-11 native first-frame failures retain the worker cause without arbitrary text',()=>{
+ const failure=nativeReadbackFailure({helperStage:'native_codec_unavailable'},'MP-08: native region readback unavailable');
+ assert.match(hostFailureMessage(failure),/native_worker_native_codec_unavailable/);
+ assert.match(hostFailureMessage(nativeReadbackFailure({helperStage:'window_not_found'},'MD-DISPLAY: native readback unavailable')),/native_worker_window_not_found/);
+ assert(!hostFailureMessage({...failure,nativeStage:'private-canary'}).includes('private-canary'));
+ assert(!hostFailureMessage({...failure,nativeStage:'native_codec_unavailable private-canary'}).includes('private-canary'));
 });
