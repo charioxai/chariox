@@ -751,3 +751,17 @@ test('MP-08/MP-10/MP-11 replacement subtree retains its live index for subsequen
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'),'replacement input retains its node ID');
  }finally{await page.close()}
 });
+
+for(const shadow of [false,true])test(`MP-08/MP-10/MP-11 promoted known child keeps its index after wrapper retirement shadow=${shadow}`,async()=>{
+ const page=await viewer();try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'div'},...(shadow?[{id:'n7',parent:'n4',kind:'shadow'}]:[]),{id:'n5',parent:shadow?'n7':'n4',kind:'element',tag:'button',attrs:{'aria-label':'promoted action'}},{id:'n6',parent:'n5',kind:'text',text:'kept'}];
+  await apply(page,snapshot(nodes));
+  await apply(page,delta(2,[{op:'children',id:'n3',children:['n5'],nodes:[]}]));
+  assert.equal(await page.evaluate(()=>window.r.dom.get('n5')===window.r.frame.contentDocument.querySelector('button')),true,'moving a descendant out must not retire its live index with the removed wrapper');
+  assert.equal(await page.evaluate(()=>window.r.records.get('n5')?.parent),'n3','the live record follows its new parent');
+  await apply(page,delta(3,[{op:'children',id:'n5',children:['n6','n8'],nodes:[{id:'n8',parent:'n5',kind:'text',text:'still live after promotion'}]}]));
+  assert(await page.frameLocator('iframe').getByText('still live after promotion',{exact:false}).isVisible());
+  await page.frameLocator('iframe').getByRole('button',{name:'promoted action'}).click();
+  assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
+ }finally{await page.close()}
+});

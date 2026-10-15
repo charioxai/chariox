@@ -638,6 +638,14 @@ export class BrowserMirror2Renderer {
           if (record?.kind === 'shadow') { shadowIds.push(id); continue }
           const child = fresh.get(id) ?? this.dom.get(id); if (child) desired.push(child)
         }
+        // A kept descendant may still be inside a wrapper we are about to retire.
+        // Move it first, including from a shadow root, so its index survives.
+        for (const child of desired) {
+          let ancestor: Node | null = child.parentNode
+          while (ancestor && ancestor !== container) ancestor = ancestor.parentNode ?? (ancestor.nodeType === 11 ? (ancestor as ShadowRoot).host ?? null : null)
+          if (ancestor === container && child.parentNode !== container) container.appendChild(child)
+          const record = this.records.get(this.ids.get(child) ?? ''); if (record) record.parent = op.id
+        }
         const keep = new Set(desired)
         // Forgotten before removal: a detached iframe no longer exposes its document.
         for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
