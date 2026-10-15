@@ -331,15 +331,6 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         return;
     }
     state.owned.session_store.restore_projects(vec![project.clone()]);
-    if matches!(scenario, SetupScenario::ProtectedAlias) {
-        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
-        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
-        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
-        *source = locator.clone();
-        let mut legacy = store.load(project.id()).unwrap().unwrap();
-        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
-        store.save(&legacy).unwrap();
-    }
     if matches!(scenario, SetupScenario::RevisionChanged | SetupScenario::SlowPlan) {
         let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else { panic!("Setup fixture") };
         *commands = vec![
@@ -374,6 +365,18 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env),
         accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
     }, "owner").unwrap().0;
+    // MP-08 / MP-10 / MP-11: simulate a pre-validation stored alias only
+    // after valid Save; current Save rejection is covered separately. Keep
+    // testing the runner defense before ambient-source reads or commands.
+    if matches!(scenario, SetupScenario::ProtectedAlias) {
+        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
+        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
+        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
+        *source = locator.clone();
+        let mut legacy = store.load(project.id()).unwrap().unwrap();
+        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
+        store.save(&legacy).unwrap();
+    }
     requirement = environment_requirements(&env)
         .find(|r| r.requirement_id == requirement.requirement_id).unwrap().clone();
     let mut operation = EnvironmentOperation {
