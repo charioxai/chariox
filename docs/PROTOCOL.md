@@ -1121,7 +1121,11 @@ chunks; the ciphertext is never decrypted or inspected by the relay.
 
 A socket admits at most four active transfers and 128 MiB of aggregate declared
 assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
-bytes. IDs increase in first-wire-write order, not completion order; an earlier
+bytes. Completed wire writes release their assembly/lane slots immediately;
+their exact outstanding receipts retain byte credit in the shared window. A
+completed message awaiting its receipt is not an unfinished assembly. This
+keeps small events and replies pipelined across the RTT within the same limits.
+IDs increase in first-wire-write order, not completion order; an earlier
 active stream may finish after a later one. Unknown/reused IDs, changed totals,
 overlapping offsets, unknown fields, nested transport frames and invalid
 checkpoints close the connection without including payloads in errors.
