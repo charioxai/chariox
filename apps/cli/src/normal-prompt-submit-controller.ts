@@ -1,3 +1,4 @@
+import type { SkillSelection } from "@chariox/kernel-client/kernel-types-skills-v2"
 import type {
   PromptAttachmentPart,
   RuntimeAttachment,
@@ -43,11 +44,13 @@ export type NormalPromptSubmitControllerDeps = {
   beginSubmittedPromptUi: (rawPrompt: string) => SubmittedPromptUiSnapshot
   renderPromptTranscript: (prompt: string) => string
   appendUserPrompt: (text: string, agentId?: string | null, metadata?: TranscriptPromptMetadata) => void
+  prepareSkillSelections?: (prompt:string,agentId:string)=>{selections:SkillSelection[]|null;restore():void}
   submitPrompt: (
     attachmentId: string,
     targetAgentId: string | null,
     prompt: string,
     attachments: PromptAttachmentPart[],
+    selections?: SkillSelection[] | null,
   ) => Promise<PromptSubmissionResult>
   applySessionState: (session: RuntimeSession) => void
   setStreamingAgentId: (agentId: string | null) => void
@@ -83,6 +86,7 @@ export function createNormalPromptSubmitController(
       const renderedPrompt = aliasRoute?.prompt ?? prompt
       const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
       let rejectedTarget: {sessionId: string; agentId: string} | undefined
+      let skillsPrompt: {selections:SkillSelection[]|null;restore():void}|null=null
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
@@ -122,8 +126,11 @@ export function createNormalPromptSubmitController(
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
+        skillsPrompt=addressedAgent?deps.prepareSkillSelections?.(rawPrompt,addressedAgent.id)??null:null
+        const selections=skillsPrompt?.selections
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
-        const submission = await deps.submitPrompt(attachment.id, targetAgentId, prompt, attachments)
+        const selectedSkills = selections !== null && selections !== undefined || prompt.includes("$")
+        const submission = await deps.submitPrompt(attachment.id, selectedSkills ? addressedAgent?.id ?? targetAgentId : targetAgentId, selectedSkills ? renderedPrompt : prompt, attachments, selections)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(payload.session)
@@ -156,7 +163,7 @@ export function createNormalPromptSubmitController(
         deps.logError?.("prompt submission failed", {
           error: message,
         })
-        deps.restoreFailedPromptUi(submissionUi)
+        if(deps.restoreFailedPromptUi(submissionUi)) skillsPrompt?.restore()
         const transition = promptSubmissionFailureTransition({
           session: deps.getSession(),
           submittingAgentId: deps.getSubmittingAgentId(),

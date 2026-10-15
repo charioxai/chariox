@@ -36,15 +36,15 @@ test("extension slash command confirms active home-proxy grants before exposing 
   ])
 })
 
-test("extension slash command grants passive remote skills without home-proxy confirmation", async () => {
+test("extension slash command rejects retired skill grants", async () => {
   const remote = agent({ remote: true })
   const harness = capabilityHarness(remote)
 
   await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant skill agent-1 qa") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
 
-  assert.deepEqual(harness.grants, ["skill:agent-1:qa"])
+  assert.deepEqual(harness.grants, [])
   assert.deepEqual(harness.notices, [])
-  assert.deepEqual(harness.footers, ["info:granted skill qa to agent-1"])
+  assert.match(harness.footers[0]??"", /extension kind must be mcp, script, connector, or app/)
 })
 
 test("extension slash command renders remote sync status, retry, and audit counts", async () => {

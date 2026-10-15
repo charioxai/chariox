@@ -1,3 +1,4 @@
+import type { SkillSelection, SkillsV2Response } from "@chariox/kernel-client/kernel-types-skills-v2"
 import {
   normalizeRuntimeSession,
   normalizeRuntimeSessionWithAgentActivity,
@@ -50,9 +51,10 @@ export async function submitPromptWithRecovery(
   getSession: () => RuntimeSession,
   options: CliOptions,
   logger?: CharioxLogger | null,
+  selections?: SkillSelection[] | null,
 ): Promise<PromptSubmissionResult> {
   try {
-    return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+    return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments,selections)
   } catch (error) {
     if (!isRecoverableProviderError(error)) {
       throw error
@@ -89,7 +91,7 @@ export async function submitPromptWithRecovery(
     logger?.info("relaunched provider after recoverable prompt failure", {
       session_id: sessionId,
     })
-    return submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+    return submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments,selections)
   }
 }
 
@@ -100,10 +102,18 @@ async function submitPrompt(
   targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
+  selections?: SkillSelection[] | null,
 ): Promise<PromptSubmissionResult> {
-  const response = await client.send<Record<string, unknown>>(
-    submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
-  )
+  let response:Record<string,unknown>
+  if(selections!==null&&selections!==undefined || prompt.includes("$")) {
+    if(!targetAgentId)throw new Error("Focus an agent to submit Skills selections")
+    const result=await client.send<{SkillsV2?:{result?:SkillsV2Response}}>({SkillsV2:{action:"submit",session_id:sessionId,attachment_id:attachmentId,target_agent_id:targetAgentId,prompt,attachments,selections:selections??[]}})
+    if(result.SkillsV2?.result?.kind!=="submitted")throw new Error("Kernel did not acknowledge the Skills prompt")
+    const state=await client.send<{SessionState:{session:RuntimeSession}}>({GetSessionState:{session_id:sessionId}})
+    response={PromptSubmitted:{...state.SessionState,outcome:result.SkillsV2.result.outcome,session:normalizeRuntimeSessionWithAgentActivity(state.SessionState)}}
+  } else {
+    response=await client.send<Record<string,unknown>>(submitPromptRequest(sessionId,attachmentId,targetAgentId,prompt,attachments))
+  }
   const payload = expectPromptSubmittedPayload(response) as PromptSubmittedPayload
   const normalizedPayload = {
     ...payload,

@@ -276,3 +276,25 @@ function agent(id: string, overrides: Partial<RuntimeSession["agents"][number]> 
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 / MP-11: v2 selection identity stays on the existing prompt lifecycle.
+test("Skills selections submit once with typed source identity and authoritative activity", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const selection = { source: "chariox" as const, skill_id: "skill", name: "review", catalog_revision: 7 };
+    const client = { send: async (request: Record<string, unknown>) => { requests.push(request); return "SkillsV2" in request ? { SkillsV2: { result: { kind: "submitted", outcome: { Started: { prompt: { id: "prompt", source_attachment_id: "attachment", target_agent_id: "agent-1", prompt: "$review", status: "Running" } } } } } } : { SessionState: { session: runtimeSession("session-1"), agent_activity: { "agent-1": { status: "working", busy: true } }, agent_activity_revision: 3 } }; } } as unknown as LocalIpcClient;
+    const result = await submitPromptWithRecovery(client, "session-1", "attachment", "agent-1", "$review", [], () => runtimeSession("session-1"), {} as CliOptions, null, [selection]);
+    assert.equal(requests.length, 2);
+    assert.deepEqual((requests[0] as {
+        SkillsV2: {
+            selections: unknown[];
+        };
+    }).SkillsV2.selections, [selection]);
+    assert.equal(result.payload.session.agent_activity_revision, 3);
+});
+test("Skills refusal does not fall through to the retired prompt/grant path", async () => {
+    const requests: unknown[] = [];
+    const client = { send: async (request: unknown) => { requests.push(request); throw Error("Skills revision changed"); } } as unknown as LocalIpcClient;
+    await assert.rejects(() => submitPromptWithRecovery(client, "session-1", "attachment", "agent-1", "$review", [], () => runtimeSession("session-1"), {} as CliOptions, null, []), /revision changed/);
+    assert.equal(requests.length, 1);
+    assert.ok("SkillsV2" in (requests[0] as object));
+});

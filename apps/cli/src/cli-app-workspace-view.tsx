@@ -43,6 +43,7 @@ export type CliAppWorkspaceViewProps = {
   fatalError: boolean
   themeRevision: number
   responsePaneRows: WorkspaceLayoutProps["responsePaneRows"]
+  skillChips?: WorkspaceLayoutProps["skillChips"]
   promptPlaceholder: string
   promptInputMaxHeight: number
   promptAreaBackground: WorkspaceLayoutProps["promptAreaBackground"]
@@ -111,6 +112,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       fatalError={props.fatalError}
       themeRevision={props.themeRevision}
       responsePaneRows={props.responsePaneRows}
+      skillChips={props.skillChips}
       promptPlaceholder={props.promptPlaceholder}
       promptInputMaxHeight={props.promptInputMaxHeight}
       promptAreaBackground={props.promptAreaBackground}

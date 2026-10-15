@@ -32,6 +32,7 @@ export type CommandCenterRenderState = {
 }
 
 type CommandCenterControllerOptions<TBox = unknown> = {
+  skills?: import("@chariox/kernel-client/skills-composer-controller").SkillsComposerController
   getCommandTree: () => readonly CommandNode[]
   getProviderCatalog: () => ProviderCatalog
   getProviderCommandCatalogs: () => ProviderCommandCatalogs
@@ -74,7 +75,7 @@ export function createCommandCenterController<TBox = unknown>(
   let selectedIndex = 0
   let box: TBox | undefined
 
-  const open = () => items.length > 0 && (query.startsWith("/") || query.startsWith("@"))
+  const open = () => items.length > 0 && (query.startsWith("/") || query.startsWith("@") || items.some(i=>i.kind==="skill"||i.kind==="skill-guidance"))
 
   const render = () => {
     options.render({
@@ -93,6 +94,12 @@ export function createCommandCenterController<TBox = unknown>(
     const previousValue = query
     query = value
     options.refreshWorkflowRegistryEntries?.(value)
+    options.skills?.sync(value)
+    const skills=options.skills?.items()
+    if(skills) {
+      items=[...skills.rows.map(r=>({id:r.id,label:r.label,description:r.description,kind:"skill" as const,value:`$${r.selection.name}`,skillSelection:r.selection})),
+        ...(skills.guidance?[{id:"skill-guidance",label:skills.guidance,description:"/skills",kind:"skill-guidance" as const,value:"/skills"}]:[])]
+    } else {
     items = buildCommandCenterItems(value, {
       providerCatalog: options.getProviderCatalog(),
       commandTree: options.getCommandTree(),
@@ -106,6 +113,7 @@ export function createCommandCenterController<TBox = unknown>(
       ...(options.getAgentAliases ? { agentAliases: options.getAgentAliases() } : {}),
       ...(options.getWorkflowRegistryEntries ? { workflowRegistryEntries: options.getWorkflowRegistryEntries() } : {}),
     })
+    }
     selectedIndex = nextCommandCenterIndex(selectedIndex, items, value, previousValue)
     render()
   }
@@ -120,6 +128,7 @@ export function createCommandCenterController<TBox = unknown>(
   const selectedItem = () => items[selectedIndex] ?? items[0] ?? null
 
   const selectItem = async (item: CommandCenterItem) => {
+    if(item.kind==="skill"||item.kind==="skill-guidance"){if(item.skillSelection)options.skills?.select(item.skillSelection);clear();return}
     const command = commandCenterExecutionCommand(item)
     if (command === null) {
       const completionText = commandCenterCompletionText(item)
@@ -139,6 +148,7 @@ export function createCommandCenterController<TBox = unknown>(
   }
 
   const completeItem = (item: CommandCenterItem) => {
+    if(item.kind==="skill"||item.kind==="skill-guidance"){void selectItem(item);return}
     const completionText = commandCenterCompletionText(item)
     replacePromptText(completionText)
     sync(completionText)

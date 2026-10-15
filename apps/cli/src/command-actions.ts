@@ -372,6 +372,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         return
       }
       const session = deps.sessionState()
+      if (command.args[1] === "skills") { await deps.skillsV2?.command(["environment",...command.args.slice(2)]); return }
       if (command.args[1] === "adjust") {
         const agentId = deps.focusedAgentId()
         if (!agentId) { deps.flashFooter("Select an agent to adjust Environment", "error"); return }
@@ -380,7 +381,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       } else {
         const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id, deps.focusedAgentId())) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
         const manifest = response.ProjectEnvironmentManifest?.manifest
-        deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project adjust — Change something...` : "No saved Project environment yet")
+        deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project skills — Skills\n/env project adjust — Change something...` : "No saved Project environment yet")
       }
       return
     }

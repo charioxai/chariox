@@ -24,6 +24,7 @@ export { formatHomeExtensionAuditEvents } from "@chariox/kernel-client/shell-cap
 type FooterTone = "info" | "error"
 
 export type CapabilityCommandHandlerDeps = {
+  skillsV2?: import("./skills-tui-controller.js").SkillsTuiController
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
@@ -271,90 +272,8 @@ export async function handleSkillSlashCommand(
   deps: CapabilityCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "skill" }>,
 ): Promise<void> {
-  const [action] = command.args
-  if (!action || action === "list" || action === "ls") {
-    if (!deps.listSkills) {
-      deps.flashFooter("skill registry is not available in this daemon", "error")
-      return
-    }
-    const skills = await deps.listSkills()
-    deps.appendNotice(skills.length === 0 ? "No Chariox-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
-    deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
-    return
-  }
-  if (action === "show") {
-    const name = command.args[1]
-    if (!name || !deps.getSkill) {
-      deps.flashFooter("usage: /skill show <name>", "error")
-      return
-    }
-    const skill = await deps.getSkill(name)
-    deps.appendNotice(formatSkillDetails(skill))
-    deps.flashFooter(`showing skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "install") {
-    const sourcePath = command.args[1]
-    if (!sourcePath || !deps.installSkill) {
-      deps.flashFooter("usage: /skill install <path>", "error")
-      return
-    }
-    const skill = await deps.installSkill(sourcePath)
-    deps.flashFooter(`installed skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "update") {
-    const sourcePath = command.args[1]
-    if (!sourcePath || !deps.updateSkill) {
-      deps.flashFooter("usage: /skill update <path>", "error")
-      return
-    }
-    const skill = await deps.updateSkill(sourcePath)
-    deps.flashFooter(`updated skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "uninstall" || action === "remove") {
-    const name = command.args[1]
-    if (!name || !deps.uninstallSkill) {
-      deps.flashFooter(`usage: /skill ${action} <name>`, "error")
-      return
-    }
-    const skill = await deps.uninstallSkill(name)
-    deps.flashFooter(`uninstalled skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "import") {
-    const provider = command.args[1]
-    const name = command.args[2] ?? null
-    if (!provider || !deps.importSkills) {
-      deps.flashFooter("usage: /skill import <codex|opencode> [name]", "error")
-      return
-    }
-    const outcome = await deps.importSkills(provider, name)
-    deps.appendNotice(formatSkillImportOutcome(outcome))
-    deps.flashFooter(`imported ${outcome.imported.length} skill${outcome.imported.length === 1 ? "" : "s"} from ${provider}`, "info")
-    return
-  }
-  if (action === "grant" || action === "revoke") {
-    const agentRef = command.args[1]
-    const name = command.args[2]
-    const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
-    if (!agentRef || !name || !handler) {
-      deps.flashFooter(`usage: /skill ${action} <agent-ref> <name>`, "error")
-      return
-    }
-    const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
-    return
-  }
-  if (action === "grants" || action === "agent") {
-    const agent = resolveGrantTarget(deps, command.args[1], `usage: /skill ${action} <agent-ref>`)
-    if (!agent) return
-    deps.appendNotice(formatAgentCapabilityGrants(agent, "skill"))
-    deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
-    return
-  }
-  deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
+  if (!deps.skillsV2) throw new Error("Skills v2 is unavailable. Upgrade this client and kernel.")
+  await deps.skillsV2.command(command.args)
 }
 
 export async function handleEnvironmentSlashCommand(
@@ -691,19 +610,19 @@ export async function handleExtensionSlashCommand(
     return
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
+    deps.flashFooter("usage: /extension grant|revoke <mcp|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
     return
   }
-  if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector" && kind !== "app") return deps.flashFooter("extension kind must be mcp, skill, script, connector, or app", "error")
+  if (kind !== "mcp" && kind !== "script" && kind !== "connector" && kind !== "app") return deps.flashFooter("extension kind must be mcp, script, connector, or app", "error")
   if (action === "grants") {
-    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector|app> <agent-ref>")
+    const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|script|connector|app> <agent-ref>")
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, kind))
     deps.flashFooter(`showing ${kind} grants for ${agent.agent_ref}`, "info")
     return
   }
   const environment = readOption(command.args, "--env")
-  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>]`, "error")
+  if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|script|connector|app> <agent-ref> <name> [--env <environment>]`, "error")
   if (kind === "app") {
     if (command.args.some((arg) => ["--env", "--credential", "--allow"].includes(arg))) {
       return deps.flashFooter("App bindings take only an installation ID", "error")
@@ -720,13 +639,6 @@ export async function handleExtensionSlashCommand(
     if (confirmActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await handler(agentRef, name)
     deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
-    return
-  }
-  if (kind === "skill") {
-    const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
-    if (!handler) return deps.flashFooter(`skill ${action} is not available`, "error")
-    const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
     return
   }
   if (kind === "connector") {
