@@ -1,3 +1,4 @@
+import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
@@ -59,6 +60,9 @@ export class BrowserMirror2Renderer {
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
   private pendingInputs = 0
   private focusSent: string | null = null // the focus the kernel has (applied from it, or sent to it)
+  private selectionSent = ''
+  private selectionHold: { key: string; until: number; epoch: number } | null = null
+  private selectionFailure = false
   private pointerDown = false // a held viewer gesture owns its range, even between input receipts
   private releasePointer = (): void => { this.pointerDown = false }
   private pointerFocus: string | null = null // a focus taken by a pointer press: its click focuses in the kernel
@@ -100,6 +104,7 @@ export class BrowserMirror2Renderer {
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; return }
+    if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
     this.queue.push({ action, epoch }); this.pendingInputs++
     void this.pump()
   }
@@ -130,8 +135,8 @@ export class BrowserMirror2Renderer {
         // protocol516 (v2 requires517). Legacy transports release only on reply.
         const replied:Promise<void> = Promise.resolve().then(() => {
           if (!this.disposed) return this.send(next.action, next.epoch, written)
-        }).then(() => { if (!this.disposed) this.holdFocus(next.action, before) })
-          .catch(() => { if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
+        }).then(() => { if (!this.disposed) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
+          .catch(() => { if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence) { this.selectionFailure = true; this.selectionHold = null } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
             this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
@@ -145,9 +150,13 @@ export class BrowserMirror2Renderer {
   // selection input has replied, including work still waiting in the write queue.
   async settleInput(): Promise<void> {
     const documentId=this.documentId
+    // selectionchange is asynchronous: Notes can be clicked before the final
+    // release endpoint has emitted its event. Sample it before awaiting receipts.
+    this.syncSelection(this.selectionDoc ?? this.doc)
     while (this.pendingInputs && !this.disposed) await Promise.all([...this.inputReplies])
     if (this.disposed) throw Error('MP-08: mirror closed')
     if(this.documentId!==documentId)throw Error('MP-08: mirror document changed')
+    if(this.selectionFailure)throw Error('MP-10: mirror selection refused')
   }
   private settleFocus(): void {
     if (this.pendingInputs || this.disposed || this.pointerDown) return
@@ -181,6 +190,15 @@ export class BrowserMirror2Renderer {
     const [anchor, focus] = field.selectionDirection === 'backward' ? [field.selectionEnd, field.selectionStart] : [field.selectionStart, field.selectionEnd]
     this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
   }
+  private syncSelection(doc: Document | null): void {
+    const selection = doc?.getSelection()
+    if (!selection || selection.isCollapsed || !selection.anchorNode?.isConnected || !selection.focusNode?.isConnected) return
+    const a = this.ids.get(selection.anchorNode), b = this.ids.get(selection.focusNode)
+    if (!a || !b || this.records.get(a)?.kind !== 'text' || this.records.get(b)?.kind !== 'text') return
+    const action: Mirror2Input = { kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }
+    this.selectionDoc = doc
+    if (JSON.stringify(action) !== this.selectionSent) this.enqueue(action)
+  }
   private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
   private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || [...this.rootScrollReplies].some(q => q.epoch.document_id === this.documentId) || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
   private idOf(node: Node | null | undefined): string | undefined {
@@ -212,7 +230,7 @@ export class BrowserMirror2Renderer {
     let origin: { x: number; y: number } | null = null, dragged = false, pressed: { el: Element; box: DOMRect } | null = null
     on('pointerdown', event => { const e = event as PointerEvent; if (e.button === 0) this.pointerDown = true; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null; const hit = element(event); pressed = hit ? { el: hit.el, box: hit.el.getBoundingClientRect() } : null })
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
-    on('pointerup', () => { this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
+    on('pointerup', () => { this.syncSelection(doc); this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointercancel', () => { this.releasePointer(); origin = null; this.pointerFocus = null; pressed = null; dragged = false })
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
@@ -291,7 +309,7 @@ export class BrowserMirror2Renderer {
     on('compositionend', event => { event.preventDefault(); const data = (event as CompositionEvent).data; if (data) { composed = data; setTimeout(() => { composed = null }, 0); this.enqueueText(data) } this.syncRange(false) })
     // The range a composition replaces is synced as it starts; its result is where the kernel's caret ends.
     on('compositionstart', () => this.syncRange())
-    on('selectionchange', () => { if (this.applying) return; const selection = doc.getSelection(); if (!selection || selection.isCollapsed) return; const a = this.ids.get(selection.anchorNode!), b = this.ids.get(selection.focusNode!); if (a && b && this.records.get(a)?.kind === 'text' && this.records.get(b)?.kind === 'text') this.enqueue({ kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }) })
+    on('selectionchange', () => { if (!this.applying) this.syncSelection(doc) })
   }
   // A multiple select's option state last sent per option, until the kernel's record for it changes: two opposing
   // changes before the first echo compare with what was sent, not with the unchanged kernel record.
@@ -569,7 +587,7 @@ export class BrowserMirror2Renderer {
       if (!this.doc) throw Error('MP-11: mirror sandbox unavailable')
       this.bind(this.doc)
       this.focusSent = null; this.pointerFocus = null; this.focusHold = null
-      this.selectionDoc = null
+      this.selectionDoc = null; this.selectionSent = ''; this.selectionHold = null; this.selectionFailure = false
     }
     if (packet.reset) this.slices.clear()
     const complete: Mirror2Resource[] = []
@@ -580,10 +598,12 @@ export class BrowserMirror2Renderer {
     const rootScroll = packet.reset && packet.document_id === this.documentId && this.rootScrolling()
       ? this.wheel.rootTarget(this.doc) ?? [this.frame.contentWindow!.scrollX, this.frame.contentWindow!.scrollY] : null
     if (packet.reset && packet.document_id !== this.documentId) { this.localRootScrollAt = -Infinity; this.releasePointer() }
+    const savedRange = packet.reset && packet.document_id === this.documentId ? rememberMirror2Range(this.doc, node => this.ids.has(node)) : null
+    let rangeRestored = false
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
-      if (packet.reset) this.reset(packet, scrolls)
+      if (packet.reset) { this.reset(packet, scrolls); this.selectionSent = ''; this.selectionHold = null; this.selectionFailure = false }
       for (const op of packet.ops ?? []) this.op(op, scrolls)
       for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
@@ -612,20 +632,27 @@ export class BrowserMirror2Renderer {
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
       this.kernelFocus = packet.focused
+      rangeRestored = restoreMirror2Range(this.doc, savedRange, node => this.ids.has(node), node => this.records.get(this.ids.get(node) ?? '')?.kind === 'mask')
+      const selectionKey = packet.selection ? JSON.stringify({kind:'selection',anchor_id:packet.selection.anchor_id,anchor_offset:packet.selection.anchor_offset,focus_id:packet.selection.focus_id,focus_offset:packet.selection.focus_offset}) : ''
+      if (this.selectionHold && (selectionKey === this.selectionHold.key || packet.sequence > this.selectionHold.until)) this.selectionHold = null
       const hold = this.focusHold
       if (hold && (packet.focused !== hold.previous || packet.sequence > hold.until)) this.focusHold = null
       this.focusWithheld = this.pendingInputs && !this.pointerFocus && !this.focusHold ? packet.focused : undefined
       if (!this.pendingInputs && !this.pointerFocus && !this.focusHold && !this.pointerDown) {
         this.takeFocus(packet.focused)
-        // Once the kernel's selection clears (or moves to another document) its old range goes too.
-        // Only there: a viewer's own range the kernel never had stays, and so does a focused text
-        // control's range (removeAllRanges would collapse it).
-        const s = packet.selection, a = s && this.dom.get(s.anchor_id), b = s && this.dom.get(s.focus_id), doc = a && b ? a.ownerDocument : null
-        if (this.selectionDoc && this.selectionDoc !== doc && !this.editing(this.selectionDoc)) this.selectionDoc.getSelection()?.removeAllRanges()
-        if (doc) doc.getSelection()?.setBaseAndExtent(a!, s!.anchor_offset, b!, s!.focus_offset)
-        this.selectionDoc = doc
+        if (!this.selectionHold && !rangeRestored) {
+          // Once the kernel's selection clears (or moves to another document) its old range goes too.
+          // Only there: a viewer's own range the kernel never had stays, and so does a focused text
+          // control's range (removeAllRanges would collapse it).
+          const s = packet.selection, a = s && this.dom.get(s.anchor_id), b = s && this.dom.get(s.focus_id), doc = a && b ? a.ownerDocument : null
+          if (this.selectionDoc && this.selectionDoc !== doc && !this.editing(this.selectionDoc)) this.selectionDoc.getSelection()?.removeAllRanges()
+          this.selectionSent = selectionKey
+          if (doc) doc.getSelection()?.setBaseAndExtent(a!, s!.anchor_offset, b!, s!.focus_offset)
+          this.selectionDoc = doc
+        }
       }
     } finally { this.applying = false }
+    if (rangeRestored) this.syncSelection(this.doc)
     if (rootScroll && (rootScroll[0] !== packet.scroll[0] || rootScroll[1] !== packet.scroll[1])) this.enqueue({kind:'scroll_to',node_id:null,x:rootScroll[0]!,y:rootScroll[1]!})
     Object.assign(this.frame.dataset, { mirrorSequence: String(packet.sequence), mirrorRegions: String(this.counts.tile), mirrorMasks: String(this.counts.mask) })
     this.timed(packet.reset ? 'apply_reset' : 'apply_delta', started)
@@ -641,7 +668,19 @@ export class BrowserMirror2Renderer {
     this.records.set(root.id, root); this.dom.set(root.id, doc); this.ids.set(doc, root.id)
     const built = this.build(main.slice(1), doc, frames, scrolls)
     const html = main[1] ? built.get(main[1].id) as Element | undefined : undefined
-    if (html) { doc.documentElement.replaceWith(html); this.csp(doc) }
+    if (html && packet.document_id !== this.documentId) { doc.documentElement.replaceWith(html); this.csp(doc) }
+    else if (html) {
+      const root = doc.documentElement
+      // Keep the sandbox root stable; all content and attributes still come
+      // exclusively from this validated snapshot, including protection resets.
+      for (const attribute of [...root.attributes]) root.removeAttribute(attribute.name)
+      for (const attribute of [...html.attributes]) root.setAttribute(attribute.name, attribute.value)
+      root.replaceChildren(...html.childNodes)
+      const id = main[1]!.id
+      this.dom.set(id, root); this.ids.set(root, id)
+      const style = this.styled.get(`${id}#style`); if (style?.kind === 'attr') style.node = root
+      this.csp(doc)
+    }
     if (root.adopted?.length) this.setStyled(root.id, { kind: 'adopted', raw: root.adopted as string[], node: doc, keys: [] })
     else doc.adoptedStyleSheets = []
     this.hydrateFrames(frames, records, scrolls)

@@ -11,6 +11,8 @@ import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 // MP-08/MP-10/MP-11: these scalar/queue fixtures start with a painted surface;
 // staged-document readiness and event retirement use the real-Chromium suite.
 function paintedRenderer(container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): BrowserMirror2Renderer {
+  container.ownerDocument.addEventListener ??= () => {}
+  container.ownerDocument.removeEventListener ??= () => {}
   const renderer = new BrowserMirror2Renderer(container, send)
   ;(renderer as unknown as { navigation: { painted: boolean } }).navigation.painted = true
   const frame = renderer.frame as HTMLIFrameElement & { removeEventListener?: unknown }

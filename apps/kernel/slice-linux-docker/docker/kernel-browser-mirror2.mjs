@@ -332,12 +332,12 @@ export class Mirror2 {
     let resources = [];
     try {
       source = await read();
-      if (source.resync) { reset = true; source = await read(); }
+      if (source.resync) { this.host.timing?.(`mirror2_reset drain_${source.resync}`, started); reset = true; source = await read(); }
       this.register(stream, source);
       // A pointer press's focus/selection alone waits for the rest of its click (the page's next frame).
       if (!reset && source.pressed > 0 && !source.ops?.length) {
         const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${source.pressed})`, true));
-        if (more.resync) { reset = true; source = await read(); this.register(stream, source); } else { this.register(stream, more); source = this.merge(source, more); }
+        if (more.resync) { this.host.timing?.(`mirror2_reset drain_${more.resync}`, started); reset = true; source = await read(); this.register(stream, source); } else { this.register(stream, more); source = this.merge(source, more); }
       }
       // The first packet carries DOM, CSS and fonts; images follow it. Resource
       // bytes travel only in packets without DOM changes (and in bounded

@@ -715,7 +715,7 @@ for(const delay of [30,700])test(`MP-08/MP-10/MP-11 M2: a same-document reset pr
   assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),500,'a resnapshot must not cancel the remaining wheel intent');
   await page.evaluate(()=>{window.released=true;window.releaseInput?.()});await frames();
   const sent=await page.evaluate(()=>window.epochs);
-  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&e.action.y===500&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path');
+  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&e.action.y===500&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path: '+JSON.stringify(sent));
   await apply(page,{...snapshot(nodes),sequence:3,document_id:'another-document'});await frames();
   assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),0,'navigation never inherits the previous document wheel');
   assert(!(await page.evaluate(()=>window.epochs)).some(e=>e.epoch.document_id==='another-document'),'no previous-document gesture is replayed');
@@ -891,7 +891,9 @@ test('MP-10: a selection echo cannot move an in-progress pointer range',async()=
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','the old kernel prefix must not replace the person’s held range');
   await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));
   await apply(page,delta(3,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
-  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after release another actor’s selection still projects');
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','released endpoint survives stale in-flight prefixes');
+  for(let sequence=4;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after the bounded credit window another actor’s selection still projects');
  }finally{await page.close()}
 });
 
@@ -906,9 +908,44 @@ test('MP-10: a cancelled or externally released drag cannot keep later kernel se
    if(release==='navigation')await apply(page,{...snapshot(nodes),document_id:'replacement',selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}});
    else{
     await page.evaluate(release=>{if(release==='cancel')window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointercancel',{bubbles:true}));else if(release==='outside')document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));else window.dispatchEvent(new Event('blur'))},release);
-    await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+    for(let sequence=2;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
    }
    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The',release);
   }finally{await page.close()}
  }
+});
+
+// MP-08/MP-10/MP-11: same native document, rebased snapshot IDs and a final selectionchange still queued.
+test('MP-10: same-document resets reconcile released ranges and Notes flushes the final endpoint',async()=>{
+ const page=await viewer();
+ try{
+  const nodes=base=>[{id:`n${base}`,parent:null,kind:'document'},{id:`n${base+1}`,parent:`n${base}`,kind:'element',tag:'html'},{id:`n${base+2}`,parent:`n${base+1}`,kind:'element',tag:'body'},{id:`n${base+3}`,parent:`n${base+2}`,kind:'element',tag:'p'},{id:`n${base+4}`,parent:`n${base+3}`,kind:'text',text:'The witness has called'}];
+  await apply(page,snapshot(nodes(1)));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;window.originalRoot=d.documentElement;d.getSelection().setBaseAndExtent(t,0,t,t.length)});
+  await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));
+  await apply(page,{...snapshot(nodes(21)),sequence:2});
+  assert.deepEqual(await page.evaluate(()=>{const d=window.r.frame.contentDocument;return[d.documentElement===window.originalRoot,d.getSelection().toString()]}),[true,'The witness has called']);
+  await page.evaluate(async()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,t.length-2);await window.r.settleInput()});
+  assert.deepEqual((await page.evaluate(()=>window.sent.filter(a=>a.kind==='selection'))).at(-1),{kind:'selection',anchor_id:'n25',anchor_offset:0,focus_id:'n25',focus_offset:20},'Notes samples the current endpoint before its asynchronous selectionchange');
+ }finally{await page.close()}
+});
+
+test('MP-11: reset range reconciliation cannot cross changed text or a protection mask',async()=>{
+ for(const mode of ['text','mask','document']){
+  const page=await viewer();try{
+   const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The witness has called'}]);
+   await apply(page,snapshot(nodes));await page.evaluate(()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,t.length)});await frames();
+   const changed=structuredClone(nodes);if(mode==='text')changed[4].text='Another witness called';if(mode==='mask')changed.splice(3,2,{id:'n4',parent:'n3',kind:'mask',tag:'span',size:[100,20]});
+   await apply(page,{...snapshot(changed),sequence:2,...(mode==='document'?{document_id:'new'}:{})});
+   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'',mode);
+  }finally{await page.close()}
+ }
+});
+
+test('MP-11: a refused final selection cannot silently authorize an older Notes quote',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The witness has called'}])));
+  const result=await page.evaluate(async()=>{window.r.send=async()=>{throw Error('stale epoch')};const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,t.length);try{await window.r.settleInput();return null}catch(e){return e.message}});
+  assert.equal(result,'MP-10: mirror selection refused');
+ }finally{await page.close()}
 });
