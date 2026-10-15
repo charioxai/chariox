@@ -250,9 +250,10 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             return true;
         }
         let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-        let Ok(_lock) = store.lock_briefly(&env.local_project_id) else {
-            return true;
-        };
+        // MP-08 / MP-10 / MP-11: the saved revision is atomically replaced.
+        // Observe it during execution without waiting on a Project lock that
+        // Plan/Detect/export may hold. Locked admission still fences every
+        // command; a changed owner, revision or folder still revokes this one.
         validate_setup_project(state, env, &store).is_err()
     };
     let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;

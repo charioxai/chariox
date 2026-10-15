@@ -352,3 +352,7 @@ pub(in crate::runtime::state) fn validate_project(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "project_environment_apply_concurrency_tests.rs"]
+mod review0034;

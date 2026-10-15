@@ -125,6 +125,7 @@ impl ProjectEnvironmentStore {
             // Requested, Running and final settlement remain durable fences.
             if changed_evidence || last_progress.elapsed() >= std::time::Duration::from_millis(100)
             {
+                self.merge_check_progress(project.id(), &mut checks, &operation.operation_id)?;
                 self.save_checks(project.id(), &checks)?;
                 last_progress = std::time::Instant::now();
             }
@@ -134,6 +135,9 @@ impl ProjectEnvironmentStore {
         if self.snapshot_until(&project, deadline)?.content_digest != env.content_digest {
             return Err(environment_error("Project changed during Check"));
         }
+        // MP-08 / MP-10 / MP-11: Plan/Apply may publish while probes release
+        // the lock. Keep their observations and first public-binding baselines.
+        self.merge_check_progress(project.id(), &mut checks, &operation.operation_id)?;
         // A dependent cannot become Ready while its prerequisite is missing, stale or excluded.
         checks.invalidate_observations(&env, &target, crate::session::unix_epoch_ms());
         invalidate_check_dependencies(
@@ -166,5 +170,67 @@ impl ProjectEnvironmentStore {
             .public_bindings
             .retain(|k, _| k.starts_with(&format!("{}:", env.content_digest)));
         self.save_checks(project.id(), &checks)
+    }
+    // Caller holds the Project lock. Only this Check's progress may replace
+    // journal state loaded before a probe; other writers keep their updates.
+    fn merge_check_progress(
+        &self,
+        project: &str,
+        pending: &mut EnvironmentChecks,
+        operation_id: &str,
+    ) -> Result<(), crate::error::DaemonError> {
+        let mut latest = self.load_checks(project)?;
+        let operation = pending
+            .operations
+            .iter()
+            .find(|o| o.operation_id == operation_id)
+            .ok_or_else(|| environment_error("Check progress identity missing"))?
+            .clone();
+        for (key, value) in &pending.public_bindings {
+            latest
+                .public_bindings
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        for mut observation in std::mem::take(&mut pending.observations)
+            .into_iter()
+            .filter(|o| o.check_operation_id.as_deref() == Some(operation_id))
+        {
+            if latest.observations.iter().any(|o| {
+                o.requirement_id == observation.requirement_id
+                    && o.target.machine_id == observation.target.machine_id
+                    && o.target.slice_ref == observation.target.slice_ref
+                    && o.checked_at_ms > observation.checked_at_ms
+            }) {
+                continue;
+            }
+            let key = format!(
+                "{}:{}:{}",
+                observation.revision_digest,
+                observation.target.machine_id,
+                observation.requirement_id
+            );
+            if pending
+                .public_bindings
+                .get(&key)
+                .zip(latest.public_bindings.get(&key))
+                .is_some_and(|(a, b)| a != b)
+            {
+                observation.status = EnvironmentObservationStatus::Outdated;
+                observation.reason_code = "binding_drift".into();
+                observation.safe_summary =
+                    "Public binding changed since its first Check for this revision".into();
+            }
+            latest.record_observation(observation);
+        }
+        let current = latest
+            .operations
+            .iter_mut()
+            .find(|o| o.operation_id == operation_id)
+            .ok_or_else(|| environment_error("Check progress identity changed"))?;
+        *current = operation;
+        latest.folder_binding_digest = pending.folder_binding_digest.clone();
+        *pending = latest;
+        Ok(())
     }
 }

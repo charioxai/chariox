@@ -136,11 +136,11 @@ async fn envp05a_setup_admission_rechecks_project_owner_and_folder_bindings() {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum SetupScenario { Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias, RevisionChanged, AuthorityChanged }
+enum SetupScenario { SlowPlan, Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias, RevisionChanged, AuthorityChanged }
 
 #[cfg(target_os = "linux")]
 async fn setup_retry_regression(scenario: SetupScenario) {
-    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness | SetupScenario::RevisionChanged | SetupScenario::AuthorityChanged);
+    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness | SetupScenario::RevisionChanged | SetupScenario::AuthorityChanged | SetupScenario::SlowPlan);
     let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
     let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
 
@@ -340,7 +340,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
         store.save(&legacy).unwrap();
     }
-    if matches!(scenario, SetupScenario::RevisionChanged) {
+    if matches!(scenario, SetupScenario::RevisionChanged | SetupScenario::SlowPlan) {
         let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else { panic!("Setup fixture") };
         *commands = vec![
             command("printf started > command-started; while [ ! -f release-first ]; do sleep .02; done; printf finished > first-finished"),
@@ -348,6 +348,26 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         ];
         env.project_requirements = vec![requirement.clone()];
     }
+    let _slow_plan_server = if matches!(scenario, SetupScenario::SlowPlan) {
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/",listener.local_addr().unwrap());
+        let mut service=requirement.clone(); service.requirement_id="slow-service".into();
+        service.spec=RequirementSpec::Services {identity:"Slow service".into(),target_binding:None,
+            probe:Some(EnvironmentProbe::Http {url,expected_status:200,timeout_ms:10000}),health_expectation:None,depends_on:vec![]};
+        env.project_requirements.push(service);
+        let RequirementSpec::SetupChecks {commands,..}=&mut requirement.spec else {panic!("setup expected")};
+        *commands=vec![command("printf started > command-started; while [ ! -f release-first ]; do sleep .02; done; printf finished > first-finished"),command("printf complete > second-command-marker")];
+        for c in commands {c.timeout_ms=15000;}
+        env.project_requirements[0]=requirement.clone();
+        Some(std::thread::spawn(move || {
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let _=stream.read(&mut [0;4096]);
+            std::thread::sleep(Duration::from_secs(4));
+            let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }))
+    } else {None};
     let current = store.snapshot(&project).unwrap();
     env = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
         project_id: project.id().into(), expected_revision: current.revision,
@@ -410,7 +430,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         }
         return;
     }
-    if matches!(scenario, SetupScenario::RevisionChanged) {
+    if matches!(scenario, SetupScenario::RevisionChanged | SetupScenario::SlowPlan) {
         let run_state = state.clone(); let run_config = config.clone();
         let run_env = env.clone(); let run_requirement = requirement.clone(); let run_operation = operation.clone();
         let running = tokio::task::spawn_blocking(move || apply_setup_requirement(&run_state, &run_config, &run_env, &run_requirement, &run_operation, || false));
@@ -419,6 +439,18 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             assert!(!running.is_finished(), "first command must actually start");
             assert!(Instant::now() < deadline, "paused command start timeout");
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if matches!(scenario, SetupScenario::SlowPlan) {
+            let LocalDaemonResponse::ProjectEnvironmentPlan { .. } = state.plan_project_environment(crate::local::PlanProjectEnvironmentRequest {
+                project_id:project.id().into(),expected_revision:env.revision,revision_digest:env.content_digest.clone(),
+                target:current_check_target(&config),selected_items:vec!["slow-service".into()],
+            }, "owner").await.unwrap() else {panic!("Plan expected")};
+            std::fs::write(workspace.join("release-first"), "release").unwrap();
+            let result=running.await.unwrap();
+            assert!(result.is_ok(), "unchanged Setup must survive concurrent slow Plan");
+            assert!(workspace.join("first-finished").exists());
+            assert!(workspace.join("second-command-marker").exists());
+            return;
         }
         let mut draft = environment_draft(&env);
         draft.project_requirements.retain(|r| r.requirement_id != "setup");
@@ -533,4 +565,10 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         &requirement,
         &operation
     ));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn review0034_unchanged_setup_survives_concurrent_slow_plan() {
+    setup_retry_regression(SetupScenario::SlowPlan).await;
 }
