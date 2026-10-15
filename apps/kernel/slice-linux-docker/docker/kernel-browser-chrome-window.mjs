@@ -147,8 +147,15 @@ export class ChromeWindows {
       bound.push(Object.freeze({...binding, in_window: true, page_overlay: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
     }
     // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
-    const popup = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
-      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale);
+    const live = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
+      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), held = this.omniboxHeld;
+    // While the list stays open its rect only grows: Chrome resizes it on almost every key, and a new
+    // fixed-size stream per size never painted while the person typed (r10). Below a shrunk list the
+    // stream shows the page (its masks apply); input there is refused against the live list.
+    const popup = live && held?.window_generation === tabbed.window_generation && held.x === live.x && held.y === live.y
+      && held.width === live.width && live.height <= held.height ? held : live;
+    this.omniboxHeld = popup && {...popup, window_generation: tabbed.window_generation};
+    this.omniboxLive = live;
     if (popup && bound.length < 8) {
       const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
       const key = `${tabbed.window_generation}:${r.id}:in-window:${r.x},${r.y},${r.width}x${r.height}`;
@@ -209,10 +216,22 @@ export class ChromeWindows {
   }
   /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
    * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
-  async inWindowCurrent(source) {
+  async inWindowCurrent(source, point = null) {
     this.omnibox = await this.readOmnibox();
     this.refreshAuxiliary(this.rows);
-    return source.isCurrent() === true;
+    if (source.isCurrent() !== true) return false;
+    if (!point) return true;
+    const live = this.omniboxLive, scale = this.bound.tabbed.scale, region = source.region.window_region;
+    const x = region.left / scale + point.x, y = region.top / scale + point.y;
+    return !!live && x >= live.x && x < live.x + live.width && y >= live.y && y < live.y + live.height;
+  }
+  /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
+   * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
+  inWindowOver(rect) {
+    const tabbed = this.bound?.tabbed;
+    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, bounds: b}) => in_window
+      && b.x - tabbed.bounds.x < rect.left + rect.width && rect.left < b.x - tabbed.bounds.x + b.width
+      && b.y - tabbed.bounds.y < rect.top + rect.height && rect.top < b.y - tabbed.bounds.y + b.height);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
   watch(read, interval = 150) {
@@ -326,7 +345,7 @@ export class InputArbiter {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
       const tab = await this.activeTab();
       if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
-      if (source.overPage && !await this.windows.inWindowCurrent(source)) throw new UserDomainRefusal('stale_reference');
+      if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
     const current = async () => {

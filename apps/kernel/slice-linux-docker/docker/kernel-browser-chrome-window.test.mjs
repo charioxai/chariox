@@ -324,6 +324,17 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
     assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
     assert.equal(windows.auxiliaryState()[0].height, 128);
+    // r10: Chrome resizes the list on almost every key; while it stays open its popup only grows (one stream that paints).
+    const grown = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    assert.equal(grown.isCurrent(), true, "a shorter list keeps the same popup");
+    assert.equal(windows.auxiliaryState()[0].height, 128);
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    const source = { isCurrent: grown.isCurrent, region: { window_region: windows.auxiliaryRegion(grown).rect } };
+    assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 80 }), true, "on the live list");
+    assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 100 }), false, "below it is the page: refused");
+    assert.equal(await windows.inWindowCurrent(source), true, "keys go to Chrome's UI");
+    delete windows.readOmnibox;
     windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.deepEqual(windows.auxiliaryState(), [], "closed");
     for (const state of [["visible", 103, 25, 1078, 90, 1120, 178], ["visible", 103, 100, 1078, 90, 1110, 178], ["visible", 103, 25, 1278, 90, 1310, 178], null]) {
@@ -431,4 +442,23 @@ test("MP-11 input on a closed in-window dropdown is refused before the next poll
   await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" });
   assert.deepEqual(sent, [["click", 40, 20]]);
   assert.equal(reads, 3, "every input re-reads the dropdown");
+});
+
+test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry only", async t => {
+  const { windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    windows.host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const video = { left: 1900, top: 220, width: 500, height: 280 };
+    assert.equal(windows.inWindowOver(video), false, "no dropdown");
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]); // list x 238..2394, y 174..350 (physical)
+    assert.equal(windows.inWindowOver(video), true, "the list covers the video's top rows");
+    assert.equal(windows.inWindowOver({ ...video, top: 360 }), false, "below the list");
+    assert.equal(windows.inWindowOver({ ...video, left: 2400 }), false, "beside it");
+    windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    assert.equal(windows.inWindowOver(video), false, "closed");
+  } finally { await real.close(); }
 });
