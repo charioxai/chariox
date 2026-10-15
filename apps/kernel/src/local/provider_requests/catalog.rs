@@ -1497,6 +1497,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
+    mod claude_vault_status;
+
     // MP-08 / MP-10 / MP-11: selected-source failure cannot silently select another provider.
     #[test]
     fn amfix_r18_catalog_focused_source_failure_is_definitive() {
@@ -1868,7 +1870,7 @@ mod tests {
     // MP-08 / MP-09 / MP-10 / MP-11: a valid file-only logout observation
     // must not erase a previously verified, account-bound Vault login.
     #[test]
-    fn claude_file_status_preserves_verified_vault_account_without_reviving_logout() {
+    fn claude_automatic_refresh_preserves_verified_vault_account_without_reviving_logout() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
@@ -1949,7 +1951,7 @@ mod tests {
             &profile_id
         )
         .unwrap());
-        let status = observe_provider_auth_status(
+        let status = refresh_provider_account_profile_with_config(
             &registry,
             "local",
             "claude-p",
@@ -1957,7 +1959,7 @@ mod tests {
             &DaemonConfig::for_tests(),
         )
         .unwrap();
-        assert_eq!(status.auth_state, "authenticated");
+        assert_eq!(status.auth_state, crate::account_profile::ProviderAccountAuthState::Authenticated);
         registry
             .require_authenticated(
                 "local",
@@ -1971,7 +1973,7 @@ mod tests {
             .mark_logged_out("local", "claude", "default")
             .unwrap();
         assert_ne!(
-            observe_provider_auth_status(
+            refresh_provider_account_profile_with_config(
                 &registry,
                 "local",
                 "claude-p",
@@ -1980,7 +1982,7 @@ mod tests {
             )
             .unwrap()
             .auth_state,
-            "authenticated"
+            crate::account_profile::ProviderAccountAuthState::Authenticated
         );
         registry
             .require_authenticated("local", "claude", "default", None, "MP-11 logout fence")
@@ -2004,7 +2006,7 @@ mod tests {
                 .update_observation("local", "claude", "default", state, None, None, None, None)
                 .unwrap();
             assert_ne!(
-                observe_provider_auth_status(
+                refresh_provider_account_profile_with_config(
                     &registry,
                     "local",
                     "claude-p",
@@ -2013,7 +2015,7 @@ mod tests {
                 )
                 .unwrap()
                 .auth_state,
-                "authenticated"
+                crate::account_profile::ProviderAccountAuthState::Authenticated
             );
         }
     }
