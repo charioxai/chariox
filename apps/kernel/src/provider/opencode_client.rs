@@ -11,6 +11,7 @@ mod message;
 mod model_selection;
 mod prompt_request;
 mod session;
+mod skills;
 
 pub use catalog::{
     OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel,
