@@ -3,10 +3,10 @@ import assert from "node:assert/strict"
 import { once } from "node:events"
 import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
-import type { LocalIpcClient } from "../ipc.js"
+import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import { startCodexProxy } from "./codex-proxy.js"
 
-test("native skill completion projects home catalog, leaves kernel inventory raw, and hot reloads", { timeout: 5_000 }, async (t) => {
+for (const foundation of [false, true]) test(`native skill completion and hot reload (${foundation ? "foundation" : "v2"})`, { timeout: 5_000 }, async (t) => {
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await once(upstream, "listening")
   const address = upstream.address()
@@ -17,13 +17,14 @@ test("native skill completion projects home catalog, leaves kernel inventory raw
       ? { data: [{ cwd: "/actual", skills: [{ name: "provider-only", description: "Native", path: "/native/SKILL.md", enabled: true }], errors: [] }] }
       : {} }))
   }))
-  let revision = 1, catalogRequests = 0
+  let revision = 1, catalogRequests = 0, unavailable = foundation
   const proxy = await startCodexProxy({ upstreamEndpoint: `ws://127.0.0.1:${address.port}`,
     client: { send: async (request: any) => {
       if (request.GetSessionState) return { SessionState: { session: { project_id: "project" } } }
       assert.equal(request.SkillsV2.action, "catalog")
       assert.equal(request.SkillsV2.agent_id, "agent")
       catalogRequests++
+      if (unavailable) throw new LocalIpcError("handle kernel response", "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build", "local_transport_error", false)
       return { SkillsV2: { result: { kind: "catalog", revision, packages: [], native: [], metadata_budget_percent: 1,
         skills: [{ skill: { id: "home-skill", name: `chariox-${revision}`, description: "Current home instruction", short_description: null },
           effective_state: "manual", delivery: { kind: "chariox" }, project_override: null, also_in_provider: null }] } } }
@@ -51,8 +52,9 @@ test("native skill completion projects home catalog, leaves kernel inventory raw
   await request(native, 1, "initialize", { clientInfo: { name: "codex_cli_rs", version: "fixture" } })
   await request(kernel, 1, "initialize", { clientInfo: { name: "chariox-kernel", version: "fixture" } })
   const completion = await request(native, 2, "skills/list", { cwds: ["/actual"], forceReload: true })
-  assert.deepEqual(completion.result.data[0].skills.map((s: any) => s.name), ["provider-only", "chariox-1"])
-  assert.equal(completion.result.data[0].skills[1].path, "chariox-skill://home-skill/SKILL.md")
+  assert.equal(completion.error, undefined)
+  assert.deepEqual(completion.result.data[0].skills.map((s: any) => s.name), foundation ? ["provider-only"] : ["provider-only", "chariox-1"])
+  if (!foundation) assert.equal(completion.result.data[0].skills[1].path, "chariox-skill://home-skill/SKILL.md")
   const beforeKernelQuery = catalogRequests
   const inventory = await request(kernel, 2, "skills/list", { cwds: ["/actual"], forceReload: true })
   assert.deepEqual(inventory.result.data[0].skills.map((s: any) => s.name), ["provider-only"])
@@ -64,6 +66,7 @@ test("native skill completion projects home catalog, leaves kernel inventory raw
     native.on("message", listener)
   })
   revision = 2
+  unavailable = false
   await proxy.refreshSkills(); await invalidated
   const refreshed = await request(native, 3, "skills/list", { cwds: ["/actual"], forceReload: true })
   assert.deepEqual(refreshed.result.data[0].skills.map((s: any) => s.name), ["provider-only", "chariox-2"])
