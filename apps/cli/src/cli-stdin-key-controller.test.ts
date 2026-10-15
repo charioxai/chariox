@@ -123,7 +123,6 @@ test("cli stdin key controller routes workspace and focus cycling shortcuts", ()
   assert.deepEqual(workspaceHarness.calls(), [
     "parse:x",
     "session-browser:p",
-    "focused:p",
     "toggle-workspace",
   ])
 
@@ -466,4 +465,15 @@ test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", as
     assert.ok(h.calls().includes("copy"))
     assert.ok(!h.calls().includes(`focused:${event.name}`))
   }
+})
+
+// MP-08 / MP-10 / MP-11: leave a provider permission unanswered to operate another workflow.
+test("workflow navigation remains available while a focused provider permission is pending", () => {
+  const harness = createHarness({
+    focusedInteractionActive: true, focusedInteractionHandled: true, promptFocused: true,
+    parsedEvent: keyEvent("p", { ctrl: true }),
+  })
+  assert.equal(harness.controller.handleData("x"), true)
+  assert.ok(harness.calls().includes("toggle-workspace"))
+  assert.equal(harness.calls().includes("focused:p"), false)
 })

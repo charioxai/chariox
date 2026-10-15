@@ -96,6 +96,13 @@ export function createCliStdinKeyController(
     if (event.eventType !== "release" && copyKey && deps.copyPromptSelection()) {
       return true
     }
+    // A provider permission belongs to its agent. Keep workflow navigation
+    // available without submitting or dismissing that agent's interaction.
+    if (event.eventType !== "release" && event.ctrl && event.name === "p"
+      && !deps.roomWorkflowsOwnsInput?.()) {
+      if (!deps.dialogOverlayOpen()) deps.toggleWorkspaceScreen()
+      return true
+    }
     // The focused textarea receives the same terminal key through its
     // onKeyDown handler. Let it exclusively own an active interaction so a
     // printable key is not appended once here and once by the textarea.
@@ -128,13 +135,6 @@ export function createCliStdinKeyController(
       return true
     }
     if (deps.roomWorkflowsOwnsInput?.()) return true
-    if (event.eventType !== "release" && event.ctrl && event.name === "p") {
-      if (deps.dialogOverlayOpen()) {
-        return true
-      }
-      deps.toggleWorkspaceScreen()
-      return true
-    }
     if (shouldCycleFocusOnTabEvent(event, {
       attached: deps.isAttached(),
       hotkeysOpen: deps.dialogOverlayOpen(),
