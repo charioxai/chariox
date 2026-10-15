@@ -41,10 +41,9 @@ pub(crate) async fn execute_get_provider_catalog_request(
     owner_user_id: &str,
     request: crate::local::GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
-        &config_projection.snapshot(),
-        owner_user_id,
-    );
+    // Preserve the admitted caller for explicit replica references. Defaults
+    // and home aliases are resolved per provider below the catalog loader.
+    let owner_user_id = owner_user_id.to_string();
     let cache_key = provider_catalog_cache_key(&owner_user_id, &request);
     if let Some(catalog) =
         provider_catalog_projection.get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
@@ -211,4 +210,74 @@ pub(crate) fn provider_catalog_cache_key(
         owner_user_id,
         serde_json::to_string(request).expect("provider catalog request serializes")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn amfix_r18_catalog_keeps_replica_and_home_cache_namespaces_distinct() {
+        crate::test_support::isolated_env_test!();
+        let root =
+            std::env::temp_dir().join(format!("chariox-amfix-catalog-{}", rand::random::<u64>()));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let replica = registry
+            .create_managed("cloud-owner", "claude", "Replica")
+            .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let config = DaemonConfigProjectionStore::new(config);
+        let projection = ProviderCatalogProjectionStore::default();
+        let request = crate::local::GetProviderCatalogRequest {
+            provider: Some("claude".into()),
+            account_profiles: BTreeMap::from([("claude".into(), replica.profile_id)]),
+            ..Default::default()
+        };
+        // A home cache with the same explicit reference must never answer for the replica.
+        projection.update_scoped(
+            &provider_catalog_cache_key("local", &request),
+            crate::provider::OpenCodeProviderCatalog {
+                all: vec![],
+                default: BTreeMap::new(),
+                connected: vec!["home-cache".into()],
+            },
+        );
+        let response = execute_get_provider_catalog_request(
+            &projection,
+            &config,
+            &registry,
+            "cloud-owner",
+            request.clone(),
+        )
+        .await
+        .unwrap();
+        let LocalDaemonResponse::ProviderCatalog { catalog } = response else {
+            panic!("catalog expected")
+        };
+        assert!(!catalog.connected.contains(&"home-cache".to_string()));
+        assert!(projection
+            .cached_scoped(&provider_catalog_cache_key("cloud-owner", &request))
+            .is_some());
+        let foreign = execute_get_provider_catalog_request(
+            &projection,
+            &config,
+            &registry,
+            "foreign-owner",
+            request,
+        )
+        .await;
+        assert!(
+            foreign.is_err(),
+            "a foreign caller cannot resolve the replica or its cache"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

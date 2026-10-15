@@ -51,15 +51,15 @@ pub(crate) fn load_provider_catalog(
     }
     let mut source_errors = Vec::new();
 
-    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    let selected_profiles = resolve_catalog_profiles(&config, &registry, &owner_user_id, &request)?;
     if let Some(opencode_profile) = selected_profiles.get("opencode") {
         let opencode_environment = registry.resolve_environment(
-            &owner_user_id,
+            &opencode_profile.owner_user_id,
             "opencode",
             &opencode_profile.profile_id,
         )?;
         match crate::provider::ensure_opencode_account_endpoint(
-            &owner_user_id,
+            &opencode_profile.owner_user_id,
             &opencode_profile.profile_id,
             opencode_environment,
         ) {
@@ -74,10 +74,13 @@ pub(crate) fn load_provider_catalog(
         }
     }
     if let Some(codex_profile) = selected_profiles.get("codex") {
-        let codex_environment =
-            registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
+        let codex_environment = registry.resolve_environment(
+            &codex_profile.owner_user_id,
+            "codex",
+            &codex_profile.profile_id,
+        )?;
         match crate::provider::ensure_codex_account_endpoint(
-            &owner_user_id,
+            &codex_profile.owner_user_id,
             &codex_profile.profile_id,
             codex_environment,
         ) {
@@ -151,6 +154,7 @@ pub(crate) fn load_provider_catalog(
 }
 
 fn resolve_catalog_profiles(
+    config: &DaemonConfig,
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     request: &GetProviderCatalogRequest,
@@ -190,10 +194,21 @@ fn resolve_catalog_profiles(
     let mut selected = BTreeMap::new();
     for provider in ["codex", "claude", "opencode"] {
         let profile = if let Some(profile_id) = overrides.get(provider) {
-            Some(registry.get(owner_user_id, provider, profile_id)?)
+            let owner = crate::account_profile::provider_account_authority_owner_for_profile(
+                config,
+                registry,
+                owner_user_id,
+                provider,
+                profile_id,
+            )?;
+            Some(registry.get(&owner, provider, profile_id)?)
         } else {
+            let owner = crate::account_profile::provider_account_authority_owner_user_id(
+                config,
+                owner_user_id,
+            );
             registry
-                .list(owner_user_id, Some(provider))?
+                .list(&owner, Some(provider))?
                 .into_iter()
                 .find(|profile| profile.is_default)
         };
@@ -1473,6 +1488,84 @@ mod tests {
 
     // MP-08 / MP-10 / MP-11: fresh caller isolation without unrelated-provider prerequisites.
     #[test]
+    fn amfix_r18_catalog_profile_resolution_keeps_exact_replica_ids_and_home_aliases() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("amfix-catalog-authority");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        let home = registry.create_managed("local", "codex", "Home").unwrap();
+        registry
+            .set_default("local", "codex", &home.profile_id)
+            .unwrap();
+        let replica = registry
+            .create_managed("cloud-owner", "codex", "Replica")
+            .unwrap();
+        registry
+            .materialize_replica(
+                "cloud-owner",
+                &crate::account_profile::ProviderAccountMaterialization {
+                    profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                        owner_user_id: "cloud-owner".into(),
+                        provider: "codex".into(),
+                        profile_id: home.profile_id.clone(),
+                        label: "Duplicate replica".into(),
+                        origin:
+                            crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                        is_default: false,
+                    },
+                    files: vec![],
+                    generated_at_ms: 1,
+                },
+            )
+            .unwrap();
+        let request = |reference: &str| GetProviderCatalogRequest {
+            provider: Some("codex".into()),
+            account_profiles: BTreeMap::from([("codex".into(), reference.into())]),
+            ..Default::default()
+        };
+        for (reference, expected_owner) in [
+            (&*replica.profile_id, "cloud-owner"),
+            (&*home.profile_id, "cloud-owner"),
+            ("Home", "local"),
+        ] {
+            let selected =
+                resolve_catalog_profiles(&config, &registry, "cloud-owner", &request(reference))
+                    .unwrap();
+            assert_eq!(
+                selected["codex"].owner_user_id, expected_owner,
+                "{reference}"
+            );
+        }
+        let defaults = resolve_catalog_profiles(
+            &config,
+            &registry,
+            "cloud-owner",
+            &GetProviderCatalogRequest::default(),
+        )
+        .unwrap();
+        assert_eq!(defaults["codex"].profile_id, home.profile_id);
+        assert_eq!(defaults["codex"].owner_user_id, "local");
+        let local =
+            resolve_catalog_profiles(&config, &registry, "local", &request(&home.profile_id))
+                .unwrap();
+        assert_eq!(local["codex"].owner_user_id, "local");
+        assert!(resolve_catalog_profiles(
+            &config,
+            &registry,
+            "foreign-owner",
+            &request(&replica.profile_id)
+        )
+        .is_err());
+    }
+
+    #[test]
     fn catalog_profile_resolution_allows_an_independent_single_provider_owner() {
         let root = std::env::temp_dir().join(format!(
             "chariox-catalog-independent-{}-{}",
@@ -1496,23 +1589,39 @@ mod tests {
             .set_default("second", "codex", &second.profile_id)
             .unwrap();
         let request = GetProviderCatalogRequest::default();
-        let selected = resolve_catalog_profiles(&registry, "second", &request).unwrap();
+        let selected =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "second", &request)
+                .unwrap();
         assert_eq!(selected.len(), 1);
         assert_eq!(selected["codex"].profile_id, second.profile_id);
-        assert!(resolve_catalog_profiles(&registry, "empty", &request)
-            .unwrap()
-            .is_empty());
+        assert!(
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "empty", &request)
+                .unwrap()
+                .is_empty()
+        );
         let foreign = GetProviderCatalogRequest {
             provider: Some("codex".into()),
             account_profiles: BTreeMap::from([("codex".into(), primary.profile_id)]),
             ..Default::default()
         };
-        assert!(resolve_catalog_profiles(&registry, "second", &foreign).is_err());
+        assert!(resolve_catalog_profiles(
+            &DaemonConfig::for_tests(),
+            &registry,
+            "second",
+            &foreign
+        )
+        .is_err());
         let missing = GetProviderCatalogRequest {
             provider: Some("opencode".into()),
             ..Default::default()
         };
-        assert!(resolve_catalog_profiles(&registry, "second", &missing).is_err());
+        assert!(resolve_catalog_profiles(
+            &DaemonConfig::for_tests(),
+            &registry,
+            "second",
+            &missing
+        )
+        .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1541,8 +1650,9 @@ mod tests {
             },
         };
 
-        let error = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect_err("unmaterialized profile should be rejected");
+        let error =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "owner-a", &request)
+                .expect_err("unmaterialized profile should be rejected");
         assert!(error.to_string().contains("not materialized"));
         registry
             .update_materialization_status(
@@ -1560,8 +1670,9 @@ mod tests {
                 },
             )
             .expect("materialization should be recorded");
-        let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect("materialized selection should resolve");
+        let selected =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "owner-a", &request)
+                .expect("materialized selection should resolve");
         assert_eq!(selected["codex"].profile_id, work.profile_id);
 
         registry
@@ -1579,7 +1690,7 @@ mod tests {
                 },
             )
             .expect("legacy stale installation should be recorded");
-        resolve_catalog_profiles(&registry, "owner-a", &request)
+        resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "owner-a", &request)
             .expect("a previously installed independent profile remains selectable");
         let _ = fs::remove_dir_all(root);
     }
