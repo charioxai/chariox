@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: one worker, eight repair chains and a <=3 video queue.
 const inWorker=typeof WorkerGlobalScope!=='undefined'&&globalThis instanceof WorkerGlobalScope;
 if(inWorker){
- const channels=new Map();let writer=null,writing=Promise.resolve();
+ const channels=new Map();let writer=null,writing=Promise.resolve(),lastTimestamp=0;
  const now=()=>globalThis.performance?performance.timeOrigin+performance.now():Date.now();
  const retire=channel=>{const state=channels.get(channel);channels.delete(channel);if(state?.decoder?.state!=='closed')state?.decoder?.close();return state;};
  const fail=channel=>{const state=retire(channel);for(const job of state?.pending?.values()??[])self.postMessage({id:job.id,error:'MD-DISPLAY: worker decode failed'});};
@@ -20,7 +20,7 @@ if(inWorker){
     fail(channel);state={pending:new Map(),format};channels.set(channel,state);
     const current=state;
     state.decoder=new VideoDecoder({output:frame=>{
-     const job=current.pending.get(frame.timestamp);
+     const timestamp=frame.timestamp,job=current.pending.get(timestamp);
      if(channels.get(channel)!==current||!job){frame.close();return;}
      const decodedAt=now();
      // Geometry is checked before a frame can enter the native track. Repair
@@ -32,7 +32,7 @@ if(inWorker){
       try{
        if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);committedAt=now();}
        if(channels.get(channel)!==current){image.close();return;}
-       current.pending.delete(job.sequence*16667);
+       current.pending.delete(timestamp);
        self.postMessage({id:job.id,frame:image,decodedAt,committedAt},[image]);
       }catch{image.close();fail(channel);}
       finally{if(image!==frame)frame.close();}
@@ -42,7 +42,10 @@ if(inWorker){
     },error:()=>{if(channels.get(channel)===current){if(current.pending.size===0)self.postMessage({id:null,error:'MD-DISPLAY: worker decode failed'});fail(channel);}}});
     state.decoder.configure({codec,codedWidth:width,codedHeight:height,optimizeForLatency:true});
    }
-   const timestamp=sequence*16667;
+   // MP-08/MP-10/MP-11: sparse damage/repairs make sequence a dependency
+   // cursor, never a60Hz media clock. Native live tracks must see the actual
+   // arrival cadence, including idle gaps. Break same-tick ties by1us.
+   const timestamp=Math.max(Math.round((globalThis.performance?performance.now():Date.now())*1000),lastTimestamp+1);lastTimestamp=timestamp;
    state.pending.set(timestamp,data);
    state.decoder.decode(new EncodedVideoChunk({type:key?'key':'delta',timestamp,data:bytes}));
   }catch{fail(channel);self.postMessage({id,error:'MD-DISPLAY: worker decode failed'});}
