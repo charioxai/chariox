@@ -116,12 +116,25 @@ export class BrowserDisplayPresenter {
         stripes=await this.stripeDecoder.decode(frame,bytes);
       }else if (frame.kind === 'tiles') {
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
+        // MP-08/MP-10/MP-11: validate the complete packet before starting any
+        // decode; four workers overlap independent images without unbounded jobs.
         for (const tile of frame.tiles) {
-          // MP-08/MP-10: lossless PNG tiles or WebP strips up to 2560x256 pixels.
           if (![tile.x, tile.y, tile.width, tile.height].every(Number.isSafeInteger) || tile.x < 0 || tile.y < 0 || tile.width < 1 || tile.height < 1 || tile.width * tile.height > 2560 * 256 || tile.x + tile.width > frame.width || tile.y + tile.height > frame.height || !Object.hasOwn(imageTypes, tile.format)) throw new Error('MD-DISPLAY: tile geometry');
-          const bitmap = await createImageBitmap(new Blob([bytes(tile.data)], { type: imageTypes[tile.format] })); bitmaps.push(bitmap);
-          if (bitmap.width !== tile.width || bitmap.height !== tile.height) throw new Error('MD-DISPLAY: tile dimensions');
         }
+        let next=0,decodeError;
+        const decode=async()=>{
+          while(!decodeError && next<frame.tiles.length){
+            const index=next++,tile=frame.tiles[index];
+            try{
+              const bitmap=await createImageBitmap(new Blob([bytes(tile.data)],{type:imageTypes[tile.format]}));
+              bitmaps[index]=bitmap;
+              if(bitmap.width!==tile.width||bitmap.height!==tile.height)throw Error('MD-DISPLAY: tile dimensions');
+            }catch(error){decodeError??=error;}
+          }
+        };
+        // All in-flight decodes must settle before finally closes their images.
+        await Promise.all(Array.from({length:Math.min(4,frame.tiles.length)},decode));
+        if(decodeError)throw decodeError;
       } else if (frame.kind === 'png') {
         const bitmap = await createImageBitmap(new Blob([bytes(frame.data)], { type: 'image/png' })); bitmaps.push(bitmap);
         if (bitmap.width !== frame.width || bitmap.height !== frame.height) throw new Error('MD-DISPLAY: image dimensions');
@@ -184,7 +197,7 @@ export class BrowserDisplayPresenter {
       if(!videoFrame){this.decodeSequence=frame.sequence;this.decodeDocumentId=frame.document_id;}
       if(!globalThis.Worker||!videoFrame)this.onTiming('client_present', presented);
       return true;
-    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap.close(); this.busy = false; }
+    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap?.close(); this.busy = false; }
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
