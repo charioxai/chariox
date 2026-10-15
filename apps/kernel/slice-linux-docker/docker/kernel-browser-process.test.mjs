@@ -22,7 +22,7 @@ test('MP-08/MP-10 production Chromium exposes its shared desktop to native captu
  const desktop={runtime:root,binding:()=>({environment:{PATH:process.env.PATH}}),start:async()=>({environment:{PATH:process.env.PATH}}),
   recordOwned:async()=>{linked=host.display===desktop},stop:async()=>{},close:async()=>{}};
  host.desktop=desktop;
- try{await assert.rejects(host.start(),/did not become ready/);assert(linked,'native capture must use the desktop that launched Chromium');}
+ try{await assert.rejects(host.start(),/host Chromium launch failed/);assert(linked,'native capture must use the desktop that launched Chromium');}
  finally{process.getuid=getuid;await host.stop();await rm(root,{recursive:true,force:true});}
 });
 test('MD-DISPLAY recovering an exited browser closes the previous X server before a failed restart',async()=>{
