@@ -108,7 +108,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L whatever the focus");
   focus = false;
   await assert.rejects(send({ kind: "key", key: "I", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+I");
-  focus = true;
+  focus = true; arbiter.pageFocused(); // after Ctrl+L, a native click back into the page
   await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "a sensitive field focused: no band text");
   await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_sensitive_requires_focus" });
   await assert.rejects(send({ kind: "key", key: "v", modifiers: 2 }), { code: "user_domain_sensitive_requires_focus" }, "Ctrl+V is not a browser shortcut: it follows the text-target fence");
@@ -148,27 +148,28 @@ test("MP-08 browser chords and refused chords", () => {
 // MP-11 (review #1016 P2): Chromium keeps the page's (sensitive) activeElement while its own omnibox
 // owns the keys. After the person puts focus in Chrome's UI, typing and Enter reach the omnibox; once
 // the page has focus again (or nothing says Chrome's UI has it), the page's text-target fence applies.
+// culinux 12:10Z: focus emulation (on while a mirror is attached) makes document.hasFocus() always true.
 test("MP-11 omnibox focus is told apart from the page's remembered sensitive focus", async () => {
-  let pageFocus = true;
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
-    : method === "Runtime.evaluate" ? { result: { value: params.expression === "document.hasFocus()" ? pageFocus : true } } : {} };
+    : method === "Runtime.evaluate" ? { result: { value: true } } : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
     browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {}), calls = [];
-  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { pageFocus = false; calls.push("click"); return true; }, chord: async k => (calls.push(k), true) };
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (calls.push("click"), true), chord: async k => (calls.push(k), true) };
   const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a password field focused in the page");
   await send({ kind: "click", x: 520, y: 63 }); // the omnibox
+  assert.deepEqual(await send({ kind: "key", key: "a", modifiers: 2 }), { dispatched: true }, "Ctrl+A selects the address");
   assert.deepEqual(await send({ kind: "text", text: "wiki" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Backspace" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "Enter hands focus back to the page");
-  pageFocus = true;
   assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L");
-  pageFocus = false;
   assert.deepEqual(await send({ kind: "text", text: "a" }), { dispatched: true }, "Ctrl+L focuses the omnibox");
-  pageFocus = true;
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "the page took focus back");
+  arbiter.pageFocused();
+  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a native click into the page took focus back");
+  await send({ kind: "click", x: 520, y: 63 }); await send({ kind: "key", key: "Tab" });
+  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "Tab moves focus on");
   await send({ kind: "click", x: 300, y: 20 }); // a Tab in the strip: the page keeps its focus
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
 });

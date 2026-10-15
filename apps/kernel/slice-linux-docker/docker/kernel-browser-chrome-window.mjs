@@ -157,6 +157,8 @@ const STRIP_HEIGHT = 41;
 export class InputArbiter {
   constructor(host, windows) { this.host = host; this.windows = windows; }
   static agent(command) { return command._agent_input === true || command.focused_agent === true; }
+  /** A native click into the page puts the keys back in the page. */
+  pageFocused() { this.chromeFocus = null; }
   /** The kernel-observed active Tab of the tabbed window, or null (fail closed). */
   async activeTab() {
     const target = await this.host.tabGroups?.active().catch(() => null);
@@ -208,8 +210,9 @@ export class InputArbiter {
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
       const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
-      // Only when the person put focus there for this document and the page reports no focus.
-      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}` && (await evaluate('document.hasFocus()')).result?.value === false) return;
+      // Only the person's own native actions say where the keys are: focus emulation (on while a
+      // mirror is attached) makes document.hasFocus() true whatever has the native focus (culinux 12:10Z).
+      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) return;
       const {result} = await evaluate(sensitiveFocusExpression(false));
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
