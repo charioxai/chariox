@@ -365,3 +365,26 @@ test("MP-08/MP-11 a countdown tick preserves the request scroll surface", async 
     assert.match(h.captureCharFrame(), /3:11 left/)
   } finally {h.renderer.destroy()}
 })
+
+// MP-08 / MP-10 / MP-11: normal sudo decisions stay readable at terminal sizes.
+test("MP-08/MP-11 typed sudo request collapses technical facts and full task", async () => {
+  const h = await createTestRenderer({width: 100, height: 40, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    const p = Object.assign({...prompt, kind: "sudo" as const, title: "Claude Code wants to run one sudo task",
+      message: "Sudo allows critical approvals until this task yields or is revoked."}, {sudo_request: {
+        requester_name: "Claude Code", agent_name: "Reviewer", session_name: "Payments", task_summary: "Review the release",
+        task: "Review the release\n" + "full task line\n".repeat(100), grant_id: "grant-handle", terminal_id: "terminal-handle",
+      }})
+    surface.render({...view, prompt: p}, {width: 100, height: 40})
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Reviewer/)
+    assert.match(frame, /“Review the release”/)
+    assert.match(frame, /Show details/)
+    assert.doesNotMatch(frame, /full task line|grant-handle|session-1/)
+  } finally {h.renderer.destroy()}
+})

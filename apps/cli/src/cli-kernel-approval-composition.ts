@@ -56,6 +56,7 @@ export function createCliKernelApprovalComposition(deps: {
     approve: () => { void popup.approve() },
     refuse: () => { void popup.refuse() },
     cycleRemember: () => popup.cycleRemember(),
+    toggleDetails: () => popup.toggleDetails(),
   })
   const popup = createPasskeyPopupController({
     serverClock: createKernelClock(async () => kernelTimeFromHealth(await deps.client.send({GetDaemonHealth: null}))),
@@ -96,7 +97,7 @@ export function createCliKernelApprovalComposition(deps: {
     popupSurface.render(popup.view(), deps.dimensions())
   })
   onCleanup(deps.client.onKernelEvent((event) => {
-    if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
+    if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts), event)
     else if (event.event === "transport_closed" || event.event === "transport_resumed") {
       popup.invalidateConnectionState({preservePrompts: event.event === "transport_resumed"})
       security.invalidate()

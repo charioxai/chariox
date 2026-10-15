@@ -356,3 +356,18 @@ test("MP-08/MP-11 kernel countdown expires once and reports the unanswered exten
     assert.equal(h.notices.length, 1)
   } finally {h.popup.dispose()}
 })
+
+for (const reason of ["expired", "answered", "revoked"] as const) {
+  test(`MP-08/MP-11 sudo closure ${reason} is authoritative with a lagging client clock`, () => {
+    const h = harness({now: () => 1_000, synchronize: async () => {}, invalidate() {}})
+    const pending = {...prompt("timed-sudo"), kind: "sudo" as const, expires_at_ms: 4_000}
+    const metadata = {kernel_now_ms: 4_001, closed: [{session_id: pending.session_id, interaction_id: pending.interaction_id, kind: pending.kind, expires_at_ms: pending.expires_at_ms, reason}]}
+    try {
+      h.popup.apply([pending], {kernel_now_ms: 1_000, closed: []})
+      h.popup.apply([], metadata)
+      h.popup.apply([], metadata)
+      assert.equal(h.popup.view().count, 0)
+      assert.deepEqual(h.notices, reason === "expired" ? ["Sudo request expired"] : [])
+    } finally {h.popup.dispose()}
+  })
+}

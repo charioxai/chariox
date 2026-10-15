@@ -2,6 +2,8 @@
 export type KernelClock = {
   now(): number | null
   synchronize(): Promise<void>
+  /** Protocol 538 feed sample, anchored at receipt without local wall-clock drift. */
+  observe?(serverNowMs: number): void
   invalidate(): void
 }
 
@@ -17,6 +19,11 @@ export function createKernelClock(read: () => Promise<number>, monotonicNow: () 
   return {
     now: () => anchor ? anchor.server + monotonicNow() - anchor.local : null,
     invalidate() { anchor = null; pending = null },
+    observe(serverNowMs) {
+      if (!Number.isFinite(serverNowMs) || serverNowMs < 0) return
+      pending = null // A late health response must not replace the newer feed sample.
+      anchor = {server: serverNowMs, local: monotonicNow()}
+    },
     async synchronize() {
       if (pending) return
       const request = {}

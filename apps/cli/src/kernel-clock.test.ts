@@ -29,3 +29,16 @@ test("MP-08/MP-11 an old connection cannot restore its clock after invalidation"
   await old
   assert.equal(clock.now(), null)
 })
+
+// MP-08 / MP-11: a delayed health sample cannot undo an authoritative feed sample.
+test("MP-08/MP-11 projected kernel time supersedes an in-flight health clock read", async () => {
+  let finish!: (value: number) => void
+  let mono = 100
+  const clock = createKernelClock(() => new Promise(resolve => {finish = resolve}), () => mono)
+  const read = clock.synchronize()
+  clock.observe!(4_000)
+  mono += 20
+  finish(1_000)
+  await read
+  assert.equal(clock.now(), 4_020)
+})
