@@ -7,6 +7,8 @@ import type { LocalIpcClient } from "../ipc.js"
 import type { NativeProviderTransportOperation, NativeProviderTransportResult } from "@chariox/kernel-client/kernel-types"
 import { nativeProviderTransportRequest } from "../ipc-requests.js"
 
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
+
 const frameBytes = 256 * 1024
 const outputFrameBytes = 16 * 1024 * 1024
 const outputBufferBytes = 32 * 1024 * 1024
@@ -30,11 +32,19 @@ export async function startCodexKernelTransport(options: {
     try {
       response = await options.client.send(nativeProviderTransportRequest({ ...options, operation }))
     } catch (error) {
+      traceCodexLifecycle("native_transport_error", {
+        method: operation.kind,
+        errorClass: error instanceof Error ? error.name : typeof error,
+        errorCode: typeof (error as { code?: unknown })?.code === "string"
+          && /^[a-z_]{1,64}$/.test((error as { code: string }).code) ? (error as { code: string }).code : undefined,
+        reasonClass: error instanceof Error ? ["native connection closed", "native attachment", "native projected run", "native lease", "not configured", "not connected", "kernel may have run", "timed out"].find(reason => error.message.includes(reason)) : undefined,
+      })
       if (error instanceof Error && /unknown variant.*NativeProviderTransport|unsupported.*native.?provider.?transport/i.test(error.message)) {
         throw new Error("Codex native transport requires kernel protocol 526 and worker protocol 134; update the owning kernel and reattach")
       }
       throw error
     }
+    if (!response.NativeProviderTransport) traceCodexLifecycle("native_transport_refused", { method: operation.kind, responseKinds: Object.keys(response) })
     const result = response.NativeProviderTransport?.result
     if (!result) throw new Error("Codex native transport requires kernel protocol 526 and worker protocol 134; update and reattach")
     return result
@@ -72,7 +82,7 @@ export async function startCodexKernelTransport(options: {
               socket.send(frame)
             }
           }
-          if (result.closed) break
+          if (result.closed) { traceCodexLifecycle("native_transport_closed", { method: "exchange" }); break }
           if (result.frames.length === 0 && frames.length === 0) await sleep(25)
         }
       } catch (error) {
