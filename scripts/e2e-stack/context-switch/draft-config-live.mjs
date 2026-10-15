@@ -16,7 +16,7 @@ try{
  await r.tui.type('\x15'+prompt);await r.capture('typed-draft-with-file');await r.tui.type('\r');await sleep(1500);const rejected=await r.capture('account-block-restored-draft');
  if(rejected.footer?.tone!=='error'||!/sign.in|signed.in|not.*authenticated|needs.*login/i.test(rejected.footer.message??''))throw Error('Expected visible account-readiness rejection');
  const ansi=r.out+'/account-block-restored-draft.ansi';
- const screen=execFileSync('python3',['-c',"import pyte,sys; s=pyte.Screen(160,48); pyte.Stream(s).feed(open(sys.argv[1]).read()); print('\\n'.join(s.display))",ansi],{encoding:'utf8'});
+ const screen=execFileSync(process.env.CTXVAL_PYTHON??'python3',['-c',"import pyte,sys; s=pyte.Screen(160,48); pyte.Stream(s).feed(open(sys.argv[1]).read()); print('\\n'.join(s.display))",ansi],{encoding:'utf8'});
  await r.record('restored-editor-proof',{promptVisible:screen.includes('Read the attached user note'),attachmentVisible:screen.includes('[file 1]')||screen.includes('user-note.txt'),noAcceptedUserRows:!(rejected.agentPanes[agentId]??[]).some(x=>x.role==='user'&&x.text?.includes('CX13_DRAFT_RETRY')),footer:rejected.footer});
  if(!screen.includes('Read the attached user note')||(!screen.includes('[file 1]')&&!screen.includes('user-note.txt')))throw Error('Real cleared editor or attachment was not restored');
  const primaryLabel=listed.ProviderAccountProfilesListed.profiles.find(p=>p.profile_id===primary)?.label;if(!primaryLabel)throw Error('Primary account label missing');await r.command('agent account '+agentId+' '+primaryLabel);await r.turn(prompt,'CX13_DRAFT_RETRY',240000);result.draftRetry='Same real editor/attachment after selecting the signed-in account; one provider turn on gpt-6-luna low';

@@ -153,3 +153,5 @@ fresh native IDs on both legs; profile labels and recall alone cannot pass.
 approval, with zero provider turns. The receiving profile in
 `account-read-live.mjs` uses product linking/refresh; a fresh 401 is recorded as
 a coordinator account action, while primary-thread continuity is checked.
+
+MP-08 / MP-10 / MP-11: `draft-config-live.mjs` replays the real ANSI editor with Python `pyte`; set `CTXVAL_PYTHON` to an interpreter with that dependency installed. The general screenshots use Python Pillow. Provider account commands take the public profile label, while RPCs use stable profile IDs.
