@@ -75,7 +75,7 @@ test("command center account choices display labels but execute stable profile i
   })
 
   assert.deepEqual(items.map((item) => ({ label: item.label, value: item.value })), [{
-    label: "Validation · signed in",
+    label: "Validation",
     value: "secondary",
   }])
 })
@@ -119,7 +119,7 @@ test("command center marks hard account exhaustion red and allowance-only Claude
     ...context,
     providerAccounts: [account] as never,
   })[0]
-  assert.equal(allowanceOnly?.label, "Codex account · signed in")
+  assert.equal(allowanceOnly?.label, "Codex account")
   assert.equal(allowanceOnly?.tone, "warning")
   assert.match(allowanceOnly?.description ?? "", /credits not reported/)
 
@@ -140,7 +140,7 @@ test("command center marks hard account exhaustion red and allowance-only Claude
       },
     }] as never,
   })[0]
-  assert.match(fullyExhausted?.label ?? "", /^Codex account \(exhausted\) · resets .+ · signed in$/)
+  assert.match(fullyExhausted?.label ?? "", /^Codex account \(exhausted\) · resets .+$/)
   assert.equal(fullyExhausted?.tone, "danger")
   assert.match(fullyExhausted?.description ?? "", /allowance and credits exhausted/)
 })
