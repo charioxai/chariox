@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { inputHostTab, protectedPointExpression } from "./kernel-browser-input.mjs";
 
 function fixture(protectedTarget = false) {
   const sent = [];
@@ -352,4 +352,40 @@ for(const fault of ['navigation','cancel','press-error'])test(`MP-08/MP-10/MP-11
  else await task;
  assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>x.params.type),['keyDown','keyUp']);
  assert(releaseSettled,'release must settle before another actor acquires input');
+});
+
+// Coordinator 15:08Z (mdmain r11 Notes on the video fallback): protocol 530 page drag.
+test("MP-08/MP-11 (530): a page drag presses, moves and releases in the view scale; the release is queued with the press", async () => {
+  const { browser, sent } = fixture(false);
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send, pressed = Promise.withResolvers(), ack = Promise.withResolvers();
+  connection.send = async (method, params) => { const reply = await send(method, params); if (params?.type === "mousePressed") { pressed.resolve(); await ack.promise; } return reply; };
+  const pending = inputHostTab(browser, tab, { kind: "drag", x: 100, y: 40, to_x: 300, to_y: 60 }, { viewScale: 0.5 });
+  try {
+    await pressed.promise; await new Promise(resolve => setImmediate(resolve));
+    const mouse = sent.filter(x => x.method === "Input.dispatchMouseEvent").map(x => x.params);
+    assert.deepEqual(mouse.map(p => p.type), ["mousePressed", ...Array(8).fill("mouseMoved"), "mouseReleased"], "moves and release ordered behind the press");
+    assert.deepEqual([mouse[0].x, mouse[0].y, mouse.at(-1).x, mouse.at(-1).y], [50, 20, 150, 30]);
+    assert(mouse.slice(1, -1).every(p => p.buttons === 1), "the primary button stays down while moving");
+  } finally { ack.resolve(); await pending; }
+  const before = sent.filter(x => x.method === "Runtime.evaluate").length;
+  assert(before >= 1, "protected endpoints are checked before the press");
+  await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 1, y: 1, to_x: 99999, to_y: 1 }), /outside viewport/);
+});
+test("MP-11 (530): a drag from or onto a protected field dispatches nothing", async () => {
+  const { browser, sent } = fixture(true);
+  await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 10, y: 10, to_x: 200, to_y: 10 }), error => error.code === "user_domain_sensitive_requires_focus");
+  assert.equal(sent.filter(x => x.method === "Input.dispatchMouseEvent").length, 0);
+});
+test("MP-11 (530): drag endpoints read through same-origin frames and fail closed on cross-origin ones", () => {
+  const el = (props = {}) => ({ tagName: "DIV", autocomplete: "", closest: () => null, ...props });
+  const run = (top) => runInNewContext(protectedPointExpression(30, 40), { document: { elementFromPoint: () => top } });
+  assert.equal(run(el()), false, "ordinary text");
+  assert.equal(run(el({ tagName: "INPUT", type: "password" })), true, "a password field");
+  assert.equal(run(el({ closest: () => ({}) })), true, "inside a Vault-filled/protected field");
+  const frame = inner => Object.defineProperty(el({ tagName: "IFRAME", clientLeft: 0, clientTop: 0, getBoundingClientRect: () => ({ left: 10, top: 10 }) }),
+    "contentDocument", { get() { if (!inner) throw Error("cross-origin"); return inner; } });
+  assert.equal(run(frame({ elementFromPoint: (x, y) => (x === 20 && y === 30 ? el() : null) })), false, "same-origin frame: its own element at the frame offset");
+  assert.equal(run(frame({ elementFromPoint: () => el({ tagName: "INPUT", type: "password" }) })), true, "a password field inside a same-origin frame");
+  assert.equal(run(frame(null)), true, "a cross-origin frame cannot be inspected");
 });

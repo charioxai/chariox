@@ -787,6 +787,8 @@ export class KernelBrowserHost {
         // admitted human viewer with a live display lease owns the fast path.
         const viewerActive=()=>command._display_input===true&&!command._agent_input&&!command.focused_agent&&
           [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
+        // Protocol 530: a page drag is the person's, on a page they are watching.
+        if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
         const candidate=this.compositors.get(tab.tab_id)?.source;
         const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;

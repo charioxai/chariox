@@ -4064,11 +4064,17 @@ The contract snapshot alone does not establish producer emission or acceptance.
 Allocated local530/peer138 lets the band behave like Chromium's own strip.
 `KernelBrowserInput` `click` takes an optional `button: "middle" | "right"`
 (absent is the primary button, so pre-530 clicks keep their shape) and a new
-`{kind:"drag",x,y,to_x,to_y}` is a primary-button drag. Both reach only the
-`browser_chrome` band: middle-click closes a Tab, right-click opens Chrome's
-context menu, and a drag must start and end in the tab strip (Tab reorder; a
-Tab is never torn into a new window). Page input, page regions and popups
-refuse them. Agents remain refused on every band and popup path.
+`{kind:"drag",x,y,to_x,to_y}` is a primary-button drag. The buttons reach only
+the `browser_chrome` band: middle-click closes a Tab and right-click opens
+Chrome's context menu. On the band a drag must start and end in the tab strip
+(Tab reorder; a Tab is never torn into a new window). A page `display_input`
+drag (selecting text while the page shows video, e.g. for a Note) is admitted
+only for the person watching that Tab through a live display lease: both points
+lie in the viewport, neither may be on a protected field (a cross-origin frame
+counts as protected), it passes the document fences, and its moves and release
+are queued with the press so cancellation cannot strand the button. Page
+regions and popups refuse drags. Agents remain refused on every band, popup and
+page drag path.
 
 `display_subscribe` accepts `{kind:"browser_auxiliary",window_generation,
 auxiliary_id}` for one popup of the band's window: Chrome's menus, the omnibox

@@ -29,6 +29,19 @@ export const sensitiveFocusExpression = observedFrameInput => `(() => { let e = 
           return false;
         } return true; })()`;
 
+// MP-08/MP-11 (530 page drag): a drag may neither start on (select) nor drop onto a protected field.
+// Same-origin frames are read through; a cross-origin frame cannot be inspected, so it fails closed.
+export const protectedPointExpression = (x, y) => `(() => { let d = document, x = ${x}, y = ${y};
+  for (let depth = 0; depth < 8; depth++) {
+    let e = d.elementFromPoint(x, y);
+    for (let n = 0; e?.shadowRoot && n < 32; n++) { const inner = e.shadowRoot.elementFromPoint(x, y); if (!inner || inner === e) break; e = inner; }
+    if (!e) return false;
+    if (e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
+    if (e.tagName !== 'IFRAME') return false;
+    let inner = null; try { inner = e.contentDocument; } catch {} if (!inner) return true;
+    const r = e.getBoundingClientRect(); x -= r.left + e.clientLeft; y -= r.top + e.clientTop; d = inner;
+  } return true; })()`;
+
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.round(delta / 100) || Math.sign(delta);
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
@@ -210,6 +223,23 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           const ack = connection.send("Input.dispatchMouseEvent", params, sessionId);
           ack.catch(() => {});
           return { ack };
+        } else if (input.kind === "drag" && !resolved) {
+          // Protocol 530: a primary-button drag in the page (text selection for Notes on the video path).
+          if (!Number.isInteger(input.to_x) || input.to_x < 0 || input.to_x >= viewport.css_width || !Number.isInteger(input.to_y) || input.to_y < 0 || input.to_y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
+          const from = [input.x * viewScale, input.y * viewScale], to = [input.to_x * viewScale, input.to_y * viewScale];
+          await check();
+          if (await evaluateText(`${protectedPointExpression(...from)} || ${protectedPointExpression(...to)}`) !== false) throw new UserDomainRefusal("sensitive_requires_focus");
+          await check();
+          // Once pressed, the moves and the release are queued with it: cancellation or navigation
+          // cannot strand the button (as for a click).
+          onDispatch?.();
+          const steps = 8, at = i => ({ x: from[0] + (to[0] - from[0]) * i / steps, y: from[1] + (to[1] - from[1]) * i / steps });
+          const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
+          for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
+          sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
+          const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
+          if (failed) throw failed.reason;
+          assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }
     });
