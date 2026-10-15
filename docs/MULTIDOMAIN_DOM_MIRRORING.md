@@ -350,6 +350,25 @@ refuses. Wrong windows/Tabs, stale documents or generations, shifted origins,
 non-media pixel changes and unreported media still refuse. Admission, delivery
 and input retain the native-window, active-Tab, geometry and protection fences.
 
+MP-11 attestation review amendment (2026-10-15 09:41): a DOM tag alone
+never supplies an exclusion. The kernel resolves that exact node in its isolated
+world and requires its backend node in the same CDP session's current content
+layer tree, with the document loader unchanged before and after the read. OOPIF
+media needs that child's own observer/session; an unattached frame remains in
+the exact comparison. Missing or oversized layer evidence supplies no exclusion.
+
+Exclusions are clipped to the attested visible page, never native Chrome, and
+cover at most 75% of that page. Each box needs an exact three-device-pixel ring
+on its visible surrounding page edges; another exclusion or a protection mask
+cannot cover the ring. Full-bleed or insufficient proof still refuses. Existing
+kernel protection wins: its regions mask both comparison rasters before compare,
+and any overlap between a media exclusion and a protected region refuses.
+Proof-pixel counts exclude all masks. This preserves the owner's existing
+Vault-fill/password-dot policy rather than introducing generic page masks.
+The private immutable attestation receipt and `native_region_attestation`
+diagnostic contain area/count fields only (excluded/page/proof/protected/ring
+pixels and media box count), never pixels, content, identifiers or secret values.
+
 MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
 to keep its renderer awake. Native Chrome text admission must not confuse that
 logical state with the page physically owning the keys. After a kernel-observed

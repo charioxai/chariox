@@ -18,6 +18,8 @@ function mediaMask(boxes,width,height){
  return mask;
 }
 const enough=(count,total)=>count>=64&&count>=total*.1;
+export const maximumMediaShare=.75;
+const ringWidth=3;
 export function attestationPlan(region,media,scale){
  const boxes=media.map(({box})=>{
   if(!Array.isArray(box)||box.length!==4||!box.every(Number.isFinite)||box[2]<=0||box[3]<=0)throw Error('MP-11: media attestation geometry');
@@ -26,25 +28,48 @@ export function attestationPlan(region,media,scale){
  const project=rect=>boxes.map(b=>({...b,x:b.x-rect.left+region.contentRect.left,y:b.y-rect.top+region.contentRect.top}));
  let rect={left:region.contentRect.left+region.pageLeft,top:region.contentRect.top+region.pageTop,width:region.width,height:region.height};
  const mask=mediaMask(project(rect),rect.width,rect.height);
- if(!enough(mask.length-mask.reduce((n,v)=>n+v,0),mask.length)){
+ if(media.length||!enough(mask.length-mask.reduce((n,v)=>n+v,0),mask.length)){
   // Full-bleed crops need surrounding page pixels at the SAME authoritative
   // origin. If the visible page has no anchors either, comparison refuses.
   const page=region.contentRect;
   rect={left:page.left,top:page.top,width:page.width-page.width%2,height:page.height-page.height%2};
  }
- return {rect,media:project(rect)};
+ const visible=project(rect).map(b=>{const x=Math.max(0,b.x),y=Math.max(0,b.y),right=Math.min(rect.width,b.x+b.width),bottom=Math.min(rect.height,b.y+b.height);return{x,y,width:right-x,height:bottom-y}}).filter(b=>b.width>0&&b.height>0);
+ return {rect,media:visible};
 }
 export function assertAttestationPixels(raw,reference,media,protectedRegions){
  if(!raw||raw.width!==reference.width||raw.height!==reference.height||raw.pixels.length!==raw.width*raw.height*4||reference.pixels.length!==raw.pixels.length)
   throw Error('MP-11: native region attestation geometry');
  const masked=mediaMask(media,raw.width,raw.height),protectedMask=attestationMask(protectedRegions,raw.width,raw.height);
- let anchors=0;
- for(let p=0;p<masked.length;p++)if(!masked[p]&&!protectedMask?.[p]){
-  anchors++;const i=p*4;
-  if(reference.pixels[i]!==raw.pixels[i+2]||reference.pixels[i+1]!==raw.pixels[i+1]||reference.pixels[i+2]!==raw.pixels[i])
+ const excluded=masked.reduce((n,v)=>n+v,0),total=masked.length;
+ if(excluded>total*maximumMediaShare)throw Error('MP-11: media attestation share exceeded');
+ for(let p=0;p<total;p++)if(masked[p]&&protectedMask?.[p])throw Error('MP-11: protected media overlap');
+ const ring=new Uint8Array(total),width=raw.width,height=raw.height;
+ const visit=(x,y)=>{const p=y*width+x;if(masked[p]||protectedMask?.[p])throw Error('MP-11: media attestation ring unavailable');ring[p]=1};
+ for(const box of media){
+  const l=Math.max(0,Math.floor(box.x)),t=Math.max(0,Math.floor(box.y)),r=Math.min(width,Math.ceil(box.x+box.width)),b=Math.min(height,Math.ceil(box.y+box.height));
+  if(r<=l||b<=t)throw Error('MP-11: media attestation geometry');
+  const el=Math.max(0,l-ringWidth),et=Math.max(0,t-ringWidth),er=Math.min(width,r+ringWidth),eb=Math.min(height,b+ringWidth);
+  let count=0;const edge=(x,y)=>{visit(x,y);count++};
+  for(let y=et;y<t;y++)for(let x=el;x<er;x++)edge(x,y);
+  for(let y=t;y<b;y++){for(let x=el;x<l;x++)edge(x,y);for(let x=r;x<er;x++)edge(x,y)}
+  for(let y=b;y<eb;y++)for(let x=el;x<er;x++)edge(x,y);
+  if(!count)throw Error('MP-11: media attestation ring unavailable');
+ }
+ // Protection wins before the comparison in BOTH rasters, including a native
+ // protection fence newer than the CDP sample. Those pixels prove no identity.
+ const pixels=protectedMask?Buffer.from(raw.pixels):raw.pixels,referencePixels=protectedMask?Buffer.from(reference.pixels):reference.pixels;
+ let anchors=0,protectedCount=0;
+ for(let p=0;p<total;p++){
+  const i=p*4;
+  if(protectedMask?.[p]){protectedCount++;pixels.fill(0,i,i+3);referencePixels.fill(0,i,i+3)}
+  if(masked[p])continue;
+  if(!protectedMask?.[p])anchors++;
+  if(referencePixels[i]!==pixels[i+2]||referencePixels[i+1]!==pixels[i+1]||referencePixels[i+2]!==pixels[i])
    throw Error('MP-11: native region attestation mismatch');
  }
- if(!enough(anchors,masked.length))throw Error('MP-11: native region attestation anchors unavailable');
+ if(!enough(anchors,total))throw Error('MP-11: native region attestation anchors unavailable');
+ return {excluded_pixels:excluded,page_pixels:total,proof_pixels:anchors,protected_pixels:protectedCount,ring_pixels:ring.reduce((n,v)=>n+v,0),media_boxes:media.length};
 }
 export function regionProtection(source,left,top){
  const regions=new NativeRegionProtection(source.connection,source.sessionId,
@@ -74,10 +99,13 @@ export async function attestNativeRegion(source){
   const reference=decodePng(cropProtectedPng(shot.data_base64,clip,source.scale).data_base64,source.scale);
   const protectedRegions=[...(shot[displayMaskRegions]??[]),statusBand({width:page.width,height:page.height},source.hostScale)]
    .map(r=>({...r,x:r.x-left,y:r.y-top}));
-  assertAttestationPixels(probe.latest?.raw,reference,plan.media,protectedRegions);
+  const raw=probe.latest?.raw;protectedRegions.push(...(raw?.[displayMaskRegions]??[]));
+  const receipt=assertAttestationPixels(raw,reference,plan.media,protectedRegions);
   await assertCurrentDocument(source.connection,source.sessionId,source.tab.target_id,source.tab.document_id);
   const after=await source.attestationState();
   if(JSON.stringify(before)!==JSON.stringify(after)||!probe.valid()||!source.valid()||!await source.validateCurrent())
    throw Error('MP-11: native region attestation binding changed');
+  source.attestationReceipt=Object.freeze(receipt);
+  source.timing.event?.('native_region_attestation',receipt);
  }finally{await probe.close();}
 }

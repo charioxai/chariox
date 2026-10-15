@@ -2,6 +2,7 @@
 // Public subscribe/input wiring belongs to 519. No client crop or OS handle.
 import { randomUUID } from 'node:crypto';
 import { assertNotCancelled } from './browser-controller-actions.mjs';
+import {mediaLayerEvidence} from './kernel-browser-media-layers.mjs';
 
 const refuse = reason => { const error = new Error(`MP-11: ${reason}`); error.mirrorReason = reason; throw error; };
 const fields = new Set(['mirror_subscription_id', 'generation', 'document_id', 'sequence', 'region_id']);
@@ -109,12 +110,13 @@ export class Mirror2Regions {
         attestationState:()=>this.locked(stream,async()=>{
           if(!await validate())refuse('region_retired');
           const boxes=await this.mirror.regionBoxes(stream,tab),media=[];
-          for(const b of boxes)if(b.media===true&&!b.distorted){
+          const evidence=await mediaLayerEvidence(this.mirror,stream,boxes);
+          for(const b of evidence){
             const checked=this.check({...request,sequence:stream.issued,region_id:b.id},scope,stream);
-            media.push({id:b.id,box:[...(b.clip??b.box)],identities:checked.identities});
+            media.push({...b,identities:checked.identities});
           }
           if(!alive())refuse('region_retired');
-          return {media};
+          return {generation:request.generation,document_id:request.document_id,sequence:request.sequence,media};
         }),
         attachDisplay:current=>{
           if(display || !alive() || current.observed_by !== scope || current.tab_id !== tab.tab_id || typeof current.subscription_id !== 'string') refuse('region_display');

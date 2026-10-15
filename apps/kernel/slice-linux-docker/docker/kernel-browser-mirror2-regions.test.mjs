@@ -9,10 +9,18 @@ function fixture() {
     async removeDisplay(id) { this.removed.push(id); this.displays.delete(id); } };
   const stream = { id: 'mirror', scope: 'owner', tab_id: 'tab', wire: 2, document_id: 'doc', issued: 6, resetAt: 3, policy: host.protection, chain: Promise.resolve(), frames: new Map(), frameSlots: new Map(),
     introduced: new Map([['n1', 3], ['n2', 3], ['n3', 3]]), identity: new Map(), world: { ref: 'observer', connection: { isOpen: () => true }, frame: { loaderId: 'doc' } } };
+  stream.world.sessionId='s';stream.world.contextId=77;stream.world.frame.id='frame';
+  let layerListener;
+  Object.assign(stream.world.connection,{subscribe(fn){layerListener=fn;return()=>{layerListener=null}},async send(method){
+    if(method==='LayerTree.enable')layerListener?.({sessionId:'s',method:'LayerTree.layerTreeDidChange',params:{layers:[{backendNodeId:42,drawsContent:true,width:200,height:100}]}});
+    if(method==='Runtime.evaluate')return{result:{objectId:'media'}};
+    if(method==='DOM.describeNode')return{node:{nodeType:1,nodeName:'CANVAS',backendNodeId:42}};
+    return{};
+  }});
   host.browser = { connection: stream.world.connection };
   const service = { host, streams: new Map([['mirror', stream]]), require(id, scope, generation) { if (id !== 'mirror' || scope !== stream.scope || generation !== host.generation || !this.streams.has(id)) throw Error('foreign'); return stream; } };
   let boxes = [{ id: 'n3', box: [10, 20, 200, 100] }];
-  const mirror = { host, service, hurry() {}, async regionBoxes() { return boxes; }, async resolveInput(s, t, input) { return { input }; } };
+  const mirror = { host, service, frames:{loaderId:async()=>tab.document_id}, hurry() {}, async regionBoxes() { return boxes; }, async resolveInput(s, t, input) { return { input }; } };
   const regions = new Mirror2Regions(mirror);
   regions.record(stream, { reset: true, nodes: [{id:'n1', parent:null, kind:'document'}, {id:'n2', parent:'n1', kind:'element'}, {id:'n3', parent:'n2', kind:'tile'}] });
   const target = {mirror_subscription_id:'mirror', generation:7, document_id:'doc', sequence:5, region_id:'n3'};
@@ -83,7 +91,7 @@ test('MP-11: a children delta retains issued opaque siblings and removes departe
 
 test('MP-11: only current kernel-reported media gets a comparison exclusion',async()=>{
  const f=fixture(),lease=await f.regions.resolve(f.target,'owner');
- assert.deepEqual(await lease.attestationState(),{media:[]});
+ assert.deepEqual((await lease.attestationState()).media,[]);
  f.boxes[0].media=true;
  assert.deepEqual((await lease.attestationState()).media.map(({id,box})=>({id,box})),[{id:'n3',box:[10,20,200,100]}]);
  await assert.rejects(f.regions.resolve({...f.target,media:[f.boxes[0]]},'owner'));

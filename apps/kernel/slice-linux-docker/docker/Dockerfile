@@ -391,6 +391,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-window-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-media-layers.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-region-attestation.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-desktop-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-desktop-source.mjs \

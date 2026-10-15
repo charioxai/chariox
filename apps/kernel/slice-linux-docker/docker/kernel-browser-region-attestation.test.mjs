@@ -39,7 +39,7 @@ test('MP-11 shifted origin, wrong raster/window and non-media differences refuse
 test('MP-11 full-bleed media without surrounding identity pixels refuses at both densities',()=>{
  for(const scale of [1,2]){
   const {raw,reference}=rasters(100,80);
-  assert.throws(()=>assertAttestationPixels(raw,reference,[{x:0,y:0,width:100,height:80}],[]),/anchors/);
+  assert.throws(()=>assertAttestationPixels(raw,reference,[{x:0,y:0,width:100,height:80}],[]),/anchors|share/);
   assert.throws(()=>attestationPlan(region,[{id:'n3',box:[NaN,0,1,1]}],scale),/geometry/);
  }
 });
@@ -47,4 +47,23 @@ test('MP-11 no media leaves the exact crop as its own attestation',()=>{
  const p=attestationPlan(region,[],1);
  assert.deepEqual(p.rect,{left:24,top:107,width:40,height:20});
  const {raw,reference}=rasters(40,20);assertAttestationPixels(raw,reference,p.media,[]);
+});
+
+test('MP-11 review: a protected target overlapping a media exclusion always refuses',()=>{
+ const {raw,reference}=rasters(100,80);
+ assert.throws(()=>assertAttestationPixels(raw,reference,[{x:20,y:20,width:40,height:20}],[{x:30,y:25,width:2,height:2}]),/overlap/);
+});
+test('MP-11 review: media cannot exclude more than three quarters of the attested page',()=>{
+ const {raw,reference}=rasters(100,80);
+ assert.throws(()=>assertAttestationPixels(raw,reference,[{x:0,y:0,width:80,height:80}],[]),/share/);
+});
+test('MP-11 review: every visible three-pixel ring remains exact and unmasked',()=>{
+ const {raw,reference}=rasters(100,80),box={x:20,y:20,width:40,height:20};
+ assert.throws(()=>assertAttestationPixels(raw,reference,[box],[{x:16,y:20,width:1,height:1}]),/ring/);
+ raw.pixels[(18*100+25)*4]++;assert.throws(()=>assertAttestationPixels(raw,reference,[box],[]),/mismatch/);
+});
+test('MP-11 review: the receipt contains only finite area counts after masks',()=>{
+ const {raw,reference}=rasters(100,80),receipt=assertAttestationPixels(raw,reference,[{x:20,y:20,width:40,height:20}],[]);
+ assert.equal(receipt.excluded_pixels,800);assert.equal(receipt.page_pixels,8000);assert.equal(receipt.proof_pixels,7200);assert(receipt.ring_pixels>0);
+ assert(Object.values(receipt).every(Number.isFinite));
 });

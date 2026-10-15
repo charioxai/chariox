@@ -1177,7 +1177,7 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     const target={mirror_subscription_id:subscription_id,generation,document_id:stream.document_id,sequence:packet.sequence,region_id};
     const lease=await host.mirror.v2.regions.resolve(target,stream.scope);
     assert.deepEqual(lease.rect,{x:0,y:0,width:200,height:100}); assert.equal(await lease.isCurrent(),true);
-    assert.deepEqual((await lease.attestationState()).media.map(({id,box})=>({id,box})),[{id:region_id,box:[0,0,200,100]}]);
+    for(const proof of (await lease.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[0,0,200,100]);assert(proof.backend_node_id>0)}
     await evaluate('document.querySelector("canvas").style.marginLeft="10px"');
     assert.equal(await lease.isCurrent(),false,'live layout changes retire before a new mirror packet');
     const replacement=await host.mirror.v2.regions.resolve(target,stream.scope);
@@ -1194,7 +1194,7 @@ test('MP-11: a child opaque lease clips to the actual cross-origin frame viewpor
     const region_id=[...stream.regionRecords].find(([,r])=>r.kind==='tile')[0];
     const lease=await host.mirror.v2.regions.resolve({mirror_subscription_id:subscription_id,generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope);
     assert.deepEqual(lease.rect,{x:0,y:40,width:100,height:40});
-    assert.deepEqual((await lease.attestationState()).media.map(({id,box})=>({id,box})),[{id:region_id,box:[0,40,100,40]}]);
+    for(const proof of (await lease.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[0,40,100,40]);assert(proof.backend_node_id>0)}
   },{'/child':{type:'text/html',body:'<style>body{margin:0}canvas{display:block;margin-top:40px;width:200px;height:100px}</style><canvas></canvas>'}}
 ));
 
