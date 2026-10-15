@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
 const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
 const PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY: usize = 32;
-const COMPACTION_WRITEBACK_BYTES: usize = 1024 * 1024;
+const COMPACTION_WRITEBACK_BYTES: usize = 64 * 1024;
 const PERSISTENT_WRITE_MAX_ATTEMPTS: usize = 3;
 const PERSISTENT_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
 const PERSISTENCE_OUTCOME_PENDING: u8 = 0;
@@ -976,12 +977,32 @@ fn apply_retention<E>(
     }
 
     if let Some(max_total_bytes) = retention.max_total_bytes {
-        if retained_events_jsonl_bytes(streams) > max_total_bytes {
+        let mut total_bytes = retained_events_jsonl_bytes(streams);
+        if total_bytes > max_total_bytes {
             let target_total_bytes = persistent_compaction_target_bytes(max_total_bytes);
-            while retained_events_jsonl_bytes(streams) > target_total_bytes {
-                let Some(event) = remove_oldest_retained_event(streams) else {
+            // Visit each stream once, then advance only the stream whose oldest
+            // event was removed. Re-scanning every stream for every eviction
+            // makes a cap crossing quadratic in the retained stream count.
+            let mut oldest = streams
+                .iter()
+                .filter_map(|(id, stream)| {
+                    stream
+                        .retained
+                        .front()
+                        .map(|event| Reverse((event.event_id, id.clone())))
+                })
+                .collect::<BinaryHeap<_>>();
+            while total_bytes > target_total_bytes {
+                let Some(Reverse((_, id))) = oldest.pop() else {
                     break;
                 };
+                let stream = streams.get_mut(&id).expect("retained stream exists");
+                let before = stream.retained_jsonl_bytes;
+                let event = stream.drop_oldest().expect("indexed stream has an event");
+                total_bytes = total_bytes.saturating_sub(before - stream.retained_jsonl_bytes);
+                if let Some(next) = stream.retained.front() {
+                    oldest.push(Reverse((next.event_id, id)));
+                }
                 dropped.push(event);
             }
         }
@@ -994,9 +1015,22 @@ fn apply_retention<E>(
 /// the append instead of on it.
 fn release_dropped_events<E: Send + 'static>(dropped: Vec<LoggedEvent<E>>) {
     if dropped.len() > 64 {
+        let count = dropped.len();
         let _ = thread::Builder::new()
             .name("chariox-event-log-release".to_string())
-            .spawn(move || drop(dropped));
+            .spawn(move || {
+                let mut timing = crate::runtime::perf_timing::Phases::new();
+                for (index, event) in dropped.into_iter().enumerate() {
+                    drop(event);
+                    // Bound remote allocator frees rather than returning a
+                    // whole cap-crossing batch to an appending worker at once.
+                    if (index + 1) % 64 == 0 {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                timing.mark("release_events");
+                timing.finish("event_memory_retire", count);
+            });
     }
 }
 
@@ -1006,22 +1040,6 @@ fn persistent_compaction_target_bytes(max_total_bytes: u64) -> u64 {
         .checked_div(PERSISTENT_COMPACTION_TARGET_DENOMINATOR)
         .unwrap_or(0)
         .max(1)
-}
-
-fn remove_oldest_retained_event<E>(
-    streams: &mut BTreeMap<String, EventStream<E>>,
-) -> Option<LoggedEvent<E>> {
-    let oldest_stream_id = streams
-        .iter()
-        .filter_map(|(stream_id, stream)| {
-            stream
-                .retained
-                .front()
-                .map(|event| (stream_id, event.event_id))
-        })
-        .min_by_key(|(_, event_id)| *event_id)
-        .map(|(stream_id, _)| stream_id.clone());
-    streams.get_mut(&oldest_stream_id?)?.drop_oldest()
 }
 
 fn retained_event_ids<E>(streams: &BTreeMap<String, EventStream<E>>) -> HashSet<u64> {

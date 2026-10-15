@@ -910,3 +910,44 @@ fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
     drop(writer);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn byte_retention_keeps_the_newest_global_ids_across_many_streams() {
+    let mut streams = std::collections::BTreeMap::new();
+    for id in 1..=12_000_u64 {
+        let key = format!("stream-{}", id % 300);
+        streams
+            .entry(key.clone())
+            .or_insert_with(super::EventStream::default)
+            .retain(
+                LoggedEvent {
+                    event_id: id,
+                    stream_id: key,
+                    stream_seq: id / 300 + 1,
+                    recorded_at_ms: 1,
+                    event: (),
+                },
+                1,
+            );
+    }
+    let dropped = super::apply_retention(
+        &mut streams,
+        EventRetentionPolicy {
+            max_stream_events: usize::MAX,
+            max_total_bytes: Some(10_000),
+            max_age_ms: None,
+        },
+        1,
+    );
+    assert_eq!(
+        dropped.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+        (1..=4_500).collect::<Vec<_>>()
+    );
+    let mut retained = streams
+        .values()
+        .flat_map(|s| s.retained.iter().map(|e| e.event_id))
+        .collect::<Vec<_>>();
+    retained.sort_unstable();
+    assert_eq!(retained, (4_501..=12_000).collect::<Vec<_>>());
+    assert_eq!(super::retained_events_jsonl_bytes(&streams), 7_500);
+}
