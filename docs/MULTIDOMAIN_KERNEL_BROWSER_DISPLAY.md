@@ -608,6 +608,12 @@ it never starts another desktop or Chromium. Room Actions remain the only input
 and takeover authority. The initial Room View target is the complete desktop;
 Browser/Region references do not grant access to an unbound worker host browser.
 
+MP-08/MP-10/MP-11: Room Chromium and approved native credential input inherit
+the same private desktop bus. The launcher checks the bus file's owner, mode,
+type and address before execution and enables the native accessibility bridge;
+Chromium also enables renderer accessibility. An unsafe or unavailable binding
+refuses execution without logging arguments, bus addresses or input contents.
+
 The worker protects capture under the Room observation and credential-input
 barriers, encodes the ordinary CXD1 event and encrypts it to the admitted viewer
 key. The existing home `kernel_browser_display` subscription/ACK pump carries
