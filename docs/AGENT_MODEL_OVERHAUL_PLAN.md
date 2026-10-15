@@ -626,13 +626,20 @@ Persist intent and result against the objective/ledger/work-turn revision;
 lost ACK reconciles exactly, never spends a second evaluation blindly. A stale
 result re-enters the revision check before accepting completion. Mark this
 turn's origin `completion_check`; its own end cannot recursively trigger another
-check, dispatch work or mint authority. On timeout/malformed result, make one
+check, dispatch work or mint authority.
+The assessment prompt and its JSON answer are kernel-internal: the kernel
+neither delivers them to client output streams nor projects them into the
+history outline, so no Chariox client shows protocol text in an agent pane. On timeout/malformed result, make one
 visible user-required recovery interaction, not an unbounded evaluation retry.
 Cost is at most one check turn per work-turn revision, plus ordinary continued
 work; the guard bounds no-progress attempts but does not cap a progressing
 multi-hour goal. Surface check count/elapsed/cost metadata if the harness
 provides it. Provider confirmation is evidence of its assessment, not proof of
 arbitrary semantic correctness; drills independently verify deployment/artifacts.
+
+The single correction lists only unresolved obligations. When none remain it
+asks only for the final answer; it never points an agent at yield/blocked tools
+that cannot apply.
 
 A done claim with open obligations retains the one-correction-then-blocked
 rule. The check lists them once; if the agent instead selects valid wait/cancel/
