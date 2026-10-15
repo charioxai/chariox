@@ -1,10 +1,11 @@
 import {setTimeout as delay} from 'node:timers/promises';
+import {chromeBandHeight} from './kernel-browser-geometry.mjs';
 
 // MP-08/MP-10/MP-11: owned-window bounds are host DIPs; the measured
 // protected reference must match the negotiated physical capture exactly.
 export async function fitNativeViewport({connection,windowId,sessionId,width,height,hostScale=1,measure,wait=delay}) {
  if(![width,height].every(n=>Number.isSafeInteger(n)&&n>0)||![1,2].includes(hostScale))throw Error('native viewport geometry invalid');
- const initial={width:width/hostScale,height:height/hostScale+87},bounds={...initial};
+ const initial={width:width/hostScale,height:height/hostScale+chromeBandHeight},bounds={...initial};
  for(let attempt=0;attempt<4;attempt++){
   let settled=false;
   for(let n=0;n<50;n++){

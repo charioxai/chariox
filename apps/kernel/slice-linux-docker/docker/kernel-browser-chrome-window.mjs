@@ -2,7 +2,7 @@
 // Chromium's own windows. A viewer never names a window, rect, PID or role; the
 // kernel resolves them from CDP window bounds and the owned display's numeric
 // inventory, and every consumer re-checks isCurrent() before readback or input.
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {chromeBandHeight} from './kernel-browser-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
@@ -51,9 +51,10 @@ export class ChromeWindows {
     // Exactly one match or no binding: never the "closest" window.
     if (tabbed.length !== 1 || !live()) throw new UserDomainRefusal('stale_reference');
     const row = tabbed[0];
-    // The page area is pinned by the kernel (geometry); the band is the rest of the
-    // real window. An infobar only shrinks the page, so the band never includes page pixels.
-    const contentTop = Math.floor((row.height - geometry.height * scale) / 2) * 2;
+    // The band is Chrome's own UI at the top of the real window (even device rows for 4:2:0
+    // crops). On the shared owned desktop the window fills the screen and the page is clipped
+    // below it; an infobar only shrinks the page, so the band never includes page pixels.
+    const contentTop = Math.floor(chromeBandHeight * scale / 2) * 2;
     if (!(contentTop > 0 && contentTop < row.height)) throw new UserDomainRefusal('stale_reference');
     const previous = this.bound?.tabbed;
     const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration;
