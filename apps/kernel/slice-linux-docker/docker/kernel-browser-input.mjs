@@ -153,6 +153,8 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
+        // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.
+        if (input.kind === "click" && input.button !== undefined) throw new Error("MD-2: unsupported input");
         if (input.kind === "click") {
           // MP-08/MP-10: a viewer click on the owned display goes through
           // XTest after the same fences (no renderer acknowledgement wait).

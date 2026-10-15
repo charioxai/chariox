@@ -74,7 +74,11 @@ fn kernel_browser_protocol_443_request_snapshots() {
             Command::Input {
                 tab_id: "t".into(),
                 generation: 2,
-                input: Input::Click { x: 12, y: 20 },
+                input: Input::Click {
+                    x: 12,
+                    y: 20,
+                    button: None,
+                },
             },
             serde_json::json!({"op":"input","tab_id":"t","generation":2,"input":{"kind":"click","x":12,"y":20}}),
         ),
@@ -374,8 +378,65 @@ fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
     );
 }
 
-// MP-08/MP-10/MP-11: allocated 529/137 places the inward-rounded video crop
-// relative to the original opaque element, after viewport/frame clipping.
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): allocated 530/138 adds the band's middle/right
+// click and Tab drag, the `browser_auxiliary` display target (the band window's
+// menus, omnibox dropdown, extension popups and bubbles) and the state's
+// `chrome_window.auxiliary` list. The host's state keys are pinned to this fixture.
+#[test]
+fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 530);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        138
+    );
+    let bytes = include_bytes!("browser-chrome-ui-530.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "e706cd0d428575d7f90932a4b89c5ad8872a4a73e60556edeba39a477027b071"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    // A primary click keeps its pre-530 shape; unknown buttons, a client-named window
+    // and an auxiliary without its window epoch are refused.
+    assert_eq!(
+        serde_json::to_value(Input::Click {
+            x: 1,
+            y: 2,
+            button: None
+        })
+        .unwrap(),
+        serde_json::json!({"kind":"click","x":1,"y":2})
+    );
+    for input in [
+        serde_json::json!({"kind":"click","x":1,"y":2,"button":"left"}),
+        serde_json::json!({"kind":"click","x":1,"y":2,"button":2}),
+        serde_json::json!({"kind":"drag","x":1,"y":2,"to_x":3}),
+        serde_json::json!({"kind":"drag","x":1,"y":2,"to_x":3,"to_y":-1}),
+    ] {
+        assert!(serde_json::from_value::<Input>(input).is_err());
+    }
+    for field in ["xid", "rect", "pid"] {
+        let mut request = snapshot["requests"][0].clone();
+        request["KernelBrowser"]["command"]["target"][field] = serde_json::json!(1);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
+    }
+    let mut request = snapshot["requests"][0].clone();
+    request["KernelBrowser"]["command"]["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("window_generation");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
+}
+
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);

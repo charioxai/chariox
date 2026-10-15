@@ -97,7 +97,8 @@ extern "C" {
     pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_shift(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_wheel(c: *mut c_void, x: i32, y: i32, dx: i32, dy: i32) -> i32;
-    pub(super) fn cx_capture_click(c: *mut c_void, x: i32, y: i32) -> i32;
+    pub(super) fn cx_capture_button(c: *mut c_void, x: i32, y: i32, button: i32) -> i32;
+    pub(super) fn cx_capture_drag(c: *mut c_void, x: i32, y: i32, tx: i32, ty: i32) -> i32;
     pub(super) fn cx_capture_key(c: *mut c_void, keysym: libc::c_ulong, shift: i32) -> i32;
     pub(super) fn cx_capture_key_modifiers(
         c: *mut c_void,

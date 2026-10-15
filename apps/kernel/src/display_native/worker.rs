@@ -66,6 +66,25 @@ impl Config {
 #[cfg(test)]
 mod region_tests {
     use super::*;
+    // Protocol 530: the exact control lines kernel-browser-native.mjs and
+    // kernel-browser-window-region.mjs write (NativeWorkerControl adds `id`).
+    #[test]
+    fn mp08_band_gesture_and_inventory_control_lines_parse() {
+        for line in [
+            r#"{"click":{"id":1,"point":[10,20]}}"#,
+            r#"{"click":{"id":2,"point":[10,20],"button":3}}"#,
+            r#"{"drag":{"id":3,"point":[10,20],"to":[300,20]}}"#,
+            r#"{"windows":{"id":4}}"#,
+        ] {
+            assert!(serde_json::from_str::<Command>(line).is_ok(), "{line}");
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"windows":{"id":4}}"#),
+            Ok(Command::Windows { .. })
+        ));
+        // The worker's own bound owner is the only inventory owner.
+        assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
+    }
     #[test]
     fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
         let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
@@ -149,6 +168,12 @@ enum Command {
     Click {
         click: Pointer,
     },
+    Drag {
+        drag: Pointer,
+    },
+    Windows {
+        windows: WindowsQuery,
+    },
     Key {
         key: [u32; 2],
     },
@@ -191,6 +216,18 @@ struct Pointer {
     point: [i32; 2],
     #[serde(default)]
     notches: Option<[i32; 2]>,
+    /// Protocol 530: 2 (middle) or 3 (right); absent means the primary button.
+    #[serde(default)]
+    button: Option<i32>,
+    /// Protocol 530: a drag's end point.
+    #[serde(default)]
+    to: Option<[i32; 2]>,
+}
+/// Protocol 530: the bound owner's window inventory from the running worker.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsQuery {
+    id: u64,
 }
 fn admit_default() -> bool {
     true
@@ -576,12 +613,26 @@ pub(super) fn run() -> Result<(), String> {
                 }
                 Command::Click { click: p } => {
                     let [x, y] = p.point;
-                    let clicked = unsafe { ffi::cx_capture_click(capture.0, x, y) } == 0;
+                    let button = p.button.unwrap_or(1);
+                    let clicked = unsafe { ffi::cx_capture_button(capture.0, x, y, button) } == 0;
                     if clicked {
                         wake = Some(epoch());
                     }
                     reply(p.id, json!({ "clicked": clicked }))?;
                 }
+                Command::Drag { drag: p } => {
+                    let ([x, y], [tx, ty]) = (p.point, p.to.ok_or("MP-11: native drag")?);
+                    let dragged = unsafe { ffi::cx_capture_drag(capture.0, x, y, tx, ty) } == 0;
+                    if dragged {
+                        wake = Some(epoch());
+                    }
+                    reply(p.id, json!({ "dragged": dragged }))?;
+                }
+                // A failed read refuses this request only; the capture keeps running.
+                Command::Windows { windows: q } => match owner_windows(owner) {
+                    Ok(rows) => reply(q.id, json!({ "windows": rows }))?,
+                    Err(_) => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
+                },
                 // MP-08/MP-10: [keysym, shift] one key press/release.
                 Command::Key {
                     key: [keysym, shift],
@@ -704,15 +755,15 @@ pub(super) fn inventory() -> Result<(), String> {
         return Err("MP-11: native window query bound".into());
     }
     let q: Query = serde_json::from_str(&line).map_err(|_| "MP-11: native window query")?;
-    if q.pid <= 1 {
+    serde_json::to_writer(std::io::stdout().lock(), &owner_windows(q.pid)?)
+        .map_err(|_| "MP-11: native window inventory reply".into())
+}
+fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
+    if pid <= 1 {
         return Err("MP-11: native window owner".into());
     }
     let mut data = [0i64; 32 * 13];
-    let count = unsafe { ffi::cx_capture_inventory(q.pid as libc::c_ulong, data.as_mut_ptr(), 32) };
-    if count < 0 {
-        return Err("MP-11: native window inventory".into());
-    }
-    let rows:Vec<_>=data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect();
-    serde_json::to_writer(std::io::stdout().lock(), &rows)
-        .map_err(|_| "MP-11: native window inventory reply".into())
+    let count = unsafe { ffi::cx_capture_inventory(pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    if count < 0 { return Err("MP-11: native window inventory".into()); }
+    Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }

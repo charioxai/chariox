@@ -1133,14 +1133,8 @@ fn mp08_room_computer_449_peer92_shapes() {
     use crate::local::{KernelBrowserCommand, KernelBrowserRequest};
     use crate::transport::relay_peer::RemoteRoomComputerObservationCall;
     use crate::transport::room_browser_controller::RoomComputerInputAction;
-    assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION,
-        crate::test_support::expected_local_protocol_version()
-    );
-    assert_eq!(
-        RELAY_PEER_PROTOCOL_VERSION,
-        crate::test_support::expected_relay_peer_protocol_version()
-    );
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 530);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 138);
     let values = serde_json::json!([
         serde_json::to_value(KernelBrowserRequest {
             command: KernelBrowserCommand::GrantRoomComputer {

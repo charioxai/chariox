@@ -88,3 +88,14 @@ test('MP-11 page crop refuses absent or out-of-page native origin',()=>{
  for(const page of [{left:NaN,top:87,width:1272,height:709},{left:4,top:87,width:1280,height:709},{left:4,top:87,width:1272,height:710}])
   assert.throws(()=>windowRegionGeometry('page',w,r,709,1,page),/origin|boundary/);
 });
+
+// Protocol 530: the band reads its window inventory from its own worker; the worker's bound owner PID
+// is the only owner (the worker refuses any other field).
+test('MP-08/MP-11 a band asks its own worker for the window inventory, nothing else does',async()=>{
+ const requests=[];const row={id:42,x:0,y:0,width:2560,height:1774,visible:true,focused:true,override_redirect:false,transient_for:0,frame_insets:[0,0,0,0]};
+ const source=Object.assign(Object.create(NativeWindowRegionCapture.prototype),{surface:'browser_chrome',valid:()=>true,
+  nativeWorker:{request:async(op,values)=>(requests.push([op,values]),{windows:[row]})}});
+ assert.deepEqual(await source.windows(),[row]);assert.deepEqual(requests,[['windows',{}]]);
+ source.surface='browser_auxiliary';await assert.rejects(source.windows(),/inventory lease/);
+ source.surface='browser_chrome';source.nativeWorker.request=async()=>({windows:[{...row,pid:1}]});await assert.rejects(source.windows(),/inventory binding/);
+});

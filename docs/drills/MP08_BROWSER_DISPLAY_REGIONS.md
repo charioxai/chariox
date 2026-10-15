@@ -30,6 +30,14 @@ kernel with display off and confirm `chrome_window` is null and the web shows it
 own strip and address bar. On a host without the AppArmor profile the state's
 `browser_lockdown` is `unavailable` and the session bar says so.
 
+Band gestures and popups (530): with the mouse only, middle-click a Tab in the band
+(it closes), right-click a Tab (Chrome's menu paints over the band where Chrome shows
+it; pick "New tab to the right"), drag a Tab along the strip (order changes; dragging
+below the strip never tears it off), open the ⋮ menu and the extensions (puzzle) menu,
+type in the omnibox (the suggestions dropdown paints and an item can be clicked), and
+in chrome://extensions remove then disable "Chariox tab groups" (the next band input
+reloads it; until then band input is refused). Repeat at DPR1 and DPR2.
+
 Use the hosted WSS path, shaped ~8 Mbit/s and measured RTT ≥60 ms. Strict
 paired Selkies reruns use the same integrated head on the coordinator's quiet
 host (HOST_REQUEST), with matching geometry. Record P95 ≤ measured RTT+60 ms,
