@@ -119,17 +119,32 @@ fn answer_tail(text: &str, limit: usize) -> String {
 }
 
 // The single correction for a turn that ended without a valid wait or answer.
-// Only unresolved obligations are actionable; with none, the agent just answers.
+// Only unresolved obligations are actionable, each with the step that settles
+// it: a completion that already arrived is acknowledged, a running source is
+// waited on, a failure is handled. With none left, the agent just answers.
 pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
-    let open = task
-        .obligations
-        .iter()
-        .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-        .collect::<Vec<_>>();
-    if open.is_empty() {
+    let with = |status: &str| {
+        task.obligations
+            .iter()
+            .filter(|o| o.status == status)
+            .collect::<Vec<_>>()
+    };
+    let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
+    if settling.is_empty() && running.is_empty() && failed.is_empty() {
         return "Every tracked obligation is already resolved and the prior turn ended without a final answer. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
     }
-    format!("The prior answer is progress, not completion. These obligations are unresolved: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms. Otherwise call chariox.events.blocked with the exact owner action. If they have all resolved by now, reply with the final answer instead. One correction is allowed.",serde_json::to_string(&open).unwrap_or_default())
+    let mut text = String::from("The prior answer is progress, not completion.");
+    if !settling.is_empty() {
+        text.push_str(&format!(" Completion has already arrived for these obligations: {}. Read chariox.events.inbox and call chariox.events.ack with handled:true for each completion receipt you have reviewed; that settles them.", serde_json::to_string(&settling).unwrap_or_default()));
+    }
+    if !running.is_empty() {
+        text.push_str(&format!(" These are still running: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms.", serde_json::to_string(&running).unwrap_or_default()));
+    }
+    if !failed.is_empty() {
+        text.push_str(&format!(" These failed: {}. Handle the failure, or call chariox.events.blocked with the exact owner action.", serde_json::to_string(&failed).unwrap_or_default()));
+    }
+    text.push_str(" If everything has resolved by now, reply with the final answer instead. One correction is allowed.");
+    text
 }
 
 // Steering belongs to the current turn; an independent prompt closes its answer boundary.
@@ -197,6 +212,18 @@ mod tests {
             !text.contains("yield") && !text.contains("blocked") && !text.contains("ob-0"),
             "{text}"
         );
+    }
+    // MP-08 / MP-10 / MP-11: a real parent was blocked with a reply obligation
+    // stuck settling after its child answered; the correction must name the ack.
+    #[test]
+    fn correction_tells_a_settling_obligation_to_acknowledge_its_receipt() {
+        let text = task_correction_text(&correction_task(&["satisfied", "settling"]));
+        assert!(text.contains("ob-1") && !text.contains("ob-0"), "{text}");
+        assert!(
+            text.contains("chariox.events.inbox") && text.contains("chariox.events.ack"),
+            "{text}"
+        );
+        assert!(!text.contains("chariox.events.yield"), "{text}");
     }
     #[test]
     fn correction_lists_only_unresolved_obligations_and_names_the_wait_route() {
