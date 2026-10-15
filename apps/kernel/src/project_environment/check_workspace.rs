@@ -26,14 +26,17 @@ impl CheckWorkspace {
         if matches!(r.spec, RequirementSpec::Files { .. }) {
             return Ok((vec![], super::check::workspace(env, r).is_some()));
         }
-        let needs_roots = matches!(
-            r.spec,
+        let needs_roots = match &r.spec {
+            RequirementSpec::MachineNeeds {
+                minimum_free_disk_bytes,
+                ..
+            } => minimum_free_disk_bytes.is_some(),
             RequirementSpec::Software { .. }
-                | RequirementSpec::MachineNeeds { .. }
-                | RequirementSpec::Services { .. }
-                | RequirementSpec::AgentTools { .. }
-                | RequirementSpec::SetupChecks { .. }
-        );
+            | RequirementSpec::Services { .. }
+            | RequirementSpec::AgentTools { .. }
+            | RequirementSpec::SetupChecks { .. } => true,
+            _ => false,
+        };
         if !needs_roots && matches!(r.scope, RequirementScope::Project) {
             return Ok((vec![], true));
         }
