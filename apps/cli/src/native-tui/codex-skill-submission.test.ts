@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: skill items cross the same home prompt admission.
 import assert from "node:assert/strict"
 import test from "node:test"
-import type { LocalIpcClient } from "../ipc.js"
+import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import type { RuntimeProviderRun } from "../cli-types.js"
 import { handleCodexNativeTurnStart } from "./codex-turn-submission.js"
 
@@ -38,4 +38,108 @@ test("Off skill rejects the native turn before prompt admission", async () => {
   const { requests, replies } = await submit(true)
   assert.match(replies[0].error.message, /Off/)
   assert.equal(requests.some(r => r.SkillsV2?.action === "submit"), false)
+})
+
+// MP-08 / MP-10 / MP-11: replay the foundation dispatcher's refusal, rather
+// than pretending the protocol foundation implements catalog/submit.
+const unavailable = () => new LocalIpcError("handle kernel response",
+  "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build",
+  "local_transport_error", false)
+for (const queued of [false, true]) test(`ordinary native text retains home admission without v2 (${queued ? "queued" : "started"})`, async () => {
+  const requests: any[] = [], replies: any[] = [], started: string[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
+    if (request.SkillsV2) throw unavailable()
+    if (request.SubmitPrompt) return { PromptSubmitted: { outcome: {
+      [queued ? "Queued" : "Started"]: { prompt: { id: "ordinary-prompt" } },
+    } } }
+    throw new Error("unexpected request")
+  } } as unknown as LocalIpcClient
+  const run = { id: "run" } as RuntimeProviderRun
+  await handleCodexNativeTurnStart({ id: 18, method: "turn/start", params: { threadId: "display", input: [
+    { type: "text", text: "explain this code" }, { type: "image", url: "https://example.org/image.png" },
+  ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+    bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false,
+    onPromptStarted: id => started.push(id), debug: () => {} }, reply => replies.push(reply))
+  assert.equal(replies[0].error, undefined)
+  assert.equal(replies[0].result.turn.id, "chariox-native-ordinary-prompt")
+  assert.deepEqual(requests.find(r => r.SubmitPrompt)?.SubmitPrompt, {
+    session_id: "session", attachment_id: "attachment", target_agent_id: "agent", prompt: "explain this code\n",
+    attachments: [{ url: "https://example.org/image.png", mime: "image/png", filename: "image.png" }],
+  })
+  assert.equal(requests.some(r => r.SkillsV2?.action === "submit"), false, "never retry a submission")
+  assert.deepEqual(started, queued ? [] : ["ordinary-prompt"])
+})
+for (const failure of [unavailable(), new Error("catalog authorization denied"), new Error("socket closed")]) {
+  test(`selected native skill never falls back on ${("code" in failure ? failure.code : failure.message)}`, async () => {
+    const requests: any[] = [], replies: any[] = []
+    const client = { send: async (request: any) => {
+      requests.push(request)
+      if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
+      throw failure
+    } } as unknown as LocalIpcClient
+    const run = { id: "run" } as RuntimeProviderRun
+    await handleCodexNativeTurnStart({ id: 19, method: "turn/start", params: { threadId: "display", input: [
+      { type: "skill", name: "only-in-chariox", path: "/untrusted/SKILL.md" },
+    ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+      bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+    assert.ok(replies[0].error)
+    assert.equal(requests.some(r => r.SubmitPrompt || r.SkillsV2?.action === "submit"), false)
+  })
+}
+
+for (const failure of [new Error("catalog authorization denied"), new Error("socket closed"),
+  new LocalIpcError("handle kernel response", "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build", "authorization_denied", false)]) {
+  test(`ordinary prompt does not hide a real catalog failure: ${failure.message}`, async () => {
+    const requests: any[] = [], replies: any[] = []
+    const client = { send: async (request: any) => {
+      requests.push(request)
+      if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
+      throw failure
+    } } as unknown as LocalIpcClient
+    const run = { id: "run" } as RuntimeProviderRun
+    await handleCodexNativeTurnStart({ id: 20, method: "turn/start", params: { threadId: "display", input: [
+      { type: "text", text: "ordinary text" },
+    ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+      bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+    assert.ok(replies[0].error)
+    assert.equal(requests.some(r => r.SubmitPrompt || r.SkillsV2?.action === "submit"), false)
+  })
+}
+test("a v2 submission refusal never retries through legacy admission", async () => {
+  const requests: any[] = [], replies: any[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
+    if (request.SkillsV2?.action === "catalog") return { SkillsV2: { result: {
+      kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1,
+    } } }
+    throw unavailable()
+  } } as unknown as LocalIpcClient
+  const run = { id: "run" } as RuntimeProviderRun
+  await handleCodexNativeTurnStart({ id: 21, method: "turn/start", params: { threadId: "display", input: [
+    { type: "text", text: "ordinary text" },
+  ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+    bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+  assert.ok(replies[0].error)
+  assert.equal(requests.filter(r => r.SkillsV2?.action === "submit").length, 1)
+  assert.equal(requests.some(r => r.SubmitPrompt), false)
+})
+
+test("typed skill selection cannot enter legacy prompt admission without v2", async () => {
+  const requests: any[] = [], replies: any[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
+    if (request.SkillsV2) throw unavailable()
+    return { PromptSubmitted: { outcome: { Started: { prompt: { id: "must-not-run" } } } } }
+  } } as unknown as LocalIpcClient
+  const run = { id: "run" } as RuntimeProviderRun
+  await handleCodexNativeTurnStart({ id: 22, method: "turn/start", params: { threadId: "display", input: [
+    { type: "text", text: "use $only-in-chariox" },
+  ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+    bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+  assert.ok(replies[0].error)
+  assert.equal(requests.some(r => r.SubmitPrompt || r.SkillsV2?.action === "submit"), false)
 })
