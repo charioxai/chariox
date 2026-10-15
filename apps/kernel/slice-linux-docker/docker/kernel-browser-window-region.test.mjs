@@ -150,7 +150,7 @@ test('MP-11 a dialog page overlay accepts the exact native page rect inside the 
 test('MP-11 an in-window popup over the page masks the active Tab\'s protected fields on every readback',async()=>{
  const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
  const base={surface:'browser_auxiliary',inWindow:true,window:{id:42,width:2560,height:1774},contentHeight:1600,isCurrent:()=>true,
-  rect:{left:238,top:174,width:2156,height:176},masks:[{x:0,y:175,width:27,height:1}],pageRect:{left:8,top:174,width:2544,height:1600},
+  rect:{left:238,top:174,width:2156,height:176},pageRect:{left:8,top:174,width:2544,height:1600},
   display:{},pid:7,connection:{},sessionId:'s-a',tab:{tab_id:'a',target_id:'target-a',document_id:'chrome-window-1-1-9'},scale:2,
   policy:{targets:[{target_id:'target-a'}],values:[]},browser:{},allowed:()=>true,timing:()=>{}};
  assert.throws(()=>new NativeWindowRegionCapture({...base,pageRect:undefined}),/auxiliary region/,'no page origin: refused');
@@ -161,7 +161,7 @@ test('MP-11 an in-window popup over the page masks the active Tab\'s protected f
   assert.equal(regions.tracker().targets,true,'attribute-only protection changes retire its frames');
   await regions.refresh();
   assert.deepEqual(await regions.regions({captured_ms:performance.timeOrigin+performance.now()+1}),
-   [{x:70,y:40,width:200,height:60},{x:0,y:175,width:27,height:1}],'the field at the crop offset, plus the corner slivers');
+   [{x:70,y:40,width:200,height:60}],'the field at the crop offset');
   let fenced=0;source.fence=()=>{fenced++;};
   source.onCdp({sessionId:'s-a',method:'Page.frameNavigated',params:{frame:{}}});
   assert.equal(fenced,1,'the active Tab\'s navigation retires the popup frames');

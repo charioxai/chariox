@@ -17,14 +17,6 @@ export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
 const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
 export const POPUP_CORNER = 16;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
-export function cornerMasks(width, height, r) {
-  const masks = [];
-  for (let row = 0; row < r; row++) {
-    const dy = row + 0.5, w = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
-    if (w > 0) masks.push({x: 0, y: height - r + row, width: w, height: 1}, {x: width - w, y: height - r + row, width: w, height: 1});
-  }
-  return masks;
-}
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
   const [, screenX, screenY, width, height, outerWidth, outerHeight] = state;
@@ -162,7 +154,7 @@ export class ChromeWindows {
       const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
       ids.set(key, auxiliary_id);
       const binding = bind(r);
-      bound.push(Object.freeze({...binding, in_window: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+      bound.push(Object.freeze({...binding, in_window: true, omnibox: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
     }
     this.auxiliaryIds = ids;
     return bound;
@@ -258,9 +250,12 @@ export class ChromeWindows {
   auxiliaryState() {
     const tabbed = this.bound?.tabbed;
     if (!tabbed?.isCurrent()) return [];
-    return this.bound.auxiliary.map(({auxiliary_id, bounds}) => ({auxiliary_id,
+    // The omnibox list's stream keeps its grown size; the viewer shows only the live list (r10).
+    const live = this.omniboxLive;
+    return this.bound.auxiliary.map(({auxiliary_id, bounds, omnibox}) => ({auxiliary_id,
       x: Math.round((bounds.x - tabbed.bounds.x) / tabbed.scale), y: Math.round((bounds.y - tabbed.bounds.y) / tabbed.scale),
-      width: (bounds.width - bounds.width % 2) / tabbed.scale, height: (bounds.height - bounds.height % 2) / tabbed.scale}));
+      width: (bounds.width - bounds.width % 2) / tabbed.scale,
+      height: Math.min((bounds.height - bounds.height % 2) / tabbed.scale, omnibox && live ? Math.floor(live.height / 2) * 2 : Infinity)}));
   }
   auxiliary(auxiliaryId) {
     const binding = this.current().auxiliary.find(a => a.auxiliary_id === auxiliaryId);
@@ -283,13 +278,13 @@ export class ChromeWindows {
         contentHeight: tabbed.bounds.height - (binding.bounds.y - tabbed.bounds.y), isCurrent: binding.isCurrent};
     }
     if (binding.in_window) {
-      // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
-      // Its rect lies over the page, so the active Tab's masks apply there too (see the page rect).
+      // Below the band only (the band streams the rest). Its rect lies over the page (around its rounded
+      // corners, below a shrunk list): the active Tab's masks apply there on every readback (see the page rect).
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
       const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2;
       return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
         rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
-        contentHeight: tabbed.bounds.height - tabbed.content_top, masks: cornerMasks(width, height, POPUP_CORNER * tabbed.scale),
+        contentHeight: tabbed.bounds.height - tabbed.content_top,
         pageRect: tabbed.page_rect, isCurrent: binding.isCurrent};
     }
     return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},

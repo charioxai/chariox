@@ -80,7 +80,7 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,pageRect,occluded,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,pageOverlay,pageDocument,pageRect,occluded,...options}){
   super(options);
   if(surface==='page'&&typeof occluded==='function')this.occluded=occluded;
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
@@ -90,8 +90,6 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;
   if(this.pageOverlay&&typeof pageDocument!=='string')throw Error('MP-11: invalid native page overlay');
   if(this.pageOverlay&&this.region.pageTop!==0)throw Error('MP-11: invalid native page overlay');
-  // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
-  this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
   // An in-window popup is drawn over the page and closes without an X event: until the owner retires it,
   // its crop may show page pixels. The active Tab's masks, at the page's native origin, apply to every readback.
   this.overPage=inWindow===true&&!this.pageOverlay;
@@ -101,18 +99,13 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  // Protection of a crop that is not a whole page region.
  protection(){
   if(this.pageOverlay)return regionProtection(this,0,0);
-  const masks=this.staticMasks;
-  if(this.overPage){
-   const {left,top}=this.region.window_region,page=regionProtection(this,left-this.pageRect.left,top-this.pageRect.top),regions=page.regions.bind(page);
-   page.regions=async raw=>[...await regions(raw),...masks];
-   return page;
-  }
+  if(this.overPage){const {left,top}=this.region.window_region;return regionProtection(this,left-this.pageRect.left,top-this.pageRect.top);}
   // The band is proved disjoint from page pixels by its boundary; a separate auxiliary window is
   // selected by the browser owner. The kernel policy/lease still gates every sample and asynchronous commit.
   return {guard:null,beforeAt:-Infinity,
    async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
    retire(){this.guard=null;},tracker(){return {targets:false};},
-   async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [...masks];} };
+   async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [];} };
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  // Diagnostics for the dialog's page overlay (labels and counts only).

@@ -300,7 +300,7 @@ test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite up
 // Real Chrome 155 probe (r8/overlay-probe/probe3*.json): the popup WebUI reports
 // ["visible", screenX 113, screenY 35, list 1078x90, widget 1110x178] for a window at (10,10) DIP,
 // list body pixels end 28 DIP above the widget bottom and sit 16 DIP inside its sides (DPR 1 and 2).
-test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup below the band, corners masked", async t => {
+test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup below the band", async t => {
   const { host, windows } = fake();
   const real = new OwnedDisplay((await import("node:os")).tmpdir());
   try { await real.start(); } catch { return t.skip("no Xvfb"); }
@@ -316,10 +316,7 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
     assert.deepEqual(region.pageRect, windows.current().tabbed.page_rect, "over the page: its masks use the page origin");
     assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
-    // Only the slivers outside the rounded corners (radius 32 px at scale 2), one rect per row: no black squares.
-    assert.deepEqual(region.masks.slice(0, 2), [{ x: 0, y: 144, width: 1, height: 1 }, { x: 2155, y: 144, width: 1, height: 1 }]);
-    assert.deepEqual(region.masks.slice(-2), [{ x: 0, y: 175, width: 27, height: 1 }, { x: 2129, y: 175, width: 27, height: 1 }]);
-    assert(region.masks.every(m => m.y >= 144 && m.y < 176 && m.width <= 32), "within the corner squares");
+    assert.equal(region.masks, undefined, "around its rounded corners are page pixels under the active Tab's masks");
     const binding = windows.auxiliary(popup.auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
     assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
@@ -328,7 +325,9 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     const grown = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.equal(grown.isCurrent(), true, "a shorter list keeps the same popup");
-    assert.equal(windows.auxiliaryState()[0].height, 128);
+    // r10final 1920x1080@2: the viewer shows only the live list; its stream keeps the grown size (no page copy below it).
+    assert.equal(windows.auxiliaryState()[0].height, 88, "the live list's height");
+    assert.equal(windows.auxiliaryRegion(grown).rect.height, 256, "the stream keeps its size");
     windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
     const source = { isCurrent: grown.isCurrent, region: { window_region: windows.auxiliaryRegion(grown).rect } };
     assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 80 }), true, "on the live list");
