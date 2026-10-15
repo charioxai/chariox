@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { blockedUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
+import { blockedUrl, extensionManagementUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
 import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 import { browserLauncher, candidates, namespaceLauncher, pinnedChromium, policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
 
@@ -23,12 +23,14 @@ test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usab
   // DeveloperToolsAvailability 2 refuses the kernel's CDP attach to every page.
   assert.equal(managedPolicy.DeveloperToolsAvailability, undefined);
   for (const url of ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai"]) assert(managedPolicy.URLAllowlist.includes(url));
-  for (const url of ["chrome://*", "devtools://*", "chrome-extension://*", "file://*", "view-source:*"]) assert(managedPolicy.URLBlocklist.includes(url));
+  for (const url of ["chrome://*", "devtools://*", "file://*", "view-source:*"]) assert(managedPolicy.URLBlocklist.includes(url));
   assert.equal(managedPolicy.DownloadRestrictions, 3);
-  // No extension source but the kernel's own (a "*" blocklist would refuse even that).
+  // Miguel 2026-10-15: the person installs and manages extensions from the Web Store as in any Chrome
+  // (popups, options pages, chrome://extensions); nothing is sideloaded. Agents cannot (host refusal).
   assert.equal(managedPolicy.ExtensionInstallBlocklist, undefined);
-  assert.deepEqual(managedPolicy.ExtensionInstallSources, []); assert.equal(managedPolicy.BlockExternalExtensions, true);
-  for (const host of ["chromewebstore.google.com", "chrome.google.com/webstore"]) assert(managedPolicy.URLBlocklist.includes(host));
+  assert.deepEqual(managedPolicy.ExtensionInstallSources, ["https://chromewebstore.google.com/*"]); assert.equal(managedPolicy.BlockExternalExtensions, true);
+  for (const blocked of ["chromewebstore.google.com", "chrome.google.com/webstore", "chrome-extension://*"]) assert(!managedPolicy.URLBlocklist.includes(blocked), blocked);
+  assert(managedPolicy.URLAllowlist.includes("chrome://extensions"));
   assert(managedPolicy.URLAllowlist.includes("chrome-extension://ecideajikgeiboaphimcgeahicjgcfea"));
   assert.equal(managedPolicy.IncognitoModeAvailability, 1);
   // A same-size fullscreen window would put page pixels in the band crop (vidlat review, 2026-10-15).
@@ -97,6 +99,8 @@ test("MP-11 the kernel browser prefers the Setup's pinned Chromium when it is ro
 });
 
 test("MP-11 blocked schemes", () => {
-  for (const url of ["chrome://settings/", "devtools://devtools/x", "file:///etc/passwd", "view-source:https://a.example/", "chrome-extension://abc/x.html", "chrome-untrusted://x/"]) assert(blockedUrl(url), url);
-  for (const url of ["https://example.com/", "about:blank", "", null, "not a url"]) assert(!blockedUrl(url), String(url));
+  for (const url of ["chrome://settings/", "devtools://devtools/x", "file:///etc/passwd", "view-source:https://a.example/", "chrome-untrusted://x/", "chrome://extensions-internals/"]) assert(blockedUrl(url), url);
+  for (const url of ["https://example.com/", "about:blank", "", null, "not a url", "chrome://extensions/", "chrome://extensions/?id=abc", "chrome-extension://abc/popup.html"]) assert(!blockedUrl(url), String(url));
+  for (const url of ["chrome://extensions/", "chrome-extension://abc/options.html", "https://chromewebstore.google.com/detail/x/abc", "https://chrome.google.com/webstore/detail/abc", "CHROMEWEBSTORE.google.com/category/extensions"]) assert(extensionManagementUrl(url), url);
+  for (const url of ["https://example.com/", "https://google.com/webstore", "https://chromewebstore.google.com.evil.example/", "not a url", null]) assert(!extensionManagementUrl(url), String(url));
 });

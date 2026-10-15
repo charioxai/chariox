@@ -177,6 +177,7 @@ impl KernelRuntimeState {
         let admission = host
             .admit_for(&user, agent.id(), KernelBrowserCapability::Computer)
             .map_err(host_error)?
+            .with_agent_label(agent.alias())
             .with_authority(move || {
                 let current = authority
                     .owned

@@ -15,7 +15,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
-import { blockedUrl } from "./kernel-browser-policy.mjs";
+import { blockedUrl, extensionManagementUrl } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
@@ -54,6 +54,7 @@ const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
+const EXTENSIONS_REFUSED = "MP-11: extensions are the person's own; an agent cannot open the Web Store or chrome://extensions or act on them";
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
@@ -414,11 +415,23 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    const previous = this.activeTarget;
     this.activeTarget = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return result;
+  }
+  // MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts, or another actor,
+  // can show another Tab in the one window. Whole-page native pixels and input of every other Tab
+  // stop first (the claim is retired synchronously); `keep` is a Tab target known to be in front.
+  retireNativeForeground(keep = null) {
+    const kept = tabId => keep !== null && this.tabs.get(tabId)?.target_id === keep;
+    if (this.foreground.tab && !kept(this.foreground.tab)) this.foreground.reset();
+    return import('./kernel-browser-native.mjs').then(async ({ LinuxCapture }) => {
+      for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
+    });
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -626,6 +639,8 @@ export class KernelBrowserHost {
       return this.observe(this.tabState(), tab, scope);
     }
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
+    const agentRequest = command.focused_agent || command._agent_input;
+    if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
     if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
@@ -676,6 +691,7 @@ export class KernelBrowserHost {
     let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
+    if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {

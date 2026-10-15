@@ -6,8 +6,10 @@ import path from "node:path";
 import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 
 // The native tab strip/omnibox is shown to the person (BROWSER-UX-14): its
-// internal pages, developer tools, extensions, files, downloads, password
-// manager, other profiles and printing must not reach the kernel's machine.
+// internal pages, developer tools, files, downloads, password manager, other
+// profiles and printing must not reach the kernel's machine. Extensions are the
+// person's own, from the Web Store, as in any Chrome (Miguel 2026-10-15); agents
+// cannot reach extension management (host refusal, extensionManagementUrl).
 // DeveloperToolsAvailability 2 is not usable: it also refuses the kernel's own
 // CDP attach to every page. DevTools stays closed through the devtools://
 // blocklist (Chrome then refuses DevTools on every page) and the kernel's
@@ -15,19 +17,19 @@ import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 export const managedPolicy = Object.freeze({
   // Chrome draws the omnibox dropdown and tab search as chrome://*.top-chrome pages;
   // PDFs open in its built-in viewer component extension; the kernel's own
-  // tab-groups extension runs as one.
-  URLAllowlist: ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai", `chrome-extension://${TAB_GROUPS_EXTENSION_ID}`],
-  URLBlocklist: ["chrome://*", "chrome-untrusted://*", "devtools://*", "chrome-extension://*", "file://*", "view-source:*", "chromewebstore.google.com", "chrome.google.com/webstore"],
+  // tab-groups extension runs as one; chrome://extensions manages the person's extensions.
+  URLAllowlist: ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome://extensions", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai", `chrome-extension://${TAB_GROUPS_EXTENSION_ID}`],
+  URLBlocklist: ["chrome://*", "chrome-untrusted://*", "devtools://*", "file://*", "view-source:*"],
   DownloadRestrictions: 3,
   PasswordManagerEnabled: false,
   AutofillAddressEnabled: false,
   AutofillCreditCardEnabled: false,
   BrowserSignin: 0,
   SyncDisabled: true,
-  // No extension can be installed (no source, no external, no Web Store) other than the
-  // kernel's own, loaded over its CDP pipe. ExtensionInstallBlocklist "*" is not used:
-  // Chrome then refuses that load even for an allow-listed id.
-  ExtensionInstallSources: [],
+  // Extensions come from the Web Store only (none external or sideloaded) besides the kernel's
+  // own, loaded over its CDP pipe. ExtensionInstallBlocklist "*" is not used: Chrome then
+  // refuses that load even for an allow-listed id.
+  ExtensionInstallSources: ["https://chromewebstore.google.com/*"],
   BlockExternalExtensions: true,
   // Its icon is never pinned in the native toolbar (Chrome for Testing pins it by default).
   ExtensionSettings: { [TAB_GROUPS_EXTENSION_ID]: { toolbar_pin: "default_unpinned" } },
@@ -78,8 +80,19 @@ export async function writePolicyLayer(root, environment = process.env) {
 
 // Second, fail-closed layer in the kernel: a page that still reaches a blocked
 // scheme (policy missing or bypassed) is closed.
-const blockedSchemes = new Set(["chrome:", "chrome-untrusted:", "devtools:", "chrome-extension:", "file:", "view-source:"]);
+const blockedSchemes = new Set(["chrome:", "chrome-untrusted:", "devtools:", "file:", "view-source:"]);
 export function blockedUrl(url) {
   if (typeof url !== "string") return false;
-  try { return blockedSchemes.has(new URL(url).protocol); } catch { return false; }
+  try { const u = new URL(url); return blockedSchemes.has(u.protocol) && !(u.protocol === "chrome:" && u.hostname === "extensions"); } catch { return false; }
+}
+
+// MP-11: the person's extension management (Web Store, chrome://extensions, extension pages).
+// Agents are refused it this iteration; installs by agents come later through /sudo.
+export function extensionManagementUrl(url) {
+  if (typeof url !== "string") return false;
+  let u;
+  try { u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`); } catch { return false; }
+  const web = u.protocol === "https:" || u.protocol === "http:";
+  return u.protocol === "chrome-extension:" || u.protocol === "chrome:" && u.hostname === "extensions"
+    || web && (u.hostname === "chromewebstore.google.com" || u.hostname === "chrome.google.com" && /^\/webstore(\/|$)/.test(u.pathname));
 }

@@ -1378,6 +1378,55 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
 }));
 
+// MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts (or any actor) can show another
+// existing Tab in the one window. A whole-page native source of the previous Tab must stop publishing and
+// accepting input before then, or Tab B's pixels (e.g. a Vault-filled field outside A's masks) go out as A's.
+test('MP-11 an existing-Tab switch retires the previous Tab\'s whole-page native capture', () => using(async ({ host }) => {
+  const { LinuxCapture } = await import('./kernel-browser-native.mjs');
+  const a = await host.request({ op: 'open', url: 'https://example.com/' });
+  const b = await host.request({ op: 'open', url: 'https://example.org/' });
+  const target = id => host.tabs.get(id).target_id;
+  let active = target(a.tab_id);
+  host.tabGroups = { active: async () => active };
+  await host.request({ op: 'state' });
+  const stream = () => {
+    const claim = host.foreground.claim(a.tab_id), events = [];
+    const source = Object.assign(Object.create(LinuxCapture.prototype), { closed: false, allowed: () => host.foreground.holds(a.tab_id, claim), close: async () => { events.push('retired'); } });
+    host.compositors.set(a.tab_id, { ready: Promise.resolve(source), source, document: host.tabs.get(a.tab_id).document_id });
+    return { source, events };
+  };
+  // 1. The person clicks Tab B in the band: retired before the click reaches Chrome.
+  let { source, events } = stream();
+  const band = { surface: 'browser_chrome', isCurrent: () => true, click: async () => { events.push(source.allowed() ? 'click while A publishes' : 'click'); active = target(b.tab_id); return true; } };
+  await host.arbiter.input({ stream: { regionSource: band }, command: { tab_id: a.tab_id, document_id: host.tabs.get(a.tab_id).document_id, generation: host.generation, input: { kind: 'click', x: 300, y: 20 } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['click', 'retired']);
+  assert.equal(host.compositors.has(a.tab_id), false);
+  // 2. Another actor activates B (Ctrl+Tab in Chrome, a page's window.focus): the next observation retires A's source.
+  active = target(a.tab_id); await host.request({ op: 'state' });
+  ({ source, events } = stream());
+  active = target(b.tab_id);
+  await host.request({ op: 'state' });
+  assert.equal(source.allowed(), false, 'A\'s claim is gone once B is the active Tab');
+  assert.deepEqual(events, ['retired']);
+}));
+
+// MP-11 (Miguel 2026-10-15): the person manages extensions as in any Chrome; an agent cannot open the
+// Web Store or chrome://extensions, nor act on such a Tab (installs come later through /sudo).
+test('MP-11 agents cannot reach extension management; the person can', () => using(async ({ host }) => {
+  const refused = { message: /extension_management_not_granted/ };
+  for (const flags of [{ _agent_input: true }, { focused_agent: 'agent-a' }]) {
+    await assert.rejects(host.handle({ id: 1, method: 'host.browser', params: { op: 'open', url: 'https://chromewebstore.google.com/detail/x/abc', ...flags } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+    await assert.rejects(host.handle({ id: 2, method: 'host.browser', params: { op: 'open', url: 'chrome://extensions/', ...flags } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+  }
+  const mine = await host.request({ op: 'open', url: 'https://example.com/' });
+  const agent = { _agent_input: true };
+  await assert.rejects(host.handle({ id: 3, method: 'host.browser', params: { op: 'navigate', tab_id: mine.tab_id, generation: mine.generation, url: 'chromewebstore.google.com', ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+  await host.request({ op: 'navigate', tab_id: mine.tab_id, generation: mine.generation, url: 'https://chromewebstore.google.com/' });
+  const tab = host.tabs.get(mine.tab_id);
+  await assert.rejects(host.handle({ id: 4, method: 'host.browser', params: { op: 'input', tab_id: mine.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'click', x: 10, y: 10 }, ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused, 'an agent cannot click Add to Chrome');
+}));
+
 // MP-08/MP-10/MP-11 (protocol 528/136): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
 test('MP-08 public Browser state keys match the protocol 528 fixture', () => using(async ({ host }) => {
