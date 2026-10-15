@@ -1188,13 +1188,14 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             "direct session did not close"
         );
         let _ = release.send(());
+        let display_subscriptions = Default::default();
         let retry = handle_daemon_request(
             &kernel.direct.router,
             &kernel.direct.command_sequence,
             Some(browser.identity()),
             encrypted.clone(),
             &kernel.direct.command_result_cache,
-            &Default::default(),
+            &display_subscriptions,
             Some(&kernel.direct),
         );
         let outcome = timeout(Duration::from_secs(2), retry)
