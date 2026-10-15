@@ -4065,5 +4065,9 @@ own native worker inventory. Popups take primary clicks, wheel, keys and text
 through the same arbiter and fences as the band, under the managed lockdown
 only. `browser-chrome-ui-530.json` pins the new requests and state keys (Rust
 hash test `mp08_mp10_mp11_browser_chrome_ui_530_snapshot`; the host's Node
-test compares its state keys to the fixture). Clients feature-detect 530; no
-client floor moves.
+test compares its state keys to the fixture). Mirrored undo and redo travel as
+the mirror keys `"Ctrl+Z"` and `"Ctrl+Shift+Z"` (`mirror_input` `key`, no new
+field): the kernel's mirror resolver turns them into the editor's own chords
+under its observed-frame, live-focus and epoch guards (before 530 they were
+document-bound `display_input` chords, which refuse any focused frame). Clients
+feature-detect 530; no client floor moves.

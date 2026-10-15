@@ -544,3 +544,12 @@ test('overlapping input replies do not release another root scroll or hold a new
  renderer.documentId='next';assert.equal(renderer.rootScrolling(),false,'old-document replies do not hold the new document');
  renderer.documentId='d';sent[0]!.resolve();await until(()=>renderer.pendingInputs===0);assert.equal(renderer.rootScrolling(),false);renderer.close();
 })
+
+// MP-08/MP-10/MP-11: structural diagnostics reveal no IDs or page content.
+test('MP-11: tree refusals distinguish missing delta targets from invalid parents without reflecting records', () => {
+  const previous = new Map(tree().map(record => [record.id, record]))
+  const delta = (target: string, parent: string): Mirror2Packet => ({ ...base(tree()), reset: false, sequence: 2, base_sequence: 1, nodes: undefined, ops: [{ op: 'children', id: target, children: ['n7'], nodes: [{ id: 'n7', parent, kind: 'text', text: 'PRIVATE_PAGE_TEXT' }] }] })
+  assert.throws(() => validateMirror2Packet(delta('n6', 'n6'), previous), { message: 'MP-11: unsafe mirror tree (missing operation target)' })
+  assert.throws(() => validateMirror2Packet(delta('n2', 'n8'), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
+  assert.throws(() => validateMirror2Packet(base(tree({ id: 'n7', parent: 'n8', kind: 'text', text: 'PRIVATE_PAGE_TEXT' })), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
+})

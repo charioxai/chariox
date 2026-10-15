@@ -16,7 +16,7 @@ const DELETIONS: Record<string, string[]> = {
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
 }
 // Cloud MP-08/MP-10: undo/redo go to the kernel's editor as its own (Linux Chromium) chords, Control=2 and Shift=8,
-// on the document-bound display_input key (protocol 517 modifiers); mirror_input keys carry no modifiers.
+// as named mirror keys from protocol 530 (before: the document-bound display_input key with 517 modifiers).
 type Chord = { kind: 'key'; key: string; modifiers: number }
 type Mirror2Input = Mirror2Action | Chord
 const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', modifiers: 2 }, historyRedo: { kind: 'key', key: 'z', modifiers: 10 } }
@@ -639,10 +639,12 @@ export class BrowserMirror2Renderer {
           const child = fresh.get(id) ?? this.dom.get(id); if (child) desired.push(child)
         }
         // A kept descendant may still be inside a wrapper we are about to retire.
-        // Move it first, including from a shadow root, so its index survives.
+        // Move it first, including from a shadow root or frame, so its index survives.
         for (const child of desired) {
           let ancestor: Node | null = child.parentNode
-          while (ancestor && ancestor !== container) ancestor = ancestor.parentNode ?? (ancestor.nodeType === 11 ? (ancestor as ShadowRoot).host ?? null : null)
+          while (ancestor && ancestor !== container) ancestor = ancestor.parentNode
+            ?? (ancestor.nodeType === 11 ? (ancestor as ShadowRoot).host ?? null
+              : ancestor.nodeType === 9 ? (ancestor as Document).defaultView?.frameElement ?? null : null)
           if (ancestor === container && child.parentNode !== container) container.appendChild(child)
           const record = this.records.get(this.ids.get(child) ?? ''); if (record) record.parent = op.id
         }
@@ -760,7 +762,10 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment') } as Mirror2Packet)
   }
-  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request('modifiers' in action ? { op: 'display_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, input: action } : { op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  // Protocol 530 (review #1016 P2): undo/redo travel as named mirror keys, keeping the mirror's frame,
+  // focus and epoch admission; older kernels take them as document-bound display chords.
+  const mirrorHistory = transport.protocolVersion >= 530
+  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request('modifiers' in action && !mirrorHistory ? { op: 'display_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, input: action } : { op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own

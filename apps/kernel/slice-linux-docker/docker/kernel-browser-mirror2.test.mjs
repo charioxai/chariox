@@ -407,3 +407,20 @@ test('MP-10 M2: first-packet font bytes use the completed response before the Pa
  mirror.evaluate=async(_world,expression)=>expression.includes('nearImages')?{near:[],all:[]}:['r1'];const entry={key:'r1',url:'https://public.example/font.woff2',kind:'font',state:'new'};
  const out=await mirror.materializeWorld(world,[entry],0,262144,{issued:0,movedAt:0,loadedCount:1,resources:new Map([['r1',entry]])});assert.equal(out[0].mime_type,'font/woff2');assert.deepEqual(calls,[]);
 });
+
+// Review #1016 @f0ccdb5c2 P2 (protocol 530): mirrored undo/redo arrive as named mirror keys and resolve to the
+// editor's own chords under the mirror's guard (observed frames, live focus, epoch); other names stay plain keys.
+test('MP-08/MP-11 mirrored Ctrl+Z / Ctrl+Shift+Z resolve to modifier chords under the mirror guard', async () => {
+  const policy = {}, world = { contextId: 7, sessionId: 's', frame: { id: 'f', loaderId: 'doc' }, ref: 'm' };
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'doc' } } }) };
+  world.connection = connection;
+  const tab = { tab_id: 't', target_id: 'target', document_id: 'doc' };
+  const stream = { id: 's', world, tab_id: 't', document_id: 'doc', policy, issued: 1, resetAt: 1, attrSequence: new Map(), frameSlots: new Map(), frames: new Map() };
+  const mirror = new Mirror2({ host: { generation: 1, protection: policy, browser: { connection } }, assertWebTab() {}, require: () => stream });
+  mirror.world = async () => world;
+  for (const [key, expected] of [['Ctrl+Z', { kind: 'key', key: 'z', modifiers: 2 }], ['Ctrl+Shift+Z', { kind: 'key', key: 'z', modifiers: 10 }], ['Tab', { kind: 'key', key: 'Tab' }], ['constructor', { kind: 'key', key: 'constructor' }]]) {
+    const resolved = await mirror.resolveInput(stream, tab, { subscription_id: 's', sequence: 1, action: { kind: 'key', key } }, 'scope');
+    assert.deepEqual(resolved.input, expected, key);
+    assert.equal(resolved.observedFrameInput, true); assert.equal(typeof resolved.guard, 'function'); assert.equal(typeof resolved.frameSensitive, 'function');
+  }
+});
