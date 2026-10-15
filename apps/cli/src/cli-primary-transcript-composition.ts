@@ -117,7 +117,6 @@ export type CliPrimaryTranscriptCompositionDeps = {
   requestTranscriptRender: AnyFn
   requestRootRender: AnyFn
   logViewDebug: AnyFn
-  promptHistoryHydrationController: any
   splitAgentResponseMode: AnyFn
   maxAgentsPerScreen: AnyFn
   setAgentPaneEntries: AnyFn
@@ -299,7 +298,6 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   }
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
-    promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadSessionHistoryOutline: (sessionId, agentIds) => getSessionHistoryOutline(deps.client, sessionId, agentIds, 4),

@@ -548,7 +548,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     addPendingPromptAttachments, appendPromptEchoToSharedHistory, beginSubmittedPromptUi, clearPendingPromptAttachments,
     clearPendingPromptDraftPersist, flushPendingPromptDraftPersist, footerHint, handlePromptContentChange,
     navigatePromptHistoryInput, persistablePromptDraft, persistSessionPromptState, promptAreaBackground,
-    promptHistoryHydrationController, promptInputHistoryRefreshController, promptInputMaxHeight, promptPlaceholder,
+    promptInputHistoryRefreshController, promptInputMaxHeight, promptPlaceholder,
     recordPromptAreaHistoryEntry, refreshPromptAttachmentHighlights, removeLastPendingPromptAttachment, removePromptAttachmentsForEdit,
     restoreFailedPromptUi, retainPromptFocus, scheduleSharedPromptInputHistoryRefresh, sessionStatusMode,
     setPromptText, syncPromptPlaceholder, syncPromptTextSnapshot,
@@ -886,7 +886,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },
-    logViewDebug, promptHistoryHydrationController, splitAgentResponseMode, maxAgentsPerScreen,
+    logViewDebug, splitAgentResponseMode, maxAgentsPerScreen,
     setAgentPaneEntries, setAgentPanePreview,
   })
 
