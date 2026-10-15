@@ -172,7 +172,7 @@ mod tests {
             .unwrap();
         assert_eq!(deletions, 0);
         assert!(
-            ProjectEnvironmentStore::new(&config.private_runtime_state_root())
+            crate::project_environment::ProjectEnvironmentStore::new(&config.private_runtime_state_root())
                 .snapshot(&project)
                 .is_ok()
         );
