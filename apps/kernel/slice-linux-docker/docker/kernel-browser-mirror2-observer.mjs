@@ -93,7 +93,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const HTML = 'http://www.w3.org/1999/xhtml', SVG = 'http://www.w3.org/2000/svg', MATH = 'http://www.w3.org/1998/Math/MathML';
     // MP-08/MP-10/MP-11 M2: document bounds are distinct from per-task/packet
     // bounds. A public spec has >337k elements; no single CDP reply contains it.
-    const NODE_BUDGET = 900000, BYTE_BUDGET = 64 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
+    const NODE_BUDGET = 900000, BYTE_BUDGET = 64 * 1024 * 1024, HEAD_BYTES = 2 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
     const DROP = new Set('script noscript template meta base title param track'.split(' '));
     const OPAQUE = new Set('canvas video audio object embed applet frame frameset portal fencedframe'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
@@ -405,12 +405,15 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // Continuations run only when a viewer gives a credit, never in a background
     // loop. Yield to Chrome/other Tabs after 8 ms, 4096 visits or 128 KiB.
+    // The head's style sheets precede the viewport: until the body is serialized (bounded by HEAD_BYTES)
+    // they do not count, so a site's large style sheets cannot leave a reset with nothing visible.
     const chunk = (visits = 4096, minimum = 256) => {
-      const out = [], end = performance.now() + 8, bytes = budget.bytes;
+      const out = [], end = performance.now() + 8; let bytes = budget.bytes;
       for (let i = 0; continuation && i < (progressive ? visits : 40000); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
+        if (budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
         // Keep ordinary small pages atomic. The backstop also catches a huge
         // open shadow tree absent from the document's native element count.
         // A medium page can have few elements and megabytes of text/attributes.
