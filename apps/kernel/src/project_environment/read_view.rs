@@ -257,7 +257,7 @@ mod tests {
         let operation:EnvironmentOperation=serde_json::from_value(serde_json::json!({
             "operation_id":"detect-review","attempt":1,"local_project_id":env.local_project_id,
             "revision_digest":env.content_digest,"target":{"machine_id":"machine","target_instance_generation":"boot","slice_ref":null},
-            "kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":2,"cancellation":null,"receipts":[],"recovery_state":"settled"
+            "kind":"detect","phase":"ready","selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":2,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}
         })).unwrap();
         env.operations.push(operation);
         for index in 0..40 {
