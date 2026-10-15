@@ -39,22 +39,31 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale,inW
   window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
 // MP-08/MP-11 (coordinator 12:22Z): under a browser-modal Chrome dialog the page area shows the page
-// behind a uniform scrim (native = k x page, real Chrome 155: k = 0.4) plus the dialog box. Outside the
-// masks, at least four fifths of the compared pixels must be exactly the scrimmed reference pixel (+-2):
-// that proves this Tab at this geometry; the rest (the dialog, a spinner) is bounded, never trusted.
-export function overlayAttestation(reference,raw,masked){
- if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native overlay attestation geometry');
- // The scrim factor: the median ratio of sampled bright pixels (the dialog's own pixels are outliers).
- const n=raw.pixels,r=reference.pixels,ratios=[];
- for(let i=0;i<n.length;i+=20)if(!masked?.[i/4]&&r[i]>64)ratios.push(n[i+2]/r[i]);
- ratios.sort((a,b)=>a-b);const k=ratios.length?ratios[ratios.length>>1]:0;let compared=0,inliers=0;
- for(let i=0;i<n.length;i+=4)if(!masked?.[i/4]){compared++;
-  if(Math.abs(n[i+2]-r[i]*k)<=2&&Math.abs(n[i+1]-r[i+1]*k)<=2&&Math.abs(n[i]-r[i+2]*k)<=2)inliers++;}
- if(compared<n.length/40)throw Error('MP-11: native overlay attestation masked');
- const counts={scrim:k,inliers:inliers/compared};
+// behind a uniform scrim (native = k x page, real Chrome 155: k = 0.4) plus the dialog box. Chrome's
+// restored window draws a frame (4 DIP each side in real captures), so the page sits a few px inside
+// the overlay: the offset (0..8 DIP across, +-2 DIP down) is found on a sparse grid, then at least four
+// fifths of the unmasked reference pixels must be exactly the scrimmed page there (+-2): this Tab at
+// this geometry; what differs (the dialog, a spinner) is bounded, never trusted. `masked` indexes the
+// reference. Returns the offset so the page's masks follow it.
+export function overlayAttestation(reference,raw,masked,scale=1){
+ if(!raw||raw.width<reference.width||raw.width-reference.width>16*scale||Math.abs(raw.height-reference.height)>4*scale)throw Error('MP-11: native overlay attestation geometry');
+ const n=raw.pixels,r=reference.pixels,W=reference.width,H=reference.height,NW=raw.width,NH=raw.height;
+ const at=(x,y,dx,dy)=>{const nx=x+dx,ny=y+dy;return nx>=0&&ny>=0&&nx<NW&&ny<NH?(ny*NW+nx)*4:-1;};
+ const inlier=(i,j,k)=>Math.abs(n[j+2]-r[i]*k)<=2&&Math.abs(n[j+1]-r[i+1]*k)<=2&&Math.abs(n[j]-r[i+2]*k)<=2;
+ const scrim=(dx,dy,step)=>{const ratios=[];for(let y=0;y<H;y+=step)for(let x=0;x<W;x+=step){const i=(y*W+x)*4,j=at(x,y,dx,dy);if(j>=0&&!masked?.[i/4]&&r[i]>64)ratios.push(n[j+2]/r[i]);}ratios.sort((a,b)=>a-b);return ratios.length?ratios[ratios.length>>1]:0;};
+ let best={share:-1};
+ for(let dy=-2*scale;dy<=2*scale;dy++)for(let dx=0;dx<=8*scale;dx++){
+  const k=scrim(dx,dy,7);let c=0,ok=0;
+  for(let y=0;y<H;y+=7)for(let x=0;x<W;x+=7){const i=(y*W+x)*4,j=at(x,y,dx,dy);if(j<0||masked?.[i/4])continue;c++;if(inlier(i,j,k))ok++;}
+  if(c&&ok/c>best.share)best={share:ok/c,dx,dy};
+ }
+ const {dx,dy}=best,k=scrim(dx,dy,5);let compared=0,inliers=0;
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=(y*W+x)*4,j=at(x,y,dx,dy);if(j<0||masked?.[i/4])continue;compared++;if(inlier(i,j,k))inliers++;}
+ if(compared<W*H/40)throw Error('MP-11: native overlay attestation masked');
+ const counts={scrim:k,inliers:inliers/compared,dx,dy};
  if(!(k>=0.25&&k<=0.75))throw Object.assign(Error('MP-11: native overlay without a scrim'),counts);
  if(inliers<compared*0.8)throw Object.assign(Error('MP-11: native overlay attestation mismatch'),counts);
- return {scrim:k,inliers:inliers/compared};
+ return counts;
 }
 export function projectRegionMasks(regions,left,top){
  return regions.map(({x,y,width,height})=>({x:x-left,y:y-top,width,height}));
@@ -87,8 +96,10 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     this.regions=new NativeRegionProtection(this.connection,this.sessionId,
      {policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
     const measure=this.regions.measure.bind(this.regions);
+    // An overlay's page sits at the attested offset inside it (Chrome's window frame).
+    this.pageOffset={dx:0,dy:0};
     this.regions.measure=async()=> (await measure()).map(([x,y,w,h])=>
-     [x-region.pageLeft,y-region.pageTop,w,h]);
+     [x-region.pageLeft+this.pageOffset.dx,y-region.pageTop+this.pageOffset.dy,w,h]);
    }else{
     // Chrome UI is proved disjoint from page pixels: the band boundary or
     // a whole separate auxiliary window selected by the browser owner.
@@ -109,17 +120,22 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     const shot=await this.screenshot();
     const clip={x:region.pageLeft/this.scale,y:region.pageTop/this.scale,
      width:region.css_width,height:region.css_height};
-    const reference=decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
+    // The overlay's reference is the page's own viewport (its frame offset is found by the attestation).
+    const page=this.pageOverlay?decodePng(shot.data_base64,this.scale):null;
+    const reference=page?(page.height>region.height?decodePng(cropProtectedPng(shot.data_base64,{x:0,y:0,width:page.width/this.scale,height:region.css_height},this.scale).data_base64,this.scale):page)
+     :decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
     const raw=this.latest?.raw;
-    if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native region attestation geometry');
+    if(!raw||!this.pageOverlay&&(raw.width!==reference.width||raw.height!==reference.height))throw Error('MP-11: native region attestation geometry');
     const fullBand=statusBand({width:region.window_region.width,height:region.contentHeight},this.hostScale);
     const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
-    const masked=attestationMask(masks,raw.width,raw.height);
-    if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');
+    const masked=attestationMask(masks,reference.width,reference.height);
+    if(masked&&masked.reduce((n,v)=>n+v,0)>reference.width*reference.height*.9)throw Error('MP-11: native region attestation masked');
     // The scrim fades in: a refused frame is retried on a later readback (counts only are recorded).
     if(this.pageOverlay)for(let attempt=0;;attempt++){
-     try{const {scrim,inliers}=overlayAttestation(reference,this.latest?.raw??raw,masked);this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${attempt}`,performance.timeOrigin+performance.now());break;}
-     catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${reference.width}x${reference.height}`,performance.timeOrigin+performance.now());
+     try{const {scrim,inliers,dx,dy}=overlayAttestation(reference,this.latest?.raw??raw,masked,this.scale);
+      this.pageOffset={dx,dy};await this.regions.refresh(); // the page's Vault masks at the attested offset
+      this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${dx},${dy} ${attempt}`,performance.timeOrigin+performance.now());break;}
+     catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${error.dx},${error.dy} ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
       if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}
     }
     else{const pixels=raw.pixels;

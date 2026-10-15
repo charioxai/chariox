@@ -103,10 +103,13 @@ test('MP-11 an in-window popup is a rect of the tabbed window below the band',()
 test('MP-11 the page overlay attests the scrimmed page and bounds what differs',()=>{
  const width=320,height=200,reference={width,height,pixels:Buffer.alloc(width*height*4)};
  let seed=7;for(let i=0;i<reference.pixels.length;i+=4){for(let c=0;c<3;c++){seed=(seed*1103515245+12345)>>>0;reference.pixels[i+c]=40+(seed>>>24)%200;}reference.pixels[i+3]=255;}
- const native=(k,{box=null,shift=0}={})=>{const pixels=Buffer.alloc(width*height*4);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const o=(y*width+x)*4,s=(y*width+Math.min(width-1,x+shift))*4;
-  const inBox=box&&x>=box[0]&&x<box[2]&&y>=box[1]&&y<box[3];for(let c=0;c<3;c++)pixels[o+2-c]=inBox?255:Math.round(reference.pixels[s+c]*k);}return {width,height,pixels};};
+ // native: the overlay raster (frame columns on each side), the page at (frame, 0) behind a scrim k
+ const native=(k,{box=null,shift=0,frame=0}={})=>{const W=width+2*frame,pixels=Buffer.alloc(W*height*4,60);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const o=(y*W+x+frame)*4,s=(y*width+Math.min(width-1,x+shift))*4;
+  const inBox=box&&x>=box[0]&&x<box[2]&&y>=box[1]&&y<box[3];for(let c=0;c<3;c++)pixels[o+2-c]=inBox?255:Math.round(reference.pixels[s+c]*k);}return {width:W,height,pixels};};
  const ok=overlayAttestation(reference,native(0.4,{box:[100,0,220,60]}),null);
- assert.ok(Math.abs(ok.scrim-0.4)<0.01);assert.ok(ok.inliers>0.85);
+ assert.ok(Math.abs(ok.scrim-0.4)<0.01);assert.ok(ok.inliers>0.85);assert.deepEqual([ok.dx,ok.dy],[0,0]);
+ const framed=overlayAttestation(reference,native(0.4,{box:[100,0,220,60],frame:4}),null);
+ assert.deepEqual([framed.dx,framed.dy],[4,0],'Chrome\'s window frame: the page 4 px inside, its masks follow');
  assert.throws(()=>overlayAttestation(reference,native(0.4,{shift:1}),null),/mismatch/,'another geometry');
  assert.throws(()=>overlayAttestation(reference,native(1),null),/without a scrim/,'no scrim (not a dialog)');
  assert.throws(()=>overlayAttestation(reference,native(0.4,{box:[0,0,320,90]}),null),/mismatch/,'at most a fifth may differ');
