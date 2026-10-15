@@ -1,5 +1,6 @@
 import type {
   PasskeyPrompt,
+  PasskeyPromptClosure,
   ProviderAccountSummary,
   SliceRecord,
   WaitingRoomPublicSessionSummary,
@@ -156,5 +157,8 @@ export type KernelEvent =
     /** Protocol 403: every passkey prompt pending for this terminal's user;
      * sent when a subscription starts and whenever the set changes. */
     event: "passkey_prompts_changed"
+    /** Protocol 538: authoritative lifecycle metadata. */
+    kernel_now_ms?: number
+    closed?: PasskeyPromptClosure[]
     prompts: PasskeyPrompt[]
   }

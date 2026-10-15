@@ -132,16 +132,61 @@ impl KernelRuntimeState {
                 .kernel_access
                 .request_timeout_minutes,
         ) * 60;
-        let requester = match &entry.requester {
-            Some(grant) => format!(
-                "External agent {} (OS pid {}, grant {})",
-                grant.holder_executable, grant.holder_pid, grant.grant_id
-            ),
-            None => format!("Terminal {}", entry.terminal_id),
+        // MP-08 / MP-11: establish display facts in the same kernel operation,
+        // before registration publishes the first popup. Never parse display copy.
+        let requester = entry.requester.as_ref().and_then(|grant| {
+            self.owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned")
+                .grants
+                .get(&grant.grant_id)
+                .map(|grant| crate::runtime::kernel_access::requester::project(&grant.holder))
+        });
+        let requester_name = if entry.requester.is_none() {
+            "You"
+        } else {
+            match requester.as_ref().and_then(|r| r.provider_harness) {
+                Some(KernelAccessProviderHarness::Claude) => "Claude Code",
+                Some(KernelAccessProviderHarness::Codex) => "Codex",
+                Some(KernelAccessProviderHarness::Opencode) => "OpenCode",
+                None => "An external agent",
+            }
         };
-        let interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, "Authorize one sudo turn",
-            format!("{} requests one sudo turn for agent {} in session {}. It may answer critical approvals across this kernel until it yields. Requester-supplied prompt:\n{}", requester, entry.agent_id, entry.session_id, prompt),
-            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()]).with_timeout_sec(seconds);
+        let agent = self.owned.agent_store.get_agent(&entry.agent_id)?;
+        let session = self.owned.session_store.get_session(&entry.session_id)?;
+        let summary = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut task_summary: String = summary
+            .chars()
+            .filter(|c| {
+                !c.is_control() && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
+            .take(160)
+            .collect();
+        if summary.chars().count() > 160 {
+            task_summary.push('…');
+        }
+        let presentation = SudoRequestPresentation {
+            requester_name: requester_name.into(),
+            agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
+            session_name: session.alias().unwrap_or("Unnamed session").into(),
+            task_summary,
+            task: prompt.into(),
+            grant_id: entry.requester.as_ref().map(|g| g.grant_id.clone()),
+            terminal_id: entry.terminal_id.clone(),
+        };
+        let title = if entry.requester.is_none() {
+            "Run one sudo task".into()
+        } else {
+            format!("{requester_name} wants to run one sudo task")
+        };
+        let mut interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, title,
+            "Sudo allows critical approvals across this kernel until this task yields or is revoked.",
+            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
+            .with_timeout_sec(seconds).with_sudo_request(presentation);
+        if let Some(requester) = requester {
+            interaction = interaction.with_requester(requester);
+        }
         let rx = self
             .create_kernel_operation_interaction(
                 &entry.session_id,

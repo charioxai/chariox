@@ -282,7 +282,7 @@ pub use api::{
 };
 pub use api::{
     KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptKind,
+    PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind, SudoRequestPresentation,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
