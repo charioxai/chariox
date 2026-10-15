@@ -17,6 +17,10 @@ function paintedRenderer(container: HTMLElement, send: ConstructorParameters<typ
   ;(renderer as unknown as { navigation: { painted: boolean } }).navigation.painted = true
   const frame = renderer.frame as HTMLIFrameElement & { removeEventListener?: unknown }
   frame.removeEventListener ??= () => {}
+  // Real frames share the registering document; scalar fixtures must expose
+  // its pointer-listener cleanup surface too.
+  Object.defineProperty(frame, 'ownerDocument', { value: frame.ownerDocument ?? container.ownerDocument, configurable: true })
+  frame.ownerDocument.removeEventListener ??= () => {}
   return renderer
 }
 
