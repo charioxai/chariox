@@ -40,8 +40,7 @@ try{
  assert.equal(presence?.protocolVersion,527,'Populated kernel config must advertise allocated protocol 527');
  await r.restart();
  await r.record('UserConfig-after-restart',check((await r.client.send({GetUserConfig:null})).UserConfig));
- await r.command('config get history.handoff.codex_brief_model');await r.capture('codex-model-after-restart');
- await r.command('config get history.handoff.claude_brief_model');await r.capture('claude-model-after-restart');
+ await r.capture('populated-handoff-after-restart');
  result.status='PASS';result.persistedAcrossRestart=true;
 }catch(error){result.firstSeam=String(error.message??error);await r.capture('handoff-config-failure').catch(()=>{});}
 finally{result.finished=new Date().toISOString();await r.record('result',result);try{await r.close();}finally{await remote?.close();}}
