@@ -7,7 +7,7 @@ import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import { extractCodexAttachments, extractCodexPrompt, extractCodexSkillNames } from "./codex-prompt.js"
 import { skillsV2Request } from "@chariox/kernel-client/ipc-skills-v2-requests"
-import { codexSkillSelections, nativeSkillCatalog, optionalNativeSkillCatalog } from "./skills-v2.js"
+import { codexSkillSelections, nativeSkillCatalog } from "./skills-v2.js"
 import { hasExplicitSkillMarker } from "./skill-marker.js"
 import { bindCodexDisplayTurn } from "./codex-conversation-controls.js"
 
@@ -43,12 +43,12 @@ export async function handleCodexNativeTurnStart(
       inlineLocalFiles: options.inlineLocalAttachments,
     })
     const names = extractCodexSkillNames(message.params)
-    const catalog = names.length || hasExplicitSkillMarker(prompt)
-      ? await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
-      : await optionalNativeSkillCatalog(options.client, options.sessionId, options.agentId)
     type Outcome = { Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } } }
     let outcome: Outcome | undefined
-    if (catalog) {
+    // MP-08 / MP-10 / MP-11: ordinary text keeps the canonical kernel prompt
+    // path. Only explicit references require the separate v2 selection shape.
+    if (names.length || hasExplicitSkillMarker(prompt)) {
+      const catalog = await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
       const selections = codexSkillSelections(names, catalog)
       const response = await options.client.send<{ SkillsV2: { result: { kind: string, outcome: Outcome } } }>(
         skillsV2Request({ action: "submit", session_id: options.sessionId, attachment_id: options.attachmentId,

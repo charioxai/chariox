@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: native clients project home state, never read skill bodies.
-import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
+import type { LocalIpcClient } from "../ipc.js"
 import { getSessionStateRequest } from "../ipc-requests.js"
 import { skillCatalogRequest } from "@chariox/kernel-client/ipc-skills-v2-requests"
 import type { SkillSelection, SkillsV2Response } from "@chariox/kernel-client/kernel-types-skills-v2"
@@ -13,20 +13,6 @@ export async function nativeSkillCatalog(client: LocalIpcClient, sessionId: stri
   const result = response.SkillsV2?.result
   if (result?.kind !== "catalog") throw new Error("kernel did not return the Skills v2 catalog; upgrade or refresh Skills")
   return result
-}
-
-// MP-08 / MP-10 / MP-11: protocol 533 was published before the runtime.
-// Only that dispatcher's definitive, pre-admission refusal permits legacy
-// text admission or an unchanged native listing. Transport/policy errors stay
-// errors, and selected skill references still require the v2 resolver.
-export async function optionalNativeSkillCatalog(client: LocalIpcClient, sessionId: string, agentId: string): Promise<Catalog | null> {
-  try {
-    return await nativeSkillCatalog(client, sessionId, agentId)
-  } catch (error) {
-    if (error instanceof LocalIpcError && error.code === "local_transport_error" && !error.retryable
-      && error.message.endsWith("local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build")) return null
-    throw error
-  }
 }
 
 export function codexSkillSelections(names: string[], catalog: Catalog): SkillSelection[] {

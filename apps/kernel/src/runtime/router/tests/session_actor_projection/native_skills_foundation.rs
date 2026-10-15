@@ -35,6 +35,13 @@ async fn native_skills_foundation_refusal_does_not_block_ordinary_prompt_admissi
         KernelCommand::from_local_request("native-foundation-catalog", None, None, &request);
     let error = router.dispatch(command, request).await.unwrap_err();
     assert_eq!(error.to_string(), "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build");
+    let transport_error = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(transport_error.code, "local_transport_error");
+    assert_eq!(transport_error.message, error.to_string());
+    assert!(
+        transport_error.retryable,
+        "the transport's generic flag is not a v2 availability signal"
+    );
     // This serialized request is exactly the ordinary native client's existing
     // prompt path. No v2 submission was attempted or retried.
     let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
