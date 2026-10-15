@@ -327,9 +327,18 @@ export class InputArbiter {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const binding = this.windows.current().tabbed;
     if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
-    const tab = await this.activeTab();
+    const generation = this.host.generation;
+    let tab = await this.activeTab();
+    // A native New Tab can precede the next inventory poll. Discover it here,
+    // before ledger admission; no action has been dispatched or replayed.
+    if (!tab) { await this.host.reconcile(); tab = await this.activeTab(); }
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
-    return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
+    // Native navigation commits independently of inventory polling. Admit the
+    // live document instead of attributing a person's new input to cached state.
+    tab = await this.host.displayTarget({tab_id: tab.tab_id, generation});
+    const active = await this.activeTab();
+    if (!binding.isCurrent() || generation !== this.host.generation || !active || active.target_id !== tab.target_id) throw new UserDomainRefusal('stale_reference');
+    return {tab_id: tab.tab_id, document_id: tab.document_id, generation};
   }
   /** After ledger admission: band input reaches Chrome's own UI through the band
    * source, for the Tab the ledger admitted (rechecked right before dispatch). Only
@@ -353,10 +362,10 @@ export class InputArbiter {
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      const tab = await activeAdmitted(), documentId = tab.document_id, sameDocument = documentId === command.document_id;
+      const tab = await activeAdmitted(), documentId = tab.document_id;
+      if (documentId !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
-      if (!sameDocument && !ownsUiFocus) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
       const currentProof = async () => {
         const active = await activeAdmitted();
@@ -374,16 +383,14 @@ export class InputArbiter {
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
       if (ownsUiFocus) {
         const capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') { if (!sameDocument) throw new UserDomainRefusal('stale_reference'); await currentProof(); return; }
+        if (typeof capture?.physicalFocus !== 'function') { await currentProof(); return; }
         const pageFocused = await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
         await currentProof();
         if (!pageFocused) {
-          if (!sameDocument) this.host.timing?.('native_chrome_ui_document_changed', performance.timeOrigin + performance.now());
           return;
         }
         this.chromeFocus = null;
       }
-      if (!sameDocument) throw new UserDomainRefusal('stale_reference');
       const {result} = await evaluate(sensitiveFocusExpression(false));
       await currentProof();
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');

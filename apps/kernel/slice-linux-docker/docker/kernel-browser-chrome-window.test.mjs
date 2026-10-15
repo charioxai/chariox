@@ -80,6 +80,7 @@ test("MP-11 two equal tabbed windows or none never bind", async t => {
 
 test("MP-11 band input acts on the kernel-observed active Tab; agents and stale windows are refused", async () => {
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" } };
+  host.displayTarget = async ({tab_id}) => host.tabs.get(tab_id);
   const binding = { window_generation: 2, isCurrent: () => true };
   const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
   assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: "host-tab-b", document_id: "db", generation: 3 });
@@ -90,6 +91,41 @@ test("MP-11 band input acts on the kernel-observed active Tab; agents and stale 
   assert.equal(await arbiter.isActiveTab({ target_id: "ta" }, binding), false);
   host.tabGroups = null;
   assert.equal(await arbiter.isActiveTab({ target_id: "tb" }, binding), false, "no extension: fail closed");
+});
+
+test("MP-08/MP-10/MP-11 band preflight observes the live document before ledger admission", async () => {
+  const cached = { tab_id: 't', target_id: 'target', document_id: 'old' };
+  const calls = [], host = { generation: 3, tabs: new Map([['t', cached]]), tabGroups: { active: async () => 'target' },
+    displayTarget: async command => { calls.push(command); return { ...cached, document_id: 'live' }; } };
+  const binding = { window_generation: 2, isCurrent: () => true };
+  const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
+  assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: 't', document_id: 'live', generation: 3 });
+  assert.deepEqual(calls, [{ tab_id: 't', generation: 3 }]);
+});
+
+test("MP-08/MP-10/MP-11 band preflight discovers a newly created native Tab", async () => {
+  let discovers = 0;
+  const tab = { tab_id: 'new', target_id: 'new-target', document_id: 'live' };
+  const host = { generation: 3, tabs: new Map(), tabGroups: { active: async () => 'new-target' },
+    reconcile: async () => { discovers++; host.tabs.set(tab.tab_id, tab); }, displayTarget: async () => tab };
+  const binding = { window_generation: 2, isCurrent: () => true };
+  const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
+  assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: 'new', document_id: 'live', generation: 3 });
+  assert.equal(discovers, 1);
+});
+
+for (const retired of ['window', 'active-tab', 'generation']) test(`MP-11 band preflight rechecks ${retired} after its document read`, async () => {
+  let live = true, active = 'target';
+  const tab = { tab_id: 't', target_id: 'target', document_id: 'live' };
+  const host = { generation: 3, tabs: new Map([['t', tab]]), tabGroups: { active: async () => active }, displayTarget: async () => {
+    if (retired === 'window') live = false;
+    if (retired === 'active-tab') active = 'other';
+    if (retired === 'generation') host.generation++;
+    return tab;
+  } };
+  const binding = { window_generation: 2, isCurrent: () => live };
+  const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
+  await assert.rejects(arbiter.resolveDisplayInput({ window_generation: 2 }), { code: 'user_domain_stale_reference' });
 });
 
 test("MP-11 band input: active Tab rechecked before dispatch, page focus fences keys/text, refused or retired input settles", async () => {
@@ -480,10 +516,22 @@ for(const focus of ['chrome','page','unavailable','other-tab','window','generati
  if(focus==='generation')host.generation=4;
  if(focus==='retired')source.isCurrent=()=>false;
  if(focus==='other-tab'){host.tabs.set('other',{tab_id:'other',target_id:'other',document_id:'home'});host.tabGroups.active=async()=> 'other'}
- if(focus==='chrome'){
-  assert.deepEqual(await send({kind:'text',text:'https'}),{dispatched:true});assert.equal(String.fromCharCode(...sent),'https','the first URL character is retained');
-  assert(marks.includes('native_chrome_ui_document_changed'),'only the finite transition label is logged');
- }else{await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'no character reaches an unproved target');}
+ await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'a stale ledger document never dispatches, even with native UI focus');
+});
+
+test('MP-08/MP-10/MP-11 a fresh ledger observation preserves omnibox text after the home commit', async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'},sent=[];let liveDocument='before';
+ const connection={send:async(method,p)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:liveDocument}}}:{result:{value:p.expression==='document.hasFocus()'?false:true}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},
+  displayTarget:async()=>Object.assign(tab,{document_id:liveDocument}),
+  browser:{inputCapture:{physicalFocus:async(_c,_s,read)=>read()},resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+ const binding={window_generation:1,isCurrent:()=>true},arbiter=new InputArbiter(host,{current:()=>({tabbed:binding})});
+ const source={surface:'browser_chrome',isCurrent:()=>true,chord:async key=>(sent.push(key),true)},stream={regionSource:source,regionWindow:binding};
+ const send=async input=>arbiter.input({stream,command:{...await arbiter.resolveDisplayInput({window_generation:1}),input}});
+ await send({kind:'key',key:'l',modifiers:2});sent.length=0;
+ liveDocument='home';
+ await send({kind:'text',text:'https'});
+ assert.equal(String.fromCharCode(...sent),'https');
 });
 
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
