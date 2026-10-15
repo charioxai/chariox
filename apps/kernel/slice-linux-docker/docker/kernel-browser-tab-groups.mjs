@@ -56,15 +56,27 @@ export class ChromeTabGroups {
   async load(directory) {
     const { id } = await this.connection.send("Extensions.loadUnpacked", { path: directory });
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");
+    this.directory = directory;
+  }
+  async worker(polls) {
+    for (let n = 0; n < polls; n++) {
+      const worker = (await this.connection.send("Target.getTargets")).targetInfos
+        .find(target => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/`));
+      if (worker) return worker;
+      await delay(50);
+    }
+    return null;
   }
   async evaluate(expression) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!this.session) {
-        let worker;
-        for (let n = 0; n < 40 && !worker; n++) {
-          worker = (await this.connection.send("Target.getTargets")).targetInfos
-            .find(target => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/`));
-          if (!worker) await delay(50);
+        // The person can remove or disable it in chrome://extensions (no policy locks an unpacked
+        // extension): the kernel installs it again (loading alone does not re-enable a disabled
+        // one) and re-sends the groups; until it is back, band input fails closed.
+        let worker = await this.worker(10);
+        if (!worker && this.directory) {
+          await this.connection.send("Extensions.uninstall", { id: TAB_GROUPS_EXTENSION_ID }).catch(() => {});
+          await this.load(this.directory); this.signature = "[]"; worker = await this.worker(40);
         }
         if (!worker) throw new Error("MP-11: kernel tab-groups extension unavailable");
         this.session = (await this.connection.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true })).sessionId;
