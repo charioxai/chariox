@@ -237,6 +237,9 @@ impl SkillCatalogService {
             if previous.agent_id == agent_id
                 && rows.iter().any(|r| {
                     r.skill.id == previous.skill_id && r.effective_state != SkillState::Off
+                        && (r.effective_state != SkillState::Manual
+                            || previous.reason == SkillLoadReason::Explicit
+                            || explicit.contains(&r.skill.id))
                         && (explicit.contains(&r.skill.id) || !selections.iter().any(|selection| matches!(selection,
                             SkillSelection::Native { name, .. } if name.eq_ignore_ascii_case(&r.skill.name)
                         )))
