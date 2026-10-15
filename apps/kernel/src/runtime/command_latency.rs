@@ -186,7 +186,12 @@ pub(crate) fn log_command_completed(
 pub(crate) fn is_quiet_success_command_type(command_type: &str) -> bool {
     matches!(
         command_type,
-        "relay.status" | "waiting_room.public_snapshot.get" | "slice.list" | "provider.catalog.get"
+        "relay.status"
+            | "local_browser_renew"
+            | "local_terminal_renew"
+            | "waiting_room.public_snapshot.get"
+            | "slice.list"
+            | "provider.catalog.get"
     )
 }
 
@@ -625,6 +630,11 @@ mod tests {
         assert_eq!(fields["lane_id"], "session-1");
         assert_eq!(fields["queue_wait_ms"], 15);
         assert_eq!(fields["submit_to_dispatch_ms"], 45);
+    }
+
+    #[test]
+    fn mp08_local_browser_renewals_are_quiet_on_success() {
+        assert!(is_quiet_success_command_type("local_browser_renew"));
     }
 
     #[test]

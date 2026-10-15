@@ -86,3 +86,4 @@ fn history_page_entry(
 }
 
 mod room_workflows;
+mod ssh_machine;

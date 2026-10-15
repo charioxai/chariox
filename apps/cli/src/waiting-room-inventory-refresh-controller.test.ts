@@ -382,7 +382,7 @@ test("waiting room inventory refresh coalesces concurrent refreshes", async () =
   assert.equal(harness.inventoryCalls(), 1)
 })
 
-test("waiting room inventory row patch applies first row set without fetching", () => {
+test("MP-08/MP-10 cold row patch does not complete the full inventory baseline", () => {
   const harness = createHarness({ connected: true })
 
   harness.controller.applyRowsChanged({
@@ -394,9 +394,9 @@ test("waiting room inventory row patch applies first row set without fetching", 
   })
 
   assert.equal(harness.inventoryCalls(), 0)
-  assert.equal(harness.inventoryStatus(), "ready")
-  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1", "session-2"])
-  assert.equal(harness.reconcileCount(), 1)
+  assert.equal(harness.inventoryStatus(), "loading")
+  assert.deepEqual(harness.availableSessions(), [])
+  assert.equal(harness.reconcileCount(), 0)
 })
 
 test("waiting room inventory row patch merges changes and removals", () => {
@@ -445,9 +445,10 @@ test("waiting room inventory row patch merges project changes and removals", asy
   assert.deepEqual(harness.projects().map(({ id, name }) => [id, name]), [["project-1", "Web"]])
 })
 
-test("waiting room refresh still hydrates unattached agents after a row patch set the inventory version", async () => {
+test("MP-08/MP-10 cold row patches cannot skip full snapshot hydration", async () => {
   const harness = createHarness({
     snapshots: [inventory("v2", {
+      sessions: [session("session-1")],
       externalProviderSessions: [
         externalProviderSession("opencode:thread-1", { last_modified_at_ms: 100 }),
         externalProviderSession("codex:thread-2", { last_modified_at_ms: 200 }),
@@ -472,29 +473,30 @@ test("waiting room refresh still hydrates unattached agents after a row patch se
     "opencode:thread-1",
   ])
   assert.deepEqual(harness.externalProviderSessionsPage(), { hasMore: true, nextCursor: "cursor-2" })
-  assert.equal(harness.reconcileCount(), 2)
+  assert.equal(harness.reconcileCount(), 1)
 })
 
-test("waiting room inventory row patch ignores duplicate versions and disconnected kernels", () => {
+test("waiting room inventory row patch ignores duplicate versions and disconnected kernels", async () => {
   const harness = createHarness({ connected: true })
+  await harness.controller.refreshNow()
 
   harness.controller.applyRowsChanged({
-    inventoryVersion: "v1",
-    structuralVersion: "structure-v1",
+    inventoryVersion: "v2",
+    structuralVersion: "structure-v2",
     activityRevision: "activity-v1",
     sessions: [session("session-1")],
     removedSessionIds: [],
   })
   harness.controller.applyRowsChanged({
-    inventoryVersion: "v1",
-    structuralVersion: "structure-v1",
+    inventoryVersion: "v2",
+    structuralVersion: "structure-v2",
     activityRevision: "activity-v1",
     sessions: [session("session-2")],
     removedSessionIds: [],
   })
 
   assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1"])
-  assert.equal(harness.reconcileCount(), 2)
+  assert.equal(harness.reconcileCount(), 3)
 
   const disconnected = createHarness({ connected: false })
   disconnected.controller.applyRowsChanged({

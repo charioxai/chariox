@@ -237,6 +237,8 @@ pub(crate) struct CommandResultCache {
     persistence: Option<CommandResultPersistence>,
     #[cfg(test)]
     fail_settlement_sync: AtomicBool,
+    #[cfg(test)]
+    dispatch_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Default for CommandResultCache {
@@ -250,11 +252,32 @@ impl Default for CommandResultCache {
             persistence: None,
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
         }
     }
 }
 
 impl CommandResultCache {
+    #[cfg(test)]
+    pub(crate) async fn pause_next_dispatch_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, reserved) = oneshot::channel();
+        let (release, resume) = oneshot::channel();
+        *self.dispatch_pause.lock().await = Some((entered, resume));
+        (reserved, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_dispatch_for_test(&self) {
+        let pause = self.dispatch_pause.lock().await.take();
+        if let Some((entered, resume)) = pause {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
     pub(crate) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         Self::new_with_persistent_path_and_retention(
             path,
@@ -296,6 +319,8 @@ impl CommandResultCache {
             receipt_retention: Mutex::new(ReceiptRetention::default()),
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),

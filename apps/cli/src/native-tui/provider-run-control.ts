@@ -58,7 +58,7 @@ export async function getNativeProviderRun(
 export async function waitForNativeProviderRunReady(
   client: LocalIpcClient,
   providerRunId: string,
-  options: { timeoutMs?: number, pollIntervalMs?: number } = {},
+  options: { timeoutMs?: number, pollIntervalMs?: number, allowParkedEndpoint?: boolean } = {},
 ): Promise<RuntimeProviderRun> {
   const deadline = Date.now() + (options.timeoutMs ?? 60_000)
   let latest: RuntimeProviderRun | null = null
@@ -76,6 +76,7 @@ export async function waitForNativeProviderRunReady(
       clearTimeout(timeout)
     }
     if (Date.now() >= deadline) throw timeoutError()
+    if (options.allowParkedEndpoint && latest.state === "Parked" && latest.structured_endpoint) return latest
     if (latest.state === "Ended" || latest.state === "Parked") {
       throw new Error(`Codex provider run ${latest.state.toLowerCase()} before attach was ready: ${providerRunId}`)
     }

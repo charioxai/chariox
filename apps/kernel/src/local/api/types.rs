@@ -40,6 +40,7 @@ mod response;
 mod room_environment;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
@@ -77,6 +78,7 @@ pub use response::*;
 pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
@@ -272,4 +274,12 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
+/// Version 520 (landing 2026-10-14, relay peer 128) adds the same-machine direct
+/// carriers (relay-minted `local_browser_connect` grants, relay-renewed
+/// `local_browser_renew` leases with a 30-second relay identity ceiling, the
+/// loopback `/v1/browser` handshake and short bound-client terminal direct
+/// leases with paired Origin), and owner-managed SSH machine add/remove,
+/// credential-free owner-managed context admission and destination receipts.
+/// Branch-only numbers 456/464/473/502/509 were never released
+/// (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;

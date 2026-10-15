@@ -116,6 +116,31 @@ impl KernelRuntimeOwnedState {
             caller_user_id,
             passkey_verified,
             false,
+            false,
+        )
+    }
+
+    /// Carries the authenticated answering connection into the locked resolver.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_terminal_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        connection_class: Option<crate::local::KernelConnectionClass>,
+    ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_inner(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            false,
+            connection_class == Some(crate::local::KernelConnectionClass::Terminal),
         )
     }
 
@@ -135,9 +160,11 @@ impl KernelRuntimeOwnedState {
             Some(owner),
             false,
             true,
+            false,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_runtime_interaction_inner(
         &self,
         session_id: &str,
@@ -147,6 +174,7 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
         take_host: bool,
+        terminal_answer: bool,
     ) -> Result<(), DaemonError> {
         self.resolve_runtime_interaction_authorized(
             session_id,
@@ -158,6 +186,7 @@ impl KernelRuntimeOwnedState {
             None,
             None,
             take_host,
+            terminal_answer,
         )
     }
 
@@ -173,6 +202,7 @@ impl KernelRuntimeOwnedState {
         sudo: Option<&crate::local::KernelSudoTurn>,
         authorizing_terminal: Option<&str>,
         take_host: bool,
+        terminal_answer: bool,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -223,16 +253,6 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if pending
-            .kernel_operation_owner
-            .as_deref()
-            .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| Some(owner) != caller_user_id)
-        {
-            return Err(interaction_error(
-                "Only the operation owner can answer this decision",
-            ));
-        }
-        if pending
             .kernel_operation_deadline
             .is_some_and(|deadline| std::time::Instant::now() >= deadline)
         {
@@ -268,6 +288,28 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        let review = super::owner_context_review::is_owner_context_review(&interaction);
+        if let Some(owner) = pending
+            .kernel_operation_owner
+            .as_deref()
+            .or(pending.terminal_credential_owner.as_deref())
+        {
+            let owner = if review {
+                self.owner_context_review_owner(owner)
+            } else {
+                owner.to_owned()
+            };
+            if Some(owner.as_str()) != caller_user_id
+                || (review
+                    && session.as_ref().is_none_or(|session| {
+                        self.owner_context_review_owner(session.owner_user_id()) != owner
+                    }))
+            {
+                return Err(interaction_error(
+                    "Only the operation owner can answer this decision",
+                ));
+            }
+        }
         if !passkey_verified
             && interaction
                 .choice(choice_id)
@@ -276,6 +318,13 @@ impl KernelRuntimeOwnedState {
             return Err(super::critical_approval_passkey::passkey_error(
                 super::critical_approval_passkey::PASSKEY_REQUIRED,
                 "approving this critical action needs your Chariox passkey",
+            ));
+        }
+        if super::owner_context_review::is_owner_context_review(&interaction)
+            && (!terminal_answer || sudo.is_some())
+        {
+            return Err(interaction_error(
+                "Only the owner's Chariox terminal can answer this review",
             ));
         }
         if take_host

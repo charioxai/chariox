@@ -20,6 +20,7 @@ const status = (state: ProviderLoginStatus["state"], text = ""): ProviderLoginSt
 function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partial<ProviderLoginInteractionControllerDeps> = {}) {
   const timers: Array<() => void> = []
   const notices: string[] = []
+  let verificationRequests = 0
   const flashes: Array<{ message: string; tone: string }> = []
   const controller = createProviderLoginInteractionController({
     getKernelId: async () => "fleet",
@@ -28,7 +29,9 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
       if (next instanceof Error) throw next
       return next
     },
-    getAuthStatus: async () => ({ provider: "claude", auth_state: "authenticated", account_profile: "disposable-claude-ggpinwmx", identity_summary: "miguel@example.org", login_hint: null, detected_version: null }),
+    // A legacy verification spy makes an accidental completion call fail.
+    ...{getAuthStatus: async () => { verificationRequests++; return {identity_summary: null} }},
+    getAccountProfile: async () => ({identity_summary: "miguel@example.org"}),
     accountLabel: () => "disposable-claude",
     localDesktop: () => false,
     openUrl: async () => true,
@@ -42,7 +45,7 @@ function harness(statuses: Array<ProviderLoginStatus | Error>, overrides: Partia
     ...overrides,
   })
   const tick = async () => { const next = timers.shift(); next?.(); for (let i = 0; i < 5; i++) await Promise.resolve() }
-  return { controller, tick, timers, notices, flashes }
+  return { controller, tick, timers, notices, flashes, verificationRequests: () => verificationRequests }
 }
 
 test("MP-08/MP-11 a sent code waits for the kernel and ends with who signed in and where it was saved", async () => {
@@ -182,7 +185,7 @@ test("MP-08/MP-11 a home-attached TUI leaves worker login status and completion 
   const reads: unknown[][] = []
   const h = harness([], {
     getLoginStatus: async (...args) => { reads.push(args); throw Error("provider login was not found") },
-    getAuthStatus: async () => { throw Error("home must not query worker auth") },
+    getAccountProfile: async () => { throw Error("home must not query worker auth") },
   })
   const forwarded: RuntimeInteraction = {
     ...interaction,
@@ -229,3 +232,24 @@ for (const kernelId of ["fleet", "worker"]) {
     } finally { h.controller.dispose() }
   })
 }
+
+// MP-08 / MP-11: login completion is an observation, never a paid token probe.
+test("MP-08 / MP-11 successful login completion sends no explicit auth verification", async () => {
+  const h = harness([status("succeeded")])
+  h.controller.track({ login_id: "login-1", provider: "claude", account_profile: "disposable-claude-ggpinwmx" })
+  await h.tick()
+  assert.equal(h.verificationRequests(), 0)
+  assert.match(h.notices[0]!, /Signed in to Claude/)
+})
+
+test("MP-08 / MP-11 completion identity uses only the saved profile RPC", async () => {
+  const {getProviderAccountProfile} = await import("./provider-api.js")
+  const requests: unknown[] = []
+  const client = {send: async (request: unknown) => {requests.push(request); return {ProviderAccountProfile: {profile: {identity_summary: "saved identity"}}}}} as unknown as import("./ipc.js").LocalIpcClient
+  const h = harness([status("succeeded")], {getAccountProfile: (provider, profile) => getProviderAccountProfile(client, provider, profile)})
+  h.controller.track({login_id: "login-1", provider: "claude", account_profile: "disposable-claude-ggpinwmx"})
+  await h.tick()
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+  assert.deepEqual(requests, [{GetProviderAccountProfile: {provider: "claude", account_profile: "disposable-claude-ggpinwmx"}}])
+  assert.match(h.notices[0]!, /as saved identity/)
+})

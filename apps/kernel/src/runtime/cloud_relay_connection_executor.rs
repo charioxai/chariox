@@ -488,8 +488,8 @@ mod tests {
             kernel_ref: "kernel-new".to_string(),
             machine_ref: Some("machine-new".to_string()),
             client_id: Some("client-1".to_string()),
-            public_key_thumbprint: None,
             session_id: None,
+            public_key_thumbprint: None,
         }
     }
 

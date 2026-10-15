@@ -65,20 +65,22 @@ export async function waitForClaudeProviderRunReady(
 export async function waitForClaudeRemoteRenderedRunExit(
   client: LocalIpcClient,
   providerRunId: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   let sawProviderRun = false
   while (true) {
+    signal?.throwIfAborted()
     const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
-      if (sawProviderRun) throw error
+      if (sawProviderRun || signal?.aborted) throw error
       return null
     })
     if (!run) {
-      await sleep(500)
+      await sleep(500, undefined, { signal })
       continue
     }
     sawProviderRun = true
     if (run.state === "Ended") return
-    await sleep(1_000)
+    await sleep(1_000, undefined, { signal })
   }
 }
 

@@ -4,7 +4,7 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    Grant,
+    Grant, Refusal,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -51,6 +51,9 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
+        for grant in &revoked {
+            state.remember_ended(&grant.holder);
+        }
         let pending_keys = state
             .pending
             .iter()
@@ -140,6 +143,9 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
+        for (grant, _) in &removed {
+            state.remember_ended(&grant.holder);
+        }
         drop(state);
         for (grant, reason) in removed {
             self.cancel_access_prompt(&grant.summary, "extension");
@@ -180,6 +186,19 @@ impl KernelRuntimeState {
         grants
     }
 
+    /// True when this peer sits under a holder whose grant has ended.
+    pub(crate) fn access_ended_for(&self, peer: &ProcessIdentity) -> bool {
+        let Ok(chain) = process::ancestry(peer) else {
+            return false;
+        };
+        let state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        chain.iter().any(|ancestor| state.ended.contains(ancestor))
+    }
+
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
         self.sweep_kernel_access();
         self.owned
@@ -216,7 +235,7 @@ impl KernelRuntimeState {
             ));
         }
         let holder =
-            process::holder(&peer, request.holder_pid).map_err(|e| error(e.to_string()))?;
+            process::holder(&peer, request.holder_pid).map_err(|_| Refusal::NotCovered.error())?;
         let config = self
             .owned
             .config_projection
@@ -313,20 +332,25 @@ impl KernelRuntimeState {
             .expires_at_ms
             .saturating_sub(crate::session::unix_epoch_ms())
             .div_ceil(60_000);
-        let title = if action == "grant" {
-            "Grant external agent access".to_owned()
-        } else {
-            format!("External agent access expires in {remaining} minutes. Extend?")
-        };
+        let requester = crate::runtime::kernel_access::requester::project(holder);
+        let (title, message) = crate::runtime::kernel_access::requester::popup_copy(
+            requester.provider_harness,
+            action == "grant",
+            remaining,
+        );
         let interaction = RuntimeInteraction::for_kernel_operation(
-            format!("{}-{action}", grant.grant_id), format!("access-{action}:{}", grant.grant_id),
+            format!("{}-{action}", grant.grant_id),
+            format!("access-{action}:{}", grant.grant_id),
             title,
-            format!("OS-verified external agent {} (pid {}) requests {} access to the whole LOCAL kernel for {} minutes. Critical approvals, secret reads, and remote kernels remain unavailable. Only this process and its OS descendants will have access. Chariox agents it spawns receive no grant.",
-                crate::runtime::kernel_access::requester::display_executable(&grant.holder_executable), grant.holder_pid, action, grant.lifetime_minutes),
-            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
-                RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
-            .with_timeout_sec(timeout_sec)
-            .with_requester(crate::runtime::kernel_access::requester::project(holder));
+            message,
+            vec![
+                RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                    .requiring_passkey(),
+            ],
+        )
+        .with_timeout_sec(timeout_sec)
+        .with_requester(requester);
         let rx = self
             .create_kernel_operation_interaction(
                 crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,

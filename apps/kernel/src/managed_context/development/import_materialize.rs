@@ -16,10 +16,12 @@ pub(super) fn prepare_repository(
             },
             &repository.overlay,
             remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-            remaining_project_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+            remaining_project_materialized_entries,
         );
     }
     let bundle = artifacts_root.join(&repository.bundle_path);
+    // Refuse unrelated histories before clone can import their pack objects.
+    super::git::verify_git_bundle_header(&bundle, &repository.head_sha)?;
     let bundle_text = utf8_path(&bundle, "Git bundle")?;
     let destination_text = utf8_path(destination, "repository destination")?;
     let staging_parent = destination
@@ -46,7 +48,7 @@ pub(super) fn prepare_repository(
         estimate,
         &repository.overlay,
         remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-        remaining_project_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+        remaining_project_materialized_entries,
     )?;
     if git_text_isolated(destination, &["rev-parse", "HEAD"])? != repository.head_sha {
         return Err(context_error(

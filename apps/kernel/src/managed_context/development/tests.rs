@@ -650,7 +650,10 @@ fn rejects_in_repository_outputs_shallow_sources_and_oversized_index_blobs() {
     );
     let shallow_error =
         one_repo_export(&root, &shallow, "shallow").expect_err("shallow source should fail");
-    assert!(shallow_error.to_string().contains("is shallow"));
+    // MP-08 / MP-11 BY-03: Copy shows this refusal; it must say how to recover.
+    assert!(shallow_error.to_string().contains(
+        "is a shallow clone; fetch its full history with `git fetch --unshallow`, then copy again"
+    ));
 
     let oversized = vec![b'x'; MAX_OVERLAY_FILE_BYTES as usize + 1];
     fs::write(repository.join("oversized.bin"), oversized).expect("write oversized file");
@@ -717,43 +720,53 @@ fn preserves_source_repository_basename_as_the_target_directory() {
 }
 
 #[test]
-fn ordinary_source_repository_basename_collision_keeps_compatible_disambiguation() {
-    let root = test_root("target-directory-collision");
-    let first = root.join("first").join("same-name");
-    let second = root.join("second").join("same-name");
-    init_repository(&first, "first.txt", "first\n");
-    init_repository(&second, "second.txt", "second\n");
-    let exported = export_development_context(DevelopmentContextExportRequest {
-        project_id: "collision-project".to_string(),
-        repositories: vec![
-            DevelopmentRepositorySelection {
-                workspace_id: "first".to_string(),
-                worktree_id: None,
-                worktree_path: first,
-                role: DevelopmentRepositoryRole::Primary,
-            },
-            DevelopmentRepositorySelection {
-                workspace_id: "second".to_string(),
-                worktree_id: None,
-                worktree_path: second,
-                role: DevelopmentRepositoryRole::Supporting,
-            },
-        ],
-        archive_path: root.join("collision.tar.gz"),
-    })
-    .expect("ordinary duplicate basenames remain exportable");
-    let targets = exported
-        .manifest
-        .repositories
-        .iter()
-        .map(|repository| repository.target_directory.as_str())
-        .collect::<BTreeSet<_>>();
-    assert!(targets.contains("same-name"));
-    assert_eq!(targets.len(), 2);
-    assert!(targets
-        .iter()
-        .any(|target| target.starts_with("same-name-")));
-    fs::remove_dir_all(root).expect("remove test root");
+fn ordinary_export_refuses_basename_collisions_without_renaming() {
+    for supporting_name in ["Same-Name", "same-name"] {
+        for supporting_git in [true, false] {
+            let root = test_root("ordinary-basename-collision");
+            let _cleanup = PlainWorkspaceCleanup(root.clone());
+            let first = root.join("first/Same-Name");
+            let second = root.join("second").join(supporting_name);
+            init_repository(&first, "first.txt", "first\n");
+            if supporting_git {
+                init_repository(&second, "second.txt", "second\n");
+            } else {
+                fs::create_dir_all(&second).unwrap();
+                fs::write(second.join("second.txt"), "second\n").unwrap();
+            }
+            let archive = root.join("collision.tar.gz");
+            let error = export_development_context(DevelopmentContextExportRequest {
+                project_id: "collision-project".to_string(),
+                repositories: vec![
+                    DevelopmentRepositorySelection {
+                        workspace_id: "first".to_string(),
+                        worktree_id: None,
+                        worktree_path: first.clone(),
+                        role: DevelopmentRepositoryRole::Primary,
+                    },
+                    DevelopmentRepositorySelection {
+                        workspace_id: "second".to_string(),
+                        worktree_id: None,
+                        worktree_path: second.clone(),
+                        role: DevelopmentRepositoryRole::Supporting,
+                    },
+                ],
+                archive_path: archive.clone(),
+            })
+            .expect_err("Copy must refuse colliding basenames rather than rename");
+            assert!(error.to_string().contains("collides with another selected"));
+            assert!(!archive.exists());
+            assert_no_export_temporaries(&root);
+            assert_eq!(
+                fs::read_to_string(first.join("first.txt")).unwrap(),
+                "first\n"
+            );
+            assert_eq!(
+                fs::read_to_string(second.join("second.txt")).unwrap(),
+                "second\n"
+            );
+        }
+    }
 }
 
 #[test]
@@ -781,8 +794,8 @@ fn managed_destination_names_use_common_component_safety() {
         assert!(export::validate_repository_basename(name).is_err());
     }
     let mut occupied = BTreeSet::new();
-    export::unique_managed_target_directory("same-name", &mut occupied).unwrap();
-    assert!(export::unique_managed_target_directory("SAME-NAME", &mut occupied).is_err());
+    export::target_directory_for_export("same-name", &mut occupied).unwrap();
+    assert!(export::target_directory_for_export("SAME-NAME", &mut occupied).is_err());
 }
 
 #[test]
@@ -1170,16 +1183,18 @@ fn fails_closed_on_invalid_ignore_files_and_bounded_path_enumeration() {
     fs::remove_file(repository.join(".charioxignore")).expect("remove ignore file");
     fs::write(repository.join("one.txt"), "one\n").expect("write first untracked file");
     fs::write(repository.join("two.txt"), "two\n").expect("write second untracked file");
-    let enumeration = stream_git_nul_records(
+    let mut enumerated = 0;
+    stream_git_nul_records(
         &repository,
         &["ls-files", "--others", "--exclude-standard", "-z", "--"],
-        1,
-        |_| Ok(()),
+        1, // The legacy count argument no longer limits Copy.
+        |_| {
+            enumerated += 1;
+            Ok(())
+        },
     )
-    .expect_err("path enumeration should stop at its record limit");
-    assert!(enumeration
-        .to_string()
-        .contains("returned more than 1 records"));
+    .expect("ordinary files are admitted by byte/time budgets, not counts");
+    assert_eq!(enumerated, 2);
 
     fs::remove_dir_all(root).expect("remove test root");
 }
@@ -1772,7 +1787,7 @@ fn materialization_rejects_large_current_tree_before_checkout() {
         &unpacked,
         &destination,
         512 * 1024,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )
     .expect_err("checkout budget must reject the current tree");
     assert!(error.to_string().contains("checkout budget"));
@@ -1781,7 +1796,7 @@ fn materialization_rejects_large_current_tree_before_checkout() {
 }
 
 #[test]
-fn multi_repository_entry_budget_rejects_before_any_checkout() {
+fn multi_repository_byte_budget_rejects_before_any_checkout() {
     let root = test_root("project-entry-budget");
     let primary = root.join("primary");
     let supporting = root.join("supporting");
@@ -1816,18 +1831,18 @@ fn multi_repository_entry_budget_rejects_before_any_checkout() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
-    .expect_err("project-wide entry budget must reject two repositories");
-    assert!(error.to_string().contains("entry materialization budget"));
+    .expect_err("project-wide byte budget must reject two repositories");
+    assert!(error.to_string().contains("checkout budget"));
     assert!(!destination.exists());
     assert_no_import_temporaries(&root.join("managed"));
     fs::remove_dir_all(root).expect("remove test root");
 }
 
 #[test]
-fn overlay_entries_count_toward_prepare_budget() {
+fn overlay_allocation_bytes_count_toward_prepare_budget() {
     let root = test_root("overlay-entry-budget");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
@@ -1844,8 +1859,8 @@ fn overlay_entries_count_toward_prepare_budget() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
     .expect_err("nested overlay must count toward the prepare budget");
     assert!(error.to_string().contains("repository overlay"));

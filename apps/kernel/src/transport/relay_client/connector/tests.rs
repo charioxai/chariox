@@ -157,6 +157,39 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 }
 
 #[tokio::test]
+async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
+    // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
+    // registration must not turn a harmless renewal race into a reconnect.
+    let url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(url.into());
+    config.relay_token = Some("first-renewal".into());
+    let mut next_config = config.clone();
+    next_config.relay_token = Some("second-renewal".into());
+    let mut app = DaemonApp::bootstrap(next_config.clone()).unwrap();
+    let registration = app.relay_registration();
+    let mut active = "old".to_string();
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config, || {
+        std::future::ready(registration.clone())
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(Some(ref r)) if r.auth_token == "first-renewal"),
+        "renewal race must authenticate the snapshot on the same socket"
+    );
+    assert_eq!(
+        active, "first-renewal",
+        "track the registration actually queued"
+    );
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
+        std::future::ready(registration)
+    })
+    .await;
+    assert!(matches!(result, Ok(Some(_))));
+    assert_eq!(active, "second-renewal");
+}
+
+#[tokio::test]
 async fn cloud_presence_publish_gate_skips_running_task() {
     let (_tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
@@ -547,10 +580,11 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [100, 101] {
+    let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+    for version in [current - 1, current] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -590,7 +624,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version == current && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }
