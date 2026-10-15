@@ -96,6 +96,17 @@ impl KernelRuntimeOwnedState {
         if message.is_empty() {
             return;
         }
+        if self.config_projection.snapshot().room_agent_tools
+            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+        {
+            crate::logging::debug_with_fields(
+                "daemon.prompt_delivery",
+                "internal dispatch diagnostic",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
+                    "agent_id": agent_id, "diagnostic": message}),
+            );
+            return;
+        }
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
         self.fan_out_terminal_outputs(

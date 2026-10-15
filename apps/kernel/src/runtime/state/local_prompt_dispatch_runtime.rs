@@ -840,7 +840,7 @@ impl KernelRuntimeState {
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
-                    &dispatch_failure,
+                    &crate::terminal::user_facing_dispatch_failure(&error),
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -3313,7 +3313,7 @@ pub(in crate::runtime::state) mod tests {
     #[tokio::test]
     async fn amfix_r19_dispatch_failure_blocks_exact_durable_task_immediately() {
         use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
-        let (_worktree, runtime, session_id, agent_id, _, provider_run_id, dispatch) =
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
         let mut config = runtime.owned.config_projection.snapshot();
         config.room_agent_tools = true;
@@ -3361,7 +3361,9 @@ pub(in crate::runtime::state) mod tests {
             ExecutionState::Blocked,
             "failed dispatch must not wait for the lost-executor sweep"
         );
-        assert!(task.reason.contains("provider_catalog"));
+        assert!(task.reason.contains("model list"));
+        assert!(!task.reason.contains("provider_catalog"));
+        assert!(!task.reason.contains("provider protocol"));
         assert!(task.reason.contains("Resume"));
         assert!(!task.reason.contains("No live provider turn"));
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -3394,6 +3396,15 @@ pub(in crate::runtime::state) mod tests {
                 &agent_id
             )
             .is_none());
+        assert!(
+            runtime
+                .owned
+                .terminal_stream
+                .drain_output_records(&session_id, &observer_id)
+                .into_iter()
+                .all(|record| record.kind != crate::terminal::TerminalOutputKind::ProviderError),
+            "kernel dispatch diagnostics must not become agent output"
+        );
         let revision = task.revision;
         runtime
             .fail_prompt_dispatch(

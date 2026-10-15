@@ -92,7 +92,11 @@ pub(crate) async fn execute_scoped_session_history_blob_content_request(
         let entries = events
             .into_iter()
             .filter(|event| event_belongs_to_external_import(agent_import.as_ref(), event))
-            .filter(|event| !event.is_completion_check_turn() && !event.is_internal_prompt_echo())
+            .filter(|event| {
+                !event.is_completion_check_turn()
+                    && !event.is_internal_prompt_echo()
+                    && !event.is_internal_dispatch_diagnostic()
+            })
             .filter_map(page_entry_from_event)
             .collect::<Vec<_>>();
         Ok(LocalDaemonResponse::SessionHistoryBlobContent {
@@ -216,8 +220,11 @@ fn load_scoped_agent_outline(
                 }
             }
         }
-        events
-            .retain(|event| !event.is_completion_check_turn() && !event.is_internal_prompt_echo());
+        events.retain(|event| {
+            !event.is_completion_check_turn()
+                && !event.is_internal_prompt_echo()
+                && !event.is_internal_dispatch_diagnostic()
+        });
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())

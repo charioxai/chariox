@@ -30,7 +30,8 @@ impl KernelRuntimeOwnedState {
                 task: task.task_id,
                 prompt: task.prompt_id,
                 reason: format!(
-                    "The provider could not confirm the request: {diagnostic}. Check the result before using Resume to retry, or Cancel."
+                    "{}. Check the result before using Resume to retry, or Cancel.",
+                    diagnostic.trim_end_matches('.')
                 ),
             })?;
         }

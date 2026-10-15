@@ -347,6 +347,17 @@ impl HistoryEvent {
                 .is_some_and(crate::session::is_internal_prompt_echo_id)
     }
 
+    /// MP-08/MP-10/MP-11: historical kernel diagnostics are not agent speech.
+    pub fn is_internal_dispatch_diagnostic(&self) -> bool {
+        matches!(
+            self.kind,
+            HistoryEventKind::ProviderError | HistoryEventKind::Notice
+        ) && self
+            .content
+            .as_deref()
+            .is_some_and(crate::terminal::is_internal_dispatch_diagnostic)
+    }
+
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
         let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
         let session_id = self.session_id.clone()?;
