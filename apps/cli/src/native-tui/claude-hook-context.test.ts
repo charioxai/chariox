@@ -31,16 +31,19 @@ async function hook(prompt: string, kernel = false) {
     child.stdout.on("data", data => stdout.push(data))
     child.stdin.end(JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt }))
     const code = await new Promise(resolve => child.once("exit", resolve))
-    return { code, result: JSON.parse(Buffer.concat(stdout).toString()) }
+    return { code, result: JSON.parse(Buffer.concat(stdout).toString()),
+      events: (await readFile(path.join(dir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)) }
   } finally { await rm(dir, { recursive: true, force: true }) }
 }
 test("selected Chariox skill cannot continue with empty context after timeout", { timeout: 10_000 }, async () => {
-  const { result } = await hook("$review inspect source")
+  const { result, events } = await hook("$review inspect source")
+  assert.equal(events.some(e => e.hook_event_name === "UserPromptSubmit"), false)
   assert.equal(result.decision, "block")
   assert.match(result.reason, /skill.*context.*refresh|skill.*context.*retry/i)
 })
 test("ordinary prompt without skills still works when no skill bridge replies", { timeout: 10_000 }, async () => {
-  const { code, result } = await hook("explain the source")
+  const { code, result, events } = await hook("explain the source")
+  assert.equal(events.filter(e => e.hook_event_name === "UserPromptSubmit").length, 1)
   assert.equal(code, 0)
   assert.equal(result.decision, undefined)
   assert.equal(result.hookSpecificOutput.additionalContext, "")
@@ -48,7 +51,8 @@ test("ordinary prompt without skills still works when no skill bridge replies", 
 
 // Execute the production kernel's generated hook as well as the release utility.
 test("kernel hook blocks a selected skill when its context delivery times out", { timeout: 10_000 }, async () => {
-  const { result } = await hook("$review inspect source", true)
+  const { result, events } = await hook("$review inspect source", true)
+  assert.equal(events.some(e => e.hook_event_name === "UserPromptSubmit"), false)
   assert.equal(result.decision, "block")
   assert.match(result.reason, /skill.*context.*retry/i)
 })

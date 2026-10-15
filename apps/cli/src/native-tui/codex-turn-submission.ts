@@ -6,7 +6,7 @@ import { cancelActivePromptRequest, submitPromptRequest } from "../ipc-requests.
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
 import { extractCodexAttachments, extractCodexPrompt, extractCodexSkillNames } from "./codex-prompt.js"
-import { skillsV2Request } from "@chariox/kernel-client/ipc-skills-v2-requests"
+import { SKILLS_V2_RUNTIME_CAPABILITY, skillsV2Request } from "@chariox/kernel-client/ipc-skills-v2-requests"
 import { codexSkillSelections, nativeSkillCatalog } from "./skills-v2.js"
 import { hasExplicitSkillMarker } from "./skill-marker.js"
 import { bindCodexDisplayTurn } from "./codex-conversation-controls.js"
@@ -45,9 +45,15 @@ export async function handleCodexNativeTurnStart(
     const names = extractCodexSkillNames(message.params)
     type Outcome = { Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } } }
     let outcome: Outcome | undefined
-    // MP-08 / MP-10 / MP-11: ordinary text keeps the canonical kernel prompt
-    // path. Only explicit references require the separate v2 selection shape.
+    // MP-08 / MP-10 / MP-11: wire allocation also covers foundation builds.
+    // Preserve native admission until the attached kernel advertises v2 runtime.
+    // Probe before admission; a catalog/submit failure never retries a prompt.
+    let skillsV2 = false
     if (names.length || hasExplicitSkillMarker(prompt)) {
+      const status = await options.client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
+      skillsV2 = status.RelayStatus.status.capabilities?.includes(SKILLS_V2_RUNTIME_CAPABILITY) === true
+    }
+    if (skillsV2) {
       const catalog = await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
       const selections = codexSkillSelections(names, catalog)
       const response = await options.client.send<{ SkillsV2: { result: { kind: string, outcome: Outcome } } }>(

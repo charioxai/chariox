@@ -208,7 +208,7 @@ fn claude_native_hook_command(
     )
 }
 
-fn claude_native_hook_handler() -> &'static str {
+pub(crate) fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -311,7 +311,7 @@ const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "
 if (!contextOnlyHook) {
   appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
     at: new Date().toISOString(),
-    hook_event_name: eventName,
+    hook_event_name: eventName === "UserPromptSubmit" ? "UserPromptContextRequest" : eventName,
     hook_context_request_id: hookContextRequestId,
     native_prompt_id: nativePromptId,
     prompt: input.prompt ?? null,
@@ -323,6 +323,19 @@ if (!contextOnlyHook) {
     error: input.error ?? null,
     error_details: eventName === "StopFailure" ? input.error_details ?? null : null,
     last_assistant_message: eventName === "StopFailure" ? input.last_assistant_message ?? null : null,
+  }) + "\n")
+}
+
+// The primary hook reports admission only after it has resolved context.
+function emitPromptAdmission(blocked) {
+  if (contextOnlyHook) return
+  appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+    at: new Date().toISOString(),
+    hook_event_name: blocked ? "UserPromptSubmitRejected" : "UserPromptSubmit",
+    native_prompt_id: nativePromptId,
+    prompt: input.prompt ?? null,
+    transcript_path: input.transcript_path ?? null,
+    permission_mode: input.permission_mode ?? null
   }) + "\n")
 }
 
@@ -376,10 +389,12 @@ if (eventName === "UserPromptSubmit") {
   // did not arrive. Sibling chunk hooks may legitimately have an empty chunk.
   const selectedSkill = hasExplicitSkillMarker(input.prompt ?? "")
   if (!contextOnlyHook && !additionalContext && selectedSkill) {
+    emitPromptAdmission(true)
     process.stdout.write(JSON.stringify({ decision: "block",
       reason: "Chariox skill context was not delivered. Refresh Skills and retry this prompt." }))
     process.exit(0)
   }
+  emitPromptAdmission(false)
   additionalContext = utf8ContextChunk(additionalContext, contextChunkIndex ?? 0)
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
@@ -1014,6 +1029,11 @@ mod tests {
             fs::read_to_string(&native.events_file)
                 .expect("hook events should read")
                 .lines()
+                .filter(
+                    |line| serde_json::from_str::<serde_json::Value>(line).unwrap()
+                        ["hook_event_name"]
+                        == "UserPromptSubmit"
+                )
                 .count(),
             1,
             "context-only hooks must not duplicate prompt acknowledgements"

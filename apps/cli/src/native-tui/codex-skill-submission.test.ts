@@ -9,6 +9,7 @@ async function submit(off = false) {
   const requests: Record<string, any>[] = [], replies: any[] = []
   const client = { send: async (request: Record<string, any>) => {
     requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
     if (request.GetSessionState) return { SessionState: { session: { project_id: "project" } } }
     if (request.SkillsV2?.action === "catalog") return { SkillsV2: { result: {
       kind: "catalog", revision: 9, skills: [{ skill: { id: "home-skill", name: "only-in-chariox" }, effective_state: off ? "off" : "manual" }], native: [],
@@ -49,6 +50,7 @@ for (const queued of [false, true]) test(`ordinary native text retains home admi
   const requests: any[] = [], replies: any[] = [], started: string[] = []
   const client = { send: async (request: any) => {
     requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
     if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
     if (request.SkillsV2) throw unavailable()
     if (request.SubmitPrompt) return { PromptSubmitted: { outcome: {
@@ -76,6 +78,7 @@ for (const failure of [unavailable(), new Error("catalog authorization denied"),
     const requests: any[] = [], replies: any[] = []
     const client = { send: async (request: any) => {
       requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
       if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
       throw failure
     } } as unknown as LocalIpcClient
@@ -95,6 +98,7 @@ for (const failure of [new Error("catalog authorization denied"), new Error("soc
     const requests: any[] = [], replies: any[] = []
     const client = { send: async (request: any) => {
       requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
       if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
       throw failure
     } } as unknown as LocalIpcClient
@@ -112,6 +116,7 @@ test("a v2 submission refusal never retries through legacy admission", async () 
   const requests: any[] = [], replies: any[] = []
   const client = { send: async (request: any) => {
     requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
     if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
     if (request.SkillsV2?.action === "catalog") return { SkillsV2: { result: {
       kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1,
@@ -128,10 +133,11 @@ test("a v2 submission refusal never retries through legacy admission", async () 
   assert.equal(requests.some(r => r.SubmitPrompt), false)
 })
 
-test("typed skill selection cannot enter legacy prompt admission without v2", async () => {
+test("advertised v2 typed selection cannot fall back when catalog fails", async () => {
   const requests: any[] = [], replies: any[] = []
   const client = { send: async (request: any) => {
     requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_runtime"] } } }
     if (request.GetSessionState) return { SessionState: { session: { project_id: null } } }
     if (request.SkillsV2) throw unavailable()
     return { PromptSubmitted: { outcome: { Started: { prompt: { id: "must-not-run" } } } } }
@@ -143,4 +149,41 @@ test("typed skill selection cannot enter legacy prompt admission without v2", as
     bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
   assert.ok(replies[0].error)
   assert.equal(requests.some(r => r.SubmitPrompt || r.SkillsV2?.action === "submit"), false)
+})
+
+// MP-08 / MP-10 / MP-11: protocol 533 foundation has no runtime capability.
+for (const chip of [false, true]) test(`foundation keeps native skill admission (${chip ? "chip" : "typed"})`, async () => {
+  const requests: any[] = [], replies: any[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    if (request.RelayStatus === null) return { RelayStatus: { status: { capabilities: ["skills_v2_contract"] } } }
+    if (request.SkillsV2) throw unavailable()
+    if (request.SubmitPrompt) return { PromptSubmitted: { outcome: { Started: { prompt: { id: "native-prompt" } } } } }
+    throw new Error("unexpected request")
+  } } as unknown as LocalIpcClient
+  const run = { id: "run" } as RuntimeProviderRun
+  await handleCodexNativeTurnStart({ id: 23, method: "turn/start", params: { threadId: "display", input: chip
+    ? [{ type: "skill", name: "review", path: "/untrusted/SKILL.md" }]
+    : [{ type: "text", text: "$review inspect source" }],
+  } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+    bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+  assert.equal(replies[0].error, undefined)
+  assert.equal(replies[0].result.turn.id, "chariox-native-native-prompt")
+  assert.equal(requests.some(r => r.SkillsV2), false)
+  assert.equal(requests.filter(r => r.SubmitPrompt).length, 1)
+  assert.equal(requests.find(r => r.SubmitPrompt).SubmitPrompt.prompt, chip ? "$review\n" : "$review inspect source\n")
+  assert.equal(JSON.stringify(requests).includes("/untrusted"), false)
+})
+
+// MP-08 / MP-10 / MP-11: status errors are not a false capability result.
+test("native skill status failure cannot bypass admission through the old path", async () => {
+  const requests: any[] = [], replies: any[] = []
+  const client = { send: async (request: any) => { requests.push(request); throw new Error("status authorization denied") } } as unknown as LocalIpcClient
+  const run = { id: "run" } as RuntimeProviderRun
+  await handleCodexNativeTurnStart({ id: 24, method: "turn/start", params: { threadId: "display", input: [
+    { type: "text", text: "$review source" },
+  ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
+    bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
+  assert.match(replies[0].error.message, /status authorization denied/)
+  assert.deepEqual(requests, [{ RelayStatus: null }])
 })
