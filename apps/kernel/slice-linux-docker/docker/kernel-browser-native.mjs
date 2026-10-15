@@ -153,6 +153,9 @@ export class LinuxCapture {
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
+   // MP-11: a projection may retire while the final lease check awaits.
+   // Only a raster from the current protection can satisfy delivery/startup.
+   if(!this.valid()||revision!==this.regionRevision||raw.captured_ms<this.regions.beforeAt){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;this.wake(true);continue;}
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
