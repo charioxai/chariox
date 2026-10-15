@@ -29,7 +29,9 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   start with a pre-order prefix; later credits extend it with these same
   `children` operations. Each continuation visits at most 4096 nodes, targets
   an 8 ms task after a minimum 256 visits, and stops near 128 KiB of record
-  work. The initial prefix visits at most 1024 nodes. Document limits remain
+  work. The initial prefix completes its fixed 1024-visit allowance (subject to
+  the byte bound), so a busy first task cannot cut a detailed header before
+  its visible viewport. Document limits remain
   finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
   one record is bounded at 1 MiB. A small document has a 20,000-record/4 MiB
   atomic backstop, including large open shadow trees. Input echoes precede

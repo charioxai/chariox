@@ -1232,6 +1232,18 @@ test("MP-10 M2: large documents paint a bounded prefix then continue on existing
     assert.equal(await evaluate('document.querySelector("h1").textContent'), 'Viewport first');
   }));
 
+test('MP-10 M2: a busy first task includes the visible viewport after a detailed header', () => mirrored(
+  '<header>'+'<span>item </span>'.repeat(150)+'</header><p>Visible viewport tail</p><main>'+'<p>Later content</p>'.repeat(10001)+'</main>', async ({next,host,evaluate}) => {
+    assert(await evaluate("document.querySelector('header+p').getBoundingClientRect().bottom < innerHeight"),'the native viewport includes the paragraph');
+    const mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror);let world;
+    mirror.evaluate=async(w,expression,...args)=>{
+      if(expression.endsWith('.snapshot()')){world=w;await original(w,"Object.defineProperty(performance,'now',{configurable:true,value:(()=>{let t=performance.now();return()=>t+=20})()});true");}
+      return original(w,expression,...args);
+    };
+    try{const first=await next();assert(!first.fallback);assert(texts(first).has('Visible viewport tail'),'a detailed header must not leave the visible viewport unfinished');assert(first.nodes.length<4096,'first paint remains bounded');}
+    finally{mirror.evaluate=original;if(world)await original(world,'delete performance.now;true');}
+  }));
+
 test('MP-10 M2: continuations finish the full DOM with bounded ordinary children packets', () => mirrored(
   '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,host,subscription_id}) => {
     const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);

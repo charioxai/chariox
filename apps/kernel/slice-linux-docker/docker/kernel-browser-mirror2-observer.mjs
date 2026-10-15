@@ -404,7 +404,7 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // Continuations run only when a viewer gives a credit, never in a background
     // loop. Yield to Chrome/other Tabs after 8 ms, 4096 visits or 128 KiB.
-    const chunk = (visits = 4096) => {
+    const chunk = (visits = 4096, minimum = 256) => {
       const out = [], end = performance.now() + 8, bytes = budget.bytes;
       for (let i = 0; continuation && i < (progressive ? visits : 40000); i++) {
         const item = continuation.next();
@@ -413,7 +413,7 @@ export function installMirror2(sanitizeMirrorCss) {
         // Keep ordinary small pages atomic. The backstop also catches a huge
         // open shadow tree absent from the document's native element count.
         if (budget.nodes >= 20000) progressive = true;
-        if (progressive && i >= 255 && performance.now() >= end || budget.bytes - bytes >= (progressive ? 128 * 1024 : 4 * 1024 * 1024)) break;
+        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= (progressive ? 128 * 1024 : 4 * 1024 * 1024)) break;
       }
       return out;
     };
@@ -469,7 +469,10 @@ export function installMirror2(sanitizeMirrorCss) {
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       continuation?.return(); continuation = serializeTree(document, null);
       progressive = document.getElementsByTagName('*').length > 10000;
-      const root = idOf(document), out = chunk(1024);
+      // A slow task must not publish only half a detailed viewport header.
+      // The first prefix has a fixed 1024-visit ceiling; later credits yield
+      // by time after 256 visits, with the same byte/document bounds.
+      const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
