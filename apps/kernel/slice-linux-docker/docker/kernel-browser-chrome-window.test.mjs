@@ -239,3 +239,19 @@ test("MP-08/MP-11 popups of the band's window get kernel ids, follow the band's 
     assert.deepEqual(windows.auxiliaryState(), [], "no popups without a current band window");
   } finally { await real.close(); }
 });
+
+// MP-08/MP-10/MP-11: Caps Lock/automation can report upper-case key labels
+// without Shift. Native X11 must receive the caller's explicit modifier chord.
+test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite upper-case labels', async () => {
+  const connection = {send:async method=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:'doc'}}}:{result:{value:false}}};
+  const host={generation:1,tabs:new Map([['tab',{tab_id:'tab',target_id:'target',document_id:'doc'}]]),tabGroups:{active:async()=> 'target'},
+    browser:{resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:1})}};
+  const arbiter=new InputArbiter(host,{}),calls=[];
+  const source={surface:'browser_chrome',isCurrent:()=>true,chord:async(k,m)=>(calls.push([k,m]),true)};
+  const send=input=>arbiter.input({stream:{regionSource:source},command:{tab_id:'tab',document_id:'doc',generation:1,input}});
+  for(const [key,modifiers,expected] of [['A',2,0x61],['Z',10,0x7a],['I',2,0x69],['A',1,0x61],['A',4,0x61],['ArrowLeft',2,0xff51]]){
+    await send({kind:'key',key,modifiers});assert.deepEqual(calls.at(-1),[expected,modifiers],`${key}/${modifiers} must not acquire implicit Shift`);
+  }
+  await send({kind:'text',text:'A'});assert.deepEqual(calls.at(-1),[0x41,0],'plain text retains its requested case');
+  await assert.rejects(send({kind:'key',key:'I',modifiers:10}),{code:'user_domain_not_granted'},'explicit Ctrl+Shift+I remains refused');
+});
