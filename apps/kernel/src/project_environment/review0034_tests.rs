@@ -1,6 +1,6 @@
 //! MP-08 / MP-10 / MP-11: fail-first security and filesystem deadline regressions.
 use super::*;
-fn context(root: &std::path::Path) -> EnvironmentCheckContext {
+pub(super) fn context(root: &std::path::Path) -> EnvironmentCheckContext {
     EnvironmentCheckContext {
         config: crate::config::DaemonConfig::for_tests(),
         owner: "owner".into(),

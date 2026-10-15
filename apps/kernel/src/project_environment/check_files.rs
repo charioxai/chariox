@@ -16,14 +16,23 @@ enum Request {
         draft: EnvironmentRevisionDraft,
     },
     Workspace {
-        current: ProjectEnvironment,
-        requirement: Requirement,
+        folders: Vec<(String, PathBuf)>,
+    },
+    Binding {
+        root: Option<PathBuf>,
+        locator: ProjectEnvironmentLocator,
+    },
+    Npm {
+        root: Option<PathBuf>,
+        name: String,
     },
 }
 #[derive(Serialize, Deserialize)]
 enum Response {
     Files(EnvironmentRevisionDraft),
     Workspace(super::check_workspace::WorkspacePreflight),
+    Binding(super::check_binding::PublicBinding),
+    Npm(Result<Option<String>, String>),
 }
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -98,19 +107,66 @@ pub(super) fn measure(
 pub(super) fn workspace(
     config: &crate::config::DaemonConfig,
     current: &ProjectEnvironment,
-    requirement: &Requirement,
     deadline: Instant,
 ) -> Result<super::check_workspace::WorkspacePreflight, DaemonError> {
     match run(
         config,
         Request::Workspace {
-            current: current.clone(),
-            requirement: requirement.clone(),
+            folders: current
+                .folders
+                .iter()
+                .filter(|f| !f.local_workspace_binding.is_empty())
+                .map(|f| {
+                    (
+                        f.folder_id.clone(),
+                        PathBuf::from(&f.local_workspace_binding),
+                    )
+                })
+                .collect(),
         },
         deadline,
     )? {
         Response::Workspace(measured) => Ok(measured),
         _ => Err(environment_error("Workspace Check worker result invalid")),
+    }
+}
+
+pub(super) fn binding(
+    config: &crate::config::DaemonConfig,
+    root: Option<&Path>,
+    locator: &ProjectEnvironmentLocator,
+    deadline: Instant,
+) -> Result<super::check_binding::PublicBinding, DaemonError> {
+    match run(
+        config,
+        Request::Binding {
+            root: root.map(Path::to_path_buf),
+            locator: locator.clone(),
+        },
+        deadline,
+    )? {
+        Response::Binding(binding) => Ok(binding),
+        _ => Err(environment_error("Binding Check worker result invalid")),
+    }
+}
+pub(super) fn npm(
+    config: &crate::config::DaemonConfig,
+    root: Option<&Path>,
+    name: &str,
+    deadline: Instant,
+) -> Result<Option<String>, &'static str> {
+    match run(
+        config,
+        Request::Npm {
+            root: root.map(Path::to_path_buf),
+            name: name.into(),
+        },
+        deadline,
+    )
+    .map_err(|_| "package_unproven")?
+    {
+        Response::Npm(result) => result.map_err(|_| "package_unproven"),
+        _ => Err("package_unproven"),
     }
 }
 
@@ -178,6 +234,15 @@ fn run(
     if let Some(marker) = std::env::var_os("CHARIOX_WORKSPACE_CHECK_STALL_MARKER") {
         command.env("CHARIOX_WORKSPACE_CHECK_STALL_MARKER", marker);
     }
+    #[cfg(test)]
+    for key in [
+        "CHARIOX_WORKSPACE_CHECK_COUNT",
+        "CHARIOX_TYPED_CHECK_STALL_MARKER",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     let output = crate::local::provider_requests::capture_inventory_probe(command, left)
         .map_err(|_| environment_error("Files Check worker did not settle within its budget"))?;
     if !output.status.success() {
@@ -204,10 +269,22 @@ pub fn run_files_measurement_worker(
             super::manual_files::verify_check_files(&current, &mut draft, deadline)?;
             Response::Files(draft)
         }
-        Request::Workspace {
-            current,
-            requirement,
-        } => Response::Workspace(super::check_workspace::inspect(&current, &requirement)),
+        Request::Workspace { folders } => {
+            Response::Workspace(super::check_workspace::inspect(&folders))
+        }
+        Request::Binding { root, locator } => {
+            Response::Binding(super::check_binding::inspect(root.as_deref(), &locator))
+        }
+        Request::Npm { root, name } => Response::Npm(
+            super::check_inventory::software_version_until(
+                &name,
+                Some("npm package"),
+                root.as_deref(),
+                &[],
+                deadline,
+            )
+            .map_err(str::to_owned),
+        ),
     };
     let bytes = serde_json::to_vec(&response)
         .map_err(|_| environment_error("Files Check metadata invalid"))?;
