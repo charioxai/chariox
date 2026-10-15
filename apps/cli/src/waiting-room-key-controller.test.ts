@@ -111,6 +111,7 @@ function createHarness(options: {
   sessions?: SessionListEntry[]
   projects?: WaitingRoomProjectSummary[]
   remote?: WaitingRoomRemoteState
+  workspacePath?: string
 } = {}) {
   let state = options.state ?? waitingRoomState()
   const calls: string[] = []
@@ -127,6 +128,7 @@ function createHarness(options: {
     getWaitingRoomState: () => state,
     getSessions: () => options.sessions ?? [],
     getProviderCatalog: () => fallbackProviderCatalog(),
+    getWorkspacePath: () => options.workspacePath ?? "/form/workspace",
     getRemoteState: () => options.remote ?? (options.projects ? { projects: options.projects } : {}),
     reconcileWaitingRoom: (nextState) => {
       calls.push("reconcile")
@@ -145,7 +147,7 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
-    openProjectEnvironment: (projectId) => { calls.push(`environment:${projectId}`) },
+    openProjectEnvironment: (projectId, workspaceId) => { calls.push(`environment:${projectId}${projectId === null ? `:${workspaceId}` : ""}`) },
     beginProjectRename: (projectId, name) => {
       calls.push(`rename:${projectId}:${name}`)
     },
@@ -219,4 +221,11 @@ test("ENV P01 V opens exactly the selected Project and ignores release/modifiers
   assert.deepEqual(harness.calls(), [])
   harness.controller.handleKey({ name: "v", eventType: "press" })
   assert.deepEqual(harness.calls(), ["environment:second"])
+})
+
+// MP-08 / MP-10 / MP-11: editable Workspace takes precedence over inventory defaults.
+for (const workspaceId of ["/inventory/folder-a", undefined]) test(`Environment opens current form folder with inventory ${workspaceId}`,()=>{
+  const harness=createHarness({state:waitingRoomState({focus:"workspace"}),remote:{workspaceId},workspacePath:"/selected/folder-b"})
+  assert.equal(harness.controller.handleKey({name:"v",eventType:"press"}),true)
+  assert.deepEqual(harness.calls(),["environment:null:/selected/folder-b"])
 })

@@ -30,6 +30,7 @@ export type WaitingRoomKeyControllerDeps = {
   getSessions: () => SessionListEntry[]
   getProviderCatalog: () => ProviderCatalog
   getRemoteState: () => WaitingRoomRemoteState
+  getWorkspacePath: () => string | undefined
   getThemeRegistry?: () => ThemeRegistry
   reconcileWaitingRoom: (state: WaitingRoomState) => void
   setWaitingRoomState: (state: WaitingRoomState) => void
@@ -95,7 +96,7 @@ export function createWaitingRoomKeyController(
       if (event.eventType !== "release" && !promptFocused && !event.ctrl && !event.meta && !event.alt && !event.super) {
         const state = deps.getWaitingRoomState()
         if (state.focus === "workspace" && event.name === "v") {
-          deps.openProjectEnvironment?.(null, deps.getRemoteState().workspaceId)
+          deps.openProjectEnvironment?.(null, deps.getWorkspacePath())
           return true
         }
         const project = state.focus === "project-entry"

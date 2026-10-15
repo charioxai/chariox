@@ -122,4 +122,66 @@ mod tests {
         assert_eq!(runtime.list_projects("owner", true).await, vec![project]);
         std::fs::remove_dir(&workspace).unwrap();
     }
+    // MP-08 / MP-10 / MP-11: both entry paths reuse a non-Git folder through aliases.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review0034_alias_and_trailing_slash_share_project_in_both_creation_orders() {
+        for standalone_first in [false, true] {
+            for symlink in [false, true] {
+                let root = crate::test_support::TestWorktree::new("project-alias");
+                let folder = root.path().join("source");
+                std::fs::create_dir(&folder).unwrap();
+                let alias = if symlink {
+                    let alias = root.path().join("source-alias");
+                    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+                    alias.to_string_lossy().into_owned()
+                } else {
+                    format!("{}/", folder.display())
+                };
+                let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+                let runtime = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                    Arc::new(Mutex::new(app)),
+                    1,
+                )
+                .runtime_state();
+                let resolve = |path: &str| match runtime
+                    .resolve_project(
+                        crate::local::ResolveProjectRequest {
+                            project_id: None,
+                            workspace_id: path.into(),
+                            create_if_missing: true,
+                        },
+                        "owner",
+                    )
+                    .unwrap()
+                {
+                    LocalDaemonResponse::ProjectResolved {
+                        project: Some(project),
+                    } => project,
+                    _ => panic!("Project expected"),
+                };
+                let create = || {
+                    runtime.create_session_response(
+                        crate::session::CreateSessionRequest::new(alias.clone(), alias.clone())
+                            .with_owner_user_id("owner"),
+                    )
+                };
+                let before = standalone_first.then(|| resolve(folder.to_str().unwrap()));
+                let LocalDaemonResponse::SessionCreated { session, .. } = create().await.unwrap()
+                else {
+                    panic!("session expected")
+                };
+                let project = resolve(folder.to_str().unwrap());
+                assert_eq!(
+                    session.project_id(),
+                    project.id(),
+                    "standalone_first={standalone_first}, symlink={symlink}"
+                );
+                if let Some(before) = before {
+                    assert_eq!(before.id(), project.id());
+                }
+                assert_eq!(runtime.list_projects("owner", true).await.len(), 1);
+            }
+        }
+    }
 }

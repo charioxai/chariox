@@ -630,6 +630,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applyLifecycleAction: (action) => {
       void deps.applyWaitingRoomSessionLifecycleAction(action)
     },
+    getWorkspacePath: () => deps.waitingRoomTargets().workspacePath,
     openProjectEnvironment: (projectId, workspaceId) => { void deps.openProjectEnvironment(projectId, workspaceId) },
     beginProjectRename: (projectId, currentName) => {
       pendingProjectRenameId = projectId
