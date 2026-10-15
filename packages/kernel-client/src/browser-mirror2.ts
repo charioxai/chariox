@@ -144,8 +144,10 @@ export class BrowserMirror2Renderer {
   // MP-08/MP-10/MP-11: Notes captures the kernel's range after every released
   // selection input has replied, including work still waiting in the write queue.
   async settleInput(): Promise<void> {
+    const documentId=this.documentId
     while (this.pendingInputs && !this.disposed) await Promise.all([...this.inputReplies])
     if (this.disposed) throw Error('MP-08: mirror closed')
+    if(this.documentId!==documentId)throw Error('MP-08: mirror document changed')
   }
   private settleFocus(): void {
     if (this.pendingInputs || this.disposed) return

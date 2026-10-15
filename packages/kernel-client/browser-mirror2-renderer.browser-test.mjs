@@ -798,3 +798,18 @@ test('MP-10: Notes waits for mirror selection input receipts',async()=>{
   await page.evaluate(async()=>{window.releaseInput();await window.idlePromise});assert.equal(await page.evaluate(()=>window.idle),true);
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: waiting for input cannot authorize capture in a replacement document.
+test('MP-10: Notes input settling rejects a document replaced during the wait',async()=>{
+ const page=await viewer();
+ try{
+  await page.evaluate(async()=>{window.r.close();window.sent=[];window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async action=>{window.sent.push(action);await new Promise(resolve=>{window.releaseInput=resolve})});await window.r.ready()});
+  const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The released selection'}]);
+  await apply(page,snapshot(nodes));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,12)});
+  await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));
+  await page.evaluate(()=>{window.idlePromise=window.r.settleInput().then(()=>null,e=>e.message)});
+  await apply(page,{...snapshot(nodes),document_id:'new-document'});
+  assert.equal(await page.evaluate(async()=>{window.releaseInput();return await window.idlePromise}),'MP-08: mirror document changed');
+ }finally{await page.close()}
+});
