@@ -51,7 +51,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1 } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
@@ -93,7 +93,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (verdict === 'frame') verdict = resolved?.frameSensitive ? await resolved.frameSensitive(sensitiveFocusExpression(false)) : true;
       if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
-    let mirrorGuard;
+    let mirrorGuard=inputGuard;
     const admitInput = async (method, params) => {
       await check();
       if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && (params.text || (params.modifiers & 7)))) {
@@ -131,7 +131,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       // separates this redundant query from that final fence.
       if (!resolved?.fenced) await check();
       if(resolved) {
-        mirrorGuard=resolved.guard;
+        mirrorGuard=inputGuard?async()=>{await inputGuard();await resolved.guard?.();}:resolved.guard;
         if(resolved.perform) {if(!resolved.fenced)await check();await resolved.perform(sendInput,onDispatch);await check();return;}
         input=resolved.input;
       }

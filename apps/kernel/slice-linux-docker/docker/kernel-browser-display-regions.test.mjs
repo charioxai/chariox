@@ -232,3 +232,31 @@ test('MP-11 the omnibox dropdown over the page binds the active Tab for masks an
  const g=fixture('browser_auxiliary');Object.assign(g.host.chromeWindows,f.host.chromeWindows);g.host.arbiter={activeTab:async()=>null,isActiveTab:async()=>false};g.command.target.auxiliary_id=9;
  await assert.rejects(subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture}),'no confirmed active Tab: refused');
 });
+
+test('MP-08/MP-10/MP-11 concurrent native starts reserve the bounded display capacity',async()=>{
+ const f=fixture('browser_chrome'),release=Promise.withResolvers(),entered=Promise.withResolvers();let starting=0;
+ class Capture extends f.Capture {async start(){if(++starting===8)entered.resolve();await release.promise;return this;}}
+ const pending=Array.from({length:8},()=>subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}));
+ try{
+  await entered.promise;
+  const ninth=subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}).then(()=>null,e=>e);
+  const result=await Promise.race([ninth,new Promise(r=>setTimeout(()=>r(null),100))]);
+  assert(result instanceof Error,'pending native starts must count against the eight-display limit');
+ }finally{
+  release.resolve();await Promise.allSettled(pending);await new Promise(r=>setImmediate(r));
+  for(const s of [...f.host.displays.values()])await s.close();
+ }
+ const next=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert(next.subscription_id);for(const s of [...f.host.displays.values()])await s.close();
+});
+
+for(const change of ['cancel','policy','active-tab'])test(`MP-11 pending native readiness retires on ${change} before registration`,async()=>{
+ const f=fixture(),entered=Promise.withResolvers(),release=Promise.withResolvers(),abort=new AbortController();
+ class Capture extends f.Capture {async start(){entered.resolve();await release.promise;return this;}}
+ const ready=subscribeRegion(f.host,f.command,'terminal:a',abort.signal,{Capture});
+ await entered.promise;
+ if(change==='cancel')abort.abort();
+ if(change==='policy')f.host.protection={unknown:false};
+ if(change==='active-tab')f.host.arbiter.isActiveTab=async()=>false;
+ release.resolve();await assert.rejects(ready);assert.equal(f.host.displays.size,0);assert(f.calls.includes('close'));
+});

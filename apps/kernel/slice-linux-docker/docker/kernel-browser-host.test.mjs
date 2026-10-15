@@ -1689,3 +1689,41 @@ test('Browser replies distinguish observation timeout from a retired subscriptio
     assert(!reply.error.message.includes('private-page-canary'));
   }
 }));
+
+test("MP-08/MP-10/MP-11 native subscription readiness does not hold input", { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  host.browser.canReconcileConcurrently = () => true;
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, method, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method, params })}\n`);
+    return result.promise;
+  };
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const handle = host.handle.bind(host);
+  host.handle = async (request,options) => {
+    if(request.method==='host.browser'&&request.params?.op==='display_subscribe'){
+      entered.resolve();await release.promise;return {id:request.id,ok:true,result:{}};
+    }
+    return handle(request,options);
+  };
+  try {
+    const state = rpc(1, "host.browser", { op: "display_subscribe", target:{kind:"browser_auxiliary"} });
+    await entered.promise;
+    const typed = await Promise.race([
+      rpc(2, "host.browser", { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+        document_id: opened.tabs[0].document_id, input: { kind: "text", text: "a" } }),
+      new Promise(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    assert.ok(typed?.ok, "input waited behind native subscription readiness");
+    assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
+    release.resolve();
+    const polled = await state;
+    assert.equal(polled.ok, true);
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
