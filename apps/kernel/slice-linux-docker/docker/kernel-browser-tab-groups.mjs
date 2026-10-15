@@ -15,6 +15,24 @@ const worker = `// MP-08/MP-11: driven by the kernel over CDP.
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
+// One browser window (coordinator 12:22Z): a Tab in a second tabbed window (New window,
+// Move tab to new window, a Tab dragged off the strip) becomes the active Tab of the oldest one;
+// its emptied window closes. Chrome refuses Tab edits while the person still drags: retry.
+const fold = async (id, tries = 100) => {
+  const tab = await chrome.tabs.get(id);
+  const [main, ...others] = (await chrome.windows.getAll({ windowTypes: ["normal"] })).sort((a, b) => a.id - b.id);
+  if (!others.some(window => window.id === tab.windowId)) return;
+  try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
+  catch (error) {
+    if (!tries || !/dragging/.test(error?.message)) throw error;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return fold(id, tries - 1);
+  }
+  await chrome.tabs.update(id, { active: true });
+  await chrome.windows.update(main.id, { focused: true });
+};
+chrome.tabs.onCreated.addListener(tab => fold(tab.id).catch(() => {}));
+chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
 globalThis.charioxTabs = {
   async active() {
     const [normal] = await chrome.windows.getAll({ windowTypes: ["normal"] });

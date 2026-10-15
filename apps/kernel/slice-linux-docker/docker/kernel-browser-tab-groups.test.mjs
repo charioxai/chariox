@@ -59,3 +59,32 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
   installed = false; failLoad = true;
   await assert.rejects(groups.active(), /load refused|unavailable/, "not back: band input fails closed");
 });
+
+// Coordinator 12:22Z: one browser window. Real Chrome 155 RED/GREEN: evidence browserux/r8/window-fold-*.json.
+test("MP-08 a Tab in a second tabbed window folds into the oldest one, also after a drag", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-tab-groups-"));
+  try {
+    const source = await readFile(path.join(await writeTabGroupsExtension(root), "sw.js"), "utf8");
+    const listeners = {}, calls = [];
+    let dragging = 2;
+    const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 11 }], [3, { id: 3, windowId: 12 }]]);
+    const chrome = {
+      runtime: { getPlatformInfo() {} },
+      windows: { getAll: async () => [{ id: 12, type: "popup" }, { id: 11 }, { id: 10 }].filter(window => !window.type), update: async (id, value) => calls.push(["focus", id, value]) },
+      tabs: {
+        onCreated: { addListener: listener => { listeners.created = listener; } },
+        onAttached: { addListener: listener => { listeners.attached = listener; } },
+        get: async id => tabs.get(id),
+        move: async (id, value) => { if (dragging-- > 0) throw new Error("Tabs cannot be edited right now (user may be dragging a tab)."); calls.push(["move", id, value]); },
+        update: async (id, value) => calls.push(["update", id, value]),
+      },
+    };
+    const timers = { setInterval() {}, setTimeout: (callback) => queueMicrotask(callback) };
+    new Function("chrome", "setInterval", "setTimeout", "globalThis", source)(chrome, timers.setInterval, timers.setTimeout, {});
+    listeners.created(tabs.get(1)); listeners.created(tabs.get(3));
+    await listeners.attached(2);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(calls, [["move", 2, { windowId: 10, index: -1 }], ["update", 2, { active: true }], ["focus", 10, { focused: true }]],
+      "only the second normal window's Tab moves (after the drag ends); the main window's and the popup's stay");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
