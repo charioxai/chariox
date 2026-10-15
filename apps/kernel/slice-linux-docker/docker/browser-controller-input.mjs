@@ -13,6 +13,7 @@ export class BrowserInputCapture {
   // MP-08/MP-10/MP-11: a display's logical wake-up makes document.hasFocus()
   // true even while Chrome's omnibox owns the keys. Observe the real focus
   // with emulation suspended, excluding same-session input and lease close.
+  // Keep a physically blurred page blurred until normal page input resumes it.
   physicalFocus(connection,sessionId,read) {
     return this.ordered(sessionId,async()=>{
       let lease;
@@ -22,13 +23,15 @@ export class BrowserInputCapture {
         await lease.ready;if(lease.closing)continue;
         lease.active++;break;
       }
-      const emulated=this.visibilityBySession.has(sessionId);
+      const capture=this.visibilityBySession.get(sessionId),emulated=capture&&!capture.focusSuspended;
       try {
         if(emulated)await connection.send('Emulation.setFocusEmulationEnabled',{enabled:false},sessionId);
-        return await read();
+        const focused=await read();
+        if(capture&&focused===false)capture.focusSuspended=true;
+        return focused;
       } finally {
         try {
-          if(emulated&&lease&&!lease.closing&&this.displayLeases.get(sessionId)===lease)
+          if(emulated&&!capture.focusSuspended&&lease&&!lease.closing&&this.displayLeases.get(sessionId)===lease)
             await connection.send('Emulation.setFocusEmulationEnabled',{enabled:true},sessionId);
         } finally {if(lease&&!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
       }
@@ -66,15 +69,22 @@ export class BrowserInputCapture {
     lease.refs++;await lease.ready;let released=false;
     return async()=>{if(released)return;released=true;if(--lease.refs)return;lease.closing=true;lease.release();await lease.closed};
   }
-  run(connection,sessionId,operation){return this.ordered(sessionId,()=>this.runHeld(connection,sessionId,operation))}
-  async runHeld(connection,sessionId,operation){
+  run(connection,sessionId,operation,{resumeFocus=true}={}){return this.ordered(sessionId,()=>this.runHeld(connection,sessionId,operation,resumeFocus))}
+  async runHeld(connection,sessionId,operation,resumeFocus=true){
     const lease=this.displayLeases.get(sessionId);
     if(!lease)return this.runTransient(connection,sessionId,operation);
-    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation)}
+    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation,resumeFocus)}
     await lease.ready;
-    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation)}
+    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation,resumeFocus)}
     lease.active++;
-    try{return await operation()}
+    try{
+      const capture=this.visibilityBySession.get(sessionId);
+      if(resumeFocus&&capture?.focusSuspended){
+        await connection.send('Emulation.setFocusEmulationEnabled',{enabled:true},sessionId);
+        capture.focusSuspended=false;
+      }
+      return await operation();
+    }
     finally{if(!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
   }
   async runTransient(connection, sessionId, operation, keepAlive = false) {

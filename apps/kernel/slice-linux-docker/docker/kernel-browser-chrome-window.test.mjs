@@ -201,7 +201,7 @@ test('MP-11 a held mirror does not make an unfocused page appear to own omnibox 
  try{
   await send({kind:'key',key:'l',modifiers:2});assert.equal(emulated,true);
   assert.deepEqual(await send({kind:'text',text:'wiki'}),{dispatched:true});
-  assert.equal(emulated,true,'the mirror keeps its wake-up lease');
+  assert.equal(emulated,false,'native Chrome keeps the page blurred until page input');
   pageFocus=true;await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'},'real sensitive page focus still refuses');
  }finally{await release()}
 });

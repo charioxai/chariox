@@ -170,9 +170,9 @@ export class InputArbiter {
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
       // Only when the person put focus there for this document and the page reports no focus.
       if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) {
-        const focused=await this.host.browser.inputCapture.physicalFocus(connection,sessionId,()=>evaluate('document.hasFocus()'));
+        const focused=await this.host.browser.inputCapture.physicalFocus(connection,sessionId,async()=>(await evaluate('document.hasFocus()')).result?.value);
         if(signal?.aborted||!source.isCurrent?.())throw new UserDomainRefusal('stale_reference');
-        if(focused.result?.value===false)return;
+        if(focused===false)return;
       }
       const {result} = await evaluate(sensitiveFocusExpression(false));
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');

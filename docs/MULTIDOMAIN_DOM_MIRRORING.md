@@ -376,7 +376,12 @@ MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
 to keep its renderer awake. Native Chrome text admission must not confuse that
 logical state with the page physically owning the keys. After a kernel-observed
 toolbar click or Ctrl+L, the shared input owner orders a short physical focus
-read with emulation suspended, then restores the live display lease. Same-page
+read with emulation suspended. When Chrome physically owns the keys, the page
+stays physically blurred across later characters and screenshots; repeatedly
+restoring logical focus would synthesize page focus/repaint events while the
+person types in the omnibox. Ordinary page input resumes the retained renderer
+lease on the same ordered owner. A refused/failed focus read restores its prior
+state, and closing the display still releases the lease. Same-page
 input cannot overlap that read; a closing lease stays closed. The isolated
 world's real focus and sensitive-target checks still refuse typing into a
 protected field or foreign frame. No native-key path may skip those checks.
