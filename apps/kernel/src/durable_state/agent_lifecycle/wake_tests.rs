@@ -591,6 +591,28 @@ fn a03_owning_turn_cancels_a_wake_and_can_then_finish() {
     assert_eq!(f.task().state, ExecutionState::Done);
 }
 
+// MP-08 / MP-10 / MP-11: a turn that cancels its own timer already knows; the
+// resulting source_lost receipt must not stay an unhandled item for the
+// completion assessment (a real parent was blocked after one such receipt).
+#[test]
+fn a03_owning_turn_cancelling_its_own_wake_leaves_no_unhandled_receipt() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), Some(60_000));
+    f.wakes(Operation::CancelWake {
+        id: "t1".into(),
+        task: "p".into(),
+        prompt: Some("p".into()),
+    });
+    let pending = f
+        .inbox()
+        .into_iter()
+        .filter(|e| {
+            e.source_id == "t1" && !matches!(e.state.as_str(), "handled" | "cancelled" | "expired")
+        })
+        .count();
+    assert_eq!(pending, 0, "{:?}", f.inbox());
+}
+
 #[test]
 fn a03_task_cancellation_settles_due_wakes_without_firing() {
     let f = Fixture::new();
