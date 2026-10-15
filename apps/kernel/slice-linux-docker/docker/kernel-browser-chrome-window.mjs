@@ -207,6 +207,13 @@ export class ChromeWindows {
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
   }
+  /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
+   * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
+  async inWindowCurrent(source) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return source.isCurrent() === true;
+  }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
   watch(read, interval = 150) {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
@@ -319,6 +326,7 @@ export class InputArbiter {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
       const tab = await this.activeTab();
       if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      if (source.overPage && !await this.windows.inWindowCurrent(source)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
     const current = async () => {

@@ -330,6 +330,14 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
       windows.omnibox = state; windows.refreshAuxiliary([tabbed]);
       assert.deepEqual(windows.auxiliaryState(), [], `not the pinned layout or not over the page: ${JSON.stringify(state)}`);
     }
+    // Review #1016 P1: input re-reads the dropdown; a closed one retires before the next poll.
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    const open = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    assert.equal(await windows.inWindowCurrent(open), true, "still open: admitted");
+    windows.readOmnibox = async () => ["hidden", 103, 25, 1078, 1, 1110, 178];
+    assert.equal(await windows.inWindowCurrent(open), false, "closed: refused");
+    assert.deepEqual(windows.auxiliaryState(), [], "and retired at once");
   } finally { await real.close(); }
 });
 
@@ -406,4 +414,21 @@ test("MP-11 keys on an admitted native popup reach Chrome's UI whatever the page
   open = false;
   await assert.rejects(send(menu, { kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" }, "a closed menu takes nothing");
   assert.deepEqual(keys.map(k => k[0]), ["menu", "menu", "menu"]);
+});
+
+// Review #1016 @53ad3e893 P1: the omnibox dropdown is drawn in the tabbed window and closes without an X event;
+// its rect is then the page itself. Input on it re-reads Chrome's dropdown before dispatch, never the last poll.
+test("MP-11 input on a closed in-window dropdown is refused before the next poll", async () => {
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" } };
+  let live = true, reads = 0;
+  const windows = { inWindowCurrent: async source => (reads++, live && source.isCurrent()) };
+  const arbiter = new InputArbiter(host, windows), sent = [];
+  const dropdown = { surface: "browser_auxiliary", overPage: true, isCurrent: () => true, click: async (x, y) => (sent.push(["click", x, y]), true), chord: async k => (sent.push(["key", k]), true) };
+  const send = input => arbiter.input({ stream: { regionSource: dropdown }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
+  assert.deepEqual(await send({ kind: "click", x: 40, y: 20 }), { dispatched: true }, "an open dropdown takes a click");
+  live = false; // Escape closed it; the 150 ms poll has not run yet
+  await assert.rejects(send({ kind: "click", x: 40, y: 20 }), { code: "user_domain_stale_reference" }, "the page under it takes nothing");
+  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" });
+  assert.deepEqual(sent, [["click", 40, 20]]);
+  assert.equal(reads, 3, "every input re-reads the dropdown");
 });
