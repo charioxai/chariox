@@ -233,6 +233,12 @@ export class ChromeWindows {
       && b.x - tabbed.bounds.x < rect.left + rect.width && rect.left < b.x - tabbed.bounds.x + b.width
       && b.y - tabbed.bounds.y < rect.top + rect.height && rect.top < b.y - tabbed.bounds.y + b.height);
   }
+  /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
+  async inWindowOverNow(rect) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return this.inWindowOver(rect);
+  }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
   watch(read, interval = 150) {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};

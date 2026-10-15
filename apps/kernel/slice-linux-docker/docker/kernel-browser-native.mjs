@@ -128,8 +128,9 @@ export class LinuxCapture {
    // A retire during that await took the readback (r10: it threw and fenced the source).
    let raw=this.pending;if(!raw)continue;this.pending=null;this.publishingRaw=raw;
    // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
-   // last frame, never Chrome's pixels; its popup stream shows them over the page.
-   if(this.occluded?.()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
+   // last frame, never Chrome's pixels; its popup stream shows them over the page. Checked live
+   // after the capture: a readback holding the list's pixels always sees it open.
+   if(this.occluded&&await this.occluded()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
    }
