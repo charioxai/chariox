@@ -339,4 +339,11 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     );
     assert!(context.contains("Do not request private tool traces from the owner solely because the public projection omits them"));
     assert!(context.contains("Do not invent verification"));
+    // MP-08 / MP-10 / MP-11: a real Haiku assessment answered `waiting` with a
+    // relative `deadline_ms` (300000) and the kernel blocked the parent. The
+    // guidance must say the deadline is an absolute epoch time.
+    assert!(
+        context.contains("deadline_ms is an absolute Unix epoch time in milliseconds"),
+        "{context}"
+    );
 }
