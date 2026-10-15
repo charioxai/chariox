@@ -61,10 +61,14 @@ export class LinuxCapture {
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
-   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
-   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
-   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
+   this.retireFrames();
   }
+ }
+ // Retire every published, queued and in-flight pixel of the current mask projection.
+ retireFrames(){
+  if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
+  this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
+  this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
  }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
