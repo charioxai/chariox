@@ -330,3 +330,12 @@ test("MP-08/MP-11 reconnect clears remembered presence including a late old ackn
   assert.equal(h.requests.length, 1)
   assert.match(h.popup.view().error ?? "", /Enter your Chariox passkey/)
 })
+
+test("MP-08/MP-11 resume invalidates presence without dropping an already fresh prompt feed", () => {
+  const h = harness()
+  h.popup.invalidateConnectionState()
+  h.popup.apply([prompt("fresh")])
+  h.popup.invalidateConnectionState({preservePrompts: true})
+  assert.equal(h.popup.view().count, 1)
+  assert.equal(h.popup.view().prompt?.interaction_id, "fresh")
+})

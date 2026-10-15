@@ -94,7 +94,7 @@ export function createCliKernelApprovalComposition(deps: {
   onCleanup(deps.client.onKernelEvent((event) => {
     if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
     else if (event.event === "transport_closed" || event.event === "transport_resumed") {
-      popup.invalidateConnectionState()
+      popup.invalidateConnectionState({preservePrompts: event.event === "transport_resumed"})
       security.invalidate()
       if (event.event === "transport_resumed") void security.refresh()
     }

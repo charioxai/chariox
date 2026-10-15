@@ -226,12 +226,14 @@ export function createPasskeyPopupController(deps: {
   }
   return {
     view, approve, refuse, cycleRemember, hide,
-    invalidateConnectionState() {
+    invalidateConnectionState(options: { readonly preservePrompts?: boolean } = {}) {
       connectionEpoch++
       rememberedUntil = 0
       pending = null
-      prompts = []
-      answered.clear()
+      if (!options.preservePrompts) {
+        prompts = []
+        answered.clear()
+      }
       hidden = true
       clearEntry()
       syncOpen()
