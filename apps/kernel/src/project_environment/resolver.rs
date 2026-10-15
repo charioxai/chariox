@@ -21,7 +21,7 @@ impl std::fmt::Debug for ResolvedProjectEnvironment {
     }
 }
 
-pub(crate) fn environment_error(message: &'static str) -> DaemonError {
+pub(crate) fn environment_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "Project environment",
         message: message.into(),
