@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 native global shortcut admission (2026-10-15)
+
+Physical agent keyboard batches probe the exact X11 root passive key grabs
+before dispatch, under the same server grab as focus admission and XTEST.
+Global extension commands can receive keys while a native app has focus;
+focus and extension-worker inventory are therefore insufficient authority.
+A conflicting or unresolved probe refuses before sending a press. Successful
+temporary grabs are removed without disturbing the owner's accelerators.
+The check covers ordinary chords and each committed text stroke, including
+current lock bits and the stroke's modifiers. Human input retains its path.
+
+The real-Chromium regression loads a global MV3 command, focuses Mousepad,
+and checks owner-positive/agent-negative input with both awake and sleeping
+workers, plus ordinary native editing. This is supplementary fixture proof;
+MP-10 live provider/client acceptance and independent MP-11 security review
+remain required on the resulting source.
+
 ## MP-08 / MP-10 / MP-11 native Computer extension admission (2026-10-15)
 
 The owner-only extension rule also gates agent native Computer mutations

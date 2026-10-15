@@ -85,3 +85,29 @@ def input_destination(connection, processes, accessibility, point=None):
     except NativeExtensionDenied:raise
     except Exception as error:
         raise accessibility.NativeInputDenied('native input destination unavailable') from error
+
+
+def key_destinations(connection, codes):
+    """MP-11: reject root accelerators, which bypass the focused X client.
+
+    The caller holds the server grab through this probe and physical dispatch.
+    Probe the exact key/modifier sequence, including lock bits, without sending
+    an event. BadAccess proves another client owns that passive root grab. A
+    successful temporary grab is removed before input; no global grab is stolen.
+    """
+    from Xlib import X
+    root=connection.screen().root
+    modifiers=connection.get_modifier_mapping()
+    mask=root.query_pointer().mask & 255
+    for code in codes:
+        errors=[]
+        try:
+            root.grab_key(code,mask,False,X.GrabModeAsync,X.GrabModeAsync,
+                          onerror=lambda error,request:errors.append(error))
+            connection.sync()
+            if errors:raise NativeExtensionDenied('Global shortcuts require owner input')
+        finally:
+            root.ungrab_key(code,mask)
+            connection.sync()
+        for index,row in enumerate(modifiers):
+            if code in row:mask |= 1 << index
