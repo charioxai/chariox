@@ -1161,6 +1161,11 @@ fn r16_plain_zero_obligations_finishes_after_correction_with_assessment_notes() 
         assessment("continue"),
         serde_json::json!({"status":"blocked","reason":"Would prefer another public trace"}),
         serde_json::json!({"status":"waiting","reason":"Would prefer another check","registration_ids":[],"deadline_ms":60_004}),
+        // MP-08 / MP-10 / MP-11: real Codex added final_answer to a
+        // continuation. A malformed advisory check cannot strand completed
+        // ordinary work after its single correction.
+        serde_json::json!({"status":"continue","reason":"Read the files again","final_answer":"The earlier review was insufficient"}),
+        serde_json::json!({"invalid":"assessment"}),
     ] {
         let f = Fixture::new();
         plain(&f);
@@ -1188,6 +1193,33 @@ fn r16_plain_zero_obligations_finishes_after_correction_with_assessment_notes() 
         f.settle(&t.prompt_id, true);
         assert_eq!(f.task(), t, "duplicate EOF cannot start another turn");
     }
+}
+
+#[test]
+fn r20_plain_correction_still_rejects_an_expired_assessment_receipt() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let first = check(&f, assessment("continue"));
+    let correction = first.pending_prompt_id.unwrap();
+    f.begin(&correction);
+    f.settle(&correction, true);
+    let current = f.task();
+    let evaluation = completion::evaluation(&current).unwrap();
+    let prompt = evaluation.prompt_id.clone();
+    let deadline = evaluation.deadline_ms;
+    f.begin(&prompt);
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt,
+        result: serde_json::json!({"invalid":"assessment"}).to_string(),
+        work_answer: Some("public corrected work".into()),
+        now: deadline + 1,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Blocked);
+    assert!(task.completion_check.unwrap().final_answer.is_none());
 }
 
 #[test]

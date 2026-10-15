@@ -273,7 +273,7 @@ pub(super) fn evaluate(
     // assessor notes are information, not an owner action or a goal loop.
     let plain_correction_finished = t.goal.is_none()
         && t.correction_used
-        && assessment.is_some()
+        && valid
         && !t
             .obligations
             .iter()
