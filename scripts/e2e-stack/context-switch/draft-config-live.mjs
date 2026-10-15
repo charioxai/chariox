@@ -8,7 +8,7 @@ try{
  await init();await r.launch('codex','gpt-6-luna');const state=await r.tui.send('snapshot'),agentId=state.session.focusedAgentId,primary=r.profiles.codex,label='ctx13-unsigned-'+Date.now();
  await r.command('provider accounts add codex '+label);
  const listed=await r.client.send({ListProviderAccountProfiles:{provider:'codex'}}),profile=listed.ProviderAccountProfilesListed.profiles.find(p=>p.label===label);if(!profile)throw Error('Unsigned profile registration missing');
- await r.command('agent account '+agentId+' '+profile.profile_id);let selected=false;
+ await r.command('agent account '+agentId+' '+label);let selected=false;
  for(let n=0;n<120;n++){const s=await r.tui.send('snapshot');if(s.session.agents.find(a=>a.id===agentId)?.accountProfile===profile.profile_id){selected=true;break;}await sleep(250);}
  if(!selected)throw Error('Unsigned account selection did not commit');
  const note=r.root+'/user-note.txt';await writeFile(note,'The audit note says preserve the user draft.\n');await r.command('attach '+note);
@@ -19,7 +19,7 @@ try{
  const screen=execFileSync('python3',['-c',"import pyte,sys; s=pyte.Screen(160,48); pyte.Stream(s).feed(open(sys.argv[1]).read()); print('\\n'.join(s.display))",ansi],{encoding:'utf8'});
  await r.record('restored-editor-proof',{promptVisible:screen.includes('Read the attached user note'),attachmentVisible:screen.includes('[file 1]')||screen.includes('user-note.txt'),noAcceptedUserRows:!(rejected.agentPanes[agentId]??[]).some(x=>x.role==='user'&&x.text?.includes('CX13_DRAFT_RETRY')),footer:rejected.footer});
  if(!screen.includes('Read the attached user note')||(!screen.includes('[file 1]')&&!screen.includes('user-note.txt')))throw Error('Real cleared editor or attachment was not restored');
- await r.command('agent account '+agentId+' '+primary);await r.turn(prompt,'CX13_DRAFT_RETRY',240000);result.draftRetry='Same real editor/attachment after selecting the signed-in account; one provider turn on gpt-6-luna low';
+ const primaryLabel=listed.ProviderAccountProfilesListed.profiles.find(p=>p.profile_id===primary)?.label;if(!primaryLabel)throw Error('Primary account label missing');await r.command('agent account '+agentId+' '+primaryLabel);await r.turn(prompt,'CX13_DRAFT_RETRY',240000);result.draftRetry='Same real editor/attachment after selecting the signed-in account; one provider turn on gpt-6-luna low';
  // The UI writes both newly serialized settings; only allowlisted keys are recorded.
  const models={codex_brief_model:'gpt-6-luna',claude_brief_model:'claude-haiku-5-5'};
  for(const [key,value]of Object.entries(models))await r.command('config set history.handoff.'+key+' '+value);

@@ -12,7 +12,7 @@ try{
  for(let n=0;n<120;n++){const response=await r.client.send({ListProviderAccountProfiles:{provider:'codex'}});profile=response.ProviderAccountProfilesListed?.profiles.find(p=>p.label===label);if(profile)break;await sleep(250);}
  if(!profile)throw Error('Real Provider Accounts link did not create the independent registration');
  result.secondaryProfile=profile.profile_id;result.firstUtilityRead='New registration; LinkProviderAccountProfile only registers the scope, then the real TUI explicit refresh runs the official app-server account/read';
- await r.command('provider accounts refresh codex '+profile.profile_id);
+ await r.command('provider accounts refresh codex '+label);
  let footer,settled=false;
  for(let n=0;n<480;n++){const s=await r.tui.send('snapshot');footer=s.footer;if(footer?.tone==='error'||footer?.message==='provider account refresh complete'){settled=true;break;}await sleep(250);}
  if(!settled)throw Error('Real Provider Accounts refresh did not settle');
