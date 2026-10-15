@@ -25,6 +25,18 @@ export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windo
   return {x, y: bandHeight, width, height: bottom - bandHeight};
 }
 
+// MP-08/MP-11 (coordinator 12:22Z): a browser-modal Chrome dialog (the Web Store's 'Add "…"?') draws a
+// scrim over the whole window, band included, and hangs from the toolbar: no X window, no CDP event.
+// The band's toolbar row just above it tells: its colour, learned while clear, dimmed (real Chrome 155:
+// 255 -> 102). While it holds, the page area streams natively as one more popup (Vault-masked, attested).
+export const TOOLBAR_ROW = 6;
+export function rowMode(bgr0) {
+  const counts = new Map();
+  for (let i = 0; i + 3 < bgr0.length; i += 4) { const key = bgr0[i] | bgr0[i + 1] << 8 | bgr0[i + 2] << 16; counts.set(key, (counts.get(key) ?? 0) + 1); }
+  let mode = 0, top = 0; for (const [key, n] of counts) if (n > top) { mode = key; top = n; }
+  return {luminance: (mode & 255) + (mode >> 8 & 255) + (mode >> 16 & 255), share: top / Math.max(1, bgr0.length / 4)};
+}
+
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
@@ -63,6 +75,7 @@ export class ChromeWindows {
     // Fullscreen/maximized windows hide or resize the band; only the launch geometry binds.
     if (bounds?.windowState !== 'normal') throw new UserDomainRefusal('stale_reference');
     const rows = await this.inventory(display, pid, live);
+    this.rows = rows;
     const physical = {x: bounds.left * scale, y: bounds.top * scale, width: bounds.width * scale, height: bounds.height * scale};
     const tabbed = rows.filter(r => r.visible && !r.override_redirect && r.transient_for === 0 &&
       r.x === physical.x && r.y === physical.y && r.width === physical.width && r.height === physical.height);
@@ -100,6 +113,15 @@ export class ChromeWindows {
       const binding = bind(r);
       return Object.freeze({...binding, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true});
     });
+    // A browser-modal dialog over the page: the whole page area of the same X window.
+    if (this.modal && bound.length < 8) {
+      const top = tabbed.content_top, r = {id: row.id, x: row.x, y: row.y + top, width: row.width - row.width % 2, height: row.height - top - (row.height - top) % 2};
+      const key = `${tabbed.window_generation}:${r.id}:modal:${r.x},${r.y},${r.width}x${r.height}`;
+      const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
+      ids.set(key, auxiliary_id);
+      const binding = bind(r);
+      bound.push(Object.freeze({...binding, in_window: true, page_overlay: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+    }
     // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
     const popup = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.content_top / tabbed.scale,
       tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale);
@@ -114,6 +136,20 @@ export class ChromeWindows {
     this.auxiliaryIds = ids;
     return bound;
   }
+  /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
+  observeBand(raw) {
+    const tabbed = this.bound?.tabbed, y = tabbed ? tabbed.content_top - TOOLBAR_ROW * tabbed.scale : -1;
+    if (!tabbed?.isCurrent() || !raw || y < 0 || raw.width !== tabbed.bounds.width) return;
+    let row;
+    try { row = typeof raw.readRegion === 'function' ? raw.readRegion(0, y, raw.width, 1) : raw.pixels.subarray(y * raw.width * 4, (y + 1) * raw.width * 4); } catch { return; }
+    const {luminance, share} = rowMode(row);
+    if (share < 0.6) return;
+    if (!this.modal) this.toolbar = Math.max(this.toolbar ?? 0, luminance);
+    const modal = this.toolbar >= 384 && luminance <= this.toolbar * 0.75 && luminance >= this.toolbar * 0.2;
+    if (modal !== !!this.modal) { this.modal = modal; this.refreshAuxiliary(this.rows); }
+  }
+  /** The page overlay's attestation found no scrim (e.g. a darker theme): learn the toolbar again. */
+  relearnToolbar() { this.toolbar = 0; if (this.modal) { this.modal = false; this.refreshAuxiliary(this.rows); } }
   /** The omnibox dropdown's WebUI: visibility and geometry only (never its content). */
   async readOmnibox() {
     const connection = this.host.browser.connection;
@@ -133,6 +169,7 @@ export class ChromeWindows {
   refreshAuxiliary(rows) {
     const bound = this.bound, tabbed = bound?.tabbed;
     if (!tabbed?.isCurrent() || !Array.isArray(rows)) return;
+    this.rows = rows;
     const row = rows.find(r => r.id === tabbed.xid);
     if (!row || row.x !== tabbed.bounds.x || row.y !== tabbed.bounds.y || row.width !== tabbed.bounds.width || row.height !== tabbed.bounds.height) return;
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
@@ -176,6 +213,12 @@ export class ChromeWindows {
   auxiliaryRegion(binding) {
     const tabbed = this.current().tabbed;
     if (binding?.role !== 'auxiliary' || binding.parent_xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+    if (binding.page_overlay) {
+      if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+      return {surface: 'browser_auxiliary', inWindow: true, pageOverlay: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
+        rect: {left: 0, top: tabbed.content_top, width: binding.bounds.width, height: binding.bounds.height},
+        contentHeight: tabbed.bounds.height - tabbed.content_top, isCurrent: binding.isCurrent};
+    }
     if (binding.in_window) {
       // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');

@@ -38,22 +38,41 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale,inW
   pageLeft:left,pageTop:top-contentTop,contentTop,
   window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
+// MP-08/MP-11 (coordinator 12:22Z): under a browser-modal Chrome dialog the page area shows the page
+// behind a uniform scrim (native = k x page, real Chrome 155: k = 0.4) plus the dialog box. Outside the
+// masks, at least four fifths of the compared pixels must be exactly the scrimmed reference pixel (+-2):
+// that proves this Tab at this geometry; the rest (the dialog, a spinner) is bounded, never trusted.
+export function overlayAttestation(reference,raw,masked){
+ if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native overlay attestation geometry');
+ // The scrim factor: the median ratio of sampled bright pixels (the dialog's own pixels are outliers).
+ const n=raw.pixels,r=reference.pixels,ratios=[];
+ for(let i=0;i<n.length;i+=20)if(!masked?.[i/4]&&r[i]>64)ratios.push(n[i+2]/r[i]);
+ ratios.sort((a,b)=>a-b);const k=ratios.length?ratios[ratios.length>>1]:0;let compared=0,inliers=0;
+ for(let i=0;i<n.length;i+=4)if(!masked?.[i/4]){compared++;
+  if(Math.abs(n[i+2]-r[i]*k)<=2&&Math.abs(n[i+1]-r[i+1]*k)<=2&&Math.abs(n[i]-r[i+2]*k)<=2)inliers++;}
+ if(compared<n.length/40)throw Error('MP-11: native overlay attestation masked');
+ if(!(k>=0.25&&k<=0.75))throw Object.assign(Error('MP-11: native overlay without a scrim'),{scrim:k});
+ if(inliers<compared*0.8)throw Error('MP-11: native overlay attestation mismatch');
+ return {scrim:k,inliers:inliers/compared};
+}
 export function projectRegionMasks(regions,left,top){
  return regions.map(({x,y,width,height})=>({x:x-left,y:y-top,width,height}));
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,...options}){
+ constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,pageOverlay,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,inWindow===true);
   // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
+  this.pageOverlay=inWindow===true&&pageOverlay===true;
+  if(this.pageOverlay&&(this.region.pageLeft!==0||this.region.pageTop!==0||this.region.width!==window.width-window.width%2||contentHeight-rect.height>1))throw Error('MP-11: invalid native page overlay');
   this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  onCdp(message){
-  if(this.surface==='page'){super.onCdp(message);return;}
+  if(this.surface==='page'||this.pageOverlay){super.onCdp(message);return;}
   // Chrome belongs to the window lease, not the navigated page. Native
   // Destroy/Configure events retire the worker's exact owned-window binding.
   if(message.method==='Chariox.browserDisconnected')this.fence();
@@ -63,7 +82,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
    const region=this.region;
-   if(this.surface==='page'){
+   if(this.surface==='page'||this.pageOverlay){
     this.regions=new NativeRegionProtection(this.connection,this.sessionId,
      {policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
     const measure=this.regions.measure.bind(this.regions);
@@ -85,7 +104,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.surface==='page'){
+   if(this.surface==='page'||this.pageOverlay){
     const shot=await this.screenshot();
     const clip={x:region.pageLeft/this.scale,y:region.pageTop/this.scale,
      width:region.css_width,height:region.css_height};
@@ -96,10 +115,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
     const masked=attestationMask(masks,raw.width,raw.height);
     if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');
-    const pixels=raw.pixels;
+    if(this.pageOverlay){const {scrim}=overlayAttestation(reference,raw,masked);this.timing(`native_overlay_admitted ${scrim.toFixed(3)}`,performance.timeOrigin+performance.now());}
+    else{const pixels=raw.pixels;
     for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
      (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))
-      throw Error('MP-11: native region attestation mismatch');
+      throw Error('MP-11: native region attestation mismatch');}
     await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');

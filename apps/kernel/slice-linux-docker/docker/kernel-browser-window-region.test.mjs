@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: surface isolation and lease-bound crop coordinates.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {windowRegionGeometry,projectRegionMasks,NativeWindowRegionCapture} from './kernel-browser-window-region.mjs';
+import {windowRegionGeometry,projectRegionMasks,NativeWindowRegionCapture,overlayAttestation} from './kernel-browser-window-region.mjs';
 test('MP-08/MP-10 page and native Chrome crops share native pixels at both densities',()=>{
  for(const scale of [1,2]){
   const window={width:1280*scale,height:888*scale},content=800*scale;
@@ -93,4 +93,21 @@ test('MP-11 an in-window popup is a rect of the tabbed window below the band',()
  for(const [r,c] of [[{left:238,top:172,width:2156,height:176},content],[{left:238,top:174,width:2156,height:176},undefined],[{left:500,top:174,width:2156,height:176},content]])
   assert.throws(()=>windowRegionGeometry('browser_auxiliary',window,r,c,2,true),/region|window|boundary/);
  assert.throws(()=>windowRegionGeometry('browser_auxiliary',{width:2560,height:1774},{left:238,top:174,width:2156,height:176},content,2,true),/region/);
+});
+
+// Coordinator 12:22Z ask 1: under a browser-modal dialog the page shows behind a uniform scrim (k = 0.4 in
+// real Chrome 155) plus the dialog box. Only that relation proves this Tab at this geometry.
+test('MP-11 the page overlay attests the scrimmed page and bounds what differs',()=>{
+ const width=320,height=200,reference={width,height,pixels:Buffer.alloc(width*height*4)};
+ let seed=7;for(let i=0;i<reference.pixels.length;i+=4){for(let c=0;c<3;c++){seed=(seed*1103515245+12345)>>>0;reference.pixels[i+c]=40+(seed>>>24)%200;}reference.pixels[i+3]=255;}
+ const native=(k,{box=null,shift=0}={})=>{const pixels=Buffer.alloc(width*height*4);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const o=(y*width+x)*4,s=(y*width+Math.min(width-1,x+shift))*4;
+  const inBox=box&&x>=box[0]&&x<box[2]&&y>=box[1]&&y<box[3];for(let c=0;c<3;c++)pixels[o+2-c]=inBox?255:Math.round(reference.pixels[s+c]*k);}return {width,height,pixels};};
+ const ok=overlayAttestation(reference,native(0.4,{box:[100,0,220,60]}),null);
+ assert.ok(Math.abs(ok.scrim-0.4)<0.01);assert.ok(ok.inliers>0.85);
+ assert.throws(()=>overlayAttestation(reference,native(0.4,{shift:1}),null),/mismatch/,'another geometry');
+ assert.throws(()=>overlayAttestation(reference,native(1),null),/without a scrim/,'no scrim (not a dialog)');
+ assert.throws(()=>overlayAttestation(reference,native(0.4,{box:[0,0,320,90]}),null),/mismatch/,'at most a fifth may differ');
+ assert.throws(()=>overlayAttestation(reference,{...native(0.4),width:318},null),/geometry/);
+ const masked=new Uint8Array(width*height).fill(1);
+ assert.throws(()=>overlayAttestation(reference,native(0.4),masked),/masked/,'a masked page proves nothing');
 });

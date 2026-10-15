@@ -29,7 +29,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
  if(tab.tab_id!==command.tab_id)refuse();
- let lease,args,offset={x:0,y:0};
+ let lease,args,offset={x:0,y:0},overlayTab=null;
  const windows=host.chromeWindows?.current();
  const window=windows?.tabbed;
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent())refuse();
@@ -59,20 +59,29 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const popup=target.kind==='browser_auxiliary'?host.chromeWindows.auxiliary(target.auxiliary_id):null;
   const current=()=>host.chromium.policy==='managed'&&window.isCurrent()&&(!popup||popup.isCurrent());
   args={...(popup?host.chromeWindows.auxiliaryRegion(popup):host.chromeWindows.band(window)),isCurrent:current};
+  // A browser-modal dialog's page overlay shows Chrome's ACTIVE Tab: its masks, reference and fence.
+  if(args.pageOverlay){
+   const active=await host.arbiter?.activeTab?.();
+   if(!active||typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(active,window))refuse();
+   overlayTab=active;args.validateCurrent=async()=>current()&&await host.arbiter.isActiveTab(active,window);
+  }
   const binding_id=`host-chrome-region-${randomUUID()}`;
   lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}${popup?`-${popup.auxiliary_id}`:''}`,sequence:window.window_generation,
    isAlive:current,isCurrent:async()=>current(),close:async()=>{}};
  }
  let source,stream;
  try {
-  const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+  const pageTab=overlayTab??tab;
+  const {connection,sessionId}=await host.browser.resolvePageTarget(pageTab.target_id);
   const scale=window.scale;
   // Browser UI survives page navigation; the frame document is its window epoch.
-  const sourceTab=chromeUi(target)?{...tab,document_id:lease.document_id}:tab;
+  const sourceTab=chromeUi(target)&&!overlayTab?{...tab,document_id:lease.document_id}:pageTab;
   source=new Capture({...args,display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
-   screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
-  await source.start();assertNotCancelled(signal);
+   screenshot:()=>host.displayScreenshot(pageTab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
+  // No scrim behind the "dialog" (a darker theme dimmed the toolbar): the kernel learns the toolbar again.
+  try{await source.start();}catch(error){if(overlayTab&&error?.scrim!==undefined)host.chromeWindows.relearnToolbar?.();throw error;}
+  assertNotCancelled(signal);
   if(host.protection!==policy||!await lease.isCurrent()||!window.isCurrent())refuse();
   const result={source_kind:'region',binding_id:lease.binding_id,document_id:lease.document_id,sequence:lease.sequence,
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
@@ -88,8 +97,10 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
   const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows()):null;
+  // The band's own frames tell when a browser-modal dialog dims the window (no other signal exists).
+  const offBand=target.kind==='browser_chrome'&&typeof source.subscribe==='function'?source.subscribe(frame=>host.chromeWindows.observeBand?.(frame?.raw)):null;
   const offWindow=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});
-  offRetire=()=>{unwatch?.();offWindow?.();};
+  offRetire=()=>{unwatch?.();offBand?.();offWindow?.();};
   host.armDisplayExpiry(stream);return result;
  }catch(error){if(stream)await stream.close();else{await source?.close();await lease.close();}throw error;}
 }

@@ -306,3 +306,37 @@ test("MP-11 the kernel reads only the omnibox popup's visibility and geometry", 
   await windows.readOmnibox();
   assert.equal(sent.filter(([method]) => method === "Target.attachToTarget").length, 1, "one session, reused");
 });
+
+// Coordinator 12:22Z ask 1: the Web Store's browser-modal 'Add "…"?' dialog dims the whole window (real
+// Chrome 155: the band's toolbar row 255 -> 102) and hangs from the toolbar; no X window or CDP event.
+test("MP-08/MP-11 a scrim over the band's toolbar row offers the page area as one more popup until it clears", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    windows.refreshAuxiliary([{ id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 }]);
+    const width = 2560, frame = (value, dialog = null) => {
+      const pixels = Buffer.alloc(width * 174 * 4, value);
+      if (dialog) for (let y = 160; y < 174; y++) pixels.fill(255, (y * width + dialog[0]) * 4, (y * width + dialog[1]) * 4);
+      return { width, height: 174, readRegion: (x, y, w, h) => Buffer.from(pixels.subarray((y * width + x) * 4, (y * width + x + w) * 4)) };
+    };
+    windows.observeBand(frame(255));
+    assert.deepEqual(windows.auxiliaryState(), [], "clear toolbar");
+    windows.observeBand(frame(242));
+    assert.deepEqual(windows.auxiliaryState(), [], "a light change (the dropdown's shadow) is not a scrim");
+    windows.observeBand(frame(102, [832, 1728]));
+    const [overlay] = windows.auxiliaryState();
+    assert.deepEqual(overlay, { auxiliary_id: overlay.auxiliary_id, x: 0, y: 87, width: 1280, height: 800 }, "the whole page area below the band");
+    const region = windows.auxiliaryRegion(windows.auxiliary(overlay.auxiliary_id));
+    assert.equal(region.pageOverlay, true); assert.equal(region.window.id, 0x600001);
+    assert.deepEqual(region.rect, { left: 0, top: 174, width: 2560, height: 1600 });
+    windows.observeBand(frame(255));
+    assert.deepEqual(windows.auxiliaryState(), [], "the dialog closed");
+    windows.observeBand(frame(102)); windows.relearnToolbar();
+    assert.deepEqual(windows.auxiliaryState(), [], "no scrim found behind it (a darker theme): learned again");
+    windows.observeBand(frame(102));
+    assert.deepEqual(windows.auxiliaryState(), [], "the darker toolbar is the new clear colour");
+  } finally { await real.close(); }
+});
