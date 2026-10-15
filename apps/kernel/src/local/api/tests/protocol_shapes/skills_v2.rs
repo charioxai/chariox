@@ -197,3 +197,13 @@ fn skills_v2_folderless_project_protocol_533_snapshot() {
     );
     assert_eq!(wire["ProjectCreated"]["project"]["workspace_id"], "");
 }
+
+#[test]
+fn skills_v2_unwired_runtime_is_not_advertised_by_protocol_foundation() {
+    assert_eq!(
+        crate::local::SKILLS_V2_RUNTIME_CAPABILITY,
+        "skills_v2_runtime"
+    );
+    assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .contains(&crate::local::SKILLS_V2_RUNTIME_CAPABILITY));
+}

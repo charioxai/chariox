@@ -65,3 +65,10 @@ import Testing
     let response = Data(#"{"ProjectCreated":{"project":{"id":"project-empty","workspace_id":"","workspace_ids":[]}}}"#.utf8)
     _ = try JSONDecoder().decode(SkillsV2ProjectCreatedResponse.self, from: response)
 }
+
+// MP-08 / MP-10 / MP-11: foundation versions cannot route users into unavailable RPCs.
+@Test func skillsV2RuntimeRequiresWiredKernelAndProtocol() {
+    #expect(!supportsSkillsV2Runtime(protocolVersion: 533, capabilities: []))
+    #expect(!supportsSkillsV2Runtime(protocolVersion: 532, capabilities: ["skills_v2_runtime"]))
+    #expect(supportsSkillsV2Runtime(protocolVersion: 533, capabilities: ["skills_v2_runtime"]))
+}

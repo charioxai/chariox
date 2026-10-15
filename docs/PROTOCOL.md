@@ -3700,6 +3700,11 @@ manifest: they require an upgrade before a v2 transfer or skill-using turn.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
 
+MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
+`skills_v2_runtime` capability in kernel status/relay discovery before routing
+Skills actions to V2. The unreleased 533/141 foundation does not advertise that
+capability: wire decoding alone is not a working list/load/dispatch runtime.
+
 The wire foundation alone is not an implemented catalog, destructive reset,
 provider delivery path or acceptance claim. Runtime rollout removes the old
 skill-grant contracts without a compatibility decoder. Skills v2 clients gate

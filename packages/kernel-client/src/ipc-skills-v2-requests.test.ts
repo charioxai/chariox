@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: shared Skills v2 wire snapshots, not live acceptance.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { skillCatalogRequest, mutateSkillCatalogRequest, nativeSkillDetailsRequest, skillsV2Request, SKILLS_MIN_LOCAL_PROTOCOL, SKILLS_MIN_PEER_PROTOCOL } from "./ipc-skills-v2-requests.js"
+import { supportsSkillsV2Runtime, skillCatalogRequest, mutateSkillCatalogRequest, nativeSkillDetailsRequest, skillsV2Request, SKILLS_MIN_LOCAL_PROTOCOL, SKILLS_MIN_PEER_PROTOCOL } from "./ipc-skills-v2-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("MP-08 Skills v2 533/141 request snapshots", () => {
@@ -35,4 +35,13 @@ test("MP-08 MP-11 native details keep the focused source identity and no client 
     SkillsV2: { action: "native_details", agent_id: "a", selection },
   })
   assert.equal(JSON.stringify(nativeSkillDetailsRequest("a", selection)).includes('"path"'), false)
+})
+
+test("MP-08 MP-10 MP-11 protocol support alone does not advertise a Skills runtime", () => {
+  assert.equal(supportsSkillsV2Runtime(533, []), false)
+  assert.equal(supportsSkillsV2Runtime(533, null), false)
+  assert.equal(supportsSkillsV2Runtime(533, ["skills_v2_contract"]), false)
+  assert.equal(supportsSkillsV2Runtime(532, ["skills_v2_runtime"]), false)
+  assert.equal(supportsSkillsV2Runtime(533, ["skills_v2_runtime"]), true)
+  assert.equal(supportsSkillsV2Runtime(534, ["skills_v2_runtime"]), true)
 })
