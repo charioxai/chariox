@@ -915,3 +915,26 @@ test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live versio
   await harness.controller.refreshNow()
   assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
 })
+
+// MP-02 / MP-08 / MP-10 / MP-11: a selected peer remains a real selectable owner after pivot.
+test("review0440 connected direct target survives its self-excluding remote snapshot", async () => {
+  const { normalizeWaitingRoomLaunchPlacement } = await import("@chariox/kernel-client/waiting-room-runtime-placement")
+  const snapshot = inventory("peer", { kernelId: "kernel-b", machineId: "machine-b", kernelAlias: "Ordinary peer", machineAlias: "Peer machine" })
+  const harness = createHarness({ snapshots: [snapshot], directTargetKernelId: "kernel-b" })
+  await harness.controller.refreshNow()
+  const remote = { machines: harness.remoteMachines(), kernels: harness.remoteKernels() }
+  assert.deepEqual(normalizeWaitingRoomLaunchPlacement({ selectedMachineRef: "machine-b", selectedKernelRef: "kernel-b" }, remote), { selectedMachineRef: "machine-b", selectedKernelRef: "kernel-b" })
+  assert.equal(remote.machines.find(m => m.machine_id === "machine-b")?.online, true)
+  assert.equal(remote.kernels.find(k => k.kernel_id === "kernel-b")?.accepting_remote_leases, false, "a live read connection does not prove execution admission")
+  harness.controller.applyRemoteMachinesChanged([])
+  assert.equal(harness.remoteMachines().find(m => m.machine_id === "machine-b")?.online, true)
+  harness.controller.applyTransportClosed()
+  assert.equal(harness.remoteMachines().find(m => m.machine_id === "machine-b")?.online, false)
+})
+
+test("review0440 cached direct target retains its identity without online or lease claims", () => {
+  const snapshot = inventory("cached-peer", { kernelId: "kernel-b", machineId: "machine-b", kernelAlias: "Ordinary peer" })
+  const harness = createHarness({ connected: false, cachedInventories: [snapshot], directTargetKernelId: "kernel-b" })
+  assert.equal(harness.remoteMachines().find(m => m.machine_id === "machine-b")?.online, false)
+  assert.equal(harness.remoteKernels().find(k => k.kernel_id === "kernel-b")?.accepting_remote_leases, false)
+})
