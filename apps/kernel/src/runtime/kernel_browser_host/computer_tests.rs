@@ -217,10 +217,16 @@ fn mp10_desktop_display_wait_does_not_block_input_or_cross_responses() {
 
 #[test]
 fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
-    held_observation_allows_desktop_input(
-        "host.browser",
-        json!({"op":"mirror_next","subscription_id":"view","generation":1}),
-    );
+    // Initial/reset credits omit wait_ms or use zero, but can still await CDP.
+    // Exercise those alongside an ordinary waiting credit on the same backend.
+    for wait in [None, Some(0), Some(1000)] {
+        let mut credit =
+            json!({"op":"mirror_next","subscription_id":"view","generation":1});
+        if let Some(wait) = wait {
+            credit["wait_ms"] = wait.into();
+        }
+        held_observation_allows_desktop_input("host.browser", credit);
+    }
 }
 
 // MP-08/MP-10/MP-11: exercise the actual Rust backend lock and reply registry.
