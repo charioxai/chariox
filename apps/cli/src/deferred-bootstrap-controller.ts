@@ -163,15 +163,11 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     }
     if (composerFlight) return composerFlight
     const attachment = deps.currentAttachmentId()
-    const promptHistory = deps.currentPromptHistoryEntries?.()
     const applyComposer = (data: import("./cli-types.js").ComposerInventory) => {
       if (attachment !== deps.currentAttachmentId() || selectedScope !== deps.getDeferred()?.composerScopeKey?.()) return
       deps.setProviderCatalog(data.providerCatalog)
       deps.setProviderCommandCatalogs(data.providerCommandCatalogs)
       deps.setTerminalCommandCatalog(data.terminalCommandCatalog)
-      if (deps.currentPromptHistoryEntries?.() === promptHistory && deps.currentPromptHistoryIndex?.() == null) {
-        deps.setPromptHistoryEntries(data.promptHistoryEntries)
-      }
       deps.updateSessionChrome()
     }
     composerFlight = load().then(data => {

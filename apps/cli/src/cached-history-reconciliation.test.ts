@@ -36,3 +36,14 @@ test("MP-08 / MP-10 / MP-11 restored historical rows cannot restore queued promp
  const restored=reconcileCachedHistory(old,session,history).history.historyEntries
  assert.equal(restored.length,3);assert.ok(restored.every(entry=>entry.queuedPrompt===undefined))
 })
+
+// MP-08 / MP-10 / MP-11: a cached prefix cannot skip turns produced while the client was closed.
+test("cached history leaves the server cursor intact when an unseen turn separates it from the latest turn", () => {
+ const current = [entry(50, "fifth")]
+ const gap = {...history,agentEntries:{a:current},historyEntries:current,nextHistoryCursor:{agentId:"a",cursor:{before_sequence:50}}}
+ const result = reconcileCachedHistory(cached,session,gap)
+ assert.equal(result.history,gap)
+ assert.deepEqual(result.history.nextHistoryCursor,{agentId:"a",cursor:{before_sequence:50}})
+ // Paging before 50 can still retrieve the unseen turn at 40.
+ assert.equal(result.discard,false)
+})

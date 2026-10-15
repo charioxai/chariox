@@ -41,8 +41,27 @@ test("MP-08 / MP-10 composer inventory stays lazy and rejects a superseded attac
       terminalCommandCatalog: { revision: "one", nodes: [] }, promptHistoryEntries: ["earlier"] })
     await pending
     assert.equal(h.providerCatalog, replace ? null : catalog)
-    assert.deepEqual(h.promptHistoryEntries, replace ? [] : ["earlier"])
+    assert.deepEqual(h.promptHistoryEntries, [])
   }
+})
+
+// MP-08 / MP-10 / MP-11: catalog refresh and prompt navigation own independent data.
+test("a composer scope refresh preserves prompt history already loaded on this attachment", async () => {
+  let scope = "codex:first", historyCalls = 0
+  const catalog = {all:[],connected:[],default:{}} as ProviderCatalog
+  const h = bootstrapHarness({attachmentSessionId:"session-1",attachmentId:"binding-1",deferred:{
+    composerScopeKey:()=>scope,
+    loadPromptInputHistory:async()=>{historyCalls++;return {sessionId:"session-1",entries:["earlier input"]}},
+    loadComposer:async()=>({sessionId:"session-1",providerCatalog:catalog,providerCommandCatalogs:{} as ProviderCommandCatalogs,terminalCommandCatalog:{revision:"one",nodes:[]},promptHistoryEntries:[]}),
+  }})
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  await h.controller.hydrateComposer()
+  scope="claude:second"
+  await h.controller.hydrateComposer()
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  assert.equal(historyCalls,1)
 })
 
 test("deferred bootstrap controller applies provider catalog hydration", async () => {

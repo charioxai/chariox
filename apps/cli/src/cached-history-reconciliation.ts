@@ -17,6 +17,9 @@ export function reconcileCachedHistory(cached: CliCachedView | null, session: Ru
   if (history.visibleAgentId !== cached.agentId || !history.nextHistoryCursor) return { history, discard: false }
   const first = Math.min(...current.flatMap(historyEntrySequence))
   if (!Number.isFinite(first)) return { history, discard: false }
+  // A missing interval must still be fetched through the server cursor.
+  const currentSequences = new Set(current.flatMap(historyEntrySequence))
+  if (!cached.entries.some(entry => historyEntrySequence(entry).some(sequence => currentSequences.has(sequence)))) return { history, discard: false }
   const older = cached.entries.filter(entry => {
     const sequences = historyEntrySequence(entry)
     return sequences.length > 0 && Math.max(...sequences) < first
