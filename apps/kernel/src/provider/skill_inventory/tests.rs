@@ -394,3 +394,54 @@ fn runtime_inventory_environment_is_profile_bound_and_never_a_serialized_input()
     let decoded: RuntimeProviderRun = serde_json::from_value(value).unwrap();
     assert!(decoded.native_skill_discovery_environment().is_empty());
 }
+#[test]
+fn native_details_return_execution_manifest_and_provenance_without_installing() {
+    let temp = Scratch::new();
+    let path = temp.skill("native", "review");
+    fs::write(
+        path.parent().unwrap().join("reference.md"),
+        "reference content",
+    )
+    .unwrap();
+    let binding = temp.binding("codex");
+    let inventory =
+        NativeSkillInventory::from_candidates(&binding, vec![candidate(path.clone())]).unwrap();
+    let details = inventory.details(&inventory.entries[0].selection).unwrap();
+    assert_eq!(details.provenance.provider_version, "pinned-test");
+    assert_eq!(details.provenance.account_profile, "selected-account");
+    assert_eq!(details.provenance.execution_id, "execution-1");
+    assert_eq!(details.provenance.cwd, temp.0);
+    assert_eq!(details.root.as_deref(), path.parent());
+    assert_eq!(details.files.len(), 2);
+    assert!(details
+        .files
+        .iter()
+        .any(|file| file.path == "reference.md" && file.bytes == 17));
+    assert!(details.body.unwrap().contains("Inspect source."));
+    assert_eq!(details.manifest_digest, inventory.entries[0].digest);
+    assert!(!temp.0.join("skills/packages").exists());
+    fs::write(path.parent().unwrap().join("reference.md"), "changed").unwrap();
+    assert!(inventory.details(&inventory.entries[0].selection).is_err());
+}
+#[test]
+fn unverified_native_details_do_not_promote_exposure_or_accept_foreign_selections() {
+    let temp = Scratch::new();
+    let mut c = candidate(temp.skill("native", "review"));
+    c.exposure = NativeSkillExposure::Unverified;
+    let inventory =
+        NativeSkillInventory::from_candidates(&temp.binding("claude"), vec![c]).unwrap();
+    let selection = &inventory.entries[0].selection;
+    assert_eq!(
+        inventory.details(selection).unwrap().entry.exposure,
+        NativeSkillExposure::Unverified
+    );
+    assert!(inventory.native_path(selection).is_err());
+    let mut foreign = selection.clone();
+    if let SkillSelection::Native {
+        account_profile, ..
+    } = &mut foreign
+    {
+        *account_profile = "other".into();
+    }
+    assert!(inventory.details(&foreign).is_err());
+}
