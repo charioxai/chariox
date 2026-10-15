@@ -31,6 +31,8 @@ test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usab
   for (const host of ["chromewebstore.google.com", "chrome.google.com/webstore"]) assert(managedPolicy.URLBlocklist.includes(host));
   assert(managedPolicy.URLAllowlist.includes("chrome-extension://ecideajikgeiboaphimcgeahicjgcfea"));
   assert.equal(managedPolicy.IncognitoModeAvailability, 1);
+  // A same-size fullscreen window would put page pixels in the band crop (vidlat review, 2026-10-15).
+  assert.equal(managedPolicy.FullscreenAllowed, false);
   assert.deepEqual(managedPolicy.ExtensionSettings, { [TAB_GROUPS_EXTENSION_ID]: { toolbar_pin: "default_unpinned" } }, "no pinned extension icon in the band");
   assert.equal(managedPolicy.WebAppInstallByUserEnabled, false);
   assert.match(managedPolicy.DefaultSearchProviderSearchURL, /^https:\/\/duckduckgo\.com\//);
