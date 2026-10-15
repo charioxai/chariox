@@ -1055,7 +1055,7 @@ fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 538);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        128
+        146
     );
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
