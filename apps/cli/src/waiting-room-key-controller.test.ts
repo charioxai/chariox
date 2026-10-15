@@ -1,3 +1,4 @@
+import {createProjectEnvironmentReadController} from "./project-environment-read-controller.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -112,6 +113,7 @@ function createHarness(options: {
   projects?: WaitingRoomProjectSummary[]
   remote?: WaitingRoomRemoteState
   workspacePath?: string
+  openProjectEnvironment?: WaitingRoomKeyControllerDeps["openProjectEnvironment"]
 } = {}) {
   let state = options.state ?? waitingRoomState()
   const calls: string[] = []
@@ -147,7 +149,7 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
-    openProjectEnvironment: (projectId, workspaceId) => { calls.push(`environment:${projectId}${projectId === null ? `:${workspaceId}` : ""}`) },
+    openProjectEnvironment: (projectId, workspaceId) => { calls.push(`environment:${projectId}${projectId === null ? `:${workspaceId}` : ""}`); options.openProjectEnvironment?.(projectId, workspaceId) },
     beginProjectRename: (projectId, name) => {
       calls.push(`rename:${projectId}:${name}`)
     },
@@ -228,4 +230,18 @@ for (const workspaceId of ["/inventory/folder-a", undefined]) test(`Environment 
   const harness=createHarness({state:waitingRoomState({focus:"workspace"}),remote:workspaceId ? {workspaceId} : {},workspacePath:"/selected/folder-b"})
   assert.equal(harness.controller.handleKey({name:"v",eventType:"press"}),true)
   assert.deepEqual(harness.calls(),["environment:null:/selected/folder-b"])
+})
+
+// MP-02 / MP-08 / MP-10 / MP-11: normal V with an empty Workspace cannot revive an old target.
+test("review0440 Workspace V forgets a previous folder opening",async()=>{
+ const requests:unknown[]=[]
+ const environment=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectResolved:{project:null}}},render(){},pageSize:()=>100})
+ await environment.open(null,"/previous");environment.close();requests.length=0
+ let opening:Promise<void>|undefined
+ const harness=createHarness({state:waitingRoomState({focus:"workspace"}),workspacePath:"",openProjectEnvironment:(id,workspace)=>{opening=environment.open(id,workspace)}})
+ harness.controller.handleKey({name:"v",eventType:"press"});await opening
+ assert(environment.visibleLines().some(line=>line.includes("Choose a folder")))
+ environment.handleKey({name:"r"});await Promise.resolve()
+ assert.equal(requests.length,0)
+ environment.close()
 })

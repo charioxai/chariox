@@ -40,9 +40,14 @@ const resolve=async(workspace,projectId,create)=>{
 }
 try {
  const a=path.join(scratch,'source'),b=path.join(scratch,'other-project')
+ const before=(await client.send({ListProjects:{include_archived:true}})).ProjectsListed.projects.map(p=>p.id).sort()
+ const sessionsBefore=JSON.stringify((await client.send({ListSessions:null})).SessionsListed.sessions)
  await mkdir(a);await mkdir(b)
  assert.equal(await resolve(a,null,false),null)
  assert.equal(await resolve(a,null,false),null)
+ const afterLookup=(await client.send({ListProjects:{include_archived:true}})).ProjectsListed.projects
+ for(const p of afterLookup)if(!before.includes(p.id) && p.workspace_id===a)owned.push(p.id)
+ assert.deepEqual(afterLookup.map(p=>p.id).sort(),before)
  report.assertions.push('lookup without mutation')
  const project=await resolve(a,null,true)
  if(project?.id)owned.push(project.id)
@@ -56,6 +61,8 @@ try {
  const env=await client.send({GetProjectEnvironment:{projectId:project.id}})
  assert.equal(env.ProjectEnvironment.environment.local_project_id,project.id)
  report.assertions.push('Environment read uses kernel-returned Project identity')
+ assert.equal(JSON.stringify((await client.send({ListSessions:null})).SessionsListed.sessions),sessionsBefore)
+ report.assertions.push('zero sessions or provider runs created')
  report.result='PASS'
 } catch(error) {
  report.error=error instanceof Error ? error.message : 'protocol drill failed'
