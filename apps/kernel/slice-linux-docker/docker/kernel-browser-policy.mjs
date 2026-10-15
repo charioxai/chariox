@@ -106,12 +106,15 @@ export async function admitComputerMutation(host, command) {
     const connection = await browser.ensureConnection();
     const { targetInfos } = await connection.send('Target.getTargets');
     if (host.browser !== browser || connection.isOpen?.() === false || !Array.isArray(targetInfos) || !targetInfos.length) throw new Error();
+    let destinations = 0;
     for (const target of targetInfos) {
-      if (!['page', 'webview', 'background_page'].includes(target.type)) continue;
+      if (['browser', 'tab', 'service_worker', 'shared_worker', 'worker'].includes(target.type)) continue;
+      destinations++;
       // Empty/unparseable URLs occur while a target is being created. Do not input
       // through that transition. Worker targets include our tab-groups extension.
       new URL(target.url);
       if (extensionManagementUrl(target.url) || target.pendingUrl && extensionManagementUrl(target.pendingUrl)) throw new Error();
     }
+    if (!destinations) throw new Error();
   } catch { throw new Error(EXTENSIONS_REFUSED); }
 }

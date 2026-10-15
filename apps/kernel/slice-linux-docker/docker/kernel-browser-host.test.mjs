@@ -1720,6 +1720,10 @@ test('MP-11 native Computer mutations cannot operate owner-only extension surfac
   pages.set('unreconciled-popup', { url: 'https://chrome.google.com/webstore/detail/x/abc' });
   assert.equal((await send('input', click)).ok, false, 'a newly opened extension surface is already fenced');
   pages.delete('unreconciled-popup');
+  pages.set('extension-side-panel', { type: 'other', url: 'chrome-extension://abc/side-panel.html' });
+  assert.equal((await send('input', click)).ok, false, 'non-page interactive extension surfaces are also owner-only');
+  pages.delete('extension-side-panel');
+  pages.set('tab-group-worker', { type: 'service_worker', url: 'chrome-extension://kernel/background.js' });
   assert.equal((await send('input', click)).ok, true, 'closing extension management restores ordinary input');
 }));
 
