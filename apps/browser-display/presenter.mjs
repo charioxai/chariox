@@ -1,4 +1,4 @@
-import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion} from './region-binding.mjs';
+import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -258,7 +258,12 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     throw Error('MP-11: invalid desktop subscription binding');
   }
   const actorCommand=op=>op==='actors'?(options.desktop?{op:'computer',command:{op}}:{op:'display_actors'}):options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,tab_id:binding.tab_id,generation:binding.generation};
-  if(options.target&&!regionBindingCurrent(binding)){
+  // MP-08/MP-10/MP-11: a default page crop is activated only at allocated536.
+  // Explicit519 regions and pre536 full-viewport producers keep their contracts.
+  if(!options.desktop&&!options.target&&binding.source_kind==='region'&&transport.kernelProtocolVersion<visiblePageMinimumProtocolVersion){
+    await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: protocol536 visible page adapter required');
+  }
+  if((options.target||binding.source_kind==='region')&&!regionBindingCurrent(binding)){
     await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: invalid region negotiation');
   }
   const onTiming = options.onTiming ?? (() => {});

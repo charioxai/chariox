@@ -4099,3 +4099,19 @@ field): the kernel's mirror resolver turns them into the editor's own chords
 under its observed-frame, live-focus and epoch guards (before 530 they were
 document-bound `display_input` chords, which refuse any focused frame). Clients
 feature-detect 530; no client floor moves.
+
+### MP-08 / MP-10 / MP-11: visible-page default display (536 / peer 144)
+
+On the kernel-owned desktop, a default Browser `display_subscribe` (without
+`target`) returns the existing region binding for the visible page content.
+The kernel intersects its current Chrome page rectangle with trusted live CDP
+content bounds and rounds inward to even device pixels, excluding native
+scrollbars. It never resizes Chrome or the shared desktop. The response's
+`css_width`, `css_height` and `device_scale_factor` are authoritative, including
+when the issued density differs from the viewer's offer. Input carries the
+returned `binding_id` and `sequence` through the ordinary display input ledger.
+CaptureVisibleRegion uses the same observer's current protected crop.
+All live active-Tab, document, window, Vault and exact-RGB checks still apply.
+Explicit region and Chrome UI targets retain their existing contract.
+This default-crop activation requires local536 / peer144; full-viewport
+producers on hosts without the owned desktop retain their negotiated geometry.

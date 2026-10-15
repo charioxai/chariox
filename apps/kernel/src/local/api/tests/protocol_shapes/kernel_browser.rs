@@ -467,3 +467,19 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
 }
+
+// MP-08/MP-10/MP-11: default page capture uses the existing region lease shape.
+#[test]
+fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 536);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 144);
+    let bytes = include_bytes!("browser-visible-page-536.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "6428fdec637cb518df85415ac6e16c05e620d1681c2b8174dfdc544a49f0ffb9");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
+}

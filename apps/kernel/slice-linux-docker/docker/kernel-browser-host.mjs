@@ -1,4 +1,4 @@
-import {captureVisiblePage} from './kernel-browser-page-display.mjs';
+import {captureVisiblePage,subscribeVisiblePage} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -659,6 +659,8 @@ export class KernelBrowserHost {
         ?this.displaySessions.resume(command.subscription_id,scope,command.generation,binding)
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
+    // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop)return subscribeVisiblePage(this,command,scope,signal);
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
       return subscribeRegion(this,command,scope,signal);
