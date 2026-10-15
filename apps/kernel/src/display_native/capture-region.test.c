@@ -55,6 +55,22 @@ int main(void) {
     assert(!cx_capture_open_selected_region(pid,w,127,160,0,0,128,32));
     int64_t inventory[32*9];assert(cx_capture_inventory(pid,inventory,32)==2);assert(cx_capture_inventory(pid,inventory,1)==-1);assert(cx_capture_inventory(1,inventory,32)==-1);
     XDestroyWindow(d,other);XSync(d,False);
+    /* MP-08/MP-10/MP-11: an owned override-redirect dropdown is a separate
+     * whole window. Its pixels/input never fall through to the page below. */
+    XSetWindowAttributes popup_attrs={.override_redirect=True,.background_pixel=0x00ff00};
+    Window popup=XCreateWindow(d,DefaultRootWindow(d),16,16,65,33,0,CopyFromParent,
+        InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&popup_attrs);
+    XChangeProperty(d,popup,XInternAtom(d,"_NET_WM_PID",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)&pid,1);
+    XSetTransientForHint(d,popup,w);XMapRaised(d,popup);XSync(d,False);
+    struct Capture *aux=cx_capture_open_selected_region(pid,popup,65,33,0,0,64,32);assert(aux);
+    assert(cx_capture_read(aux,pixels,bounds)==1);
+    for(int i=0;i<64*32;i++)assert(pixels[i*4]==0&&pixels[i*4+1]==255&&pixels[i*4+2]==0);
+    assert(pointer_target(aux,10,12,&px,&py)==0);assert(px==26&&py==28);
+    assert(!cx_capture_open_selected_region(pid+1,popup,65,33,0,0,64,32));
+    XDestroyWindow(d,popup);XSync(d,False);
+    assert(cx_capture_damage(aux));
+    assert(cx_capture_read(aux,pixels,bounds)==-1);
+    assert(cx_capture_click(aux,10,12)==-1);cx_capture_close(aux);
     struct Capture *transient=cx_capture_open_selected_region(pid,w,128,160,0,0,128,32);assert(transient);
     XSync(transient->display,False);
     XResizeWindow(d,w,128,161);XResizeWindow(d,w,128,160);XSync(d,False);
