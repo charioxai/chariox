@@ -135,17 +135,40 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
+  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
+  // the kernel dispatched into that Tab, never from the page: App code can
+  // rewrite anything in its realm, and its timers, browser-generated events
+  // (scroll, focus, load) and own navigations can outlive the input that
+  // caused them by any delay. So once an agent drove the Tab, through any of
+  // its documents, no call from it is the person's: with one such agent every
+  // call runs as that agent (a person's own click there acts with no more than
+  // the agent's grants), with several the call is refused. A Tab no agent
+  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
+  noteAgent(targetId, agent) {
+    const app = [...this.apps.values()].find(open => open.targetId === targetId);
+    app?.agents.add(agent);
+  }
+
+  // undefined: the person; null: unknown, refused.
+  callActor(app) {
+    if (!app.agents.size) return undefined;
+    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
+  }
+
   async open(params) {
     const origin = appOrigin(params?.origin_label);
     if (typeof params?.installation_id !== "string" || !params.installation_id) throw invalid("missing installation");
+    if (params.instance_id != null && (typeof params.instance_id !== "string"
+      || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.instance_id))) throw invalid("invalid App instance");
+    const instanceId = params.instance_id ?? null;
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
+    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
     // terminal, or a kernel that restarted) shows that Tab with the current
-    // assets instead of a second one.
-    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
+    // assets instead of a second one. User-domain instance keys keep distinct tabs.
+    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
       Object.assign(open, { entry, assets: app.assets, page: app.page });
@@ -164,12 +187,14 @@ export class AppTabs {
     // A restored placeholder has no App script or authority. Only an Open
     // with kernel-verified assets can adopt it, matching the exact origin.
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
-    const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
+    const restored = instanceId === null
+      ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
+      : undefined;
     const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
+    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), agents: new Set() });
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -185,6 +210,18 @@ export class AppTabs {
       throw error;
     }
     return { target_id: targetId, origin };
+  }
+
+  async close(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    await this.browser.closePageTarget(this.connection, app.targetId);
+    this.apps.delete(sessionId);
+    this.calls = this.calls.filter(call => call.target_id !== app.targetId);
+    this.wakeCalls();
+    return { closed: true };
   }
 
   // An update (or a kernel restart) rebinds an open view: serve the current
@@ -295,11 +332,18 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    // Attribute at binding time, before any await can admit other input.
+    const actor = this.callActor(app);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
+    if (actor === null) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
+        message: "More than one agent drove this App Tab: close the App view and open it again" });
+      return;
+    }
     if (this.calls.length >= MAX_PENDING_CALLS) {
       await this.resolve(sessionId, call.id, false, { code: "APP_BUSY",
         message: `App view call queue is full (${MAX_PENDING_CALLS} pending calls); retry after 500 ms` });
@@ -310,7 +354,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {} });
+      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
     this.wakeCalls();
   }
 

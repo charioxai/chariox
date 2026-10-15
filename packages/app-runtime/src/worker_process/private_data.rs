@@ -37,7 +37,7 @@ type Result<T> = std::result::Result<T, PrivateDataError>;
 pub struct PrivateData {
     root: Arc<Dir>,
     // Last: close cloned directories before helper storage reclamation.
-    preparation: Arc<Mutex<PreparedWorker>>,
+    _preparation: Arc<Mutex<PreparedWorker>>,
     installation: String,
     generation: u64,
     release_digest: String,
@@ -61,7 +61,7 @@ impl PreparedWorker {
         let preparation = Arc::new(Mutex::new(self));
         let data = PrivateData {
             root: Arc::new(Dir(directory)),
-            preparation: preparation.clone(),
+            _preparation: preparation.clone(),
             installation,
             generation,
             release_digest,
@@ -85,7 +85,7 @@ impl WorkerProcess {
         let directory = prepared.domain.private_data_directory()?;
         Ok(PrivateData {
             root: Arc::new(Dir(directory)),
-            preparation: self._preparation.clone(),
+            _preparation: self._preparation.clone(),
             installation: self.installation.clone(),
             generation: self.generation.parse().map_err(|_| WorkerError::Identity)?,
             release_digest: self.release_digest.clone(),

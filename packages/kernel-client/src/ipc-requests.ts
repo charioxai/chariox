@@ -24,3 +24,7 @@ export { controlRoomWorkflowRunsRequest } from "./room-workflows.js"
 export { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "./project-environment-aggregate.js"
 
 export * from "./project-environment-aggregate-requests.js"
+export * from "./ipc-kernel-browser-requests.js"
+
+export * from "./notes.js"
+export * from "./ipc-screenshot-requests.js"

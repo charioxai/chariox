@@ -64,7 +64,12 @@ impl KernelRuntimeState {
             };
             match run {
                 Some(run) if run.id() == run_id && run.workflow_id() == request.workflow_id => {
-                    if run.status().is_terminal()
+                    if let Err(error) = self
+                        .owned
+                        .ensure_workflow_run_has_control_provenance(&initial, &run)
+                    {
+                        result.error = Some(error.to_string());
+                    } else if run.status().is_terminal()
                         || (request.action == RoomWorkflowRunAction::Pause
                             && run.status() == crate::session::WorkflowRunStatus::Paused)
                     {
@@ -107,10 +112,15 @@ impl KernelRuntimeState {
         }
         match self.owned.session_snapshot(&request.session_id) {
             Ok(session) => {
-                let inventory = crate::runtime::projection::RoomWorkflowInventory::project(
-                    &session,
-                    caller_user_id,
-                );
+                let inventory =
+                    match crate::runtime::projection::RoomWorkflowInventory::project_with_history(
+                        &session,
+                        caller_user_id,
+                        Some(&self.owned.durable_state_store),
+                    ) {
+                        Ok(inventory) => inventory,
+                        Err(error) => return (Err(error), Some(session)),
+                    };
                 (
                     Ok(LocalDaemonResponse::RoomWorkflowRunsControlled { results, inventory }),
                     Some(session),

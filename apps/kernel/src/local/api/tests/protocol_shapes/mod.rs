@@ -13,20 +13,25 @@ mod app_publisher;
 mod apps;
 mod browser_artifact;
 mod browser_import;
+mod browser_mirror;
 mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
 mod disposable_worker;
+mod display_resumption;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;
 mod kernel_access;
+mod kernel_browser;
+mod kernel_computer;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod notes;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -44,6 +49,8 @@ mod room_environment_placement;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod user_app_views;
+mod user_domain_access;
 mod workflow_code;
 mod workflow_notifications;
 mod workspace_history_external;
@@ -85,4 +92,7 @@ fn history_page_entry(
     }
 }
 
+mod agent_lifecycle;
+mod owner_handoff;
 mod room_workflows;
+mod screenshot;

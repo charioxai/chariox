@@ -3,6 +3,15 @@ use super::*;
 pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
+            name: META_HISTORY_SEARCH_TOOL.into(),
+            description: "Search sanitized public prompts, answers and normalized tool records in this room using literal full-text terms. Returns bounded snippets, opaque event_ref values for chariox.history.read, a scoped cursor, and explicit redaction/index coverage. Unknown legacy/private history is excluded; no file or attachment indexing. Limited to the caller room, even under /sudo; read another session with chariox_kernel_request.".into(),
+            input_schema: serde_json::json!({"type":"object","required":["query"],"properties":{
+                "query":{"type":"string","minLength":1,"maxLength":1024},
+                "agent_ref":{"type":"string"},"session_id":{"type":"string"},
+                "limit":{"type":"integer","minimum":1,"maximum":50},"cursor":{"type":"string"}
+            },"additionalProperties":false}),
+        },
+        RuntimeToolSpec {
             name: META_SESSION_OVERVIEW_TOOL.to_string(),
             description: "Return a compact overview of the current session for this agent in Meta mode: owned agents, agent status, workflow state, pending interactions, and event counts.".to_string(),
             input_schema: serde_json::json!({
@@ -323,7 +332,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_CREATE_TOOL.to_string(),
-            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. node_path is optional; the kernel discovers Node.js when omitted.".to_string(),
+            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. The kernel selects the isolated compiler runtime; caller node_path values are ignored.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["name", "source"],
@@ -382,7 +391,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_VALIDATE_TOOL.to_string(),
-            description: "Validate workflow-code without mutating session workflow state. Pass either saved artifact name or inline source; node_path is optional for inline source.".to_string(),
+            description: "Validate workflow-code without mutating session workflow state. Pass either saved artifact name or inline source. The kernel selects the isolated compiler runtime; caller node_path values are ignored.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -775,20 +784,6 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     }
-                },
-                "additionalProperties": false
-            }),
-        },
-        RuntimeToolSpec {
-            name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
-            description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. An agent in Meta mode can never resolve its own interactions.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["interaction_id"],
-                "properties": {
-                    "interaction_id": {"type": "string"},
-                    "choice_id": {"type": "string"},
-                    "input": {"type": "string"}
                 },
                 "additionalProperties": false
             }),

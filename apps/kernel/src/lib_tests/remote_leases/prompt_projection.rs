@@ -395,8 +395,9 @@ fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering
     );
 }
 
+// MP-08 / MP-10 / MP-11 #971 P1: authenticated leased origin is execution policy.
 #[test]
-fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
+fn review971b_leased_assessment_origin_survives_provider_startup_queue() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
@@ -431,14 +432,29 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
             "",
             Vec::new(),
             None,
-            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                prompt_origin: Some(PromptOrigin::CompletionCheck),
+                home_session_id: "session-starting-provider".into(),
+                home_agent_id: "agent-home-starting-provider".into(),
+                home_prompt_id: "home-assessment".into(),
+                home_turn_id: "home-assessment-turn".into(),
+                prompt_summary: "public evidence assessment".into(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+            }),
             Vec::new(),
             None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should prepare");
     let request = match &prepared.provider_run {
-        crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => request.clone(),
+        crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => request
+            .clone()
+            .with_execution_mode(crate::provider::AgentExecutionMode::Build)
+            .with_permission_level(crate::provider::AgentPermissionLevel::Yolo),
         crate::app::PreparedLeasedProviderRun::Ready(_) => {
             panic!("first leased prompt should require a provider launch")
         }
@@ -450,6 +466,22 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
         .finish_prepared_leased_prompt_submission(prepared, started.run.id().to_string())
         .expect("prompt should queue behind provider startup");
     assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+
+    // MP-08 / MP-10 / MP-11: Git metadata alone cannot fence native authority.
+    // The actual queued worker item must select AssessmentTurn on promotion.
+    let queued = app
+        .prompt_owner_peek_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(queued.prompt_origin(), PromptOrigin::CompletionCheck);
+    assert_eq!(
+        crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+            .with_prompt_origin(queued.prompt_origin()),
+        crate::prompt_assembly::PromptAssemblyMode::AssessmentTurn,
+    );
 
     let recovered = RemoteLeaseRuntime::new(&mut app)
         .recover_idle_leased_prompt_queue(&leased_agent.id)
@@ -471,6 +503,30 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
             &leased_agent.backing_agent_id,
         )
         .expect("active prompt state should load")
+        .is_none());
+
+    // An unstructured Build/Yolo worker must fail closed at the native boundary,
+    // rather than delivering the promoted assessment through its ordinary PTY.
+    let run = app.providers().mark_run_running(started.run.id()).unwrap();
+    assert_eq!(
+        run.execution_mode(),
+        crate::provider::AgentExecutionMode::Build
+    );
+    assert_eq!(
+        run.permission_level(),
+        crate::provider::AgentPermissionLevel::Yolo
+    );
+    let promoted = RemoteLeaseRuntime::new(&mut app)
+        .recover_idle_leased_prompt_queue(&leased_agent.id)
+        .expect("unsupported native assessment must settle without PTY delivery");
+    assert!(promoted.is_none());
+    assert!(!app.prompt_activity.read().contains_key(started.run.id()));
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .unwrap()
         .is_none());
 }
 

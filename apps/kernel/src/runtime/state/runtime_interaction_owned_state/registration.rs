@@ -36,6 +36,16 @@ impl KernelRuntimeOwnedState {
                 "Only kernel decisions can require the Chariox passkey",
             ));
         }
+        if session_id.is_empty() {
+            if forwarding.is_some() || terminal_credential_owner.is_some() {
+                return Err(interaction_error("Invalid unattached decision authority"));
+            }
+            return self.register_user_domain_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+            );
+        }
         if session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
             return self.register_kernel_wide_access_interaction(
                 interaction,
@@ -234,6 +244,7 @@ impl KernelRuntimeOwnedState {
             agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
+            user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {

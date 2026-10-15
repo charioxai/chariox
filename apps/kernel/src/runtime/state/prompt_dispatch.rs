@@ -656,13 +656,22 @@ impl KernelRuntimeState {
 
     async fn submit_prepared_prompt_authorized(
         &self,
-        prepared: crate::app::KernelPreparedPromptSubmission,
+        mut prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        let authorize = || self.authorize_prompt_command(authority);
+        // MP-08 / MP-11: delegated prompts also retain the room caller's epoch
+        // and typed authority, including after waiting to launch a cold peer.
+        let authorize = || {
+            self.authorize_current_external_command()?;
+            self.authorize_prompt_command(authority)
+        };
         authorize()?;
         self.owned.require_publication_activation()?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            prepared
+                .prepare_task_prompt_identity(|| self.owned.session_store.reserve_prompt_id())?;
+        }
         {
             let owned = &self.owned;
             let session = owned.session_store.get_session(&prepared.session_id)?;
@@ -677,6 +686,7 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
+            owned.validate_goal_prompt(&prepared)?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,
@@ -684,74 +694,11 @@ impl KernelRuntimeState {
                 )
                 .await?;
             authorize()?;
-            if let Some(mut submission) =
-                owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-            {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
-                return Ok(submission);
-            }
-            authorize()?;
-            if let Some(mut submission) =
-                owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-            {
-                self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                    .await?;
-                self.spawn_remote_prompt_projection_drain_if_needed(&submission);
-                return Ok(submission);
-            }
-            let session_id = prepared.session_id.clone();
-            let target_agent_id = prepared.prompt.target_agent_id().to_string();
-            let attachment_id = prepared.prompt.source_attachment_id().to_string();
-            let has_active = owned
-                .prompt_state_owner
-                .active_prompt_for_agent(
-                    &owned.session_store.get_session(&session_id)?,
-                    &target_agent_id,
-                )
-                .is_some();
-            let has_run = owned
-                .provider_store
-                .get_run_for_agent(&session_id, &target_agent_id)
-                .is_some();
-            if !has_active && !has_run {
-                let is_remote_agent = owned
-                    .agent_store
-                    .get_agent(&target_agent_id)?
-                    .remote_execution()
-                    .is_some();
-                authorize()?;
-                if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-                    let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
-                        &session_id,
-                        &target_agent_id,
-                        &prepared.prompt,
-                    )?;
-                    let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
-                        &session_id,
-                        &target_agent_id,
-                        fresh_context,
-                        prepared.prompt.workflow_node_run_id(),
-                    )?;
-                } else if is_remote_agent {
-                    if let Some(mut submission) = owned
-                        .submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
-                    {
-                        self.finish_owned_prompt_submission_workflow_start(&mut submission)
-                            .await?;
-                        self.spawn_remote_prompt_projection_drain_if_needed(&submission);
-                        return Ok(submission);
-                    }
-                } else {
-                    self.with_app_side_effect(|app| {
-                        // The app mutex can outlive the grant. Reauthorize only
-                        // after acquiring it, before launching a cold provider.
-                        authorize()?;
-                        app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                    })
-                    .await?;
-                };
-                authorize()?;
+            let admitted = self.owned.admit_agent_task(&prepared)?;
+            self.owned.admit_goal_prompt(&mut prepared)?;
+            let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
+            // Boxed: keeps the outer submission future small on deep call stacks.
+            let submission = Box::pin(async {
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
@@ -759,13 +706,95 @@ impl KernelRuntimeState {
                         .await?;
                     return Ok(submission);
                 }
-            }
-            Err(DaemonError::LocalTransport {
-                operation: "submit prepared prompt",
-                message:
-                    "owned prompt runtime could not admit prompt without side-effect completion"
-                        .to_string(),
+                authorize()?;
+                if let Some(mut submission) =
+                    owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                {
+                    self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                        .await?;
+                    self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+                    return Ok(submission);
+                }
+                let session_id = prepared.session_id.clone();
+                let target_agent_id = prepared.prompt.target_agent_id().to_string();
+                let attachment_id = prepared.prompt.source_attachment_id().to_string();
+                let has_active = owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &owned.session_store.get_session(&session_id)?,
+                        &target_agent_id,
+                    )
+                    .is_some();
+                let has_run = owned
+                    .provider_store
+                    .get_run_for_agent(&session_id, &target_agent_id)
+                    .is_some();
+                if !has_active && !has_run {
+                    let is_remote_agent = owned
+                        .agent_store
+                        .get_agent(&target_agent_id)?
+                        .remote_execution()
+                        .is_some();
+                    authorize()?;
+                    if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
+                        let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
+                            &session_id,
+                            &target_agent_id,
+                            &prepared.prompt,
+                        )?;
+                        let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
+                            &session_id,
+                            &target_agent_id,
+                            fresh_context,
+                            prepared.prompt.workflow_node_run_id(),
+                        )?;
+                    } else if is_remote_agent {
+                        if let Some(mut submission) = owned
+                            .submit_remote_prepared_prompt_with_queue_policy(
+                                &prepared,
+                                allow_queue,
+                            )?
+                        {
+                            self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                                .await?;
+                            self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+                            return Ok(submission);
+                        }
+                    } else {
+                        self.with_app_side_effect(|app| {
+                            // The app mutex can outlive the grant. Reauthorize only
+                            // after acquiring it, before launching a cold provider.
+                            authorize()?;
+                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
+                        })
+                        .await?;
+                    };
+                    authorize()?;
+                    if let Some(mut submission) = owned
+                        .submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                    {
+                        self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                            .await?;
+                        return Ok(submission);
+                    }
+                }
+                Err(DaemonError::LocalTransport {
+                    operation: "submit prepared prompt",
+                    message:
+                        "owned prompt runtime could not admit prompt without side-effect completion"
+                            .to_string(),
+                })
             })
+            .await;
+            // A02: a rejected submission must not leave a task that later
+            // blocks on the owner for work that never started.
+            if submission.is_err() && admitted {
+                self.owned.withdraw_agent_task(prepared.prompt.id())?;
+            }
+            if submission.is_ok() {
+                self.reconcile_delegated_prompt(delegated_parent, &prepared);
+            }
+            submission
         }
     }
 
@@ -803,7 +832,7 @@ impl KernelRuntimeState {
         &self,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<(), DaemonError> {
-        self.authorize_current_forwarded_binding()?;
+        self.authorize_current_external_command()?;
         match authority {
             Some((id, request)) => self.authorize_external_request(id, request).map(|_| ()),
             None => Ok(()),
@@ -863,6 +892,11 @@ impl KernelRuntimeState {
                 expected_prompt_id,
             )? {
                 return Ok(cancellation);
+            }
+            if expected_prompt_id.is_some() {
+                return Err(DaemonError::NoActivePrompt {
+                    session_id: session_id.to_string(),
+                });
             }
             Err(DaemonError::LocalTransport {
                 operation: "cancel prompt",

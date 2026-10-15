@@ -544,12 +544,12 @@ impl KernelRuntimeState {
                     &owned.config_projection.snapshot(),
                     provider_run.owner_user_id(),
                 );
-            owned.provider_account_profiles.update_usage(
+            owned.provider_account_profiles.record_observed_usage(
                 &account_owner_user_id,
                 provider_run.provider(),
                 provider_run.account_profile(),
                 usage,
-            )?;
+            );
         }
         let projected_provider_run = owned
             .provider_store
@@ -612,7 +612,7 @@ impl KernelRuntimeState {
         // provider termination evidence.
         let provider_termination = poll_result
             .explicit_provider_error
-            .then(|| terminal_failure.as_deref())
+            .then_some(terminal_failure.as_deref())
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(

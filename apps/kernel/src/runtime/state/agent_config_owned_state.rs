@@ -1,6 +1,10 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
+    )]
     pub(super) fn update_agent_config(
         &self,
         session_id: &str,

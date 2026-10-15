@@ -172,6 +172,10 @@ impl CompletedGitTurnSnapshotStore {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_prompt_settlement operation signature and explicit context arguments"
+    )]
     pub(crate) fn record_prompt_settlement(
         &self,
         session_id: &str,
@@ -194,6 +198,10 @@ impl CompletedGitTurnSnapshotStore {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_prompt_settlement_with_termination operation signature and explicit context arguments"
+    )]
     pub(crate) fn record_prompt_settlement_with_termination(
         &self,
         session_id: &str,

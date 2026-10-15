@@ -587,6 +587,10 @@ pub(super) async fn execute_start_slice_request(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing execute_start_slice_request_with_relaunch_manifests operation signature and explicit context arguments"
+)]
 async fn execute_start_slice_request_with_relaunch_manifests(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -1361,7 +1365,7 @@ fn hosted_slice_token_installation_matches(
 ) -> bool {
     slice_id == expected_slice_id
         && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        && peer_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
 }
 
 async fn wait_for_hosted_slice_relay_activation(
@@ -1457,6 +1461,7 @@ async fn wait_for_hosted_slice_relay_activation(
                 Ok(Ok(crate::transport::relay_peer::RelayPeerResponse::Pong {
                     value,
                     daemon_id,
+                    ..
                 })) if value == ping_value && daemon_id == worker.kernel_id => return Ok(()),
                 Ok(Ok(_)) => {
                     last_probe_error = Some(DaemonError::LocalTransport {
@@ -1659,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+    fn mp08_mp10_mp11_browser_artifact_peer_minimum_hosted_install_gate() {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();

@@ -574,10 +574,9 @@ fn is_executable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return path
-            .metadata()
+        path.metadata()
             .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {
@@ -943,6 +942,21 @@ mod tests {
             0o600
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selected_claude_profile_removes_ambient_cloud_provider_selectors() {
+        let removed = super::claude_provider_env_remove(None);
+        for name in [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            assert!(
+                removed.iter().any(|value| value == name),
+                "{name} must be removed"
+            );
+        }
     }
 
     #[test]

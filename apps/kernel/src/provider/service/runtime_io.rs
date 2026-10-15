@@ -16,6 +16,10 @@ use super::super::{
 };
 use super::ProviderProcessService;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ProviderRuntimeBinding typed actor payload layout"
+)]
 pub(crate) enum ProviderRuntimeBinding {
     Claude(ClaudeRuntimeBinding),
     Codex(CodexRuntimeBinding),
@@ -223,6 +227,10 @@ impl ProviderProcessService {
         self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &mut self,
         session_id: String,
@@ -249,7 +257,8 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let mode = if mode == PromptAssemblyMode::MetaagentProviderTurn {
+        let assessment_only = mode == PromptAssemblyMode::AssessmentTurn;
+        let mode = if assessment_only || mode == PromptAssemblyMode::MetaagentProviderTurn {
             mode
         } else if run.client_interface().is_chariox() {
             PromptAssemblyMode::NormalProviderTurn
@@ -260,15 +269,26 @@ impl ProviderProcessService {
             "{hidden_system_context}\n\n{}",
             crate::prompt_assembly::agent_message_origin_context(origin_prompt_id)
         );
-        let envelope = PromptAssemblyService::from_env()?
-            .assemble_provider_turn(
-                run,
+        let envelope = if assessment_only {
+            let mut envelope = crate::prompt_assembly::PromptEnvelope::new(
                 prompt,
-                Some(&hidden_system_context),
-                attachments.to_vec(),
-                mode,
-            )?
-            .with_steering(steering);
+                "Assess only the supplied public evidence. Tools and external authority are unavailable.",
+                Vec::new(),
+                crate::prompt_assembly::PromptManifest::current(),
+            );
+            envelope.assessment_only = true;
+            envelope
+        } else {
+            PromptAssemblyService::from_env()?
+                .assemble_provider_turn(
+                    run,
+                    prompt,
+                    Some(&hidden_system_context),
+                    attachments.to_vec(),
+                    mode,
+                )?
+                .with_steering(steering)
+        };
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

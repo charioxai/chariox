@@ -67,6 +67,11 @@ export class BrowserFrameSessions {
     this.pending = new Set();
   }
   clear() { this.sessions.clear(); }
+  // MP-11: the flat session that renders an isolated frame (its target id).
+  sessionFor(frameId, connection) {
+    for (const [id, entry] of this.sessions) if (entry.frameId === frameId && entry.connection === connection) return id;
+    return null;
+  }
   removeTarget(targetId) {
     return this.removeWhere((entry) => entry.targetId === targetId);
   }
@@ -107,7 +112,7 @@ export class BrowserFrameSessions {
         void this.release(connection, childSession, true);
         return true;
       }
-      const entry = { targetId, parentSessionId: message.sessionId, connection };
+      const entry = { targetId, frameId: params.targetInfo.targetId, parentSessionId: message.sessionId, connection };
       if (this.pending.size >= MAX_FRAMES || [...this.sessions.values()].filter((current) => current.targetId === targetId).length >= MAX_FRAMES) {
         void this.release(connection, childSession, true);
         return true;
@@ -150,9 +155,17 @@ export class BrowserFrameSessions {
 }
 
 export async function registerBrowserFrameTargets(connection, sessionId, targetId, documentId, registry) {
-  return withBrowserFrames(connection, sessionId, targetId, documentId, (frames) => {
-    registry.replace(targetId, frames.map((entry) => entry.tree));
-  });
+  // MP-08/MP-10/MP-11: ordinary state/input preflight is not a structured
+  // snapshot. Global advertising iframe counts must not disable a live tab.
+  // Page/isolated-session lifecycle listeners own removal and nested frames;
+  // merge this page tree without dropping their live isolated descendants.
+  // The registry still caps attribution at MAX_FRAMES (unknown downloads fail
+  // closed), and explicit snapshots/actions retain withBrowserFrames bounds.
+  const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+  if (frameTree?.frame?.loaderId !== documentId) {
+    throw new BrowserSnapshotError("stale_document_reference", "browser top document changed");
+  }
+  registry.merge(targetId, [frameTree]);
 }
 
 // A renderer's backend node IDs are not browser-wide IDs. Keep the owning

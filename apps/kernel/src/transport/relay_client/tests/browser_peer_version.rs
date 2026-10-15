@@ -1,12 +1,14 @@
 //! MP-08/MP-10/MP-11: a controlled advertisement over the real encrypted relay.
-//! Both workers use the current kernel dispatcher; v70 changes only the lease
+//! Both workers use the current kernel dispatcher; an obsolete peer changes only the lease
 //! advertisement, avoiding any artifact/upload dispatch to an obsolete worker.
 use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
+// MP-11: the admission floor moves with relay peer bumps; test around it.
+const FLOOR: u32 = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_100_encrypted_lease_admission() {
+fn mp08_mp10_mp11_browser_artifact_current_peer_encrypted_lease_admission() {
     crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("browser-artifact-peer-version", check);
 }
@@ -72,7 +74,7 @@ async fn check() {
     home_config.relay_url = Some(format!("ws://{addr}"));
     home_config.relay_token = Some("peer-version-fixture".into());
     home_config.relay_request_timeout_ms = 2_000;
-    let version = Arc::new(AtomicU32::new(70));
+    let version = Arc::new(AtomicU32::new(FLOOR - 1));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let (stop_worker, mut stopped) = watch::channel(false);
     let target = {
@@ -153,7 +155,12 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [100, 101] {
+        let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+        for advertised in [
+            minimum - 1,
+            minimum,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +183,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 101 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(101));
+                    if advertised >= minimum {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(advertised));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -185,15 +192,18 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 100 {
-                let error =
-                    result.expect_err("v100 must be rejected before spawn or artifact dispatch");
+            if advertised < minimum {
+                let error = result.expect_err(
+                    "MP-08/MP-11: obsolete worker rejected before spawn or artifact dispatch",
+                );
                 assert!(
-                    error.to_string().contains("protocol 100"),
+                    error
+                        .to_string()
+                        .contains(&format!("protocol {advertised}")),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 101"));
+                assert!(error.to_string().contains(&format!("requires {minimum}")));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -201,7 +211,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v101 must bind: {}",
+                    "compatible peer {advertised} must bind: {}",
                     result
                         .as_ref()
                         .err()

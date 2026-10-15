@@ -4,6 +4,44 @@ Phase A source: OSS main `e325afa580d81954e2c179757fc53fa02ed2a2b3`
 (local435 / relay73). Work branch: `computer/unicode-input-ocr-main`.
 This is an audit and proposed design, not Phase B implementation or acceptance.
 
+## MP-08 / MP-10 / MP-11: hosted capture and Drill D scope (2026-10-10)
+
+The culinux r32 campaign measures OSS #958
+`b27870a9a44a50897b205477a99fd7410e143c06` with Cloud #313
+`04764d3734f199fdf7bc5b94e1c39828efbfc205`. Its native kernel, real built
+TUI, web entry and relay use those sources; screenshots and logs remain outside
+the repositories under the campaign evidence root. The capture flow navigates
+the real Wikipedia Linux article or MDN JavaScript page, opens Computer,
+captures a region crossing its title and desktop pixels, then opens the ready
+PNG thumbnail in the screenshot editor. The hosted WSS viewer uses an 8 Mbit/s
+uplink and 35 ms propagation in each direction at DPR 1 and 2.
+
+All four capture cells pass in the completed per-DPR runs: Wikipedia and MDN
+at DPR 1 and 2. Each produces a ready PNG draft and opens its thumbnail in the
+editor with no capture refusal. Both completed batches report no remaining
+owned processes and remove their disposable kernel homes. The earlier real
+RED campaign retains OSS `449f5b43149d342b4385f78556febc903e44e503` / Cloud
+`f2bfbbd884ebf966fdd9e50bd60c7be61d9a020a`; all four capture gestures failed
+there. These results establish capture acceptance for this scoped campaign,
+not the broader site or provider matrix.
+
+The owner narrowed this round's Drill D to an official agent launching an
+installed editor through the Computer tool and editing a public document,
+observed in hosted Web at DPR 1 and 2. Native-host Vault insertion is separately
+blocked on the owner's Vault session; Google remains blocked without CAPTCHA
+bypass. This scope does not close the provider/placement/terminal matrix below,
+full-site mirroring, latency, smoothness, stability, or ordinary/Path-1 parity.
+
+Drill D cannot start an official OpenCode turn from the fresh product-created
+UID 65534 profile: `ProviderAccountProfileRegistry::require_authenticated`
+rejects `opencode/big-pickle` before provider dispatch. The ordinary
+`LinkProviderAccountProfile` request to the documented fleet OpenCode scope also
+fails with Unix permission denied under that UID. The missing prerequisite is
+a Chariox-materialized authenticated Zen scope accessible to UID 65534, or a
+supported free-model admission path. This is not a provider quota failure or a
+request for a new personal login. Shared credentials and permissions were not
+changed, and the authentication guard was not weakened.
+
 ## MP-08 / MP-10 / MP-11: reconcile #846
 
 Compared #846 `0c4e848eb9997741cbde03f4c20f5de502a0794e` with the
@@ -132,6 +170,14 @@ targets. Agents receive on-demand snapshots/screenshots and never depend on
 video decoding, stream timing or whether a human viewer is attached. AT-SPI
 coverage and secret masking need new live fixtures; none was tested in Phase A.
 
+MP-08 / MP-10 / MP-11 round 4 separates the 64-node / 3 KiB public
+projection from private protection coverage (at most 8,192 nodes). Managed
+AT-SPI virtual tables are covered by their visible cell rectangles, with
+matching indexed role/name/geometry and descendant password checks. Missing
+rectangles, changed targets, unknown visible windows or exhausted bounds keep
+capture/OCR protected. The full private observation is still revalidated before
+action or capture; these bounds do not grant an agent additional authority.
+
 Use a private Xauthority cookie, display socket with no TCP listener, private
 runtime directory and explicit display/geometry binding; launch the user browser
 as a non-root user with renderer sandboxing. Do not adopt the logged-in desktop
@@ -146,7 +192,17 @@ existing capability loader/focus grant. Retained holders keep the same operation
 on granted resources across focus changes; busy turns/tools/subagents retain
 access, while fully idle holders enter the existing expiry window. Explicit
 revoke, expiry, session end, destruction and placement retirement cancel the
-grant epoch and active input. No cross-kernel user-domain control is added:
+grant epoch and active input. MP-08 / MP-11 protocol 500 / peer 109 adds one
+explicit leased-desktop exception: the agent's HOME owner issues
+`/access grant-computer <agent-id> <surface-id> <generation>` for the observed
+desktop on that agent's bound ordinary Linux worker. The typed grant binds
+home/session/agent/lease/worker, desktop generation and a revocable epoch.
+The worker checks HOME's live lease/run and grant on every Computer invocation,
+then uses the existing desktop mutation admission and human takeover service.
+`/access revoke-computer <agent-id>` and ordinary Access revoke retire that
+authority; stale epochs cannot revive queued input. Browser and Vault retain
+their existing local authority guards. No arbitrary desktop target or Room
+browser forwarding authority is accepted:
 remote agents receive the existing actionable kernel/focus refusal. A Room's
 membership never becomes an implicit grant to the user's host desktop.
 
@@ -241,6 +297,18 @@ with each terminal column independently verified, plus the combined-client run.
 Each cell ID is the row prefix plus `W`, `L`, `R` or `J` (24 cells).
 All slice cells are NOT_RUN in Phase A; all host cells are PLANNED.
 
+MP-08 / MP-10 / MP-11 owner update, 2026-10-06 18:10–18:11 UTC:
+acceptance uses real user tasks, real applications/sites, product-linked accounts
+and official provider harnesses. Mousepad, pixel canvases and synthetic pages
+are regression evidence only. Historical Phase A/helper results above do not
+become acceptance. Web (`W`) and combined (`J`) cells use the real app entry
+in a desktop browser at **DPR 2**, once PR5 lands. Remote TUI (`R`) and combined
+(`J`) cells use the approved hosted **Caddy-fronted `wss://` relay** through
+normal Chariox bootstrap; a local relay proves transport regressions only.
+Record missing hosted admission, client/display dependencies and provider quota
+as explicit blocked prerequisites. Nothing goes to staging before complete
+implementation and validation.
+
 | Provider × placement / cell prefix | Web (`W`) | Local TUI (`L`) | Remote TUI (`R`) | Web + both TUIs (`J`) |
 | --- | --- | --- | --- | --- |
 | Codex slice / `CU-CODEX-SLICE-` | required | required | required | required |
@@ -250,16 +318,22 @@ All slice cells are NOT_RUN in Phase A; all host cells are PLANNED.
 | OpenCode kernel-host virtual display / `CU-OPENCODE-HOST-` | required | required | required | required |
 | Claude kernel-host virtual display / `CU-CLAUDE-HOST-` | required | required | required | required |
 
-Each cell must run the official provider with a product-linked profile and
-complete the same public-fixture task set:
+Each MP-08 / MP-10 / MP-11 cell must run the official provider with a real
+product-linked account and complete the same public real-user task set:
 
-1. Observe an AT-SPI tree, target a graphical editor, enter/select/copy Unicode
-   text, use shortcuts, save/edit a document and verify its bytes independently.
-   Assert native focus, stale accessibility-target rejection and action receipts.
-2. Deliberately remove accessibility from a fixture region. Use OCR fallback
-   and on-demand exact MCP screenshot bytes to act on randomized visual targets;
-   retain delivered-image hashes, provider turn identity and independently checked
-   native effects. Repeat blinded targets; no shell/CDP or file-reading shortcut.
+1. Use **LibreOffice Writer and Calc** through their real graphical interfaces.
+   Edit a Unicode document and a spreadsheet with a formula; save, close and
+   reopen both. Verify document text and spreadsheet values/formulas independently
+   from the saved ODT/ODS artifacts, and retain screenshots of reopened content.
+   Use a real file manager to find and reopen the saved files. Assert native
+   focus, AT-SPI action receipts and stale accessibility-target rejection.
+2. Navigate a **real public website in browser chrome** and complete a public
+   reading/navigation task. Use bounded AT-SPI targets, protected OCR where the
+   accessible projection is absent/incomplete, and exact screenshots on demand.
+   Retain URL/title, image hashes, provider turn identity and independently checked
+   native effects. Providers may not use shell/CDP or direct file reading to
+   substitute for the graphical task. Synthetic randomized targets remain useful
+   fail-first regressions and do not satisfy this acceptance task.
 3. Switch Browser↔Computer without changing the Chromium profile/tab registry,
    exercise browser chrome and the non-browser app, then reconnect that terminal
    to the same surface/generation and authoritative provider history.

@@ -322,14 +322,16 @@ export function hydrateSessionHistoryOutlineAgentEntries(
   return applyTranscriptDisplayState(entries, [], activeTurnId) as SessionHistoryTranscriptEntry[]
 }
 
+// Placeholders are keyed by blob id: entry ids are renumbered whenever an
+// earlier blob in the transcript expands.
 export function replaceSessionHistoryBlobPlaceholder(
   entries: SessionHistoryTranscriptEntry[],
-  entryId: number,
+  blobId: string,
   content: SessionHistoryBlobContent,
   collapsedTurnIds: readonly number[],
 ): SessionHistoryTranscriptEntry[] {
-  const placeholder = entries.find((entry) => entry.id === entryId)
-  if (!placeholder?.historyBlobId) {
+  const placeholder = entries.find((entry) => entry.historyBlobId === blobId)
+  if (!placeholder) {
     return entries
   }
   const turnId = placeholder.turnId
@@ -360,7 +362,7 @@ export function replaceSessionHistoryBlobPlaceholder(
       promptMetadata,
     )
   })
-  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
+  const replaced = entries.flatMap((entry) => entry === placeholder ? hydrated : [entry])
   return applyTranscriptDisplayState(
     reindexTranscriptEntries(replaced, 0),
     collapsedTurnIds,
@@ -370,12 +372,12 @@ export function replaceSessionHistoryBlobPlaceholder(
 
 export function markSessionHistoryBlobLoading(
   entries: SessionHistoryTranscriptEntry[],
-  entryId: number,
+  blobId: string,
   loading: boolean,
   error?: string | null,
 ): SessionHistoryTranscriptEntry[] {
   return entries.map((entry) => {
-    if (entry.id !== entryId || !entry.historyBlobId) {
+    if (entry.historyBlobId !== blobId) {
       return entry
     }
     const next: SessionHistoryTranscriptEntry = {

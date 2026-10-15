@@ -19,7 +19,8 @@ impl KernelRuntimeState {
             .to_vec();
         match grant.kind {
             crate::extension::ExtensionKind::App => {
-                self.grant_agent_app(agent_ref, grant, caller_user_id).await
+                self.grant_agent_app(agent_ref, grant, caller_user_id, None)
+                    .await
             }
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
@@ -728,6 +729,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_home_extension_manifest_audit_event operation signature and explicit context arguments"
+    )]
     fn append_home_extension_manifest_audit_event(
         &self,
         kind: &'static str,
@@ -899,6 +904,10 @@ impl KernelRuntimeState {
             .update_session_config(session_id, attachment_id, values, requires_idle)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
+    )]
     pub(crate) async fn update_agent_config(
         &self,
         session_id: &str,
@@ -914,8 +923,8 @@ impl KernelRuntimeState {
             session_id,
             agent_id,
             caller_user_id,
-            execution_mode_override.clone(),
-            permission_level_override.clone(),
+            execution_mode_override,
+            permission_level_override,
             workspace_id,
             worktree_id,
         )?;
@@ -990,6 +999,10 @@ impl KernelRuntimeState {
         Ok(agent)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_agent_profile operation signature and explicit context arguments"
+    )]
     pub(crate) async fn update_agent_profile(
         &self,
         session_id: &str,

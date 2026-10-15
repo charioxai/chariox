@@ -20,7 +20,9 @@ mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
+mod provider_account_authority;
 mod provider_activation;
+mod provider_endpoint_identity;
 mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
@@ -129,11 +131,13 @@ pub(crate) use provider_processes::{
     ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
-#[cfg(test)]
-pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, LeasedAgentCleanupPhase, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
+    LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
+    RemoteLeaseRuntime,
+};
+#[cfg(test)]
+pub(crate) use remote_lease::{
+    LeasedAgentCleanupPhase, ProviderCleanupFailurePoint, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -152,6 +156,9 @@ pub struct DaemonApp {
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
+    // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
+    pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -172,6 +179,7 @@ pub struct DaemonApp {
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
+    sudo_window_projection: crate::runtime::state::SudoWindowProjection,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
@@ -199,6 +207,8 @@ pub struct DaemonApp {
     completed_execution_lease_deletions: VecDeque<String>,
     #[cfg(test)]
     leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
+    #[cfg(test)]
+    leased_projection_after_output_drain: Option<Box<dyn FnOnce(&mut DaemonApp) + Send>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
@@ -361,6 +371,10 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
+            kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
+                config.private_runtime_state_root(),
+            ),
+            room_computer_revoked: Default::default(),
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
@@ -383,6 +397,7 @@ impl DaemonApp {
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
+            sudo_window_projection: Default::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
@@ -410,6 +425,8 @@ impl DaemonApp {
             completed_execution_lease_deletions: VecDeque::new(),
             #[cfg(test)]
             leased_runtime_projection_pauses: BTreeMap::new(),
+            #[cfg(test)]
+            leased_projection_after_output_drain: None,
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),
@@ -436,6 +453,8 @@ impl DaemonApp {
         app.app_control
             .lifecycle()
             .attach_event_config(app.config_projection.clone());
+        app.durable_state
+            .attach_workflow_history_authority(app.config_projection.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
@@ -587,7 +606,15 @@ impl DaemonApp {
         self.sessions.prompt_id_allocator()
     }
 
+    pub(crate) fn sudo_window_projection(&self) -> crate::runtime::state::SudoWindowProjection {
+        self.sudo_window_projection.clone()
+    }
+
     pub(crate) fn update_session_projection(&self, mut session: RuntimeSession) {
+        session.set_sudo_windows(
+            self.sudo_window_projection
+                .windows_for_session(session.id()),
+        );
         self.prompt_state_owner.project_into_session(&mut session);
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);

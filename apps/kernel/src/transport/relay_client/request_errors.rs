@@ -7,6 +7,9 @@ use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
+        DaemonError::UserDomainRefused { reason } => {
+            relay_error(reason.code(), &error.to_string(), false)
+        }
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_relay_error(source);
             mapped.message = error.to_string();
@@ -277,6 +280,29 @@ mod tests {
         assert_eq!(relay_error.code, "target_disconnected");
         assert_eq!(relay_error.message, "target daemon disconnected from relay");
         assert!(relay_error.retryable);
+    }
+
+    #[test]
+    fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
+        use crate::error::UserDomainRefusalReason;
+        for reason in [
+            UserDomainRefusalReason::NotFocusedAgent,
+            UserDomainRefusalReason::ForeignOwner,
+            UserDomainRefusalReason::StaleEpoch,
+            UserDomainRefusalReason::StaleReference,
+            UserDomainRefusalReason::NotGranted,
+            UserDomainRefusalReason::SensitiveRequiresFocus,
+        ] {
+            let mapped = map_relay_error(&DaemonError::UserDomainRefused { reason });
+            assert_eq!(mapped.code, reason.code());
+            assert_eq!(mapped.message, "User-domain request refused");
+            assert!(!mapped.retryable);
+        }
+        let untrusted = map_relay_error(&DaemonError::LocalTransport {
+            operation: "controller.fixture",
+            message: "user_domain_not_granted: untrusted text".into(),
+        });
+        assert_eq!(untrusted.code, "transport_error");
     }
 
     #[test]

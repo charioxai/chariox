@@ -208,7 +208,7 @@ fn select_synchronized_workflow_message_indices(
 
 fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String {
     *next_workflow_node_run_number += 1;
-    format!("workflow-node-run-{}", next_workflow_node_run_number)
+    format!("workflow-node-run-{next_workflow_node_run_number}")
 }
 
 fn next_workflow_node_iteration_index(workflow_run: &WorkflowRun, node_id: &str) -> u64 {

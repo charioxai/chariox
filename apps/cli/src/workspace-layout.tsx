@@ -64,6 +64,7 @@ export type WorkspaceLayoutProps = {
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
   onKernelApprovalBannerRef: RefHandler
+  onSudoBandRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
   onPasskeyPopupBoxRef: RefHandler
   onProviderAccountRecoveryBoxRef?: RefHandler | undefined
@@ -314,6 +315,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       </box>
 
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
+      <box ref={props.onSudoBandRef} flexShrink={0} flexDirection="column" />
       <box
         visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexShrink={0}
@@ -368,7 +370,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
 
       <box flexShrink={0} onMouseUp={props.onFooterMouseUp}>
         <box flexDirection="row" gap={1}>
-          <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" />
+          <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" flexShrink={0} />
           <box ref={props.onFooterSummaryBoxRef} flexDirection="row" />
         </box>
       </box>

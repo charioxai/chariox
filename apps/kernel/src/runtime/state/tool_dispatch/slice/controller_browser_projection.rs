@@ -434,11 +434,29 @@ pub(super) fn controller_browser_permission_tool_result(
 }
 
 pub(super) fn controller_browser_document_text(snapshot: &RoomBrowserStructuredSnapshot) -> String {
+    // Script, style and template contents are page code, not document text.
+    let code = snapshot
+        .dom_nodes
+        .iter()
+        .filter(|node| {
+            ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]
+                .iter()
+                .any(|tag| node.node_name.eq_ignore_ascii_case(tag))
+        })
+        .map(|node| node.element_ref.as_str())
+        .collect::<BTreeSet<_>>();
     let mut text = String::new();
     let mut seen = BTreeSet::new();
     for candidate in snapshot
         .dom_nodes
         .iter()
+        .filter(|node| {
+            !code.contains(node.element_ref.as_str())
+                && !node
+                    .parent_ref
+                    .as_deref()
+                    .is_some_and(|parent| code.contains(parent))
+        })
         .map(|node| node.text.as_str())
         .chain(
             snapshot
@@ -518,48 +536,6 @@ fn append_bounded_text(output: &mut String, candidate: &str) {
         output.push('\n');
     }
     output.push_str(&candidate[..end]);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn controller_browser_find_preserves_opaque_references_and_kind_filtering() {
-        let status = serde_json::json!({
-            "fields": [{"field_id": "element-1", "label": "Email", "text": ""}],
-            "buttons": [{"field_id": "element-2", "label": "Continue", "text": "Continue"}],
-            "links": [{"field_id": "element-3", "label": "Help", "text": "Help"}],
-        });
-
-        let result = controller_browser_find(&status, "cont", "button")
-            .expect("supported kind should return matches");
-
-        assert_eq!(result["matches"][0]["field_id"], "element-2");
-        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
-        assert!(controller_browser_find(&status, "", "image").is_err());
-    }
-
-    #[test]
-    fn controller_browser_action_requires_a_kernel_issued_element_reference() {
-        assert_eq!(
-            controller_browser_element_ref(None, Some("element-7"), "test")
-                .expect("opaque reference should be accepted"),
-            "element-7"
-        );
-        assert!(controller_browser_element_ref(Some("#password"), None, "test").is_err());
-    }
-
-    #[test]
-    fn controller_browser_text_bound_never_splits_utf8() {
-        let mut output = "a".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES - 2);
-
-        append_bounded_text(&mut output, "😀");
-
-        assert!(output.len() <= MAX_CONTROLLER_BROWSER_TEXT_BYTES);
-        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
-        assert!(!output.ends_with('\n'));
-    }
 }
 
 fn empty_surfaces() -> serde_json::Map<String, serde_json::Value> {
@@ -689,4 +665,46 @@ fn browser_element_summary(
         "disabled": disabled,
         "readOnly": read_only,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_browser_find_preserves_opaque_references_and_kind_filtering() {
+        let status = serde_json::json!({
+            "fields": [{"field_id": "element-1", "label": "Email", "text": ""}],
+            "buttons": [{"field_id": "element-2", "label": "Continue", "text": "Continue"}],
+            "links": [{"field_id": "element-3", "label": "Help", "text": "Help"}],
+        });
+
+        let result = controller_browser_find(&status, "cont", "button")
+            .expect("supported kind should return matches");
+
+        assert_eq!(result["matches"][0]["field_id"], "element-2");
+        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
+        assert!(controller_browser_find(&status, "", "image").is_err());
+    }
+
+    #[test]
+    fn controller_browser_action_requires_a_kernel_issued_element_reference() {
+        assert_eq!(
+            controller_browser_element_ref(None, Some("element-7"), "test")
+                .expect("opaque reference should be accepted"),
+            "element-7"
+        );
+        assert!(controller_browser_element_ref(Some("#password"), None, "test").is_err());
+    }
+
+    #[test]
+    fn controller_browser_text_bound_never_splits_utf8() {
+        let mut output = "a".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES - 2);
+
+        append_bounded_text(&mut output, "😀");
+
+        assert!(output.len() <= MAX_CONTROLLER_BROWSER_TEXT_BYTES);
+        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
+        assert!(!output.ends_with('\n'));
+    }
 }

@@ -3,7 +3,10 @@ use crate::local::*;
 use sha2::{Digest, Sha256};
 #[test]
 fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let register = LocalDaemonRequest::RegisterWorkflowNotificationSource(
         RegisterWorkflowNotificationSourceRequest {
             session_id: "s".into(),

@@ -26,6 +26,19 @@ impl CommandRouter {
         caller
     }
 
+    /// MD-3: transport-owned identity, never a request payload field.
+    pub(crate) async fn local_terminal_caller(
+        &self,
+        source: KernelCommandSource,
+        connection_id: &str,
+    ) -> KernelCaller {
+        let mut caller = self
+            .local_command_caller(source, KernelConnectionClass::Terminal)
+            .await;
+        caller.caller_id = format!("local-terminal:{connection_id}");
+        caller
+    }
+
     pub(super) fn redact_result_for_user(
         &self,
         result: Result<LocalDaemonResponse, DaemonError>,
@@ -37,6 +50,7 @@ impl CommandRouter {
                 caller_user_id,
                 &self.provider_run_projection,
                 None,
+                Some(self.runtime_state.durable_state_store()),
             )
         })
     }
@@ -60,6 +74,7 @@ impl CommandRouter {
                 caller_user_id,
                 &self.provider_run_projection,
                 workflow_run_context.as_deref(),
+                Some(self.runtime_state.durable_state_store()),
             )
         })
     }

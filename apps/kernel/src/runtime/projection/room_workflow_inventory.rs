@@ -39,6 +39,8 @@ pub struct RoomWorkflowSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomWorkflowRunSummary {
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created_before_ownership_tracking: bool,
     pub endpoint_id: String,
     pub status: WorkflowRunStatus,
     pub can_pause: bool,
@@ -58,21 +60,33 @@ pub struct RoomWorkflowEndpointSummary {
 
 impl RoomWorkflowInventory {
     pub fn project(session: &RuntimeSession, caller_user_id: &str) -> Self {
+        Self::project_with_history(session, caller_user_id, None)
+            .expect("workflow visibility without durable lookups is infallible")
+    }
+
+    pub(crate) fn project_with_history(
+        session: &RuntimeSession,
+        caller_user_id: &str,
+        history: Option<&crate::durable_state::DurableKernelStateStore>,
+    ) -> Result<Self, crate::error::DaemonError> {
+        let visible_runs = session.visible_workflow_runs_for_user(caller_user_id, history)?;
         let mut definitions = session.workflows().iter().collect::<Vec<_>>();
         definitions.sort_by(|a, b| (a.created_at_ms(), a.id()).cmp(&(b.created_at_ms(), b.id())));
         let workflows = definitions
             .into_iter()
             .map(|workflow| {
-                let runs = session
-                    .workflow_runs()
+                let runs = visible_runs
                     .iter()
                     .filter(|run| run.workflow_id() == workflow.id() && !run.status().is_terminal())
                     .map(|run| RoomWorkflowRunSummary {
                         run_id: run.id().to_string(),
+                        created_before_ownership_tracking: run.created_before_ownership_tracking(),
                         endpoint_id: run.endpoint_id().to_string(),
                         status: run.status(),
-                        can_pause: run.status() != WorkflowRunStatus::Paused,
-                        can_resume: run.status() == WorkflowRunStatus::Paused
+                        can_pause: !run.created_before_ownership_tracking()
+                            && run.status() != WorkflowRunStatus::Paused,
+                        can_resume: !run.created_before_ownership_tracking()
+                            && run.status() == WorkflowRunStatus::Paused
                             && run.node_runs().iter().any(|node| {
                                 node.status() == WorkflowNodeRunStatus::Stopped
                                     && node.completion().is_none()
@@ -81,7 +95,7 @@ impl RoomWorkflowInventory {
                                         .and_then(|envelope| envelope.rendered_prompt())
                                         .is_some()
                             }),
-                        can_stop: true,
+                        can_stop: !run.created_before_ownership_tracking(),
                     })
                     .collect::<Vec<_>>();
                 let paused_count = runs
@@ -141,7 +155,7 @@ impl RoomWorkflowInventory {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&inventory).expect("inventory serializes"))
         );
-        inventory
+        Ok(inventory)
     }
 }
 
@@ -192,6 +206,11 @@ mod tests {
     #[test]
     fn room_inventory_includes_completing_and_paused_but_excludes_terminal_runs() {
         let mut room = room();
+        room.add_member(
+            "viewer",
+            None,
+            crate::session::CollaborationLevel::Transparent,
+        );
         room.create_workflow(WorkflowDefinition::new("workflow", None));
         for (id, status) in [
             ("completing", WorkflowRunStatus::Completing),
@@ -209,9 +228,9 @@ mod tests {
                 vec![],
             );
             run.set_status(status);
-            room.create_workflow_run(run);
+            room.create_workflow_run(run.with_creator(Some("fixture-agent".into())));
         }
-        let inventory = RoomWorkflowInventory::project(&room, "local");
+        let inventory = RoomWorkflowInventory::project(&room, "viewer");
         let workflow = &inventory.workflows[0];
         assert_eq!(workflow.state, RoomWorkflowState::Mixed);
         assert_eq!(workflow.running_count, 1);
@@ -239,4 +258,79 @@ mod tests {
             .is_some());
         assert_eq!(inventory.home_kernel_id, "home");
     }
+}
+
+// MP-08/MP-10/MP-11: inventory metadata obeys the trace boundary too.
+#[cfg(test)]
+#[test]
+fn mp11_amfix_room_inventory_hides_foreign_private_runs() {
+    use crate::session::{CollaborationLevel, WorkflowDefinition, WorkflowRun};
+    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    room.add_member("bob", None, CollaborationLevel::Private);
+    room.create_workflow(WorkflowDefinition::new("workflow", None));
+    room.create_workflow_run(
+        WorkflowRun::new(
+            "foreign",
+            "workflow",
+            "endpoint",
+            "node",
+            Some("private".into()),
+            None,
+            vec![],
+            vec![],
+        )
+        .with_creator(Some("foreign-agent".into())),
+    );
+    let private = RoomWorkflowInventory::project(&room, "bob");
+    assert!(private.workflows[0].runs.is_empty());
+    assert_eq!(private.workflows[0].state, RoomWorkflowState::Idle);
+    assert_eq!(private.workflows[0].running_count, 0);
+    room.add_member("viewer", None, CollaborationLevel::Transparent);
+    assert_eq!(
+        RoomWorkflowInventory::project(&room, "viewer").workflows[0]
+            .runs
+            .len(),
+        1
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_amfix_snapshot_recomputes_inventory_for_private_recipient() {
+    use crate::session::{CollaborationLevel, WorkflowDefinition, WorkflowRun};
+    let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    room.add_member("viewer", None, CollaborationLevel::Transparent);
+    room.add_member("bob", None, CollaborationLevel::Private);
+    room.create_workflow(WorkflowDefinition::new("workflow", None));
+    room.create_workflow_run(
+        WorkflowRun::new(
+            "foreign",
+            "workflow",
+            "endpoint",
+            "node",
+            None,
+            None,
+            vec![],
+            vec![],
+        )
+        .with_creator(Some("foreign-agent".into())),
+    );
+    let inventory = RoomWorkflowInventory::project(&room, "viewer");
+    assert_eq!(inventory.workflows[0].runs.len(), 1);
+    let projection = super::SessionSnapshotProjection {
+        room_workflows: inventory,
+        metadata: super::ProjectionMetadata::new(super::SESSION_SNAPSHOT_PROJECTION_VERSION, 0),
+        session: room,
+        provider_run: None,
+        agent_activity: Default::default(),
+    }
+    .redacted_for_user("bob", &app.durable_state_store())
+    .unwrap();
+    assert!(projection.session.workflow_runs().is_empty());
+    assert!(projection.room_workflows.workflows[0].runs.is_empty());
+    assert_eq!(
+        projection.room_workflows.workflows[0].state,
+        RoomWorkflowState::Idle
+    );
 }

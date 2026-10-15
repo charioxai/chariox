@@ -372,7 +372,7 @@ async fn bounded_cloud_relay_refresh_times_out() {
 #[tokio::test]
 async fn post_connect_hook_confirms_through_owner_handler_and_clears_worker_pending() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(true, false).await;
+        exercise_post_connect_confirmation(true, false, false).await;
     assert!(owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 1);
@@ -381,7 +381,7 @@ async fn post_connect_hook_confirms_through_owner_handler_and_clears_worker_pend
 #[tokio::test]
 async fn post_connect_hook_clears_worker_pending_after_terminal_owner_rejection() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(false, false).await;
+        exercise_post_connect_confirmation(false, false, false).await;
     assert!(!owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 1);
@@ -390,15 +390,25 @@ async fn post_connect_hook_clears_worker_pending_after_terminal_owner_rejection(
 #[tokio::test]
 async fn post_connect_hook_retries_retryable_rejection_on_same_connection() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(true, true).await;
+        exercise_post_connect_confirmation(true, true, false).await;
     assert!(owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 2);
 }
 
+#[tokio::test]
+async fn mp08_mp10_mp11_retained_socket_confirms_install_after_registration_heartbeat() {
+    let (owner_confirmed, worker_pending, attempts) =
+        exercise_post_connect_confirmation(true, false, true).await;
+    assert!(owner_confirmed);
+    assert!(!worker_pending);
+    assert_eq!(attempts, 1);
+}
+
 async fn exercise_post_connect_confirmation(
     owner_accepts_worker_key: bool,
     reject_first_attempt_as_retryable: bool,
+    retained_socket: bool,
 ) -> (bool, bool, usize) {
     let mut worker_config = crate::config::DaemonConfig::for_tests();
     worker_config.relay_url = Some("wss://relay.example.test".to_string());
@@ -438,6 +448,24 @@ async fn exercise_post_connect_confirmation(
         );
     let (owner_outgoing, _owner_priority_rx, _owner_event_rx) = RelayOutgoingSender::channel(1);
 
+    set_connected(
+        &worker_state,
+        worker_outgoing.clone(),
+        "wss://relay.example.test".to_string(),
+    )
+    .await
+    .expect("worker relay should become connected");
+    if retained_socket {
+        assert!(
+            spawn_pending_managed_slice_activation_confirmation_after_connect(
+                Arc::clone(&worker_router),
+                Arc::clone(&worker_state),
+            )
+            .await
+            .is_none(),
+            "the initial connection predates token installation"
+        );
+    }
     worker_state
         .write()
         .await
@@ -450,13 +478,23 @@ async fn exercise_post_connect_confirmation(
                 "activation-1".to_string(),
             ),
         );
-    set_connected(
-        &worker_state,
-        worker_outgoing,
-        "wss://relay.example.test".to_string(),
-    )
-    .await
-    .expect("worker relay should become connected");
+    if retained_socket {
+        send_outgoing_envelope(
+            &worker_outgoing,
+            RelayEnvelope::DaemonHeartbeat {
+                daemon_id: worker_kernel_id.clone(),
+                registration: Some(worker_router.relay_registration().await),
+            },
+        )
+        .expect("queue renewed registration before confirmation");
+        assert!(matches!(
+            worker_priority_rx.recv().await,
+            Some(RelayEnvelope::DaemonHeartbeat {
+                registration: Some(_),
+                ..
+            })
+        ));
+    }
     let task = spawn_pending_managed_slice_activation_confirmation_after_connect(
         Arc::clone(&worker_router),
         Arc::clone(&worker_state),
@@ -550,7 +588,12 @@ async fn exercise_post_connect_confirmation(
 fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [100, 101] {
+    let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+    for version in [
+        minimum - 1,
+        minimum,
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+    ] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -590,7 +633,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version >= minimum && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }

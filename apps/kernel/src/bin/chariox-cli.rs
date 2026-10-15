@@ -358,8 +358,7 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "the TypeScript CLI build did not produce apps/cli/dist/index.js; rerun `pnpm --filter @chariox/cli run build` and then `{} apps/cli/dist/index.js` manually if needed",
-            bun
+            "the TypeScript CLI build did not produce apps/cli/dist/index.js; rerun `pnpm --filter @chariox/cli run build` and then `{bun} apps/cli/dist/index.js` manually if needed"
         ))
     }
 }

@@ -29,7 +29,9 @@ impl KernelRuntimeState {
             RelayPeerRequest::ObserveRoomComputer { slice_id, .. }
             | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
             | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
-            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. } => Some(slice_id),
+            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. }
+            | RelayPeerRequest::OpenRoomSharedDisplay { slice_id, .. }
+            | RelayPeerRequest::RoomSharedDisplay { slice_id, .. } => Some(slice_id),
             _ => None,
         };
         if let Some(slice_id) = slice_id {
@@ -308,6 +310,29 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
+        if matches!(command, Command::NoteObservation { .. }) {
+            // MD-N2: Ping is understood by old workers; only send the new variant
+            // after a current, authenticated response from this exact target.
+            let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
+            let response = Box::pin(self.send_room_slice_peer_request(
+                &config,
+                target.clone(),
+                RelayPeerRequest::Ping {
+                    value: value.clone(),
+                },
+                Duration::from_secs(15),
+            ))
+            .await?;
+            let version = match response {
+                RelayPeerResponse::Pong {
+                    value: received,
+                    relay_peer_protocol_version,
+                    ..
+                } if received == value => relay_peer_protocol_version,
+                _ => None,
+            };
+            super::room_browser_controller_admission::require_notes_worker_protocol(version)?;
+        }
         let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {
             session_id: session_id.to_string(),
@@ -616,6 +641,40 @@ async fn execute_local(
                     "environment_input_invalid_authority_context",
                 ));
             }
+            // MP-11 R1: refuse unfenced agent mutations before a physical
+            // helper is spawned; human and approved Vault actors retain their paths.
+            if actor_id.starts_with("agent:") {
+                if crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action) {
+                    return Err(crate::error::HostFailure::Refused(
+                        crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                    )
+                    .into_daemon("room_computer"));
+                }
+                // MP-11 review R2: registered/unknown protection fences both
+                // text and shortcuts. Never pass registry values to a keyboard.
+                // #904 review @61b0a4ac6: clicks and AT-SPI actions can activate
+                // Paste, and a registered value in an ordinary native field has
+                // no password role for clipboard-owner admission to see.
+                if matches!(
+                    &action,
+                    crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { .. }
+                ) {
+                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
+                    let policy: serde_json::Value = serde_json::from_str(&policy)
+                        .map_err(|_| controller_route_error("protection unavailable"))?;
+                    if policy["unknown"] == true
+                        || policy["values"].as_array().is_none_or(|values| !values.is_empty())
+                        || policy["targets"].as_array().is_none_or(|targets| !targets.is_empty())
+                    {
+                        return Err(crate::error::HostFailure::Refused(
+                            crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                        ).into_daemon("room_computer"));
+                    }
+                }
+            }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
                 .map_err(controller_route_error)?;
@@ -627,8 +686,21 @@ async fn execute_local(
             }
             let cancellation = execution
                 .cancellation()
-                .with_authorizer(authorize_input.clone());
+                .with_authorizer(authorize_input.clone())
+                .with_agent_input(actor_id.starts_with("agent:"));
             let input_result = match action {
+                crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { tree_revision, target_id, action } => {
+                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
+                    let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|_| controller_route_error("protection unavailable"))?;
+                    let controller = processes.clone();
+                    let room = session_id.to_string();
+                    let authorize = authorize_input.clone();
+                    tokio::task::spawn_blocking(move || {
+                        authorize().map_err(|e| crate::error::HostFailure::Other(e.to_string()))?;
+                        controller.room_computer_action(&room, serde_json::json!({"observer":actor_id,"tree_revision":tree_revision,"target_id":target_id,"action":action,"policy":policy}), move || cancellation.requested() || cancellation.authorize().is_err())
+                    }).await.map_err(|_| controller_route_error("accessibility action task failed"))?
+                        .map(|_| ()).map_err(|error| error.into_daemon("room_computer"))
+                }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
                     y,
@@ -775,6 +847,13 @@ async fn execute_local(
         Command::Artifact { request } => processes
             .browser_artifact(&session_id, &request)
             .map(|capture| Response::Artifact { capture }),
+        Command::NoteObservation {
+            target_id,
+            document_id,
+            quote,
+        } => processes
+            .note_observation(&session_id, &target_id, &document_id, quote.as_ref())
+            .map(|observation| Response::NoteObservation { observation }),
         Command::Snapshot {
             target_id,
             document_id,

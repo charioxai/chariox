@@ -580,7 +580,7 @@ impl KernelRuntimeOwnedState {
                 &prompt_with_handoff,
                 &hidden_system_context,
                 started_next.attachments(),
-                mode,
+                mode.with_prompt_origin(started_next.prompt_origin()),
                 false,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
@@ -652,6 +652,10 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_completed_prompt_settlement operation signature and explicit context arguments"
+    )]
     fn record_completed_prompt_settlement(
         &self,
         session_id: &str,

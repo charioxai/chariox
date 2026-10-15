@@ -12,7 +12,8 @@ use crate::transport::relay_client::{
 };
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayPeerRequest, RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION,
+    RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::remote_kernel_selection::{
@@ -72,6 +73,10 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
         )
         .await?;
         discovery_config.relay_token = Some(token.token);
+    } else {
+        discovery_config =
+            crate::runtime::cloud_api_client::relay_metadata_discovery_config(&discovery_config)
+                .await?;
     }
 
     let machine_ref =
@@ -146,7 +151,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             });
         }
     };
-    if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+    if relay_peer_protocol_version < MINIMUM_RELAY_PEER_RUNTIME_VERSION {
         cleanup_remote_binding_setup_off_lock(
             &relay_config,
             &plan.relay_state,
@@ -162,7 +167,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
                 worker_kernel.kernel_id,
                 relay_peer_protocol_version,
-                RELAY_PEER_PROTOCOL_VERSION
+                MINIMUM_RELAY_PEER_RUNTIME_VERSION
             ),
         });
     }
@@ -638,6 +643,10 @@ impl DaemonApp {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit remote_prompt_capabilities_for_agent state or return type at the existing boundary"
+    )]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
         agent: &AgentInstance,
@@ -711,7 +720,11 @@ impl DaemonApp {
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
-            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
+            let destroyed = self.agents.destroy_agent(agent.id(), &mut sessions);
+            drop(sessions);
+            if destroyed.is_ok() {
+                self.forget_room_computer_access(agent.id());
+            }
         }
         remote_setup
     }
@@ -813,7 +826,7 @@ impl DaemonApp {
                     use_connected_relay,
                 );
             };
-        if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+        if relay_peer_protocol_version < MINIMUM_RELAY_PEER_RUNTIME_VERSION {
             cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
             return Err(DaemonError::LocalTransport {
                 operation: "create remote execution lease",
@@ -821,7 +834,7 @@ impl DaemonApp {
                     "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
                     worker_kernel.kernel_id,
                     relay_peer_protocol_version,
-                    RELAY_PEER_PROTOCOL_VERSION
+                    MINIMUM_RELAY_PEER_RUNTIME_VERSION
                 ),
             });
         }

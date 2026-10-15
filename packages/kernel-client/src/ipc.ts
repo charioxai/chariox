@@ -1,3 +1,4 @@
+import { KernelCatalogReads } from './kernel-catalog-reads.js'
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -51,6 +52,7 @@ import {
   type RelayClientIdentity,
 } from "./relay-crypto.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
+import { decodeDisplayEvent } from "./browser-relay-crypto.js"
 import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
@@ -78,13 +80,15 @@ const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // The kernel runs these again when they are replayed: they carry no request id
 // its ledgers deduplicate, and it keeps them out of its command-result cache
-// (`request_is_cacheable`, whose tests check this list). Each stops an App
+// (`request_is_cacheable`, whose tests check this list). Worker control stops an App
 // worker, which can outlast the stall window; a replay then meets the first
 // one's operation guard and answers `busy` (or, once the first has finished,
 // restarts the worker again or is refused by the uninstall's generation fence)
 // although the first one succeeds. Once written, they wait for their answer
 // and are never resent; losing the answer rejects with `outcome_unknown`.
-const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp"])
+// User view opens allocate instances/tabs and frontend calls may mutate App
+// state. They likewise have no request-id receipts: neither may be resent.
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "OpenUserAppView", "CallUserAppView", "RespondToHandoff"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
@@ -244,6 +248,7 @@ type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  private readonly catalogReads = new KernelCatalogReads()
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
   private readonly relayIssuerDaemonId: string | null
@@ -390,7 +395,7 @@ export class LocalIpcClient {
       return this.sendWebSocket(query, "control", admittedSocket)
     }, request)
     if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
+    return this.catalogReads.run(request, this.socketPath, () => this.sendUnchecked<TResponse>(request))
   }
 
   private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
@@ -567,6 +572,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.catalogReads.clear()
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
       await this.unsubscribeFromKernelEvents()
@@ -623,7 +629,7 @@ export class LocalIpcClient {
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
-    const requestId = randomUUID()
+    let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
     const retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
@@ -693,13 +699,20 @@ export class LocalIpcClient {
         if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()
         if (!replayAfterWrite && error instanceof LocalIpcError
-          && (error.code === "connection_closed" || error.code === "request_timeout")) {
-          const lost = error.code === "request_timeout" ? "no answer in time" : "the connection closed before the answer"
+          && (error.code === "connection_closed" || error.code === "request_timeout" || error.code === "write_failed")) {
+          // MP-11 A07: a send error can follow a partial write. Protected input
+          // and other unreceipted effects must never retry that uncertain write.
+          const lost = error.code === "request_timeout" ? "no answer in time"
+            : error.code === "write_failed" ? "the write outcome was not confirmed"
+              : "the connection closed before the answer"
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
+        // MD-3: a reconnected terminal has another caller-bound receipt scope.
+        // Safe browser reads are new observations; uncertain mutations never replay.
+        if (isBrowserObservation(request)) requestId = randomUUID()
         this.destroyWebSocket(lane)
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
@@ -711,7 +724,8 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+      // target_not_connected: the kernel or relay refused before starting it.
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
@@ -1159,6 +1173,22 @@ export class LocalIpcClient {
   }
 
   private handleWebSocketMessage(data: WebSocket.RawData, lane: KernelSocketLane) {
+    // MP-08/MP-10: protocol 466 display events arrive as binary messages.
+    if (Buffer.isBuffer(data) && data[0] === 0x43) {
+      let display: KernelEvent | null = null
+      try {
+        const value = decodeDisplayEvent(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        display = value ? kernelEventFromValue(value) : null
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
+        return
+      }
+      if (display) {
+        this.markKernelEventReceived()
+        for (const handler of this.eventHandlers) handler(display)
+        return
+      }
+    }
     let frame:
       | KernelTransportResponseFrame<unknown>
       | KernelTransportEventFrame<KernelEvent>
@@ -1187,7 +1217,7 @@ export class LocalIpcClient {
         this.rejectPending(error instanceof Error ? error.message : String(error), lane)
         return
       }
-      this.lastReceivedEventId = frame.event_id
+      if (event.event !== "kernel_browser_frame") this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
         handler(event)
@@ -1597,8 +1627,20 @@ export class LocalIpcClient {
 }
 
 function runsAgainOnReplay(request: unknown): boolean {
-  return request !== null && typeof request === "object"
-    && Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
+  if (request === null || typeof request !== "object") return false
+  if ((request as {GetSliceDisplayEndpoint?:{shared_display?:unknown}}).GetSliceDisplayEndpoint?.shared_display) return true
+  if (Object.keys(request).some(kind => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))) return true
+  // MD-3: reconnect creates another browser actor. Never repeat an uncertain
+  // mutation on that connection; observations can be fetched again safely.
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined && !isBrowserObservation(request)
+}
+
+function isBrowserObservation(request: unknown): boolean {
+  if (request === null || typeof request !== "object") return false
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined
+    && ["state", "snapshot", "screenshot", "frames", "list_grants", "subscribe_grants"].includes(browser.command?.op ?? "")
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {

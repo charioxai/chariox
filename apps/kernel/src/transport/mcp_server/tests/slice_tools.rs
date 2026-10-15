@@ -834,11 +834,10 @@ done
         value["result"]["structuredContent"]["browser"]["focusedElement"]["label"],
         "Email"
     );
-    assert_eq!(
+    assert!(
         value["result"]["structuredContent"]["browser"]["fields"][0]["field_id"]
             .as_str()
-            .is_some_and(|field_id| field_id.starts_with("element-")),
-        true
+            .is_some_and(|field_id| field_id.starts_with("element-"))
     );
     assert_eq!(
         value["result"]["structuredContent"]["browser"]["buttons"][0]["text"],
@@ -1765,7 +1764,9 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        // MP-08 / MP-11: each snapshot first reconciles native address-bar
+        // navigation through the bound worker before minting references.
+        "reconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

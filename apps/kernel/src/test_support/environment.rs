@@ -77,20 +77,21 @@ pub(crate) fn isolate_environment_test() -> bool {
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
-    // MP-08 / MP-10 / MP-11: retain birth/ancestry witnesses before any timeout signal.
-    let mut owned_signals =
+    #[cfg(unix)]
+    let mut signals =
         crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
-        if let Some(guard) = owned_signals.as_mut() {
-            // Complete group membership is verified; ambiguous members are never signalled.
-            let _ = guard.kill_group();
-            let _ = guard.kill_owned_processes();
+        let pid = i32::try_from(child.id()).expect("isolated child PID fits the signal API");
+        assert!(pid > 1, "refusing to signal a reserved isolated child PID");
+        #[cfg(unix)]
+        if let Some(signals) = signals.as_mut() {
+            let _ = signals.kill_group();
+            // Detached descendants may survive even a successful group signal.
+            let _ = signals.kill_owned_processes();
         }
-        // The unreaped std Child remains ours; never cast it to an unchecked group id.
-        if child.id() > 1 && child.id() <= i32::MAX as u32 {
-            let _ = child.kill();
-        }
+        // The std Child handle still owns this unreaped, validated positive PID.
+        let _ = child.kill();
         let _ = child.wait();
     }
     let stdout = std::fs::read_to_string(stdout).unwrap();

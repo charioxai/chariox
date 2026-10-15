@@ -18,6 +18,7 @@ use crate::terminal::{
 };
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
+    provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     prompt_state_owner: PromptStateOwner,
     active_turns: ActiveTurnStore,
     agent_store: AgentServiceStore,
@@ -39,6 +40,7 @@ impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
             provider_store: app.providers.clone(),
+            provider_run_projection: app.provider_run_projection.clone(),
             prompt_state_owner: app.prompt_state_owner(),
             active_turns: app.active_turn_store(),
             agent_store: app.agents.clone(),
@@ -75,6 +77,10 @@ impl ProviderOutputFanout {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing fan_out_for_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn fan_out_for_agent(
         &self,
         session_id: &str,
@@ -95,7 +101,7 @@ impl ProviderOutputFanout {
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         if bounded_bytes.len() < delta_bytes.len() {
-            let kind_label = format!("{:?}", kind);
+            let kind_label = format!("{kind:?}");
             if let Some(suppressed_logs) = should_log_provider_output_truncation(
                 session_id,
                 provider_run_id,
@@ -446,6 +452,8 @@ impl ProviderOutputFanout {
             self.session_store.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve(&entry);
         match self

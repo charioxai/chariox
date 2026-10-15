@@ -3,7 +3,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn room_workflows_protocol_439_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let room = crate::session::RuntimeSession::new(
         "room",
         None,
@@ -32,6 +35,7 @@ fn room_workflows_protocol_439_shapes_are_versioned() {
             }],
             runs: vec![crate::runtime::projection::RoomWorkflowRunSummary {
                 run_id: "captured".into(),
+                created_before_ownership_tracking: false,
                 endpoint_id: "endpoint".into(),
                 status: crate::session::WorkflowRunStatus::Running,
                 can_pause: true,
@@ -99,9 +103,55 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
         .contains_key("room_workflows"));
     assert!(event.as_object().unwrap().contains_key("room_workflows"));
     let shape = serde_json::json!({"state":state,"event":event});
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
         "503a28a5f32edec28c1939c6f58934567598b16936b8c56bd16099930d6fb1ae"
     );
+}
+
+// MP-08 / MP-10 / MP-11: bind the historical marker to its reviewed 513/121 snapshot.
+#[test]
+fn historical_workflow_projection_protocol_snapshot() {
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../../fixtures/historical-workflow-protocol.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        Some(u64::from(LOCAL_DAEMON_PROTOCOL_VERSION)),
+        expected["local"].as_u64()
+    );
+    assert_eq!(
+        Some(u64::from(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        )),
+        expected["relayPeer"].as_u64()
+    );
+    let mut run = crate::session::WorkflowRun::new(
+        "historical",
+        "workflow",
+        "endpoint",
+        "node",
+        None,
+        None,
+        vec![],
+        vec![],
+    );
+    run.mark_created_before_ownership_tracking();
+    let summary = crate::runtime::projection::RoomWorkflowRunSummary {
+        run_id: "historical".into(),
+        endpoint_id: "endpoint".into(),
+        status: crate::session::WorkflowRunStatus::Running,
+        created_before_ownership_tracking: true,
+        can_pause: false,
+        can_resume: false,
+        can_stop: false,
+    };
+    let mut shape = serde_json::json!({"run":run,"summary":summary});
+    shape["run"]["created_at_ms"] = 0.into();
+    shape["run"]["received_at_ms"] = 0.into();
+    assert_eq!(shape, expected["shape"]);
 }

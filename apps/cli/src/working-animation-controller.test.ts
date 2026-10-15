@@ -38,9 +38,18 @@ test("working animation starts and stops one interval", () => {
   assert.deepEqual(harness.calls(), ["interval:120", "clear:timer-1"])
 })
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: idle native clients keep goal clocks live.
+test("working animation repaints an idle goal clock without split panes", () => {
+  const harness=createHarness({hasGoalClock:true})
+  harness.controller.tick()
+  assert.deepEqual(harness.calls(),["frame","chrome"])
+})
+
 function createHarness(options: {
+  hasWaitingDeadline?: boolean
   sessionStatusMode?: string
   splitAgentResponseMode?: boolean
+  hasGoalClock?: boolean
 } = {}) {
   const calls: string[] = []
   const controller = createWorkingAnimationController<string>({
@@ -56,6 +65,8 @@ function createHarness(options: {
       calls.push("frame")
     },
     sessionStatusMode: () => options.sessionStatusMode ?? "idle",
+    hasWaitingDeadline: () => options.hasWaitingDeadline ?? false,
+    hasGoalClock: () => options.hasGoalClock ?? false,
     splitAgentResponseMode: () => options.splitAgentResponseMode ?? false,
     updateSessionChrome: () => {
       calls.push("chrome")
@@ -70,3 +81,9 @@ function createHarness(options: {
     calls: () => calls,
   }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 waiting deadlines repaint once per second while native provider is idle", () => {
+  const harness = createHarness({ hasWaitingDeadline: true })
+  for (let i = 0; i < 9; i++) harness.controller.tick()
+  assert.equal(harness.calls().filter((call) => call === "chrome").length, 1)
+})

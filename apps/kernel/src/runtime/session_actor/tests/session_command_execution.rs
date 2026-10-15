@@ -397,7 +397,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nreconcile\nhealth\nsnapshot\nreconcile\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 
@@ -1297,11 +1297,10 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     state
-        .attach(AttachRequest::new(
-            &session_id,
-            "client-b",
-            ClientCapabilityLevel::FullTerminal,
-        ))
+        .attach(
+            AttachRequest::new(&session_id, "client-b", ClientCapabilityLevel::FullTerminal),
+            true,
+        )
         .await
         .expect("reattach should resume the focused provider run");
     {
@@ -1325,7 +1324,7 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     let cycled = state
-        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID)
+        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID, true)
         .await
         .expect("cycling focus after reattach should not park an already parked run")
         .expect("another agent should be focused");

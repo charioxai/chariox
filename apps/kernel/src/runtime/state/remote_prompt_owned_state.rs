@@ -245,7 +245,7 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
+            &self.provider_account_authority_owner_for_agent(&target_agent)?,
             &target_agent,
             "submit remote prompt",
         )?;
@@ -261,18 +261,19 @@ impl KernelRuntimeOwnedState {
             .is_some();
         let will_queue = prepared.force_queue || queued_while_active;
         let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
-            prepared.prompt.clone().with_source_attribution(
-                source_attachment.client_id(),
-                source_attachment.owner_user_id(),
-            )
+            prepared
+                .prompt
+                .clone()
+                .with_source_attachment(source_attachment)
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue {
+        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let sudo_deferred = self.sudo_work_defers(&session, &target_agent_id, prompt.id());
         let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
@@ -282,6 +283,7 @@ impl KernelRuntimeOwnedState {
                 prepared.force_queue,
                 allow_queue,
             )?;
+        self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
@@ -551,7 +553,10 @@ impl KernelRuntimeOwnedState {
             target_agent_id,
             attachment_id,
             None,
-        )
+        )?
+        .ok_or_else(|| DaemonError::NoActivePrompt {
+            session_id: session_id.to_string(),
+        })
     }
 
     pub(super) fn begin_remote_prompt_cancellation_if_matches(
@@ -559,9 +564,11 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
-        expected_prompt_id: Option<&str>,
-    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+        expected: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        if expected.is_none()
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
+        {
             let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         }
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
@@ -572,34 +579,31 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
-        let active_prompt = self
+        let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
-        if expected_prompt_id.is_some_and(|expected| active_prompt.id() != expected) {
-            return Err(DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            });
-        }
+            .filter(|prompt| expected.is_none_or(|id| prompt.id() == id))
+        else {
+            return Ok(None);
+        };
         if active_prompt.status() == crate::session::PromptStatus::Cancelling {
             let session = self.session_snapshot(session_id)?;
-            return Ok(crate::app::KernelPromptCancellation {
+            return Ok(Some(crate::app::KernelPromptCancellation {
                 cancellation: crate::session::PromptCancellation {
                     prompt: active_prompt,
                     started_next: None,
                 },
                 session,
                 dispatch: None,
-            });
+            }));
         }
-        let prompt = self
-            .prompt_state_owner
-            .begin_cancelling_prompt_if_matches(&session, target_agent_id, expected_prompt_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
+        let Some(prompt) = self.prompt_state_owner.begin_cancelling_prompt_if_matches(
+            &session,
+            target_agent_id,
+            expected,
+        ) else {
+            return Ok(None);
+        };
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, target_agent_id);
@@ -624,14 +628,14 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        Ok(crate::app::KernelPromptCancellation {
+        Ok(Some(crate::app::KernelPromptCancellation {
             cancellation: crate::session::PromptCancellation {
                 prompt,
                 started_next: None,
             },
             session,
             dispatch: None,
-        })
+        }))
     }
 
     pub(super) fn finalize_remote_prompt_cancellation_after_worker_settled(
@@ -642,6 +646,11 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
         let started =
             self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        self.cancel_settled_remote_prompt_task(
+            session_id,
+            target_agent_id,
+            started.cancellation.prompt.id(),
+        )?;
         self.workflow_cancel_prompt(session_id, &started.cancellation.prompt)?;
         let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
             session_id,

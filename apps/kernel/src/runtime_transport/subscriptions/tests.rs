@@ -7,6 +7,126 @@ use super::*;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
 
+// MP-08 / MP-10 / MP-11: local and relay subscriptions drain this same boundary.
+#[tokio::test]
+async fn terminal_workflow_updates_obey_current_attachment_trace_visibility() {
+    use crate::session::{
+        CollaborationLevel, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    };
+    for status in [
+        WorkflowRunStatus::Completed,
+        WorkflowRunStatus::Failed,
+        WorkflowRunStatus::Stopped,
+    ] {
+        for level in [
+            CollaborationLevel::Private,
+            CollaborationLevel::Transparent,
+            CollaborationLevel::Full,
+        ] {
+            let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+            let (session, owner) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    "workspace",
+                    "worktree",
+                ))
+                .unwrap();
+            let foreign = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_owner_user_id("foreign-owner"),
+                )
+                .unwrap();
+            let retired_owned = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_owner_user_id(owner.owner_user_id()),
+                )
+                .unwrap();
+            let attachment = crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::for_user(
+                    session.id(),
+                    "workflow-subscriber",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    owner.owner_user_id(),
+                ))
+                .unwrap();
+            let run = |id: &str, creator: &str, worker: &str| {
+                let mut run = WorkflowRun::new(
+                    id,
+                    "workflow",
+                    "endpoint",
+                    "node",
+                    Some(format!("{id}-private-input")),
+                    None,
+                    vec![WorkflowNodeRun::new(
+                        format!("{id}-node-run"),
+                        "node",
+                        worker,
+                        0,
+                        WorkflowNodeRunStatus::Completed,
+                    )],
+                    vec![],
+                )
+                .with_creator(Some(creator.into()));
+                run.set_status(status);
+                run
+            };
+            let foreign_run = run("foreign-run", foreign.id(), foreign.id());
+            let own_run = run("owned-run", owner.id(), retired_owned.id());
+            let mixed_run = run("mixed-run", owner.id(), foreign.id());
+            // Queue before the collaboration change: delivery must use current policy.
+            for run in [foreign_run, own_run, mixed_run] {
+                app.terminal().record_workflow_run_update(
+                    session.id(),
+                    vec![attachment.id().into()],
+                    run,
+                );
+            }
+            for id in [foreign.id(), retired_owned.id()] {
+                crate::app::KernelSessionService::new(&mut app)
+                    .destroy_agent(id)
+                    .unwrap();
+            }
+            let mut wire =
+                serde_json::to_value(app.sessions().get_session(session.id()).unwrap()).unwrap();
+            wire["members"][0]["collaboration_level"] = serde_json::to_value(level).unwrap();
+            app.sessions_mut()
+                .restore_session(serde_json::from_value(wire).unwrap());
+            let WatchResult::Ok {
+                workflow_run_updates,
+                ..
+            } = watch_subscription_state(&mut app, session.id(), attachment.id(), false, None, 0)
+            else {
+                panic!("subscription must remain available");
+            };
+            let ids = workflow_run_updates
+                .iter()
+                .map(|run| run.id())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                if level.can_view_agent_trace() {
+                    vec!["foreign-run", "owned-run", "mixed-run"]
+                } else {
+                    vec!["owned-run"]
+                },
+                "MP-11: terminal {status:?} updates must use {level:?} trace visibility",
+            );
+            let WatchResult::Ok {
+                workflow_run_updates,
+                ..
+            } = watch_subscription_state(&mut app, session.id(), attachment.id(), false, None, 0)
+            else {
+                panic!("subscription must remain available");
+            };
+            assert!(
+                workflow_run_updates.is_empty(),
+                "updates drain exactly once"
+            );
+        }
+    }
+}
+
 // MP-08 / MP-10: exercise the actual subscription loop, without another producer wakeup.
 #[tokio::test]
 async fn subscription_delivers_three_mib_burst_in_order_without_another_append() {

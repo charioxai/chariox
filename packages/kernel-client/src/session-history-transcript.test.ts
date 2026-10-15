@@ -891,7 +891,7 @@ test("session history blob replacement keeps incomplete external turns active", 
 
   const replaced = replaceSessionHistoryBlobPlaceholder(
     entries,
-    placeholder.id,
+    "blob-1",
     {
       blob_id: "blob-1",
       entries: [pageEntry(2, "provider_tool", JSON.stringify({
@@ -948,7 +948,7 @@ test("session history blob replacement preserves prompt and external turn metada
 
   const replaced = replaceSessionHistoryBlobPlaceholder(
     entries,
-    placeholder.id,
+    "blob-1",
     {
       blob_id: "blob-1",
       entries: [pageEntry(1, "provider_tool", JSON.stringify({

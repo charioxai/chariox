@@ -107,9 +107,18 @@ pub(crate) struct CommandFingerprint {
     session_id: Option<String>,
     attachment_id: Option<String>,
     request_hash: u64,
+    // MD-N3 / MP-11: browser/note receipts belong to the authenticated terminal identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_caller: Option<crate::runtime::command::KernelCaller>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_protection_revision: Option<u64>,
 }
 
 impl CommandFingerprint {
+    pub(crate) fn with_browser_protection_revision(mut self, revision: Option<u64>) -> Self {
+        self.browser_protection_revision = revision;
+        self
+    }
     pub(crate) fn from_command_and_request(
         command: &KernelCommand,
         request: &LocalDaemonRequest,
@@ -122,6 +131,12 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
+            browser_caller: matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+            )
+            .then(|| command.caller.clone()),
+            browser_protection_revision: None,
         }
     }
 }
@@ -133,6 +148,27 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
+    {
+        return false;
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::CaptureVisibleRegion(_)
+            | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplaySuspend { .. }
+                    | crate::local::KernelBrowserCommand::DisplayResume { .. }
+                    | crate::local::KernelBrowserCommand::DisplayAck { .. }
+                    | crate::local::KernelBrowserCommand::ListGrants
+                    | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
+                    | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
+                    | crate::local::KernelBrowserCommand::RevokeGrants { .. }
+                    | crate::local::KernelBrowserCommand::MirrorNext { .. }
+            })
+    ) {
+        return false;
+    }
     // App requests and browser-import consent must reach owner authorization and
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached
@@ -144,6 +180,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::ExtendKernelSudo(_)
+            // MP-11 A07: physical owner input carrying a value is never
+            // fingerprinted, cached or replayed.
+            | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -167,6 +207,13 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
+            | LocalDaemonRequest::OpenUserAppView(_)
+            | LocalDaemonRequest::ListUserAppViews(_)
+            | LocalDaemonRequest::CloseUserAppView(_)
+            | LocalDaemonRequest::GetUserAppViewFrontend(_)
+            | LocalDaemonRequest::CallUserAppView(_)
+            | LocalDaemonRequest::SubscribeUserAppViews(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
             | LocalDaemonRequest::OpenAppView(_)
             | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
@@ -617,6 +664,20 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
+    pub(super) async fn completed_browser_caller(
+        &self,
+        command_id: &str,
+    ) -> Option<crate::runtime::command::KernelCaller> {
+        self.completed_results_snapshot()
+            .await
+            .into_iter()
+            .find(|entry| entry.command_id == command_id)?
+            .result
+            .fingerprint
+            .browser_caller
+    }
+
+    #[cfg(test)]
     pub(super) async fn insert_completed_for_test(
         &self,
         command_id: String,
@@ -659,6 +720,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(bytes),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -670,6 +733,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(command_type.as_bytes()),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -814,7 +879,7 @@ fn read_persistent_results_with_receipt_fence(
         if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
             continue;
         }
-        let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
+        let jsonl_bytes = line.len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
                 return Err(io::Error::other("oversized at-most-once receipt"));
@@ -933,7 +998,9 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "credential_enrollment.interaction.request"
+        "kernel_browser"
+            | "notes"
+            | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"
@@ -989,3 +1056,6 @@ fn rewrite_persistent_results(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notes_tests;

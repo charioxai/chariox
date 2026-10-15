@@ -59,14 +59,17 @@ async fn dispatch(
         state.owned.prompt_state_owner.clone(),
         Default::default(),
     );
-    crate::runtime::interactive_command_dispatcher::dispatch_interactive_command(
+    let dispatched = crate::runtime::interactive_command_dispatcher::dispatch_interactive_command(
         session_runtime,
         &agent_runtime,
         state,
         command,
         request,
-    )
-    .await
+    );
+    // MP-08 / MP-10 / MP-11: unrelated controls must not carry the protected
+    // browser action's large future on the default test/runtime stack.
+    assert!(std::mem::size_of_val(&dispatched) <= 1024);
+    dispatched.await
 }
 
 async fn revoked_control(operation: Operation, discovery: bool) {

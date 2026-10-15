@@ -36,5 +36,6 @@ pub(super) fn display_endpoint_for_slice(
         stream_protocol: None,
         stream_id: None,
         peer_public_key: None,
+        shared_display: None,
     })
 }

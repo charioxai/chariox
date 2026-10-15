@@ -79,7 +79,8 @@ fn wait(mut predicate: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-fn stage(store: &DurableKernelStateStore) {
+/// Stages the fixture App release so its catalog can be listed or started.
+pub(crate) fn stage(store: &DurableKernelStateStore) {
     let (bytes, publisher) = fixture_event_package();
     let verified = verify(
         &bytes,
@@ -117,6 +118,15 @@ fn make_control(
 }
 
 impl AppLifecycleService {
+    /// MP-08/MP-11: hold a real cold start before callable publication.
+    pub(crate) fn fixture_before_publication(&self, observe: Arc<dyn Fn() + Send + Sync>) {
+        *self.0.start_checkpoint.lock().unwrap() = Some(Arc::new(move |at| {
+            if at == StartCheckpoint::BeforePublication {
+                observe();
+            }
+        }));
+    }
+
     /// Reproduce a catalog retained when an idle App's startup fails.
     pub(crate) fn fixture_dormant_catalog(&self) {
         let catalog = self
@@ -145,7 +155,7 @@ impl AppLifecycleService {
         )
     }
 
-    fn fixture_inbox_workers_with_mode(
+    pub(crate) fn fixture_inbox_workers_with_mode(
         &self,
         mode: chariox_app_runtime::worker_process::test_fixture::Mode,
     ) -> Arc<Mutex<Vec<Observation>>> {
@@ -250,7 +260,6 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
             .desired_running
     );
     drop(old);
-    drop(service);
     drop(control);
     drop(executor);
     drop(store);

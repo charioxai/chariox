@@ -16,6 +16,45 @@ const viewport = {
   desktop_pixel_height: 1440,
 };
 
+test("MP-08/MP-10 page reconciliation overlaps independent focus and frame reads", async () => {
+  const connection = new FakeConnection(), ready = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    const value = await send(method, params, sessionId);
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") await ready.promise;
+    return value;
+  };
+  const browser = new BrowserCdpClient({connectionFactory:async()=>connection});
+  await browser.ensureConnection();
+  const inspected = browser.inspectPage(connection, {targetId:"target-a"}, {});
+  try {
+    for (let n=0;n<20;n++) await new Promise(setImmediate);
+    assert.equal(connection.calls.filter(c=>c.method==="Page.getFrameTree").length,2,
+      "frame registration must progress while the renderer focus reply is pending");
+  } finally { ready.resolve(); await inspected; await browser.close(); }
+});
+
+test("MP-08/MP-10/MP-11 failed focus drains pending frame observation before returning", async () => {
+  const connection = new FakeConnection(), ready = Promise.withResolvers();
+  const send = connection.send.bind(connection); let frames=0,settled=false;
+  connection.send = async (method, params, sessionId) => {
+    const value = await send(method, params, sessionId);
+    if (method === "Page.getFrameTree" && ++frames === 2) await ready.promise;
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") throw Error("Execution context was destroyed");
+    return value;
+  };
+  const browser = new BrowserCdpClient({connectionFactory:async()=>connection});
+  await browser.ensureConnection();
+  const inspected = browser.inspectPage(connection,{targetId:"target-a"},{}).then(
+    ()=>{settled=true;assert.fail("stale focus must fail closed");},
+    error=>{settled=true;assert.equal(error.code,"stale_document_reference");});
+  try {
+    for (let n=0;n<20;n++) await new Promise(setImmediate);
+    assert.equal(settled,false,"a rejected focus read must not leave frame work behind the caller");
+  } finally { ready.resolve();await inspected;await browser.close(); }
+  assert.equal(browser.documentIdsByTarget.has("target-a"),false);
+});
+
 test("concurrent reads share connection initialization", async () => {
   const ready = Promise.withResolvers();
   const connection = new FakeConnection();
@@ -154,6 +193,53 @@ test("a Tab that closes while it is inspected drops out instead of failing the r
   const reconciled = await browser.reconcile(viewport);
   assert.deepEqual(reconciled.tabs.map((tab) => tab.target_id), ["target-b"]);
   assert.equal(reconciled.focused_target_id, "target-b");
+});
+
+// MP-08/MP-10/MP-11: BBC workers can end between discovery and attachment.
+for (const type of ["worker", "shared_worker"]) {
+ test(`MP-10 an exited ${type} cannot fail ordinary page reconciliation`, async()=>{
+  const connection=new FakeConnection();connection.includeWorker=false;
+  connection.extraTargets=[{targetId:'transient-writer',type}];
+  const send=connection.send.bind(connection);
+  connection.send=async(method,params,session)=>{
+   if(method==='Target.attachToTarget'&&params.targetId==='transient-writer'){
+    connection.closedTargetIds.add('transient-writer');
+    throw new Error('Target.attachToTarget: No target with given id found');
+   }
+   return send(method,params,session);
+  };
+  const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+  const result=await browser.reconcile(viewport);
+  assert.deepEqual(result.tabs.map(t=>t.target_id),['target-a','target-b']);
+  assert.equal(browser.sessionsByTarget.has('transient-writer'),false);
+  // Security-critical import still independently fences all live writers.
+  connection.includeWorker=true;await browser.withCookieWritersQuiesced(async()=>{});
+  assert(connection.calls.some(c=>c.method==='Runtime.evaluate'&&c.params.expression==='self.close()'&&c.sessionId==='worker-session-a'));
+ });
+}
+for (const persistent of [false, true]) {
+ test(`MP-11 a still-listed writer ${persistent ? 'keeps its failure' : 'reattaches its stale session'}`,async()=>{
+  const connection=new FakeConnection(),send=connection.send.bind(connection);let attempts=0;
+  connection.send=async(method,params,session)=>{
+   if(method==='Target.attachToTarget'&&params.targetId==='worker-a'){
+    attempts++;if(persistent||attempts===1)throw new Error('Target.attachToTarget: No target with given id found');
+   }
+   return send(method,params,session);
+  };
+  const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+  if(persistent)await assert.rejects(browser.reconcile(viewport),/No target with given id found/);
+  else {await browser.reconcile(viewport);assert.equal(browser.sessionsByTarget.get('worker-a'),'worker-session-a');}
+  assert.equal(attempts,2);
+ });
+}
+test('MP-11 live writer attachment failures remain fail closed',async()=>{
+ const connection=new FakeConnection(),send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.attachToTarget'&&params.targetId==='worker-a')throw new Error('Target.attachToTarget: permission denied');
+  return send(method,params,session);
+ };
+ const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await assert.rejects(browser.reconcile(viewport),/permission denied/);
 });
 
 test("viewport validation happens before opening a browser connection", async () => {
@@ -1612,3 +1698,35 @@ test("isolated-world focus keeps the physical visibility captured by input emula
   assert.equal((await browser.reconcile(viewport)).focused_target_id, "target-b");
   await browser.close();
 });
+
+// MP-08/MP-10: a native viewer click can navigate between the frame read and
+// the focus poll; the destroyed world is a stale document, which reconcile retries.
+test("MP-08/MP-10 a focus poll racing a navigation reports a stale document", async () => {
+  const browser = new BrowserCdpClient({ connectionFactory: async () => ({}) });
+  const connection = { async send(method) {
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 3 };
+    throw new Error("Runtime.evaluate: Cannot find context with specified id");
+  } };
+  await assert.rejects(browser.readFocus(connection, "s", "t", { id: "f", loaderId: "d" }), error => error.code === "stale_document_reference");
+  assert.equal(browser.focusWorldsByTarget.has("t"), false);
+});
+
+test("MP-08 CDP reconciliation retains Chromium popup creation origins", async () => {
+  const connection = new FakeConnection(), send = connection.send.bind(connection)
+  connection.send = async (method, ...args) => {
+    const result = await send(method, ...args)
+    if (method === "Target.getTargets") result.targetInfos.find(target => target.targetId === "target-b").openerId = "target-a"
+    return result
+  }
+  const browser = new BrowserCdpClient({connectionFactory: async () => connection})
+  const state = await browser.reconcile(viewport)
+  assert.equal(state.tabs.find(tab => tab.target_id === "target-b").opener_target_id, "target-a")
+  assert(!Object.hasOwn(state.tabs.find(tab => tab.target_id === "target-a"), "opener_target_id"))
+})
+
+// MP-08/MP-10/MP-11: fail-first real BBC seam: snapshot_frame_limit during state.
+test('ordinary tab reconciliation survives more than64 unrelated advertising frame targets',async()=>{
+ const connection=new FakeConnection();connection.extraTargets=Array.from({length:80},(_,i)=>({targetId:'ad-'+i,type:'iframe'}));
+ const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ try{const state=await browser.reconcile(viewport);assert.equal(state.tabs.length,2);assert.equal(connection.calls.filter(c=>c.method==='Target.attachToTarget'&&c.params.targetId.startsWith('ad-')).length,0,'state must not attach unrelated iframe targets; isolated listeners own bounded child sessions')}finally{await browser.close()}
+})

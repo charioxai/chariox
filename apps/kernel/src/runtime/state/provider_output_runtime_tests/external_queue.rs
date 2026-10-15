@@ -842,3 +842,73 @@ async fn losing_queue_claim_does_not_release_the_winning_workflow_workspace_clai
     assert!(loser.is_none());
     assert_eq!(active.unwrap().id(), winner.prompt_id);
 }
+
+// MP-08/MP-10/MP-11: a provider-only edit must not carry another harness's profile.
+#[tokio::test]
+async fn provider_only_switch_selects_compatible_defaults_atomically() {
+    let worktree = crate::test_support::TestWorktree::new("provider-only-switch");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (room, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let registry = app.provider_account_profile_registry();
+    let old = registry
+        .create_managed(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "opencode",
+            "Old account",
+        )
+        .unwrap();
+    let expected = registry
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+        .unwrap();
+    app.agents()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "opencode",
+            Some("opencode/gpt-6-luna".into()),
+            Some("high".into()),
+            Some(old.profile_id.clone()),
+            agent.provider_resume_state().clone(),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let changed = runtime
+        .update_agent_profile(
+            room.id(),
+            agent.id(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("codex".into()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.provider(), "codex");
+    assert_eq!(changed.provider_account_profile(), expected.profile_id);
+    assert_eq!(changed.model(), None);
+    assert_eq!(changed.effort(), None);
+    let before = changed.clone();
+    let rejected = runtime
+        .update_agent_profile(
+            room.id(),
+            agent.id(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("opencode".into()),
+            Some("missing-account".into()),
+            None,
+            None,
+        )
+        .await;
+    assert!(rejected.is_err());
+    let retained = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+    assert_eq!(retained.provider(), before.provider());
+    assert_eq!(
+        retained.provider_account_profile(),
+        before.provider_account_profile()
+    );
+}

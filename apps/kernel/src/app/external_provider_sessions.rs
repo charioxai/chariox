@@ -472,7 +472,7 @@ impl ExternalProviderSessionIndexStore {
                     .provider
                     .as_deref()
                     .and_then(normalize_external_provider_filter)
-                    .map_or(true, |provider| session.provider == provider)
+                    .is_none_or(|provider| session.provider == provider)
             })
             .cloned()
             .collect::<Vec<_>>();

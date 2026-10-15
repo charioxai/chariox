@@ -36,6 +36,7 @@ impl KernelRuntimeState {
                 self.owned.agent_store.clone(),
                 self.owned.slice_store.clone(),
                 self.owned.metaagent_events.clone(),
+                self.owned.room_computer_revoked.clone(),
                 policy,
             ),
         )
@@ -43,6 +44,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn pump_transport_runtime(&self) {
         self.owned.announce_durable_writer_condition();
+        self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -54,6 +56,28 @@ impl KernelRuntimeState {
         }
         if !self.owned.publication_activation.is_active() {
             return;
+        }
+        let now = crate::session::unix_epoch_ms();
+        let next = self
+            .owned
+            .next_agent_lifecycle_sweep_ms
+            .load(Ordering::Acquire);
+        if next > now.saturating_add(crate::durable_state::agent_lifecycle::SWEEP_MS) {
+            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(
+                next,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        if claim_periodic_sweep(
+            &self.owned.next_agent_lifecycle_sweep_ms,
+            now,
+            crate::durable_state::agent_lifecycle::SWEEP_MS,
+        ) {
+            if let Err(error) = self.sweep_agent_lifecycle().await {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
+            }
         }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
@@ -430,6 +454,26 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.stop_app_grant_wakes();
+        for id in self.app_control().user_views().shutdown() {
+            self.app_control().views().forget_session(&id);
+            self.app_control().views().keep_pumping(&id);
+        }
+        let browser_host = self.owned.kernel_browser_host.clone();
+        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "kernel_browser.shutdown",
+                message: "MD-2: shutdown task failed".into(),
+            })
+            .and_then(|result| {
+                result.map_err(|message| DaemonError::LocalTransport {
+                    operation: "kernel_browser.shutdown",
+                    message,
+                })
+            });
+        let wakes = self.owned.agent_wakes.clone();
+        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;
@@ -477,10 +521,12 @@ impl KernelRuntimeState {
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        browser_result?;
         controller_result?;
         app_result
     }
 
+    #[cfg(test)]
     pub(crate) fn session_snapshot_projection(
         &self,
         session_id: &str,
@@ -535,36 +581,12 @@ impl KernelRuntimeState {
                 attachment_id: attachment_id.to_string(),
             });
         }
-        let mut projection = self.session_snapshot_projection_for_user(
+        let projection = self.session_snapshot_projection_for_user(
             session_id,
             last_event_id,
             Some(attachment.owner_user_id()),
         )?;
-        projection.session = projection
-            .session
-            .redacted_for_user(attachment.owner_user_id());
-        projection.agent_activity.retain(|agent_id, _| {
-            projection
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        });
-        if projection
-            .provider_run
-            .as_ref()
-            .and_then(|run| run.agent_instance_id())
-            .is_some_and(|agent_id| {
-                !projection
-                    .session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == agent_id)
-            })
-        {
-            projection.provider_run = None;
-        }
-        Ok(projection)
+        projection.redacted_for_user(attachment.owner_user_id(), &self.owned.durable_state_store)
     }
 }
 
@@ -594,10 +616,10 @@ fn transport_runtime_pump_interval_for_state(
 }
 
 fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
-    idle_ttl_ms
-        .min(orphan_ttl_ms)
-        .min(MAX_PROVIDER_PROCESS_GC_INTERVAL_MS)
-        .max(MIN_PROVIDER_PROCESS_GC_INTERVAL_MS)
+    idle_ttl_ms.min(orphan_ttl_ms).clamp(
+        MIN_PROVIDER_PROCESS_GC_INTERVAL_MS,
+        MAX_PROVIDER_PROCESS_GC_INTERVAL_MS,
+    )
 }
 
 fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {

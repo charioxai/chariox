@@ -1,0 +1,382 @@
+//! MD-DISPLAY-04: caller-bound registration on the existing relay event route.
+use super::subscriptions::{RelaySubscriptionTask, RelaySubscriptionTasks};
+use super::*;
+use chariox_relay::protocol::RelayCallerIdentity;
+// MD-DISPLAY-04: delivery registration only; policy stays in the host service.
+pub(super) struct DisplaySubscription {
+    pub(super) request_id: String,
+    pub(super) relay_id: String,
+    pub(super) display_id: String,
+    pub(super) generation: String,
+    pub(super) identity: Option<RelayCallerIdentity>,
+    pub(super) public_key: String,
+    pub(super) resume: Option<u64>,
+}
+
+// Room admission makes a peer round trip. Queue it in the connection's existing
+// subscription registry so its reader can receive that response; unsubscribe and
+// connection teardown can cancel an admission before it registers delivery.
+pub(super) async fn enqueue_subscribe(
+    router: &Arc<CommandRouter>,
+    outgoing: &RelayOutgoingSender,
+    tasks: &RelaySubscriptionTasks,
+    events: &Arc<RelayEventRuntime>,
+    subscription: DisplaySubscription,
+) -> Result<(), DaemonError> {
+    let router = Arc::clone(router);
+    let writer = outgoing.clone();
+    let owned_tasks = Arc::clone(tasks);
+    let events = Arc::clone(events);
+    let request_id = subscription.request_id.clone();
+    let queued = super::display_admission::enqueue(
+        tasks,
+        subscription.relay_id.clone(),
+        subscription.public_key.clone(),
+        async move {
+            if super::subscriptions::handle_relay_subscribe(
+                &router,
+                &writer,
+                &owned_tasks,
+                &events,
+                subscription.request_id,
+                subscription.relay_id,
+                subscription.display_id,
+                subscription.generation,
+                subscription.identity,
+                subscription.public_key,
+                Some("kernel_browser_display".into()),
+                subscription.resume,
+            )
+            .await
+            .is_err()
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "display admission response could not be delivered",
+                    serde_json::json!({}),
+                );
+            }
+        },
+    )
+    .await;
+    if !queued {
+        return send_outgoing_envelope(
+            outgoing,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: request_id,
+                encrypted_response: None,
+                error: Some(super::request_errors::map_relay_error(
+                    &DaemonError::LocalTransport {
+                        operation: "kernel_browser",
+                        message: "MD-DISPLAY: display admission is already pending or at capacity"
+                            .into(),
+                    },
+                )),
+            },
+        );
+    }
+    Ok(())
+}
+
+pub(super) async fn handle_subscribe(
+    router: &Arc<CommandRouter>,
+    outgoing_tx: &RelayOutgoingSender,
+    tasks: &RelaySubscriptionTasks,
+    subscription: DisplaySubscription,
+) -> Result<(), DaemonError> {
+    let DisplaySubscription {
+        request_id,
+        relay_id,
+        display_id,
+        generation,
+        identity,
+        public_key,
+        resume,
+    } = subscription;
+    use crate::runtime::command::{KernelCommand, KernelCommandSource};
+    let request =
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::State,
+        });
+    let caller = KernelCommand::from_local_request_with_caller(
+        request_id.clone(),
+        KernelCommandSource::RelayClient,
+        display_subscription_caller(router, identity, &public_key)?,
+        None,
+        None,
+        &request,
+    );
+    let admission = match generation.parse::<u64>() {
+        Ok(generation) if resume.is_none() => {
+            router
+                .runtime_state()
+                .kernel_browser_display_attach(&caller, display_id.clone(), generation)
+                .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "kernel_browser",
+            message: "MD-DISPLAY: fresh generation-bound subscription required".into(),
+        }),
+    };
+    if let Err(error) = admission {
+        return send_outgoing_envelope(
+            outgoing_tx,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: request_id,
+                encrypted_response: None,
+                error: Some(super::request_errors::map_relay_error(&error)),
+            },
+        );
+    }
+    let mut guard = tasks.lock().await;
+    guard.retain(|_, task| task.display_id.is_none() || !task.handle.is_finished());
+    let key = format!("display:{display_id}:{public_key}");
+    if let Some(old) = guard.remove(&key) {
+        old.handle.abort();
+        if let Some(pump) = &old.display_pump {
+            pump.stop();
+        }
+    }
+    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack.
+    let generation = generation.parse::<u64>().unwrap_or_default();
+    let pump = super::display_pump::DisplayPump::new(generation);
+    guard.insert(
+        key.clone(),
+        RelaySubscriptionTask {
+            display_id: Some(display_id.clone()),
+            display_pump: Some(pump.clone()),
+            relay_subscription_id: relay_id.clone(),
+            client_public_key: public_key.clone(),
+            handle: tokio::spawn(sleep(Duration::from_secs(60))),
+        },
+    );
+    drop(guard);
+    let request =
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::DisplayNext {
+                subscription_id: display_id.clone(),
+                generation,
+                after_sequence: 0,
+            },
+        });
+    let pump_caller = KernelCommand::from_local_request_with_caller(
+        format!("{request_id}-push"),
+        KernelCommandSource::RelayClient,
+        caller.caller.clone(),
+        None,
+        None,
+        &request,
+    );
+    tokio::spawn(super::display_pump::run(
+        super::display_pump::PumpRoute {
+            router: router.clone(),
+            outgoing_tx: outgoing_tx.clone(),
+            tasks: tasks.clone(),
+            key,
+            caller: pump_caller,
+            display_id,
+            relay_id,
+            public_key: public_key.clone(),
+        },
+        pump,
+    ));
+    let encrypted = encrypt_json_response(
+        router,
+        &public_key,
+        serde_json::json!({"ok":true,"display_attached":true}),
+    )
+    .await?;
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonResponse {
+            relay_request_id: request_id,
+            encrypted_response: Some(encrypted),
+            error: None,
+        },
+    )
+}
+
+pub(super) async fn browser_display_delivery_id(
+    tasks: &RelaySubscriptionTasks,
+    display_id: &str,
+    public_key: &str,
+) -> Option<String> {
+    let mut guard = tasks.lock().await;
+    let task = guard.values_mut().find(|task| {
+        task.display_id.as_deref() == Some(display_id)
+            && task.client_public_key == public_key
+            && !task.handle.is_finished()
+    })?;
+    task.handle.abort();
+    task.handle = tokio::spawn(sleep(Duration::from_secs(60)));
+    Some(task.relay_subscription_id.clone())
+}
+
+/// MP-08/MP-10: protocol 491 acknowledgement from the subscription's own
+/// sender key; renews its delivery lease and reports the pump state.
+pub(super) async fn acknowledge(
+    tasks: &RelaySubscriptionTasks,
+    display_id: &str,
+    public_key: &str,
+    generation: u64,
+    sequence: u64,
+    lost: bool,
+) -> Option<&'static str> {
+    let pump = {
+        let guard = tasks.lock().await;
+        guard
+            .values()
+            .find(|task| {
+                task.display_id.as_deref() == Some(display_id)
+                    && task.client_public_key == public_key
+                    && !task.handle.is_finished()
+            })?
+            .display_pump
+            .clone()?
+    };
+    let status = pump.acknowledge(generation, sequence, lost)?;
+    browser_display_delivery_id(tasks, display_id, public_key).await?;
+    Some(status)
+}
+
+pub(super) async fn refresh_admitted_display_poll(
+    tasks: &RelaySubscriptionTasks,
+    display_id: &str,
+    public_key: &str,
+) -> bool {
+    browser_display_delivery_id(tasks, display_id, public_key)
+        .await
+        .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn md_display_static_polling_renews_delivery_beyond_sixty_seconds() {
+        let tasks = Arc::new(Mutex::new(std::collections::BTreeMap::from([(
+            "display".into(),
+            RelaySubscriptionTask {
+                display_id: Some("d".into()),
+                display_pump: None,
+                relay_subscription_id: "relay".into(),
+                client_public_key: "key".into(),
+                handle: tokio::spawn(sleep(Duration::from_secs(60))),
+            },
+        )])));
+        tokio::task::yield_now().await;
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+            assert!(refresh_admitted_display_poll(&tasks, "d", "key").await);
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            browser_display_delivery_id(&tasks, "d", "key")
+                .await
+                .as_deref(),
+            Some("relay")
+        );
+        assert!(browser_display_delivery_id(&tasks, "d", "foreign")
+            .await
+            .is_none());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert!(browser_display_delivery_id(&tasks, "d", "key")
+            .await
+            .is_none());
+    }
+}
+
+// MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
+fn display_subscription_caller(
+    router: &CommandRouter,
+    identity: Option<RelayCallerIdentity>,
+    public_key: &str,
+) -> Result<crate::runtime::command::KernelCaller, DaemonError> {
+    use crate::runtime::command::KernelCaller;
+    Ok(match router.admit_self_host_terminal(public_key)? {
+        Some(grant) => KernelCaller::from_paired_terminal(grant),
+        None => KernelCaller::for_relay_request(identity),
+    })
+}
+
+#[cfg(test)]
+mod paired_tests {
+    use super::*;
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    #[tokio::test]
+    async fn mp08_mp10_mp11_paired_display_metadata_keeps_rpc_actor() {
+        let work = crate::test_support::TestWorktree::new("paired-display-actor");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config_path = work.path().join("config.toml");
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("test-transport".into());
+        config.user_config.state.path = Some(work.path().join("state.db").display().to_string());
+        let private = crate::transport::relay_crypto::generate_private_key_base64();
+        let public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+        let grant = crate::config::PersistedClientPairing {
+            client_id: "paired-web".into(),
+            alias: None,
+            terminal_type: "web".into(),
+            public_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &public,
+            ),
+            paired_at_ms: crate::session::unix_epoch_ms(),
+            revoked: false,
+        };
+        crate::runtime::self_host_terminal_grants::register(
+            &config,
+            "pairing-link",
+            &grant.client_id,
+            crate::session::unix_epoch_ms() + 60_000,
+            "web",
+            None,
+        )
+        .unwrap();
+        crate::runtime::self_host_terminal_grants::redeem(&config, "pairing-link", grant.clone())
+            .unwrap();
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let request =
+            crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::State,
+            });
+        // This is the RPC's pre-existing paired admission contract.
+        let mut rpc = KernelCaller::for_relay_request(None);
+        rpc.caller_id = grant.client_id.clone();
+        rpc.client_id = Some(grant.client_id.clone());
+        rpc.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
+        rpc.public_key_thumbprint = Some(grant.public_key_thumbprint.clone());
+        rpc.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        let command = |caller| {
+            KernelCommand::from_local_request_with_caller(
+                "paired",
+                KernelCommandSource::RelayClient,
+                caller,
+                None,
+                None,
+                &request,
+            )
+        };
+        let rpc_actor = router
+            .runtime_state()
+            .kernel_browser_terminal_context(&command(rpc))
+            .unwrap();
+        let display = display_subscription_caller(&router, None, &public).unwrap();
+        assert_eq!(
+            router
+                .runtime_state()
+                .kernel_browser_terminal_context(&command(display))
+                .expect("MP-08 P2: paired metadata is an authenticated terminal"),
+            rpc_actor
+        );
+        crate::runtime::self_host_terminal_grants::revoke(&config, &grant.client_id).unwrap();
+        assert!(
+            display_subscription_caller(&router, None, &public).is_err(),
+            "MP-11: revoked keys never acquire a display caller"
+        );
+        router.runtime_state().shutdown_cleanup().await.unwrap();
+    }
+}

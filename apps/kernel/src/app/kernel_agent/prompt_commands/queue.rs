@@ -114,7 +114,10 @@ impl<'a> KernelAgentService<'a> {
             };
             let Some(next) = next_candidate else {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
-                continue;
+                // MP-08/MP-10/MP-11: the head may be held by a sudo work
+                // fence or another admission boundary. Leave it pending;
+                // retrying it here would monopolize the App lock until release.
+                return Ok(None);
             };
             if is_workflow_prompt {
                 crate::app::RemoteLeaseRuntime::new(self.app)

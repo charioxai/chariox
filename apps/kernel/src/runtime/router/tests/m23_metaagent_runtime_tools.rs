@@ -22,18 +22,6 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
-fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
-    std::process::Command::new(node)
-        .arg("--no-warnings")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg(
-            "const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)",
-        )
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn mark_test_agent_controlled_by_metaagent(
     app: &mut DaemonApp,
     agent_id: &str,
@@ -192,13 +180,14 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             .iter()
             .all(|spec| spec.name.starts_with("chariox.meta.")
                 || spec.name == "chariox_kernel_request"
+                || spec.name == "chariox.vault.generate"
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
                 || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
-        "metaagents should only see the cached sudo interface, meta, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
+        "metaagents should only see the cached sudo interface (kernel request and Vault generation), meta, agent collaboration, read-only workspace, and recall tools: {meta_specs:?}"
     );
 
     // Discovery lets the official harness cache the interface before sudo.
@@ -294,3 +283,5 @@ mod task_scope;
 mod trace_projection;
 mod workflow_code_crud;
 mod workflow_code_patterns;
+
+mod room_admission;

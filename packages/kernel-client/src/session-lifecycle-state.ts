@@ -47,6 +47,7 @@ export type SessionLifecycleListSession = {
 }
 
 export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
+  readonly account_profile?: AgentInstance["account_profile"]
   readonly remote_execution?: AgentInstance["remote_execution"]
 }
 
@@ -290,4 +291,12 @@ export function resolveSessionAgentDefaults(
     model: defaults?.model?.trim() || fallback.model,
     effort: defaults?.effort?.trim() || fallback.effort,
   }
+}
+
+// MP-08 / MP-10 / MP-11: reconnect uses the authoritative agent selection.
+export function resolveAgentLaunchAccountProfile(
+  agent: SessionLifecycleLaunchAgent | null,
+  fallback: string,
+): string {
+  return agent?.account_profile?.trim() || fallback
 }

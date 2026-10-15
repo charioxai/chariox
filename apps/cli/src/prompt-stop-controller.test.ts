@@ -97,3 +97,27 @@ test("request falls back to the current streaming agent when active prompt targe
 
   assert.equal(requestedAgentId, "streaming-agent")
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: capture the same peer across cancellation I/O.
+test("request preserves the selected peer when focus changes while cancellation is pending", async () => {
+  let prompt = { target_agent_id: "peer" }
+  let target: string | null | undefined
+  let notified: string | null = null
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  const controller = createPromptStopController({
+    getAttachment: () => ({ id: "terminal" }), getActivePrompt: () => prompt,
+    getSessionId: () => "room", getFallbackStreamingAgentId: () => null,
+    cancelActivePrompt: async (_room: string, _terminal: string, agent?: string | null) => {
+      target = agent
+      await pending
+    },
+    onCancellationRequested: (agent) => { notified = agent }, onCancellationFailed: () => {},
+  })
+  const requested = controller.request()
+  prompt = { target_agent_id: "other" }
+  release()
+  assert.equal(await requested, true)
+  assert.equal(target, "peer")
+  assert.equal(notified, "peer")
+})

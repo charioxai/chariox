@@ -8,6 +8,7 @@ use tokio::time::Instant;
 pub(crate) struct AppOperationBudget {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    resource: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -23,6 +24,7 @@ impl AppOperationBudget {
         let cancellation = request.cancellation.clone();
         Self {
             deadline: request.deadline,
+            resource: None,
             cancelled: Arc::new(move || cancellation.is_cancelled()),
         }
     }
@@ -33,6 +35,7 @@ impl AppOperationBudget {
     pub(crate) fn from_supervisor(cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         Self {
             deadline: Instant::now() + std::time::Duration::from_secs(30),
+            resource: None,
             cancelled: Arc::new(cancelled),
         }
     }
@@ -43,7 +46,37 @@ impl AppOperationBudget {
         let parent = self.cancelled.clone();
         Self {
             deadline: self.deadline,
+            resource: self.resource.clone(),
             cancelled: Arc::new(move || parent() || cancelled()),
+        }
+    }
+
+    /// MP-08/MP-11: the writer takes the grant lock only at physical enqueue,
+    /// so revocation can still cancel work while SQLite admission is waiting.
+    pub(crate) fn with_resource(
+        mut self,
+        resource: super::kernel_browser_host::KernelBrowserResourceGrant,
+    ) -> Self {
+        let parent = self.cancelled.clone();
+        let observed = resource.clone();
+        self.cancelled = Arc::new(move || parent() || observed.cancelled());
+        self.resource = Some(resource);
+        self
+    }
+    pub(crate) fn commit<T, E: From<AppOperationStopped>>(
+        &self,
+        call: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        self.check()?;
+        let commit = || {
+            self.check()?;
+            call()
+        };
+        match &self.resource {
+            Some(resource) => resource
+                .commit(commit)
+                .map_err(|_| E::from(AppOperationStopped::Cancelled))?,
+            None => commit(),
         }
     }
 
@@ -65,6 +98,7 @@ impl AppOperationBudget {
         let cancelled = self.cancelled;
         Self {
             deadline: self.deadline,
+            resource: self.resource.clone(),
             cancelled: Arc::new(move || {
                 let result = cancelled();
                 observe();
@@ -80,6 +114,7 @@ impl AppOperationBudget {
     ) -> Self {
         Self {
             deadline,
+            resource: None,
             cancelled: Arc::new(cancelled),
         }
     }

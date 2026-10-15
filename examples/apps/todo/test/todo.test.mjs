@@ -146,3 +146,17 @@ test('reminder status reports the reminders automation without naming its workfl
   // An App runtime enrolled before the SDK read has no events.automations.
   assert.deepEqual(await status({ sdkReads: false }), { state: 'unknown', last_delivery: null });
 });
+
+// MP-08/MP-10/MP-11: the App sees who called (human owner vs agent) and treats them differently.
+test('an agent may delete only Todos an agent created; a person may delete any', async () => {
+  const kernel = fakeKernel();
+  const person = { actor: { kind: 'human', id: 'owner' } };
+  const agent = { actor: { kind: 'agent', id: 'agent-7' }, agent_id: 'agent-7' };
+  const mine = await kernel.tools.get('create_todo')({ title: 'Person Todo' }, person);
+  const theirs = await kernel.tools.get('create_todo')({ title: 'Agent Todo' }, agent);
+  assert.equal(mine.created_by, 'person');
+  assert.equal(theirs.created_by, 'agent');
+  await assert.rejects(kernel.tools.get('delete_todo')({ id: mine.id }, agent), error => error.code === 'FORBIDDEN');
+  assert.deepEqual(await kernel.tools.get('delete_todo')({ id: theirs.id }, agent), { deleted: theirs.id });
+  assert.deepEqual(await kernel.tools.get('delete_todo')({ id: mine.id }, person), { deleted: mine.id });
+});

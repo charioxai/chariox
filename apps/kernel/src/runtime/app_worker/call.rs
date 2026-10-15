@@ -315,7 +315,7 @@ fn bounded(prefix: &str, variable: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{background_context, bounded, event_request, wake_request};
+    use super::{bounded, event_request, wake_request};
     use chariox_app_runtime::{
         app_inbox::InboxItem,
         managed_state::Wake,

@@ -21,6 +21,15 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     });
     assert!(!request_is_cacheable(&control));
     assert!(!request_is_cacheable(&uninstall));
+    for request in [
+        serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
+        serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
+        // MP-11 A07: owner hand-off input is physical and never replayed.
+        serde_json::json!({"RespondToHandoff":{"session_id":"s","interaction_id":"handoff-o","action":{"kind":"enter_value","value":"fixture"}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
     let client = include_str!("../../../../../packages/kernel-client/src/ipc.ts");
     let listed = client
         .split_once("KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set([")
@@ -33,7 +42,16 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
                 .collect::<Vec<_>>()
         })
         .expect("the kernel client lists the requests it never resends");
-    assert_eq!(listed, ["ControlAppWorker", "UninstallApp"]);
+    assert_eq!(
+        listed,
+        [
+            "ControlAppWorker",
+            "UninstallApp",
+            "OpenUserAppView",
+            "CallUserAppView",
+            "RespondToHandoff"
+        ]
+    );
 }
 
 #[test]
@@ -948,5 +966,29 @@ fn command_cache_replays_floats_without_precision_loss() {
             replayed["value"].as_f64().unwrap().to_bits(),
             value.to_bits()
         );
+    }
+}
+
+#[test]
+fn md_capture_observations_reenter_live_protection_instead_of_replaying_pixels() {
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "CaptureVisibleRegion": {
+            "capture_id": "capture-1",
+            "surface": {"kind":"kernel_browser","tab_id":"host-tab-1","generation":1},
+            "region": {"x":0,"y":0,"width":1,"height":1,"viewport_width":1280,"viewport_height":800,"frame_width":1280,"frame_height":800}
+        }
+    })).unwrap();
+    assert!(!super::request_is_cacheable(&request));
+}
+
+#[test]
+fn mp08_room_display_resume_and_open_recheck_live_authority_instead_of_cached_grants() {
+    for value in [
+        serde_json::json!({"GetSliceDisplayEndpoint":{"slice_ref":"slice-1","session_id":"room-1","attachment_id":"attachment-1","viewer_public_key":"key","shared_display":{"codecs":["avc1.420033"],"bitrate":8000000,"device_scale_factor":2}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"display_suspend","subscription_id":"room-display-one","generation":1}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"display_resume","subscription_id":"room-display-one","generation":1}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(!request_is_cacheable(&request));
     }
 }

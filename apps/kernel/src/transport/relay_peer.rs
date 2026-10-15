@@ -100,17 +100,51 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// `event_actions_enabled` and leased provider-run projections lose
 /// `workflow_event_actions_enabled`, which a peer at v68 or below still requires.
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
-/// Version73 adds bounded Browser artifacts, opaque upload bytes and bounded Computer holds (MP-08/MP-10/MP-11).
-/// A v70 worker cannot decode these controller variants; reject it before dispatch.
-/// Version 101 binds the embedded local response union to local protocol 491,
+/// MP-08/MP-10/MP-11: version 86 combines the multidomain and main worker shapes.
+/// MP-08/MP-11: reserved peer89 shares the owned-desktop local contract.
+/// MP-08/MP-10/MP-11: version 90 negotiates bounded stripes.
+/// MP-08/MP-11: version 92 adds Room AT-SPI target actions and owner Computer revoke.
+/// Older worker contracts are rejected before dispatch.
+/// Version 101 (main) binds the embedded local response union to local protocol 491,
 /// restores owner-private workflow notifications to the Browser/Computer peer
 /// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 101;
+/// Version 102 reconciles the agent-model union and its leased watcher contract (MP-08/MP-09/MP-10/MP-11).
+/// Version 114 integrates the 102 agent-model/leased-watcher union, main's
+/// identity-preserving renewal and the native display binary-event transport
+/// (MP-08/MP-09/MP-10/MP-11), and includes main's 101 kernel ownership,
+/// waiting-room and Room workflow contracts (#974). Generated consumers follow
+/// this allocated version.
+/// MP-08/MP-10/MP-11: allocated 133 carries the local 525 resumption union.
+/// MP-08/MP-10/MP-11: allocated 136 carries the local 528 Browser state fields.
+/// Allocated 138 carries the local 530 band gestures and auxiliary popups.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 138;
+/// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
+/// independently of a relay's ability to downgrade its binary transport.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
+/// MP-08/MP-11: typed leased Computer grants require peer 109.
+pub(crate) const MINIMUM_LEASED_COMPUTER_PEER_VERSION: u32 = 109;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
+// MP-08/MP-09/MP-10/MP-11 A10: start and queries use the exact admitted lease.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeasedWatchedProcessAction {
+    Start {
+        wake: crate::durable_state::agent_lifecycle::AgentWake,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+        cwd: Option<String>,
+    },
+    Query {
+        wake_id: String,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+    },
+    Cancel {
+        wake_id: String,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+    },
+}
 // MP-08 / MP-10 / MP-11 public transfer binding. Values are target-sealed at the source worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectEnvironmentExportTarget {
@@ -298,6 +332,19 @@ pub struct RemoteExtensionInvocationContext {
     pub worker_machine_id: Option<String>,
 }
 
+/// MP-08/MP-11 peer109: value-free, home-selected lease and desktop authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeasedComputerGrant {
+    pub epoch: String,
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub desktop_kernel_id: String,
+    pub target: crate::local::KernelDesktopTarget,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteRoomBrowserRuntimeToolCall {
     pub tool_name: String,
@@ -329,6 +376,9 @@ impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteRoomComputerObservationCall {
+    Snapshot {
+        observer: String,
+    },
     ScreenStatus,
     Ocr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -344,6 +394,7 @@ pub enum RemoteRoomComputerObservationCall {
 impl std::fmt::Debug for RemoteRoomComputerObservationCall {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Snapshot { .. } => formatter.write_str("Snapshot(<redacted>)"),
             Self::ScreenStatus => formatter.write_str("ScreenStatus"),
             Self::Ocr { .. } => formatter.write_str("Ocr(<redacted>)"),
             Self::FindText { .. } => formatter.write_str("FindText(<redacted>)"),
@@ -473,6 +524,20 @@ pub struct RemoteGitTurnContext {
     pub prompt_summary: String,
 }
 
+/// A10: what a worker may know of a home sudo window: a revoke handle, its
+/// revision and the time left when the home sent it. It is a narrowing fence
+/// only; the home rechecks its own window on every forwarded privileged call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSudoGrant {
+    pub entry_id: String,
+    pub revision: u64,
+    pub remaining_ms: u64,
+    /// The window's first fence. A worker that does not hold the window
+    /// refuses any later one, so a worker restart ends elevation visibly.
+    #[serde(default)]
+    pub initial: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
@@ -583,6 +648,10 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
+)]
 pub enum RelayPeerRequest {
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -605,6 +674,21 @@ pub enum RelayPeerRequest {
         session_id: String,
         slice_id: String,
         command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
+    OpenRoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        viewer_public_key: String,
+        offer: crate::slice::RoomDisplayOffer,
+        viewport: crate::session::CanonicalViewport,
+        target: super::room_shared_display::RoomDisplayTarget,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        command: super::room_shared_display::RoomDisplayCommand,
     },
     OpenRoomDisplay {
         session_id: String,
@@ -762,6 +846,13 @@ pub enum RelayPeerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
+    /// A10: install or replace the worker fence for one exact leased home
+    /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
+    UpdateLeasedSudo {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        grant: LeasedSudoGrant,
+    },
     GetLeasedPromptReceipt {
         leased_agent_id: String,
         home_prompt_id: String,
@@ -851,6 +942,10 @@ pub enum RelayPeerRequest {
         home_session_id: String,
         home_agent_id: String,
     },
+    LeasedWatchedProcess {
+        leased_agent_id: String,
+        action: LeasedWatchedProcessAction,
+    },
     ForwardWorkflowRuntimeTool {
         context: RemoteWorkflowTurnContext,
         tool_name: String,
@@ -880,6 +975,15 @@ pub enum RelayPeerRequest {
         context: RemoteWorkspaceLiveSyncContext,
         tool_name: String,
         arguments: serde_json::Value,
+    },
+    SetLeasedComputerGrant {
+        leased_agent_id: String,
+        epoch: String,
+        grant: Option<LeasedComputerGrant>,
+    },
+    CheckLeasedComputerGrant {
+        context: RemoteExtensionInvocationContext,
+        epoch: String,
     },
     ForwardRoomBrowserRuntimeTool {
         context: RemoteExtensionInvocationContext,
@@ -1005,6 +1109,9 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    LeasedWatchedProcess {
+        receipt: Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>,
+    },
     WorkflowNotificationSources {
         protocol_version: u32,
         sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
@@ -1020,6 +1127,11 @@ pub enum RelayPeerResponse {
         session_id: String,
         slice_id: String,
         result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        result: super::room_shared_display::RoomDisplayResult,
     },
     RoomDisplayOpened {
         session_id: String,
@@ -1044,6 +1156,8 @@ pub enum RelayPeerResponse {
     Pong {
         value: String,
         daemon_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_peer_protocol_version: Option<u32>,
     },
     ManagedSliceRelayTokenInstalled {
         slice_id: String,
@@ -1143,6 +1257,7 @@ pub enum RelayPeerResponse {
     LeasedPromptCancelled {
         cancellation: PromptCancellation,
     },
+    LeasedSudoUpdated,
     LeasedProjectEnvironmentSetupTargetResolved {
         worker_id: String,
         platform: String,
@@ -1185,6 +1300,10 @@ pub enum RelayPeerResponse {
     },
     MetaRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    LeasedComputerGrantUpdated {},
+    LeasedComputerGrantChecked {
+        grant: LeasedComputerGrant,
     },
     RoomBrowserRuntimeToolHandled {
         result: RemoteRoomBrowserRuntimeToolResult,
@@ -1305,7 +1424,10 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1342,7 +1464,10 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1364,7 +1489,10 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1430,7 +1558,10 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1474,7 +1605,10 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1649,7 +1783,10 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1954,7 +2091,10 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+        assert_eq!(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            crate::test_support::expected_local_protocol_version()
+        );
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1981,7 +2121,10 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2019,7 +2162,10 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2073,13 +2219,16 @@ mod project_environment_export_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_101_shapes {
+mod workflow_notification_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};
     #[test]
-    fn mp08_mp10_completion_peer_101_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+    fn mp08_mp10_completion_peer_current_snapshot() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
@@ -2110,26 +2259,26 @@ mod workflow_notification_101_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2147,10 +2296,147 @@ mod workflow_notification_101_shapes {
             },
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
         ];
-        let wire = serde_json::json!({"requests":requests,"responses":responses});
+        let mut wire = serde_json::json!({"requests":requests,"responses":responses});
+        // Pin the wire shape independently of the generated current peer number.
+        for collection in ["requests", "responses"] {
+            for message in wire[collection].as_array_mut().unwrap() {
+                if let Some(version) = message.get_mut("protocol_version") {
+                    assert_eq!(*version, RELAY_PEER_PROTOCOL_VERSION);
+                    *version = serde_json::json!(0);
+                }
+            }
+        }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "d9e19811e96919dc9760c1e0151c755a54c7760bc7e05a398e2db381d1a291a8"
+            "874bc240ba66a34636edf93b2aec7ef58cfbc9cbd4a18cbded6c51e687900b7a"
         );
+    }
+}
+
+#[cfg(test)]
+mod multidomain_union_tests {
+    #[test]
+    fn md_notes_room_observation_protocol_74_snapshot_and_hash() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        assert_eq!(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            crate::test_support::expected_local_protocol_version()
+        );
+        let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1","quote":{"exact":"quote","prefix":"before","suffix":"after"}}});
+        let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null,"anchoring":null}}});
+        let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+        let decoded: super::RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), response);
+        let snapshot = serde_json::json!({"request":request,"response":response});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "f56562dd26d9adb6d99f4173955085b8ac953b9f8064cfbbc3f93f9f01a8a7a0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod notes_protocol_probe_tests {
+    #[test]
+    fn md_notes_protocol_probe_preserves_legacy_pong_and_pins_union_advertisement() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let current = serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1","relay_peer_protocol_version":74});
+        let legacy =
+            serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1"});
+        for (value, expected) in [(&current, Some(74)), (&legacy, None)] {
+            let decoded: super::RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                matches!(&decoded, super::RelayPeerResponse::Pong { relay_peer_protocol_version, .. } if *relay_peer_protocol_version == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+        }
+        let snapshot = serde_json::json!({"current":current,"legacy":legacy});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "5c9e2f881c4ebce7f3ee9f4af71ec364547a4f51f451f46d457e5809885c29ac"
+        );
+    }
+}
+
+#[cfg(test)]
+mod leased_watched_process_protocol_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_leased_process_query_shape_is_bound_to_peer102() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let binding = crate::durable_state::agent_lifecycle::LeasedProcessBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased".into(),
+            home_prompt_id: "prompt".into(),
+            worker_provider_run_id: "run".into(),
+        };
+        let request = RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id: "leased".into(),
+            action: LeasedWatchedProcessAction::Query {
+                wake_id: "wake".into(),
+                binding,
+            },
+        };
+        let value = serde_json::to_value(request).unwrap();
+        let expected = serde_json::json!({"kind":"leased_watched_process","leased_agent_id":"leased","action":{"Query":{"wake_id":"wake","binding":{"worker_kernel_id":"worker","worker_machine_id":"machine","execution_lease_id":"lease","leased_agent_id":"leased","home_prompt_id":"prompt","worker_provider_run_id":"run"}}}});
+        assert_eq!(value, expected);
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!("{:x}", Sha256::digest(value.to_string())),
+            "2432555231cea1828a200e1a9519230b8689bf51496fe714ec1a35cd239122d6"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mp08_transport_compatibility_tests {
+    #[test]
+    fn mp08_mp11_transport_downgrade_cannot_admit_legacy_worker_contracts() {
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        // MP-08/MP-10/MP-11: transport negotiation does not grant an older
+        // worker the integrated task, wake and leased-watcher contract.
+        for (version, compatible) in [
+            (None, false),
+            (Some(89), false),
+            (Some(90), false),
+            (Some(94), false),
+            (Some(96), false),
+            (Some(102), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION - 1), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION), true),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION + 1), true),
+        ] {
+            let binding: crate::agent::RemoteAgentBinding =
+                serde_json::from_value(serde_json::json!({
+                    "worker_kernel_id":"worker","worker_machine_id":"machine",
+                    "execution_lease_id":"lease","leased_agent_id":"agent",
+                    "relay_peer_protocol_version":version,
+                }))
+                .unwrap();
+            assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
+        }
     }
 }

@@ -632,3 +632,83 @@ test("navigation keeps the enqueue wait armed and target close cancels it", asyn
   assert.deepEqual((await close).open_targets, []);
   assert.equal(tabs.callWaiters.size, 0);
 });
+
+test("explicit App close is target-bound and drops its queued calls and interception", async () => {
+  const {tabs,connection,result} = await opened();
+  await connection.emit({method:"Runtime.bindingCalled",sessionId:"s1",params:{name:"__charioxAppCall",payload:JSON.stringify({id:"close-pending",method:"echo",params:{text:"queued"}})}});
+  await tabs.close({target_id:result.target_id});
+  assert.equal(tabs.apps.size,0);
+  const drained = await tabs.takeCalls();
+  assert.deepEqual(drained.open_targets,[]);
+  assert.deepEqual(drained.calls,[]);
+  assert(connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId===result.target_id));
+  await assert.rejects(tabs.close({target_id:"foreign-target"}));
+  assert(!connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId==="foreign-target"));
+});
+
+
+test("user-domain instances of one App have independent targets and do not adopt Room placeholders", async () => {
+  const {browser,connection}=fakeBrowser();
+  connection.targets=[{targetId:"restored",type:"page",url:appPlaceholder(appOrigin("a"))}];
+  const tabs=new AppTabs(browser);
+  const params={origin_label:"a",installation_id:"same",assets:[asset("index.html","hi")]};
+  const first=await tabs.open({...params,instance_id:"user-app-a"});
+  const second=await tabs.open({...params,instance_id:"user-app-b"});
+  assert.notEqual(first.target_id,second.target_id);
+  assert.notEqual(first.target_id,"restored");
+  assert.deepEqual(await tabs.open({...params,instance_id:"user-app-a"}),first);
+  await tabs.close({target_id:first.target_id});
+  assert.deepEqual((await tabs.takeCalls()).open_targets,[second.target_id]);
+  for (const instance_id of ["", "../other", {}, "x".repeat(129)]) {
+    await assert.rejects(tabs.open({...params,instance_id}));
+  }
+});
+
+// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
+// own record of the input it dispatched there, never from the page.
+const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
+  params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
+const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
+const agentOf = (id) => ({ kind: "agent", id });
+
+test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
+  const { tabs, connection } = await opened();
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  tabs.noteAgent("t1", "agent-7");
+  // Timers, browser-generated events and the person's own clicks look alike to
+  // the controller: after the agent, none of them is the person's.
+  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+  tabs.noteAgent("unknown", "agent-7");
+});
+
+test("the page cannot name who a call runs as", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
+  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
+});
+
+test("a new document of the Tab keeps the agents that drove it", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  await navigated(connection, "doc-2");
+  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+});
+
+test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
+  const { tabs, connection } = await opened();
+  const answers = [];
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, id) => {
+    if (method === "Runtime.evaluate") answers.push(params.expression);
+    return send(method, params, id);
+  };
+  tabs.noteAgent("t1", "agent-7");
+  tabs.noteAgent("t1", "agent-8");
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), []);
+  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
+});
