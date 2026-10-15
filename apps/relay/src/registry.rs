@@ -655,7 +655,6 @@ impl RelayRegistry {
         realm_id: &str,
         targets: Option<&[String]>,
     ) -> Vec<RelayMachinePresence> {
-        let relay_aliases = self.relay_kernel_aliases(realm_id);
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
         for registration in self.daemon_registrations_in_realm(realm_id) {
             if targets.is_some_and(|targets| !targets.contains(&registration.daemon_id)) {
@@ -680,11 +679,7 @@ impl RelayRegistry {
                         .iter()
                         .flat_map(|registration| registration.provider_accounts.iter().cloned()),
                 );
-                let machine_alias = registrations
-                    .iter()
-                    .min_by_key(|registration| normalized_kernel_started_at_ms(registration))
-                    .and_then(|registration| relay_aliases.get(&registration.daemon_id))
-                    .cloned();
+                let machine_alias = Some(self.machine_alias_in_realm(realm_id, &machine_id));
                 RelayMachinePresence {
                     machine_alias,
                     machine_id,
@@ -713,9 +708,9 @@ impl RelayRegistry {
                         .get(&registration.daemon_id)
                         .map(String::as_str)
                         == Some(machine_ref)
-                    || registration.machine_alias.as_deref() == Some(machine_ref)
+                    || self.machine_alias_in_realm(realm_id, &registration.machine_id) == machine_ref
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| self.kernel_presence(realm_id, registration, &relay_aliases))
             .collect()
     }
 
@@ -739,18 +734,19 @@ impl RelayRegistry {
                         .map(String::as_str)
                         == Some(kernel_ref)
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| self.kernel_presence(realm_id, registration, &relay_aliases))
     }
 
     fn kernel_presence(
         &self,
+        realm_id: &str,
         registration: &DaemonRegistration,
         relay_aliases: &BTreeMap<String, String>,
     ) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: registration.daemon_id.clone(),
             machine_id: registration.machine_id.clone(),
-            machine_alias: relay_aliases.get(&registration.daemon_id).cloned(),
+            machine_alias: Some(self.machine_alias_in_realm(realm_id, &registration.machine_id)),
             relay_alias: relay_aliases.get(&registration.daemon_id).cloned(),
             kernel_alias: registration
                 .kernel_alias
@@ -777,6 +773,25 @@ impl RelayRegistry {
             })
             .map(|(_, registration)| registration)
             .filter(|registration| daemon_registration_is_kernel_target(registration))
+    }
+
+    // Machine names are registration metadata. Numbered relay aliases address
+    // kernels and change with live inventory; never project them as machine names.
+    fn machine_alias_in_realm(&self, realm_id: &str, machine_id: &str) -> String {
+        self.daemon_registrations_in_realm(realm_id)
+            .filter(|registration| registration.machine_id == machine_id)
+            .filter_map(|registration| {
+                registration.machine_alias.as_deref().map(str::trim)
+                    .filter(|alias| !alias.is_empty())
+                    .map(|alias| (registration, alias))
+            })
+            .min_by(|(left, _), (right, _)| {
+                normalized_kernel_started_at_ms(left)
+                    .cmp(&normalized_kernel_started_at_ms(right))
+                    .then_with(|| left.daemon_id.cmp(&right.daemon_id))
+            })
+            .map(|(_, alias)| alias.to_string())
+            .unwrap_or_else(|| machine_id.to_string())
     }
 
     fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {
