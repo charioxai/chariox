@@ -181,7 +181,9 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
 #[tokio::test]
 async fn browser_loader_reports_deferred_tools_and_retains_one_kernel_continuation() {
     crate::test_support::isolated_env_test!();
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
             crate::session::CreateSessionRequest::new("loader-catalog", "loader-catalog")
@@ -231,6 +233,47 @@ async fn browser_loader_reports_deferred_tools_and_retains_one_kernel_continuati
             "open my browser"
         );
     }
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, agent.id())
+        .unwrap();
+    let (task, correction) = runtime
+        .owned
+        .settle_agent_task(
+            session.id(),
+            agent.id(),
+            &prompt,
+            "catalog-fixture-run",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.pending_prompt_id.as_deref(),
+        Some("task-catalog:loader-catalog-request"),
+        "MP-08/MP-10/MP-11: refresh must retain its source task before completion supervision"
+    );
+    assert!(!correction);
+    assert!(!task.correction_used);
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Working
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         runtime.owned.provider_store.list_runs().is_empty(),
         "catalog fixture launches no provider"

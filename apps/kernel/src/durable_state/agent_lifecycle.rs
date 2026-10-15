@@ -1,6 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
+#[cfg(test)]
+mod catalog_continuation_tests;
 pub(crate) mod completion;
+mod continuations;
 mod delegation;
 mod delivery;
 mod leased_processes;

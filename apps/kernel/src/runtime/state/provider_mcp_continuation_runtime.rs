@@ -217,6 +217,17 @@ impl KernelRuntimeState {
         previous_prompt: &str,
         reload_reason: ProviderReloadReason,
     ) {
+        let source_prompt_id = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .map(|prompt| prompt.id().to_string());
         let mut pending = self.owned.pending_mcp_continuations.write();
         if let Some(existing) = pending.get_mut(agent_id) {
             // The first continuation owns the interrupted turn. Later grants in
@@ -228,6 +239,7 @@ impl KernelRuntimeState {
                 PendingMcpContinuation {
                     session_id: session_id.to_string(),
                     agent_id: agent_id.to_string(),
+                    source_prompt_id,
                     mcp_name: mcp_name.to_string(),
                     previous_prompt: previous_prompt.to_string(),
                     reload_reason,
@@ -372,6 +384,34 @@ impl KernelRuntimeState {
         let (hidden_system_context, _manifest) =
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            // Only the exact source task's committed intent can replay a turn.
+            // Refreshing a catalog never clears an owner-visible blocked task.
+            let task = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(session_id), Some(agent_id))?
+                .into_iter()
+                .find(|task| {
+                    continuation.source_prompt_id.as_deref() == Some(task.prompt_id.as_str())
+                        && task.state
+                            == crate::durable_state::agent_lifecycle::ExecutionState::Working
+                        && task.wait.is_none()
+                        && task.pending_prompt_id.as_deref()
+                            == Some(format!("task-catalog:{}", task.prompt_id).as_str())
+                });
+            if let Some(task) = task {
+                let attachment = self.ensure_mcp_continuation_attachment(&continuation)?;
+                self.dispatch_task_continuation_with_context(
+                    &task,
+                    &attachment,
+                    continuation.previous_prompt,
+                    Some(hidden_system_context),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         let prompt = crate::session::PromptQueueItem::new(
             format!(
                 "pending-draft:mcp-continuation:{}:{}",

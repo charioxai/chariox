@@ -262,6 +262,7 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     let continuation = PendingMcpContinuation {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
+        source_prompt_id: None,
         mcp_name: "mid_session_script".into(),
         previous_prompt: "invoke the granted script".into(),
         reload_reason: ProviderReloadReason::RuntimeToolCatalog,
