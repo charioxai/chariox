@@ -188,9 +188,12 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             .reserve()
             .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        timing.mark("queue_reserve");
         let event_id = self.event_ids.next()?;
+        timing.mark("event_id");
         let mut streams = self.streams.lock().await;
         persistence.reconcile_completed_events(&mut streams);
+        timing.mark("reconcile");
         let stream = streams.entry(stream_id.clone()).or_default();
         let logged = LoggedEvent {
             event_id,
@@ -200,6 +203,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             event,
         };
         let append_jsonl = logged_event_jsonl_payload(&logged)?;
+        timing.mark("serialize");
         let logged_jsonl_bytes = append_jsonl.len() as u64;
         stream.next_stream_seq += 1;
         stream.retain(logged.clone(), logged_jsonl_bytes);
