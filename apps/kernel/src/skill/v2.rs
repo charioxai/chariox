@@ -127,6 +127,27 @@ pub struct NativeSkillEntry {
     pub discovery_error: Option<String>,
 }
 
+/// Read-only details of the focused harness entry, never an installed revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSkillProvenance {
+    pub source_machine: Option<String>,
+    pub locator: Option<String>,
+    pub provider_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSkillDetails {
+    pub entry: NativeSkillEntry,
+    pub provenance: NativeSkillProvenance,
+    pub body: Option<String>,
+    pub files: Vec<SkillFileManifest>,
+    pub declared_version: Option<String>,
+    pub compatibility_notes: Vec<String>,
+    pub unavailable_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SkillDelivery {
@@ -267,6 +288,27 @@ pub struct SkillCatalogMutation {
     pub actions: Vec<SkillCatalogAction>,
 }
 
+/// Home-owned preview identity. Mutation accepts its ID only; the home service
+/// verifies owner/scope/revision and the canonical mutation hash, and publishes
+/// the staged reviewed bytes without fetching a newer source at approval time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillReviewReceipt {
+    pub id: String,
+    pub expires_at_ms: u64,
+    pub mutation_sha256: String,
+    pub sources: Vec<SkillReviewedSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillReviewedSource {
+    pub action_index: u32,
+    pub skill_id: String,
+    pub digest: String,
+    pub source_revision: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SkillsV2Request {
@@ -282,12 +324,17 @@ pub enum SkillsV2Request {
         agent_id: String,
         refresh: bool,
     },
+    NativeDetails {
+        agent_id: String,
+        selection: SkillSelection,
+    },
     Loads {
         session_id: String,
         agent_id: Option<String>,
     },
     Mutate {
         mutation: SkillCatalogMutation,
+        review_receipt_id: String,
     },
     Preview {
         mutation: SkillCatalogMutation,
@@ -331,6 +378,9 @@ pub enum SkillsV2Response {
         entries: Vec<NativeSkillEntry>,
         inventory_revision: String,
     },
+    NativeDetails {
+        details: NativeSkillDetails,
+    },
     Loads {
         records: Vec<SkillLoadRecord>,
     },
@@ -338,6 +388,7 @@ pub enum SkillsV2Response {
         expected_revision: u64,
         affected: Vec<SkillRecord>,
         collisions: Vec<String>,
+        review_receipt: SkillReviewReceipt,
     },
     Published {
         revision: u64,

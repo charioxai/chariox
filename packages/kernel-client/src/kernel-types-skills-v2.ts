@@ -84,6 +84,22 @@ export type NativeSkillEntry = {
   discovery_error: string | null
 }
 
+export type NativeSkillProvenance = {
+  source_machine: string | null
+  locator: string | null
+  provider_version: string | null
+}
+
+export type NativeSkillDetails = {
+  entry: NativeSkillEntry
+  provenance: NativeSkillProvenance
+  body: string | null
+  files: (SkillFileManifest)[]
+  declared_version: string | null
+  compatibility_notes: (string)[]
+  unavailable_reason: string | null
+}
+
 export type SkillDelivery =
   | { kind: "chariox" }
   | { kind: "provided_by"; provider: string; entry_id: string }
@@ -145,12 +161,27 @@ export type SkillCatalogMutation = {
   actions: (SkillCatalogAction)[]
 }
 
+export type SkillReviewReceipt = {
+  id: string
+  expires_at_ms: number
+  mutation_sha256: string
+  sources: (SkillReviewedSource)[]
+}
+
+export type SkillReviewedSource = {
+  action_index: number
+  skill_id: string
+  digest: string
+  source_revision: string | null
+}
+
 export type SkillsV2Request =
   | { action: "catalog"; project_id: string | null; agent_id: string | null }
   | { action: "get"; skill_id: string; project_id: string | null }
   | { action: "native_inventory"; agent_id: string; refresh: boolean }
+  | { action: "native_details"; agent_id: string; selection: SkillSelection }
   | { action: "loads"; session_id: string; agent_id: string | null }
-  | { action: "mutate"; mutation: SkillCatalogMutation }
+  | { action: "mutate"; mutation: SkillCatalogMutation; review_receipt_id: string }
   | { action: "preview"; mutation: SkillCatalogMutation }
   | { action: "list"; session_id: string; agent_id: string; cursor: string | null; limit: number }
   | { action: "load"; session_id: string; agent_id: string; skill_id: string }
@@ -160,8 +191,9 @@ export type SkillsV2Response =
   | { kind: "catalog"; revision: number; skills: (SkillProjection)[]; packages: (SkillPackageRecord)[]; native: (NativeSkillEntry)[]; metadata_budget_percent: number }
   | { kind: "detail"; skill: SkillProjection; body: string }
   | { kind: "native_inventory"; entries: (NativeSkillEntry)[]; inventory_revision: string }
+  | { kind: "native_details"; details: NativeSkillDetails }
   | { kind: "loads"; records: (SkillLoadRecord)[] }
-  | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[] }
+  | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[]; review_receipt: SkillReviewReceipt }
   | { kind: "published"; revision: number; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }
   | { kind: "page"; revision: number; skills: (SkillProjection)[]; next_cursor: string | null }
   | { kind: "loaded"; skill_id: string; digest: string; body: string; root: string; files: (SkillFileManifest)[] }

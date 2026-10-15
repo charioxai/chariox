@@ -364,6 +364,15 @@ Remote native TUI composition:
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Chariox TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
+MP-08 / MP-10 / MP-11, Skills v2 local 533 / peer 141: `native_details`
+accepts the focused agent and a provider/account/execution/inventory-bound native
+selection, never a client-chosen native root. Its read-only projection carries
+source provenance, the file manifest and declared version; unavailable bodies
+remain explicitly unavailable. Catalog `preview` returns a home review receipt
+binding the mutation hash, resolved source revisions and complete-content digests.
+`mutate` requires that receipt ID. Home must verify its owner, scope, revision,
+expiry and reviewed staged bytes; approval must not fetch newer source content.
+
 Native TUI MCP and skill placement:
 
 - MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants

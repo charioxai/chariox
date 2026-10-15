@@ -17,13 +17,13 @@ fn skills_v2_protocol_allocation_and_contract_hash() {
             "{:x}",
             Sha256::digest(include_str!("../../../../skill/v2.rs"))
         ),
-        "69e2e80640b11297f537af9faf3dcf104aa49ed8d62412863d88d6c71ae9bd9b"
+        "7ccd1043005152ae37f81636c81a66c59d150613dc84f084caa7c10fa8f539a5"
     );
 }
 
 #[test]
 fn skills_v2_reset_to_inherited_batch_snapshot() {
-    let wire = serde_json::json!({"SkillsV2": {"action":"mutate", "mutation": {
+    let wire = serde_json::json!({"SkillsV2": {"action":"mutate", "review_receipt_id":"review-1", "mutation": {
         "scope":{"kind":"project","project_id":"p1"}, "expected_revision":4,
         "actions":[{"action":"set_state","skill_id":"s1","state":null}]
     }}});
@@ -118,5 +118,56 @@ fn skills_v2_budget_configuration_wire_snapshot() {
     assert_eq!(
         serde_json::to_value(&config).unwrap()["skills"],
         serde_json::json!({"metadata_budget_percent": 1.0})
+    );
+}
+
+#[test]
+fn skills_v2_review_receipt_is_required_for_mutations_and_native_details_are_bound() {
+    let old = serde_json::json!({"action":"mutate","mutation":{
+        "scope":{"kind":"chariox"},"expected_revision":0,"actions":[]}});
+    assert!(serde_json::from_value::<SkillsV2Request>(old.clone()).is_err());
+    let mut reviewed = old;
+    reviewed["review_receipt_id"] = serde_json::json!("review-1");
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<SkillsV2Request>(reviewed.clone()).unwrap())
+            .unwrap(),
+        reviewed
+    );
+    let native = serde_json::json!({"action":"native_details","agent_id":"a", "selection":{
+        "source":"native","entry_id":"n","name":"review","provider":"codex",
+        "account_profile":"p","execution_id":"e","inventory_revision":"r"}});
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<SkillsV2Request>(native.clone()).unwrap())
+            .unwrap(),
+        native
+    );
+    let mut malicious = native;
+    malicious["selection"]["path"] = serde_json::json!("/client/choice");
+    assert!(serde_json::from_value::<SkillsV2Request>(malicious).is_err());
+    let receipt = SkillReviewReceipt {
+        id: "review-1".into(),
+        expires_at_ms: 10,
+        mutation_sha256: "a".repeat(64),
+        sources: vec![SkillReviewedSource {
+            action_index: 0,
+            skill_id: "s".into(),
+            digest: "b".repeat(64),
+            source_revision: Some("pinned-revision".into()),
+        }],
+    };
+    let wire = serde_json::to_value(SkillsV2Response::Preview {
+        expected_revision: 0,
+        affected: vec![],
+        collisions: vec![],
+        review_receipt: receipt,
+    })
+    .unwrap();
+    assert_eq!(
+        wire["review_receipt"]["sources"][0]["source_revision"],
+        "pinned-revision"
+    );
+    assert_eq!(
+        wire["review_receipt"]["sources"][0]["digest"],
+        "b".repeat(64)
     );
 }

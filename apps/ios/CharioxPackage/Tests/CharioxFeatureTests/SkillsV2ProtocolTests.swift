@@ -38,3 +38,20 @@ import Testing
     guard case let .conflict(conflictPayload) = conflict else { Issue.record("Expected content conflict"); return }
     #expect(conflictPayload.native_digest == "different")
 }
+
+// MP-08 / MP-10 / MP-11: unreleased 533/141 preview receipt and native details.
+@Test func skillsV2MutationRequiresReviewReceiptAndNativeDetailsRoundTrip() throws {
+    let old = Data(#"{"action":"mutate","mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[]}}"#.utf8)
+    var rejected = false
+    do { _ = try JSONDecoder().decode(SkillsV2Request.self, from: old) } catch { rejected = true }
+    #expect(rejected)
+    let reviewed = Data(#"{"action":"mutate","review_receipt_id":"review-1","mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[]}}"#.utf8)
+    let request = try JSONDecoder().decode(SkillsV2Request.self, from: reviewed)
+    let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as! [String: Any]
+    #expect(wire["review_receipt_id"] as? String == "review-1")
+    let native = Data(#"{"action":"native_details","agent_id":"a","selection":{"source":"native","entry_id":"n","name":"review","provider":"codex","account_profile":"p","execution_id":"e","inventory_revision":"r"}}"#.utf8)
+    let details = try JSONDecoder().decode(SkillsV2Request.self, from: native)
+    let detailsWire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(details)) as! [String: Any]
+    #expect(detailsWire["action"] as? String == "native_details")
+    #expect(detailsWire["agent_id"] as? String == "a")
+}
