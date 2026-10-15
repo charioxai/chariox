@@ -2220,15 +2220,6 @@ fn encrypt_peer_response(
             };
         }
     };
-    if plaintext.len() > 128 * 1024 {
-        // MP-11: variant name and size only; never provider response contents.
-        let response_kind = serde_json::from_slice::<serde_json::Value>(&plaintext)
-            .ok().and_then(|value| value.get("kind").and_then(|v| v.as_str()).map(str::to_owned));
-        crate::logging::info_with_fields(
-            "daemon.relay_client", "large relay peer response",
-            serde_json::json!({"response_kind": response_kind, "response_bytes": plaintext.len()}),
-        );
-    }
     match relay_crypto::encrypt_payload_for_peer(
         daemon_private_key,
         requester_public_key,

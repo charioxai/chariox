@@ -8,7 +8,7 @@ pub use api::{
 };
 mod api;
 pub use api::{
-    NativeProviderTransportOperation, NativeProviderTransportRequest, NativeProviderTransportResult,
+    NativeProviderTransportGzipFragment, NativeProviderTransportOperation, NativeProviderTransportRequest, NativeProviderTransportResult,
 };
 mod client;
 mod harness;

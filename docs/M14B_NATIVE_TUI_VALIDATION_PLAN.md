@@ -490,3 +490,24 @@ Focused supplementary guards include
 `mp08_projection_pages_retain_output_before_settlement_and_replay_exact_bytes`,
 `mp08_projection_home_deduplicates_replayed_output_and_rechecks_admission`,
 and `mp08_projection_delivery_531_139_snapshot_and_hash`.
+
+
+### MP-08 / MP-10 / MP-11: native catalog backpressure and reload states
+
+The real Codex0.159.3 `plugin/list` reply can exceed14MiB. With the same hosted
+stack and worker uplink at8Mbit/s, attach the official native client and join its
+session in two real browsers before submitting native A, queued web B/Steer and
+successor C. The base must demonstrate the large reply exceeding the native
+recovery window. The candidate must preserve that exact official reply through
+bounded gzip pages/receipts, keep the native connection alive and admit/settle
+all normal prompts. Record only page sizes/offsets and lifecycle metadata, never
+the plugin payload or provider configuration. Exercise lost-page replies too.
+
+For every ordinary reload, observe both browsers after the first paint, including
+the inactive view. At DPR1 in1440×900 and1920×1080 and at DPR2, inventory loading
+must show a loading state, never Account unavailable or a false red offline
+badge. Require a stable restored view, then inspect the complete recording and
+screenshots. A DOM check ending at the first restored frame cannot accept this
+case. Original intermittent restore errors remain blockers until the actual
+failing flow is green; source tests and a simple held-session reload are not
+substitutes. The dedicated-worker two-hour and quiet-host timing gates remain.

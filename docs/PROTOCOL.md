@@ -304,8 +304,22 @@ limited to two per exact scope and 32 per kernel, and use 32-frame queues with
 and use the existing encrypted relay large-message framing (64 MiB envelope
 ceiling). Kernel-to-relay envelopes use bounded RFC 6455 continuation frames,
 so encryption/base64 expansion cannot exceed a peer WebSocket frame limit.
-Queued output has byte budgets of 32 MiB per connection and 256 MiB
-per kernel, including output retained in receipts. Each Exchange carries the next
+MP-08 / MP-10 / MP-11: a large official frame is gzip-encoded once and returned
+as optional `gzip_fragment` pages: `offset`, `total_bytes`, `decoded_bytes` and
+base64 `data`. Offsets count compressed bytes; each page is at most64KiB before
+base64. A receipt retains the exact page, and only its next Exchange sequence
+advances it. The client validates contiguous offsets, stable totals, canonical
+base64, the16MiB decoded limit and UTF-8 before emitting the original frame once.
+Small frames keep the existing `frames` array. Final upstream close waits for
+all pages. This is within the coordinator's allocated, unmerged531/139 contract.
+
+Queued output has decoded-byte budgets of32MiB per connection and256MiB per
+kernel, including output retained in receipts. Encoding releases the original
+JSON allocation while retaining its byte permits until the last page is
+acknowledged. A legitimate output burst waits for permits rather than discarding
+a catalog response; one already-read frame (at most16MiB per connection) may wait
+for at most the120-second native idle bound. Gzip working storage and framing
+add bounded overhead; encoded frames are capped at16MiB+64KiB. Each Exchange carries the next
 positive safe-integer `sequence`; its exact input and reply are retained until the
 next sequence acknowledges it. An identical repeated sequence returns that reply
 without re-enqueueing input or draining later output. Conflicting, older and skipped

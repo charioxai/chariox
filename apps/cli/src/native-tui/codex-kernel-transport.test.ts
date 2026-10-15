@@ -1,9 +1,43 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
+import { createHash } from "node:crypto"
+import { gzipSync } from "node:zlib"
 import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
 import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import { startCodexKernelTransport } from "./codex-kernel-transport.js"
+
+test("MP-08 / MP-10 / MP-11 a lost native output page retries its receipt and emits one exact frame", async () => {
+  const bytes = Buffer.concat(Array.from({ length: 4096 }, (_, i) => createHash("sha256").update(String(i)).digest()))
+  const original = JSON.stringify({ id: 9, result: { catalog: bytes.toString("base64") } })
+  const compressed = gzipSync(original, { level: 1 })
+  const operations: unknown[] = []
+  let refused = false
+  const client = { send: async (request: { NativeProviderTransport: { operation: { kind: string; sequence?: number } } }) => {
+    const op = request.NativeProviderTransport.operation
+    if (op.kind === "exchange") {
+      operations.push(op)
+      if (!refused) { refused = true; throw new LocalIpcError("test", "lost reply", "outcome_unknown", true) }
+      const offset = ((op.sequence ?? 1) - 1) * 64 * 1024
+      return { NativeProviderTransport: { result: {
+        connection_id: "owning", sequence: op.sequence, frames: [], closed: false,
+        ...(offset < compressed.length ? { gzip_fragment: {
+          offset, total_bytes: compressed.length, decoded_bytes: Buffer.byteLength(original),
+          data: compressed.subarray(offset, offset + 64 * 1024).toString("base64"),
+        } } : {}),
+      } } }
+    }
+    return { NativeProviderTransport: { result: { connection_id: "owning", sequence: 0, frames: [], closed: op.kind === "close" } } }
+  } } as unknown as LocalIpcClient
+  const transport = await startCodexKernelTransport({ client, sessionId: "room", attachmentId: "view", agentId: "agent", providerRunId: "run" })
+  const socket = new WebSocket(transport.endpoint)
+  try {
+    const [frame] = await once(socket, "message")
+    assert.equal(frame.toString(), original)
+    assert.deepEqual(operations[1], operations[0])
+    assert.ok(operations.length >= 3)
+  } finally { socket.terminate(); await transport.close() }
+})
 
 test("MP-08 / MP-10 / MP-11 silent IPC reply retries the identical native receipt within the recovery budget", async () => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })

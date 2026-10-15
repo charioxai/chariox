@@ -33,7 +33,31 @@ pub struct NativeProviderTransportResult {
     pub connection_id: String,
     pub sequence: u64,
     pub frames: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gzip_fragment: Option<NativeProviderTransportGzipFragment>,
     pub closed: bool,
+}
+
+/// MP-08 / MP-10 / MP-11: one receipted page of an opaque official frame.
+/// Offset/total count compressed bytes; decoded_bytes bounds gzip expansion.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProviderTransportGzipFragment {
+    pub offset: u32,
+    pub total_bytes: u32,
+    pub decoded_bytes: u32,
+    pub data: String,
+}
+
+impl std::fmt::Debug for NativeProviderTransportGzipFragment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeProviderTransportGzipFragment")
+            .field("offset", &self.offset)
+            .field("total_bytes", &self.total_bytes)
+            .field("decoded_bytes", &self.decoded_bytes)
+            .field("encoded_bytes", &self.data.len())
+            .finish_non_exhaustive()
+    }
 }
 
 // MP-11: official native frames may contain private provider configuration.
@@ -54,6 +78,7 @@ impl std::fmt::Debug for NativeProviderTransportResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeProviderTransportResult")
             .field("frame_count", &self.frames.len())
+            .field("gzip_fragment", &self.gzip_fragment)
             .field("closed", &self.closed)
             .finish_non_exhaustive()
     }
@@ -72,6 +97,12 @@ mod tests {
             connection_id: "private-handle-canary".into(),
             frames: vec!["private-provider-config-canary".into()],
             sequence: 1,
+            gzip_fragment: Some(NativeProviderTransportGzipFragment {
+                offset: 0,
+                total_bytes: 1,
+                decoded_bytes: 1,
+                data: "private-provider-config-canary".into(),
+            }),
             closed: false,
         };
         for debug in [format!("{operation:?}"), format!("{result:?}")] {

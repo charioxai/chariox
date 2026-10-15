@@ -355,5 +355,13 @@ export type NativeProviderTransportResult = {
   readonly connection_id: string
   readonly sequence: number
   readonly frames: readonly string[]
+  readonly gzip_fragment?: NativeProviderTransportGzipFragment | null
   readonly closed: boolean
+}
+/** MP-08 / MP-10 / MP-11: base64 gzip page; offsets count compressed bytes. */
+export type NativeProviderTransportGzipFragment = {
+  readonly offset: number
+  readonly total_bytes: number
+  readonly decoded_bytes: number
+  readonly data: string
 }

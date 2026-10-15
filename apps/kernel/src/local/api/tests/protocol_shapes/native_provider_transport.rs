@@ -9,7 +9,7 @@ fn mp08_native_provider_transport_531_139_snapshot_and_hash() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         139
     );
-    let snapshot: serde_json::Value = serde_json::from_str(r###"{"local_protocol":531,"peer_protocol":139,"peer_requests":[{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"worker-run"}],"reconnecting_error":{"code":"native_transport_reconnecting","message":"relay transport `native provider transport` failed with code `native_transport_reconnecting` (retryable=true): native display is reconnecting; retry the same receipted operation","retryable":true},"requests":[{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"run","session_id":"session"}}],"response":{"NativeProviderTransport":{"result":{"closed":false,"connection_id":"connection","frames":[],"sequence":1}}}}"###).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(r###"{"fragmented_response":{"NativeProviderTransport":{"result":{"closed":false,"connection_id":"connection","frames":[],"gzip_fragment":{"data":"AA==","decoded_bytes":1,"offset":0,"total_bytes":1},"sequence":1}}},"local_protocol":531,"peer_protocol":139,"peer_requests":[{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"worker-run"}],"reconnecting_error":{"code":"native_transport_reconnecting","message":"relay transport `native provider transport` failed with code `native_transport_reconnecting` (retryable=true): native display is reconnecting; retry the same receipted operation","retryable":true},"requests":[{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"run","session_id":"session"}}],"response":{"NativeProviderTransport":{"result":{"closed":false,"connection_id":"connection","frames":[],"sequence":1}}}}"###).unwrap();
     let error = crate::error::DaemonError::RelayTransport {
         operation: "native provider transport",
         code: "native_transport_reconnecting".into(),
@@ -40,7 +40,13 @@ fn mp08_native_provider_transport_531_139_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "2f74384f0849384fea2f8dfc1bf42c433e0f75290bc0f43f56ed37560e82e3e7"
+        "842bc1ab060bb6b2b218223d70da13662520d1f22fd1adda05b7adf271f54c85"
+    );
+    let fragmented: LocalDaemonResponse =
+        serde_json::from_value(snapshot["fragmented_response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(fragmented).unwrap(),
+        snapshot["fragmented_response"]
     );
     let mut arbitrary_endpoint = snapshot["requests"][0].clone();
     arbitrary_endpoint["NativeProviderTransport"]["endpoint"] =

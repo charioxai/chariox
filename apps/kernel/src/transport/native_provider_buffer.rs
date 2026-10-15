@@ -15,6 +15,26 @@ impl Default for NativeOutputBudget {
         Self(Arc::new(Semaphore::new(KERNEL_OUTPUT_BYTES)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mp08_native_catalog_burst_waits_for_receipted_byte_permits() {
+        let budget = NativeOutputBudget::default().connection();
+        let first = budget.reserve("a".repeat(OUTPUT_FRAME_BYTES)).unwrap();
+        let second = budget.reserve("b".repeat(OUTPUT_FRAME_BYTES)).unwrap();
+        let waiting_budget = budget.clone();
+        let waiting = tokio::spawn(async move { waiting_budget.reserve_wait("next".into()).await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        let admitted = waiting.await.unwrap().unwrap();
+        assert_eq!(admitted.data, "next");
+        drop((second, admitted));
+    }
+}
 impl NativeOutputBudget {
     pub(crate) fn connection(&self) -> NativeConnectionOutputBudget {
         NativeConnectionOutputBudget {
@@ -34,6 +54,40 @@ pub(crate) struct NativeBufferedFrame {
     _connection: OwnedSemaphorePermit,
 }
 impl NativeConnectionOutputBudget {
+    /// MP-08 / MP-10 / MP-11: apply backpressure to legitimate catalog bursts.
+    /// One already-read frame (at most 16 MiB) may wait for byte permits, for no
+    /// longer than the native connection's 120-second idle bound.
+    pub(crate) async fn reserve_wait(
+        &self,
+        data: String,
+    ) -> Result<NativeBufferedFrame, DaemonError> {
+        if data.len() > OUTPUT_FRAME_BYTES {
+            return Err(error("native output frame exceeds 16 MiB"));
+        }
+        let bytes = data.len() as u32;
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            let connection = self
+                .connection
+                .clone()
+                .acquire_many_owned(bytes)
+                .await
+                .map_err(|_| error("native connection output budget closed"))?;
+            let kernel = self
+                .kernel
+                .clone()
+                .acquire_many_owned(bytes)
+                .await
+                .map_err(|_| error("native kernel output budget closed"))?;
+            Ok(NativeBufferedFrame {
+                data,
+                _kernel: kernel,
+                _connection: connection,
+            })
+        })
+        .await
+        .map_err(|_| error("native output backpressure timed out"))?
+    }
+
     pub(crate) fn reserve(&self, data: String) -> Result<NativeBufferedFrame, DaemonError> {
         if data.len() > OUTPUT_FRAME_BYTES {
             return Err(error("native output frame exceeds 16 MiB"));

@@ -219,6 +219,7 @@ impl NativeProviderSockets {
                         connection_id: id.clone(),
                         sequence: 0,
                         frames: vec![],
+                        gzip_fragment: None,
                         closed: false,
                     });
                 }
@@ -265,7 +266,6 @@ impl NativeProviderSockets {
                 let id = connection_id.clone();
                 tokio::spawn(async move {
                     let mut socket = socket;
-                    let mut request_methods = BTreeMap::<String, String>::new();
                     let mut interval = tokio::time::interval(Duration::from_secs(1));
                     loop {
                         tokio::select! {
@@ -275,32 +275,11 @@ impl NativeProviderSockets {
                             }
                             frame = outbound.recv() => {
                                 let Some(frame) = frame else { break; };
-                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) {
-                                    if let (Some(id), Some(method)) = (value.get("id"), value.get("method").and_then(|v| v.as_str())) {
-                                        if request_methods.len() < 256 {
-                                            request_methods.insert(id.to_string(), method.into());
-                                        }
-                                    }
-                                }
                                 if authorize().await.is_err() || tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Text(frame.into()))).await.map_or(true, |result| result.is_err()) { break; }
                             }
                             message = socket.next() => {
                                 match message {
-                                    Some(Ok(Message::Text(frame))) => {
-                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) {
-                                            let method = value.get("id").and_then(|id| request_methods.remove(&id.to_string()));
-                                            if frame.len() > 128 * 1024 {
-                                                // MP-11: method names came from admitted display RPCs. No
-                                                // request id, frame, configuration or response body is logged.
-                                                crate::logging::info_with_fields(
-                                                    "daemon.native_display", "large native upstream response",
-                                                    serde_json::json!({"frame_bytes": frame.len(), "method": method}),
-                                                );
-                                            }
-                                        }
-                                        let Ok(frame) = output_budget.reserve(frame.to_string()) else { break; };
-                                        if inbound.try_send(frame).is_err() { break; }
-                                    }
+                                    Some(Ok(Message::Text(frame))) => { let Ok(frame) = output_budget.reserve_wait(frame.to_string()).await else { break; }; if authorize().await.is_err() || tokio::time::timeout(Duration::from_secs(120), inbound.send(frame)).await.map_or(true, |result| result.is_err()) { break; } }
                                     Some(Ok(Message::Ping(data))) => { if tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Pong(data))).await.map_or(true, |result| result.is_err()) { break; } }
                                     Some(Ok(Message::Pong(_))) => {}
                                     _ => break,
@@ -337,6 +316,7 @@ impl NativeProviderSockets {
                     connection_id,
                     sequence: 0,
                     frames: vec![],
+                    gzip_fragment: None,
                     closed: false,
                 })
             }
@@ -409,7 +389,7 @@ impl NativeProviderSockets {
                     }
                 }
                 // No await between enqueue/drain and retaining its receipt.
-                Ok(exchange.complete(&connection_id, sequence, frames, output))
+                exchange.complete(&connection_id, sequence, frames, output)
             }
             NativeProviderTransportOperation::Close { connection_id } => {
                 let mut entries = self.0.lock().await;
@@ -426,6 +406,7 @@ impl NativeProviderSockets {
                     connection_id,
                     sequence: 0,
                     frames: vec![],
+                    gzip_fragment: None,
                     closed: true,
                 })
             }
@@ -505,11 +486,15 @@ mod tests {
 
     #[tokio::test]
     async fn mp08_native_large_official_catalog_uses_shared_relay_sized_frames() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let catalog = serde_json::json!({"id":1,"result":{"catalog":"x".repeat(14 * 1024 * 1024)}})
             .to_string();
         let expected = catalog.len();
+        let expected_hash = Sha256::digest(catalog.as_bytes());
         let upstream = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
@@ -542,6 +527,7 @@ mod tests {
             .unwrap()
             .connection_id;
         let mut received = false;
+        let mut compressed = Vec::new();
         for index in 0..500 {
             let result = sockets
                 .execute(
@@ -555,11 +541,20 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            if let Some(frame) = result.frames.first() {
-                assert_eq!(frame.len(), expected);
-                assert!(!result.closed);
-                received = true;
-                break;
+            assert!(result.frames.is_empty(), "a large reply must use bounded pages");
+            assert!(serde_json::to_vec(&result).unwrap().len() < 128 * 1024);
+            if let Some(page) = result.gzip_fragment {
+                assert_eq!(page.offset as usize, compressed.len());
+                compressed.extend(base64::engine::general_purpose::STANDARD.decode(page.data).unwrap());
+                if compressed.len() == page.total_bytes as usize {
+                    let mut decoded = Vec::new();
+                    flate2::read::GzDecoder::new(compressed.as_slice()).read_to_end(&mut decoded).unwrap();
+                    assert_eq!(decoded.len(), expected);
+                    assert_eq!(Sha256::digest(&decoded), expected_hash);
+                    assert!(!result.closed);
+                    received = true;
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

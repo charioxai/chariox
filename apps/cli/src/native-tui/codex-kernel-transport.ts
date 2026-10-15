@@ -9,6 +9,7 @@ import type { NativeProviderTransportOperation, NativeProviderTransportResult } 
 import { nativeProviderTransportRequest, nativeProviderTransportMinimumProtocolVersion } from "../ipc-requests.js"
 
 import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
+import { createCodexNativeOutputAssembler } from "./codex-native-output.js"
 
 const frameBytes = 256 * 1024
 const outputFrameBytes = 16 * 1024 * 1024
@@ -93,6 +94,7 @@ export async function startCodexKernelTransport(options: {
     })
     const task = (async () => {
       try {
+        const assembleOutput = createCodexNativeOutputAssembler()
         const opened = await send({ kind: "open", request_id: randomUUID() })
         connectionId = opened.connection_id
         let sequence = 1
@@ -102,14 +104,20 @@ export async function startCodexKernelTransport(options: {
           const result = await send({ kind: "exchange", connection_id: connectionId, frames: outbound, sequence })
           if (result.connection_id !== connectionId) throw new Error("native connection identity changed")
           sequence += 1
-          for (const frame of result.frames) {
+          const output = assembleOutput(result)
+          if (result.gzip_fragment) traceCodexLifecycle("native_output_fragment", {
+            decodedBytes: result.gzip_fragment.decoded_bytes,
+            compressedBytes: result.gzip_fragment.total_bytes,
+            fragmentOffset: result.gzip_fragment.offset,
+          })
+          for (const frame of output) {
             if (socket.readyState === WebSocket.OPEN) {
               if (Buffer.byteLength(frame) > outputFrameBytes || socket.bufferedAmount + Buffer.byteLength(frame) > outputBufferBytes) { finished = true; socket.close(1013, "native output backpressure"); break }
               socket.send(frame)
             }
           }
           if (result.closed) { traceCodexLifecycle("native_transport_closed", { method: "exchange" }); break }
-          if (result.frames.length === 0 && frames.length === 0) await sleep(25)
+          if (result.frames.length === 0 && !result.gzip_fragment && frames.length === 0) await sleep(25)
         }
       } catch (error) {
         if (error instanceof Error && /^Codex native transport requires kernel protocol /.test(error.message)) {

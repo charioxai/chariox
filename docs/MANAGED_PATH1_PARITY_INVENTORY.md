@@ -1,6 +1,19 @@
 # Managed Path-1 parity inventory (MP-11)
 
 
+## MP-08 / MP-10 / MP-11: bounded native catalog pages (531/139)
+
+Real hosted output identified a Codex0.159.3 `plugin/list` response over14MiB;
+its encrypted reply monopolized the shaped worker uplink and exhausted native
+recovery. The unmerged531/139 native result now has bounded gzip fragments with
+exact Exchange receipts. The client reassembles the official frame after
+contiguity, compressed/decoded-size, base64 and UTF-8 checks. Output bursts wait
+under the existing connection/byte/idle bounds. Prompt and permission authority
+remain in the normal kernel paths. Protocol snapshot/hash and a fail-first real
+hosted drill accompany the change. Temporary payload-free diagnosis is removed.
+These source changes do not claim live, two-hour or timing acceptance; the
+current security-critical bounds/admission anchor still needs semantic review.
+
 ## MP-07 / MP-08 / MP-10 / MP-11: leased output delivery ownership (531/139)
 
 The allocated, unmerged531/139 contract extends leased runtime projections with
