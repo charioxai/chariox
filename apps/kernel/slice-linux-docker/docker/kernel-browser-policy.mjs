@@ -5,22 +5,17 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 
-// The native tab strip/omnibox is shown to the person (BROWSER-UX-14): its
-// internal pages, developer tools, files, downloads, password manager, other
-// profiles and printing must not reach the kernel's machine. Extensions are the
-// person's own, from the Web Store, as in any Chrome (Miguel 2026-10-15); agents
-// cannot reach extension management (host refusal, extensionManagementUrl).
-// DeveloperToolsAvailability 2 is not usable: it also refuses the kernel's own
-// CDP attach to every page. DevTools stays closed through the devtools://
-// blocklist (Chrome then refuses DevTools on every page) and the kernel's
-// fail-closed target layer.
+// The native tab strip/omnibox is shown to the person (BROWSER-UX-14). Miguel
+// 2026-10-15: Chrome's own settings and internal pages, DevTools, downloads and
+// printing are allowed (agents may need those tools where they work; files land
+// on the kernel's machine). Files and view-source, Chrome's password manager (it
+// would copy Vault-filled passwords into the profile), other profiles, sign-in
+// and fullscreen stay off. Extensions are the person's own, from the Web Store,
+// as in any Chrome; agents cannot reach extension management (host refusal,
+// extensionManagementUrl). DeveloperToolsAvailability stays default: its
+// blocking value also refuses the kernel's own CDP attach to every page.
 export const managedPolicy = Object.freeze({
-  // Chrome draws the omnibox dropdown and tab search as chrome://*.top-chrome pages;
-  // PDFs open in its built-in viewer component extension; the kernel's own
-  // tab-groups extension runs as one; chrome://extensions manages the person's extensions.
-  URLAllowlist: ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome://extensions", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai", `chrome-extension://${TAB_GROUPS_EXTENSION_ID}`],
-  URLBlocklist: ["chrome://*", "chrome-untrusted://*", "devtools://*", "file://*", "view-source:*"],
-  DownloadRestrictions: 3,
+  URLBlocklist: ["file://*", "view-source:*"],
   PasswordManagerEnabled: false,
   AutofillAddressEnabled: false,
   AutofillCreditCardEnabled: false,
@@ -38,7 +33,6 @@ export const managedPolicy = Object.freeze({
   FullscreenAllowed: false,
   BrowserGuestModeEnabled: false,
   BrowserAddPersonEnabled: false,
-  PrintingEnabled: false,
   // A web app install would add launchers on the kernel's machine.
   WebAppInstallByUserEnabled: false,
   TaskManagerEndProcessEnabled: false,
@@ -80,10 +74,10 @@ export async function writePolicyLayer(root, environment = process.env) {
 
 // Second, fail-closed layer in the kernel: a page that still reaches a blocked
 // scheme (policy missing or bypassed) is closed.
-const blockedSchemes = new Set(["chrome:", "chrome-untrusted:", "devtools:", "file:", "view-source:"]);
+const blockedSchemes = new Set(["file:", "view-source:"]);
 export function blockedUrl(url) {
   if (typeof url !== "string") return false;
-  try { const u = new URL(url); return blockedSchemes.has(u.protocol) && !(u.protocol === "chrome:" && u.hostname === "extensions"); } catch { return false; }
+  try { return blockedSchemes.has(new URL(url).protocol); } catch { return false; }
 }
 
 // MP-11: the person's extension management (Web Store, chrome://extensions, extension pages).

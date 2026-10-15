@@ -22,16 +22,20 @@ test("MP-11 the policy layer carries every compiled Chromium policy root", async
 test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usable", () => {
   // DeveloperToolsAvailability 2 refuses the kernel's CDP attach to every page.
   assert.equal(managedPolicy.DeveloperToolsAvailability, undefined);
-  for (const url of ["chrome://omnibox-popup.top-chrome", "chrome://tab-search.top-chrome", "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai"]) assert(managedPolicy.URLAllowlist.includes(url));
-  for (const url of ["chrome://*", "devtools://*", "file://*", "view-source:*"]) assert(managedPolicy.URLBlocklist.includes(url));
-  assert.equal(managedPolicy.DownloadRestrictions, 3);
+  // Miguel 2026-10-15: Chrome's settings/internal pages, DevTools, downloads and printing are allowed;
+  // files and view-source stay blocked; the password manager stays off (Vault-filled passwords).
+  assert.deepEqual(managedPolicy.URLBlocklist, ["file://*", "view-source:*"]);
+  assert.equal(managedPolicy.URLAllowlist, undefined);
+  assert.equal(managedPolicy.DownloadRestrictions, undefined); assert.equal(managedPolicy.PrintingEnabled, undefined);
+  assert.equal(managedPolicy.PasswordManagerEnabled, false);
+  assert.equal(managedPolicy.BrowserSignin, 0); assert.equal(managedPolicy.BrowserGuestModeEnabled, false); assert.equal(managedPolicy.BrowserAddPersonEnabled, false);
+  for (const url of ["chrome://settings/", "chrome://history/", "devtools://devtools/bundled/devtools_app.html", "chrome-untrusted://print/"]) assert.equal(blockedUrl(url), false, url);
+  for (const url of ["file:///etc/hostname", "view-source:https://example.com/"]) assert.equal(blockedUrl(url), true, url);
   // Miguel 2026-10-15: the person installs and manages extensions from the Web Store as in any Chrome
   // (popups, options pages, chrome://extensions); nothing is sideloaded. Agents cannot (host refusal).
   assert.equal(managedPolicy.ExtensionInstallBlocklist, undefined);
   assert.deepEqual(managedPolicy.ExtensionInstallSources, ["https://chromewebstore.google.com/*"]); assert.equal(managedPolicy.BlockExternalExtensions, true);
   for (const blocked of ["chromewebstore.google.com", "chrome.google.com/webstore", "chrome-extension://*"]) assert(!managedPolicy.URLBlocklist.includes(blocked), blocked);
-  assert(managedPolicy.URLAllowlist.includes("chrome://extensions"));
-  assert(managedPolicy.URLAllowlist.includes("chrome-extension://ecideajikgeiboaphimcgeahicjgcfea"));
   assert.equal(managedPolicy.IncognitoModeAvailability, 1);
   // A same-size fullscreen window would put page pixels in the band crop (vidlat review, 2026-10-15).
   assert.equal(managedPolicy.FullscreenAllowed, false);
@@ -99,8 +103,9 @@ test("MP-11 the kernel browser prefers the Setup's pinned Chromium when it is ro
 });
 
 test("MP-11 blocked schemes", () => {
-  for (const url of ["chrome://settings/", "devtools://devtools/x", "file:///etc/passwd", "view-source:https://a.example/", "chrome-untrusted://x/", "chrome://extensions-internals/"]) assert(blockedUrl(url), url);
-  for (const url of ["https://example.com/", "about:blank", "", null, "not a url", "chrome://extensions/", "chrome://extensions/?id=abc", "chrome-extension://abc/popup.html"]) assert(!blockedUrl(url), String(url));
+  for (const url of ["file:///etc/passwd", "view-source:https://a.example/", "FILE:///etc/hostname"]) assert(blockedUrl(url), url);
+  // Miguel 2026-10-15: Chrome's settings/internal pages and DevTools are allowed.
+  for (const url of ["https://example.com/", "about:blank", "", null, "not a url", "chrome://extensions/", "chrome://settings/", "chrome-untrusted://x/", "devtools://devtools/x", "chrome-extension://abc/popup.html"]) assert(!blockedUrl(url), String(url));
   for (const url of ["chrome://extensions/", "chrome-extension://abc/options.html", "https://chromewebstore.google.com/detail/x/abc", "https://chrome.google.com/webstore/detail/abc", "CHROMEWEBSTORE.google.com/category/extensions"]) assert(extensionManagementUrl(url), url);
   for (const url of ["https://example.com/", "https://google.com/webstore", "https://chromewebstore.google.com.evil.example/", "not a url", null]) assert(!extensionManagementUrl(url), String(url));
 });

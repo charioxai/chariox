@@ -1320,20 +1320,13 @@ test('MP-08/MP-10 Tabs keep their order and new Tabs are appended', () => using(
   assert.deepEqual(order, [a.tab_id, b.tab_id, c.tab_id]);
 }));
 
-// MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host denies
-// downloads and closes a Tab that reaches a blocked scheme without the policy's refusal page.
-// r8 live drill: under the managed policies (DownloadRestrictions 3 blocks files) Chrome's own Web Store
-// package download must run, or the extension the person adds fails with "Download error".
-test('MP-11 under managed policies downloads follow DownloadRestrictions, not a CDP deny', () => using(async ({ host, sent }) => {
-  host.chromium.policy = 'managed';
+// MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host closes a Tab
+// that reaches a blocked scheme without the policy's refusal page.
+test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', () => using(async ({ host, handlers, sent, connection, pages }) => {
   await host.request({ op: 'open', url: 'about:blank' });
-  const behaviors = sent.filter(call => call.method === 'Browser.setDownloadBehavior').map(call => call.params.behavior);
-  assert.deepEqual([...new Set(behaviors)], ['default']);
-}));
-
-test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () => using(async ({ host, handlers, sent, connection, pages }) => {
-  await host.request({ op: 'open', url: 'about:blank' });
-  assert(sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'));
+  // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
+  // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1347,7 +1340,7 @@ test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () =>
   await emit('Target.targetCreated', { targetId: 'ntp', type: 'page', url: 'chrome://newtab/' });
   await emit('Target.targetCreated', { targetId: 'omnibox', type: 'browser_ui', url: 'chrome://omnibox-popup.top-chrome/' });
   await emit('Target.targetInfoChanged', { targetId: 'site', type: 'page', url: 'https://example.com/' });
-  assert.deepEqual(closed(), ['settings', 'devtools', 'file']);
+  assert.deepEqual(closed(), ['file']);
   assert(pages.size > 0);
 }));
 
@@ -1625,11 +1618,13 @@ for(const completion of ['Page.frameStoppedLoading','Page.frameNavigated'])test(
  }finally{await stream.close();}
 }));
 
-// MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host denies
-// downloads and closes a Tab that reaches a blocked scheme without the policy's refusal page.
-test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () => using(async ({ host, handlers, sent, connection, pages }) => {
+// MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host closes a Tab
+// that reaches a blocked scheme without the policy's refusal page.
+test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', () => using(async ({ host, handlers, sent, connection, pages }) => {
   await host.request({ op: 'open', url: 'about:blank' });
-  assert(sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'));
+  // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
+  // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1643,7 +1638,7 @@ test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () =>
   await emit('Target.targetCreated', { targetId: 'ntp', type: 'page', url: 'chrome://newtab/' });
   await emit('Target.targetCreated', { targetId: 'omnibox', type: 'browser_ui', url: 'chrome://omnibox-popup.top-chrome/' });
   await emit('Target.targetInfoChanged', { targetId: 'site', type: 'page', url: 'https://example.com/' });
-  assert.deepEqual(closed(), ['settings', 'devtools', 'file']);
+  assert.deepEqual(closed(), ['file']);
   assert(pages.size > 0);
 }));
 

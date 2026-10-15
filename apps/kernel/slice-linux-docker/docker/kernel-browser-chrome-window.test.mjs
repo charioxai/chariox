@@ -107,7 +107,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   focus = true;
   assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L whatever the focus");
   focus = false;
-  await assert.rejects(send({ kind: "key", key: "I", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+I");
+  await assert.rejects(send({ kind: "key", key: "N", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+N (incognito)");
   focus = true; arbiter.pageFocused(); // after Ctrl+L, a native click back into the page
   await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "a sensitive field focused: no band text");
   await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_sensitive_requires_focus" });
@@ -141,8 +141,9 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
 
 test("MP-08 browser chords and refused chords", () => {
   for (const [k, m] of [[0x6c, 2], [0x74, 2], [0x77, 2], [0xff09, 2], [0xff09, 10], [0x54, 10], [0xff51, 1], [0xff53, 1]]) assert(bandChord(k, m), `${k}/${m}`);
-  for (const [k, m] of [[0xffc9, 0], [0x49, 10], [0x4a, 10], [0x43, 10], [0x75, 2], [0x4e, 10], [0x70, 2], [0x73, 2], [0x6f, 2], [0x6a, 2], [0x68, 2]]) assert(refusedChord(k, m), `${k}/${m}`);
-  for (const [k, m] of [[0x61, 0], [0x6c, 2], [0x63, 2], [0x76, 2]]) assert(!refusedChord(k, m), `${k}/${m}`);
+  for (const [k, m] of [[0x75, 2], [0x4e, 10], [0x6f, 2], [0xff1b, 8]]) assert(refusedChord(k, m), `${k}/${m}`); // view-source, incognito, open file, task manager
+  // Miguel 2026-10-15: DevTools, print, save, downloads, history and clear data are allowed.
+  for (const [k, m] of [[0x61, 0], [0x6c, 2], [0x63, 2], [0x76, 2], [0xffc9, 0], [0x49, 10], [0x4a, 10], [0x43, 10], [0x70, 2], [0x73, 2], [0x6a, 2], [0x68, 2], [0xffff, 10]]) assert(!refusedChord(k, m), `${k}/${m}`);
 });
 
 // MP-11 (review #1016 P2): Chromium keeps the page's (sensitive) activeElement while its own omnibox
@@ -254,7 +255,7 @@ test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite up
     await send({kind:'key',key,modifiers});assert.deepEqual(calls.at(-1),[expected,modifiers],`${key}/${modifiers} must not acquire implicit Shift`);
   }
   await send({kind:'text',text:'A'});assert.deepEqual(calls.at(-1),[0x41,0],'plain text retains its requested case');
-  await assert.rejects(send({kind:'key',key:'I',modifiers:10}),{code:'user_domain_not_granted'},'explicit Ctrl+Shift+I remains refused');
+  await assert.rejects(send({kind:'key',key:'N',modifiers:10}),{code:'user_domain_not_granted'},'explicit Ctrl+Shift+N remains refused');
 });
 
 // Coordinator 12:22Z ask 1: Chrome 155 draws the omnibox dropdown inside its main window (no X window).

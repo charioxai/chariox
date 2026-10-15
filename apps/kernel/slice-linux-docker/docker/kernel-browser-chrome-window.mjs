@@ -251,11 +251,9 @@ export class ChromeWindows {
 const ALT = 1, CTRL = 2, SHIFT = 8, key = c => c.charCodeAt(0);
 const lower = keysym => keysym >= 0x41 && keysym <= 0x5a ? keysym + 0x20 : keysym;
 const matches = chords => (keysym, modifiers) => chords.some(([k, m]) => k === lower(keysym) && m === modifiers);
-// Chords that open surfaces the lockdown blocks (DevTools, view-source, incognito,
-// print, save, open file, downloads, history, clear data, task manager).
-export const refusedChord = matches([[0xffc9, 0], [key('i'), CTRL | SHIFT], [key('j'), CTRL | SHIFT], [key('c'), CTRL | SHIFT],
-  [key('u'), CTRL], [key('n'), CTRL | SHIFT], [0xffff, CTRL | SHIFT], [key('p'), CTRL], [key('s'), CTRL], [key('o'), CTRL],
-  [key('j'), CTRL], [key('h'), CTRL], [0xff1b, SHIFT]]);
+// Chords that open surfaces the lockdown blocks (view-source, incognito, open file,
+// task manager). DevTools, print, save, downloads, history and settings are allowed (Miguel 2026-10-15).
+export const refusedChord = matches([[key('u'), CTRL], [key('n'), CTRL | SHIFT], [key('o'), CTRL], [0xff1b, SHIFT]]);
 // Browser chords always go to the band, whatever the page focus.
 export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'), CTRL], [0xff09, CTRL], [0xff09, CTRL | SHIFT],
   [key('t'), CTRL | SHIFT], [0xff51, ALT], [0xff53, ALT]]);
