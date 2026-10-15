@@ -39,6 +39,8 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
         .expect("persistent relay event runtime should initialize");
     let session_stream = subscription_event_stream_id("session-a", "attachment-a");
 
+    runtime.event_log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     runtime
         .event_log
