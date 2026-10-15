@@ -84,3 +84,13 @@ test('MP-08/MP-11 a band asks its own worker for the window inventory, nothing e
  source.surface='browser_auxiliary';await assert.rejects(source.windows(),/inventory lease/);
  source.surface='browser_chrome';source.nativeWorker.request=async()=>({windows:[{...row,pid:1}]});await assert.rejects(source.windows(),/inventory binding/);
 });
+
+// Coordinator 12:22Z ask 1: the omnibox dropdown drawn inside the tabbed window streams as a kernel rect of it, below the band only.
+test('MP-11 an in-window popup is a rect of the tabbed window below the band',()=>{
+ const window={id:42,width:2560,height:1774},content=1600;
+ const g=windowRegionGeometry('browser_auxiliary',window,{left:238,top:174,width:2156,height:176},content,2,true);
+ assert.deepEqual(g.window_region,{width:2560,height:1774,left:238,top:174,id:42});
+ for(const [r,c] of [[{left:238,top:172,width:2156,height:176},content],[{left:238,top:174,width:2156,height:176},undefined],[{left:500,top:174,width:2156,height:176},content]])
+  assert.throws(()=>windowRegionGeometry('browser_auxiliary',window,r,c,2,true),/region|window|boundary/);
+ assert.throws(()=>windowRegionGeometry('browser_auxiliary',{width:2560,height:1774},{left:238,top:174,width:2156,height:176},content,2,true),/region/);
+});

@@ -8,6 +8,23 @@ import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
+// MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
+// the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
+// pinned Chrome the list body is the widget less a 16 DIP side and 28 DIP bottom shadow, with 16 DIP
+// rounded bottom corners (measured at DPR 1 and 2). The part below the band streams as one more popup;
+// any other layout is not offered (the band still shows the top of it).
+export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
+const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
+export const POPUP_CORNER = 16;
+export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
+  if (!Array.isArray(state) || state[0] !== 'visible') return null;
+  const [, screenX, screenY, width, height, outerWidth, outerHeight] = state;
+  if (![screenX, screenY, width, height, outerWidth, outerHeight].every(Number.isSafeInteger) || outerWidth - width !== 2 * POPUP_SIDE || height < 2) return null;
+  const x = screenX - windowLeft + POPUP_SIDE, bottom = screenY - windowTop + outerHeight - POPUP_BOTTOM;
+  if (x < 0 || x + width > windowWidth || bottom > windowHeight || bottom - bandHeight < POPUP_CORNER + 2 || screenY - windowTop >= bandHeight) return null;
+  return {x, y: bandHeight, width, height: bottom - bandHeight};
+}
+
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
@@ -83,8 +100,33 @@ export class ChromeWindows {
       const binding = bind(r);
       return Object.freeze({...binding, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true});
     });
+    // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
+    const popup = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.content_top / tabbed.scale,
+      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale);
+    if (popup && bound.length < 8) {
+      const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
+      const key = `${tabbed.window_generation}:${r.id}:in-window:${r.x},${r.y},${r.width}x${r.height}`;
+      const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
+      ids.set(key, auxiliary_id);
+      const binding = bind(r);
+      bound.push(Object.freeze({...binding, in_window: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+    }
     this.auxiliaryIds = ids;
     return bound;
+  }
+  /** The omnibox dropdown's WebUI: visibility and geometry only (never its content). */
+  async readOmnibox() {
+    const connection = this.host.browser.connection;
+    if (!connection) return null;
+    try {
+      if (!this.omniboxSession) {
+        const target = (await connection.send('Target.getTargets')).targetInfos.find(t => t.type === 'browser_ui' && t.url === OMNIBOX_POPUP_URL);
+        if (!target) return null;
+        this.omniboxSession = (await connection.send('Target.attachToTarget', {targetId: target.targetId, flatten: true})).sessionId;
+      }
+      const {result} = await connection.send('Runtime.evaluate', {expression: 'JSON.stringify([document.visibilityState,screenX,screenY,innerWidth,innerHeight,outerWidth,outerHeight])', returnByValue: true}, this.omniboxSession);
+      return JSON.parse(result.value);
+    } catch { this.omniboxSession = null; return null; }
   }
   /** Protocol 530: refresh only the auxiliary windows of the current tabbed binding (a live
    * band polls its own worker's inventory); a changed tabbed window waits for resolve(). */
@@ -103,7 +145,7 @@ export class ChromeWindows {
     watcher.reads.add(read);
     const tick = async () => {
       const [first] = watcher.reads;
-      try { if (first) this.refreshAuxiliary(await first()); } catch {}
+      try { if (first) { const rows = await first(); this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } } catch {}
         if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };
     if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
@@ -132,7 +174,17 @@ export class ChromeWindows {
       contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isCurrent};
   }
   auxiliaryRegion(binding) {
-    if (binding?.role !== 'auxiliary' || binding.parent_xid !== this.current().tabbed.xid) throw new UserDomainRefusal('stale_reference');
+    const tabbed = this.current().tabbed;
+    if (binding?.role !== 'auxiliary' || binding.parent_xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+    if (binding.in_window) {
+      // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
+      if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+      const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2, corner = POPUP_CORNER * tabbed.scale;
+      return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
+        rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
+        contentHeight: tabbed.bounds.height - tabbed.content_top, masks: [{x: 0, y: height - corner, width: corner, height: corner}, {x: width - corner, y: height - corner, width: corner, height: corner}],
+        isCurrent: binding.isCurrent};
+    }
     return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
       rect: {left: 0, top: 0, width: binding.bounds.width - binding.bounds.width % 2, height: binding.bounds.height - binding.bounds.height % 2}, isCurrent: binding.isCurrent};
   }

@@ -256,3 +256,53 @@ test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite up
   await send({kind:'text',text:'A'});assert.deepEqual(calls.at(-1),[0x41,0],'plain text retains its requested case');
   await assert.rejects(send({kind:'key',key:'I',modifiers:10}),{code:'user_domain_not_granted'},'explicit Ctrl+Shift+I remains refused');
 });
+
+// Coordinator 12:22Z ask 1: Chrome 155 draws the omnibox dropdown inside its main window (no X window).
+// Real Chrome 155 probe (r8/overlay-probe/probe3*.json): the popup WebUI reports
+// ["visible", screenX 113, screenY 35, list 1078x90, widget 1110x178] for a window at (10,10) DIP,
+// list body pixels end 28 DIP above the widget bottom and sit 16 DIP inside its sides (DPR 1 and 2).
+test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup below the band, corners masked", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178];
+    windows.refreshAuxiliary([tabbed]);
+    const [popup] = windows.auxiliaryState();
+    assert.deepEqual(popup, { auxiliary_id: popup.auxiliary_id, x: 119, y: 87, width: 1078, height: 88 }, "the list below the band, CSS px");
+    const region = windows.auxiliaryRegion(windows.auxiliary(popup.auxiliary_id));
+    assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
+    assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
+    assert.deepEqual(region.masks, [{ x: 0, y: 144, width: 32, height: 32 }, { x: 2124, y: 144, width: 32, height: 32 }], "rounded corners show page pixels");
+    const binding = windows.auxiliary(popup.auxiliary_id);
+    windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
+    assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
+    assert.equal(windows.auxiliaryState()[0].height, 128);
+    windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    assert.deepEqual(windows.auxiliaryState(), [], "closed");
+    for (const state of [["visible", 103, 25, 1078, 90, 1120, 178], ["visible", 103, 100, 1078, 90, 1110, 178], ["visible", 103, 25, 1278, 90, 1310, 178], null]) {
+      windows.omnibox = state; windows.refreshAuxiliary([tabbed]);
+      assert.deepEqual(windows.auxiliaryState(), [], `not the pinned layout or not over the page: ${JSON.stringify(state)}`);
+    }
+  } finally { await real.close(); }
+});
+
+test("MP-11 the kernel reads only the omnibox popup's visibility and geometry", async () => {
+  const sent = [];
+  const connection = { send: async (method, params) => {
+    sent.push([method, params]);
+    if (method === "Target.getTargets") return { targetInfos: [{ type: "browser_ui", targetId: "aim", url: "chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html" }, { type: "browser_ui", targetId: "pop", url: "chrome://omnibox-popup.top-chrome/" }] };
+    if (method === "Target.attachToTarget") return { sessionId: "ps" };
+    if (method === "Runtime.evaluate") return { result: { value: '["visible",113,35,1078,90,1110,178]' } };
+    return {};
+  } };
+  const windows = new ChromeWindows({ browser: { connection } });
+  assert.deepEqual(await windows.readOmnibox(), ["visible", 113, 35, 1078, 90, 1110, 178]);
+  assert.deepEqual(sent[1], ["Target.attachToTarget", { targetId: "pop", flatten: true }]);
+  assert.equal(sent[2][1].expression, "JSON.stringify([document.visibilityState,screenX,screenY,innerWidth,innerHeight,outerWidth,outerHeight])");
+  await windows.readOmnibox();
+  assert.equal(sent.filter(([method]) => method === "Target.attachToTarget").length, 1, "one session, reused");
+});

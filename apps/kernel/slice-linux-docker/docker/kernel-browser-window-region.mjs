@@ -9,13 +9,17 @@ import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pi
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {checkedInventory} from './kernel-browser-native-windows.mjs';
 
-export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
+export function windowRegionGeometry(surface,window,rect,contentHeight,scale,inWindow=false){
  const {width,height}=rect,top=rect.top,left=rect.left;
  if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
  const auxiliary=surface==='browser_auxiliary';
  // Browser-owned dropdowns have no page boundary. The owner binds their
  // exact X window; only its whole inward-even raster may reach the pump.
- if(auxiliary){
+ // Chrome UI drawn inside the tabbed window (the omnibox dropdown) is the
+ // owner's kernel-resolved rect of that window, entirely below the band.
+ if(auxiliary&&inWindow){
+  if(window.id===undefined||contentHeight===undefined||top<window.height-contentHeight)throw Error('MP-11: invalid native auxiliary region');
+ }else if(auxiliary){
   if(window.id===undefined||contentHeight!==undefined||left!==0||top!==0||
    width!==window.width-window.width%2||height!==window.height-window.height%2)
    throw Error('MP-11: invalid native auxiliary region');
@@ -39,11 +43,13 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,...options}){
+ constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
-  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale);
+  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,inWindow===true);
+  // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
+  this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  onCdp(message){
@@ -67,10 +73,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     // Chrome UI is proved disjoint from page pixels: the band boundary or
     // a whole separate auxiliary window selected by the browser owner.
     // The kernel policy/lease still gates every sample and asynchronous commit.
+    const masks=this.staticMasks;
     const protection={guard:null,beforeAt:-Infinity,
      async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
      retire(){this.guard=null;},tracker(){return {targets:false};},
-     async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [];} };
+     async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [...masks];} };
     this.regions=protection;
    }
    await this.regions.refresh();
