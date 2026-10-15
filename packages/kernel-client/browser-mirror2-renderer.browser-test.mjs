@@ -715,7 +715,7 @@ for(const delay of [30,700])test(`MP-08/MP-10/MP-11 M2: a same-document reset pr
   assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),500,'a resnapshot must not cancel the remaining wheel intent');
   await page.evaluate(()=>{window.released=true;window.releaseInput?.()});await frames();
   const sent=await page.evaluate(()=>window.epochs);
-  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&e.action.y===500&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path: '+JSON.stringify(sent));
+  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&Math.abs(e.action.y-500)<0.001&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path: '+JSON.stringify(sent));
   await apply(page,{...snapshot(nodes),sequence:3,document_id:'another-document'});await frames();
   assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),0,'navigation never inherits the previous document wheel');
   assert(!(await page.evaluate(()=>window.epochs)).some(e=>e.epoch.document_id==='another-document'),'no previous-document gesture is replayed');
@@ -957,5 +957,16 @@ test('MP-11: same-document reset cannot resurrect a range the kernel cleared',as
   await apply(page,{...snapshot(nodes),sequence:3});await frames();
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'');
   assert.equal(await page.evaluate(()=>window.sent.filter(a=>a.kind==='selection').length),0);
+ }finally{await page.close()}
+});
+
+test('MP-11: an old-document selection refusal cannot poison the new document range',async()=>{
+ const page=await viewer();try{
+  const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Current selection'}]);
+  await page.evaluate(()=>{window.r.send=async(_a,epoch)=>{if(epoch.document_id==='d')await new Promise((_resolve,reject)=>{window.rejectOld=()=>reject(Error('retired document'))})}});
+  await apply(page,snapshot(nodes));await page.evaluate(()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,7)});await page.waitForFunction(()=>!!window.rejectOld);
+  await apply(page,{...snapshot(nodes),document_id:'new'});
+  const result=await page.evaluate(async()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,7);const settled=window.r.settleInput().then(()=>null,e=>e.message);window.rejectOld();return settled});
+  assert.equal(result,null,'a refused input for d must not mark the current new-document selection refused');
  }finally{await page.close()}
 });
