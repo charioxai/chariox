@@ -373,3 +373,33 @@ fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
         snapshot["response"]
     );
 }
+
+// MP-08/MP-10/MP-11: allocated 529/137 places the inward-rounded video crop
+// relative to the original opaque element, after viewport/frame clipping.
+#[test]
+fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 137);
+    let bytes = include_bytes!("browser-display-placement-529.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "1396cbd02821e79f5fa2f4166548d9d1f4c1ca554cf7100873d556205cbae47b"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+}

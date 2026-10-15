@@ -43,3 +43,38 @@ transport/timing and resource samples. Stop exact owned PIDs and stacks, remove
 only owned scratch and runtime identities, and write the acceptance update.
 Missing Chrome owner seams or a quiet host are named coordinator dependencies;
 a synthetic lease never substitutes for a live acceptance row.
+
+
+## MP-08 / MP-10 / MP-11 page placement 529/137
+
+First run the focused supplementary version/snapshot regression:
+`node --test scripts/browser-display-placement-529.test.mjs`, the Rust
+`mp08_mp10_mp11_browser_display_placement_529_snapshot` through cargo-slot,
+and the Cloud page-runtime-regions, display and browser-mirror2-regions tests.
+The old528 source must fail the version/floor assertions. These are source
+regressions, not real-path acceptance.
+
+On the refreshed integrated pair, repeat fresh normal Browser startup at
+1440×900 and1920×1080 DPR1 and DPR2 with the real built web entry, kernel and
+hosted WSS relay. Record protocol529 or newer, the first wire2 paint and the
+native window geometry. From the public-site list above find a genuine opaque
+canvas/video/cross-origin slot, including one partially clipped by scrolling
+or an ancestor frame. Navigate/scroll with normal keys and clicks; do not
+inject a canvas, set slot coordinates or use viewer CDP to choose a crop.
+Capture the ordinary subscribe reply and verify `region_offset` is present,
+finite and nonnegative. Watch the recording: video must align with the still
+and surrounding page, retain the original layout at both densities, and
+accept a normal click at its visible location through the same kernel lease.
+
+Scroll/resize and navigate to retire that lease; late frames and input must
+not paint or act at its old location. A fresh lease must return new placement.
+Capture a partially offscreen or masked case and verify it stays within the
+owned page/window and protection fences. Kernel refusal stays a still with a
+recorded reason, not an invented placement. Confirm a528 kernel keeps stills
+without page Region requests while native band519 remains usable. The old
+producer without placement is RED for page video, not accepted as a fallback.
+
+Report startup/placement/input/retirement separately with exact heads,
+screenshots, recording review and first failing seam. Only after functional
+readiness passes request the quiet host for strict paired Selkies timing and
+the two-hour soak; b3 source/functional checks cannot establish these gates.
