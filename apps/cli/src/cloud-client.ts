@@ -3,7 +3,7 @@ import type { CloudControlProfile } from "./cloud-control-auth.js"
 import { RelayAuthRenewal } from "@chariox/kernel-client/relay-auth-renewal"
 import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { CloudClientCredentialStore, type CloudClientCredential } from "./cloud-client-credential-store.js"
-import { cloudClientRequest, CloudClientAuthError } from "./cloud-client-http.js"
+import { cloudClientRequest, CloudClientAuthError, cloudErrorCode, endsCloudLogin } from "./cloud-client-http.js"
 import { LocalIpcClient, type RelayClientIdentity } from "./ipc.js"
 import { publicRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"
 import { requireRelayTokenKeyBinding } from "./relay-api.js"
@@ -31,7 +31,12 @@ export class CloudClient {
     if (!await this.store.load()) return false
     return this.authenticated(async () => true)
   }
-  async profile(): Promise<RelayCloudProfile | null> { return publicRelayCloudProfile((await this.store.load())?.profile) }
+  async profile(): Promise<RelayCloudProfile | null> {
+    const credential = await this.store.load()
+    // BY-03: another terminal signed this profile out while this one was resumed on it.
+    if (!credential && this.renewal) this.invalidate(new CloudClientAuthError("client_revoked"))
+    return publicRelayCloudProfile(credential?.profile)
+  }
   async humanProfile(): Promise<CloudControlProfile | null> {
     const value = await this.store.load()
     if (!value) return null
@@ -46,8 +51,8 @@ export class CloudClient {
       const response = await fetch(target, {...options, headers, redirect: "error", signal: options?.signal ?? AbortSignal.timeout(20_000)})
       if (!response.ok) {
         const body = await response.clone().json().catch(() => null)
-        const code = body?.error?.code
-        if (["session_invalid", "client_revoked", "refresh_reuse_detected"].includes(code)) throw new CloudClientAuthError(code)
+        const code = cloudErrorCode(body)
+        if (code === "session_invalid" || endsCloudLogin(code)) throw new CloudClientAuthError(code as string)
       }
       return response
     })}
@@ -125,7 +130,8 @@ export class CloudClient {
   async logout(): Promise<void> {
     if (!await this.store.load()) return
     try { await this.authenticated(async credential => cloudClientRequest(credential.profile.apiUrl, "/auth/logout", { body: { sessionToken: credential.accessToken, accountId: credential.profile.accountId, clientId: credential.clientId, revokeClient: true } })) }
-    catch (error) { if (!(error instanceof CloudClientAuthError) || !["client_revoked", "refresh_reuse_detected"].includes(error.code)) throw error }
+    catch (error) { if (!(error instanceof CloudClientAuthError) || !endsCloudLogin(error.code)) throw error }
+    this.renewal?.stop(); this.renewal = undefined
     await this.store.clear()
     for (const client of this.clients) client.invalidateRelayAuthorization(new CloudClientAuthError("client_revoked"))
     this.stop()
@@ -160,13 +166,14 @@ export class CloudClient {
   }
   private async authenticated<T>(request: (credential: CloudClientCredential) => Promise<T>): Promise<T> {
     if (this.revoked) throw new CloudClientAuthError("client_revoked")
+    let used: CloudClientCredential | undefined
     try {
-      let credential = await this.store.session(this.identity().publicKeyThumbprint)
+      let credential = used = await this.store.session(this.identity().publicKeyThumbprint)
       try { return await request(credential) }
       catch (error) {
         if (!(error instanceof CloudClientAuthError) || error.code !== "session_invalid") throw error
         // A different profile process may have rotated between load and request.
-        credential = await this.store.session(this.identity().publicKeyThumbprint, false, credential.accessToken)
+        credential = used = await this.store.session(this.identity().publicKeyThumbprint, false, credential.accessToken)
         return await request(credential)
       }
     } catch (error) {
@@ -174,7 +181,12 @@ export class CloudClient {
       // its revocation callback runs. Existing admission must settle as revoked.
       const authError = error instanceof CloudClientAuthError && error.code === "login_required" && (this.renewal || this.revoked)
         ? new CloudClientAuthError("client_revoked") : error
-      if (authError instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(authError.code)) this.invalidate(authError)
+      if (authError instanceof CloudClientAuthError && endsCloudLogin(authError.code)) {
+        // BY-03: a signed-out answer ends the stored login like a revoked client, but only the login that
+        // made the request: a late answer must not end a newer login of this profile.
+        const ended = authError.code === "signed_out" && used ? await this.store.clear({ loginId: used.loginId }) : true
+        if (ended) this.invalidate(authError)
+      }
       throw authError
     }
   }

@@ -95,6 +95,23 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
+        // MP-11: bind both review forms to the enrolled human, while leaving
+        // every other credential/operation owner and session membership intact.
+        let review_owner =
+            if super::super::owner_context_review::is_owner_context_review(&interaction) {
+                if kernel_operation_owner.or(terminal_credential_owner)
+                    != Some(session.owner_user_id())
+                {
+                    return Err(interaction_error("Copy review requires the session owner"));
+                }
+                Some(self.owner_context_review_owner(session.owner_user_id()))
+            } else {
+                None
+            };
+        let kernel_operation_owner =
+            kernel_operation_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        let terminal_credential_owner =
+            terminal_credential_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
         // A kernel decision nobody waits for any more does not block its
         // subject: the new request supersedes it. The pump's sweep times such
         // decisions out too, but a registration must not depend on it having

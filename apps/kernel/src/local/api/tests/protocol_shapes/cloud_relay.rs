@@ -29,7 +29,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "managed_environment_keep_running_v1",
             "terminal_relay_authorization_renewal_v1",
             "exact_prompt_cancellation_v499",
-            "native_turn_settlement_v510"
+            "native_turn_settlement_v510",
+            "owner_managed_context_transfer_v1"
         ])
     );
     assert_eq!(

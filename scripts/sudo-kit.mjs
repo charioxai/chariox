@@ -42,7 +42,7 @@ const input = createInterface({ input: process.stdin, terminal: false })
 function errorReceipt(action, error) {
   const text = String(error)
   emit({ action, ok: false, code: typeof error?.code === "string" ? error.code : "request_refused",
-    markers: ["kernel_access_denied", "PASSKEY_NOT_ACCEPTED", "PASSKEY_REQUIRED", "already answered", "refused", "expired", "Unix peer has no live authority"].filter(marker => text.includes(marker)) })
+    markers: ["kernel_access_denied", "kernel_access_human_only", "kernel_access_not_covered", "kernel_access_ended", "PASSKEY_NOT_ACCEPTED", "PASSKEY_REQUIRED", "already answered", "refused", "expired", "This process has no access"].filter(marker => text.includes(marker)) })
 }
 
 async function probe(target = session) {

@@ -1,3 +1,4 @@
+import type { CodexPromptSettlement } from "./codex-prompt-settlement.js"
 import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
 import type { AgentRuntimeActivity, TerminalOutputRecord } from "../cli-types.js"
 import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
@@ -17,6 +18,7 @@ export function createCodexKernelOutputProjection(options: {
   agentId: string
   broadcast: (message: unknown) => void
   debug: (label: string, payload: unknown) => void
+  resolveSettledPrompts?: (promptIds: string[]) => Promise<Map<string, CodexPromptSettlement>>
   nowMs?: () => number
   onTurnMapped?: (threadId: string, turnId: string, promptId: string) => void
 }) {
@@ -74,10 +76,9 @@ export function createCodexKernelOutputProjection(options: {
 
   // MP-08 / MP-10: Output silence says nothing about tool/approval waits.
   // Only the kernel's exact prompt settlement can complete its display turn.
-  const projectAgentActivity = (activity: AgentRuntimeActivity | undefined) => {
-    const completion = activity?.last_completed_turn
+  const settlePrompt = (completion: NonNullable<AgentRuntimeActivity["last_completed_turn"]>) => {
     traceCodexLifecycle("activity", { promptId: completion?.prompt_id,
-      activePromptId, knownPromptIds: [...projectedTurns.keys()], activeCount: activity?.active_prompt_count,
+      activePromptId, knownPromptIds: [...projectedTurns.keys()],
       settlement: completion?.settlement_status })
     if (!completion || completion.agent_id !== options.agentId || !projectedThreadId) return
     const turn = projectedTurns.get(completion.prompt_id)
@@ -112,6 +113,25 @@ export function createCodexKernelOutputProjection(options: {
         if (projectedTurns.size <= 64) break
         if (value.completed) projectedTurns.delete(key)
       }
+    }
+  }
+
+  const projectAgentActivity = async (activity: AgentRuntimeActivity | undefined) => {
+    const completion = activity?.last_completed_turn
+    if (completion) settlePrompt(completion)
+    // MP-08/MP-11: a pump can miss more than one settlement. Recover only
+    // known predecessor prompts; the current active prompt stays snapshot-owned.
+    const predecessors = [...projectedTurns].filter(([id, turn]) =>
+      !turn.completed && id !== activePromptId && id !== completion?.prompt_id).map(([id]) => id)
+    if (!predecessors.length || !options.resolveSettledPrompts) return
+    const threadId = projectedThreadId
+    const settled = await options.resolveSettledPrompts(predecessors)
+    if (projectedThreadId !== threadId) return
+    for (const [promptId, value] of settled) {
+      if (!predecessors.includes(promptId)) continue
+      settlePrompt({ agent_id: options.agentId, prompt_id: promptId,
+        completed_at_ms: value.completedAtMs, settlement_status: value.status,
+        turn_id: promptId, provider_run_id: "", changed_paths: [], undo_available: false })
     }
   }
 

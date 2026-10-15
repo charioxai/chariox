@@ -1,6 +1,7 @@
 export type FooterFlash = {
   message: string
   tone: "info" | "error"
+  display?: "toast"
 }
 
 type FooterFlashControllerOptions<TimerHandle> = {
@@ -12,7 +13,7 @@ type FooterFlashControllerOptions<TimerHandle> = {
 }
 
 export type FooterFlashController = {
-  flash(message: string, tone: FooterFlash["tone"]): void
+  flash(message: string, tone: FooterFlash["tone"], display?: "toast"): void
   clearTimer(): void
 }
 
@@ -30,15 +31,15 @@ export function createFooterFlashController<TimerHandle>(
   }
 
   return {
-    flash(message, tone) {
+    flash(message, tone, display) {
       clearPendingTimer()
-      options.setFooterFlash({ message, tone })
+      options.setFooterFlash({ message, tone, ...(display ? { display } : {}) })
       options.onFooterFlashChange()
       pendingTimer = options.scheduleTimer(() => {
         pendingTimer = undefined
         options.setFooterFlash(null)
         options.onFooterFlashChange()
-      }, options.delayMs)
+      }, display === "toast" ? 30_000 : options.delayMs)
     },
     clearTimer() {
       clearPendingTimer()

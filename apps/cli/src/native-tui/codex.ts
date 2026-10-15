@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { spawn } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
@@ -116,7 +117,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     // MP-08 / MP-10: Every native server uses the normal kernel adapter so
     // granted MCPs and provider-account configuration reach the actual harness.
-    const run = await launchManagedNativeProviderRun({
+    const run = await launchKernelNativeProviderRun({
       client,
       sessionId: session.id,
       agentId: agent.id,
@@ -155,6 +156,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "codex native-tui",
       session,
       agent,
@@ -342,7 +344,7 @@ function printNativeCodexUsage() {
   ].join("\n") + "\n")
 }
 
-async function launchManagedNativeProviderRun(options: {
+async function launchKernelNativeProviderRun(options: {
   client: LocalIpcClient
   sessionId: string
   agentId: string
@@ -356,7 +358,7 @@ async function launchManagedNativeProviderRun(options: {
     effort: options.effort,
     agentId: options.agentId,
   })
-  return waitForNativeProviderRunReady(options.client, run.id)
+  return waitForNativeProviderRunReady(options.client, run.id, { allowParkedEndpoint: true })
 }
 
 async function runCodexTui(options: {

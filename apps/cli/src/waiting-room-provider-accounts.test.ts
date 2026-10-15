@@ -219,3 +219,23 @@ test("exhausted selected account exposes reset and a usable alternative", () => 
   assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
   assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
 })
+
+// MP-08 / MP-11 OpenCode owns Go → Zen fallback: show exhaustion, never refuse before the harness runs.
+test("exhausted OpenCode service stays visible but does not block the start", () => {
+  const reset = Date.now() + 3_600_000
+  const go = { ...usageMeter("go/monthly", "rolling_limit", "exhausted", reset), service_id: "opencode-go" }
+  const zen = { ...usageMeter("zen/credits", "credit_balance", "exhausted"), service_id: "opencode" }
+  const openCode = accountWithUsage("opencode", [go, zen])
+  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go \(exhausted\).*resets.*UTC/)
+  for (const model of ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4-flash"]) {
+    assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
+test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+  for (const mode of ["claude", "claude-p", "claude-headless"]) {
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
+      /not available on this kernel.*[Cc]opy login/)
+  }
+})

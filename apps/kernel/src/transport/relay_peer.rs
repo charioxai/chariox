@@ -105,8 +105,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 118 binds the embedded local response union to local protocol 510,
 /// restores owner-private workflow notifications to the Browser/Computer peer
 /// union, exact home-prompt cancellation and definitive completion outcomes (MP-08/MP-10/MP-11).
-/// Version 134 introduced scoped native Codex display transport (local 526).
-/// Version 139 adds scoped Open replay and sequential Exchange receipts (local 531).
+/// Version128 binds owner-managed destinations to local520. Version134 adds scoped
+/// native Codex display transport. Version139 adds Open replay and Exchange receipts.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 139;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
@@ -186,6 +186,8 @@ pub struct RelayManagedContextImportedRepository {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -987,7 +989,10 @@ pub enum RelayPeerRequest {
     },
     ArmManagedContextImport {
         plan: crate::managed_context::package::ManagedContextPlanBinding,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         target_environment_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
         target_kernel_id: String,
         target_key_thumbprint: String,
         capability: RelayManagedContextCapability,
@@ -2132,7 +2137,25 @@ mod project_environment_export_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_101_shapes {
+mod owner_managed_context_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+            "972bfa82e0e37d399f829a7cca14b7260100b207c610d86ccc2c0039eaab6bf4"
+        );
+        assert!(value.get("target_environment_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_128_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};

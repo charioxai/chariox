@@ -297,6 +297,7 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
 
+pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
 pub use api::{
     ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
     DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,

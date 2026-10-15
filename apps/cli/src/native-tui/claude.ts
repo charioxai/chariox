@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { appendFileSync } from "node:fs"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -160,6 +161,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude native-tui",
       session,
       agent,
@@ -397,6 +399,7 @@ async function runClaudeRemoteRendered(
   let disposeEvents: (() => void) | null = null
   let restoreStdin: (() => void) | null = null
   let restoreResize: (() => void) | null = null
+  const exitController = new AbortController()
   try {
     const created = options.sessionRef
       ? null
@@ -416,11 +419,18 @@ async function runClaudeRemoteRendered(
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
     const readiness = createClaudeRemoteRenderedReadiness()
+    // MP-08/MP-11: trust/onboarding can end the official provider. Release the
+    // queued initial prompt wait and its timer instead of waiting sixty seconds.
+    const exited = waitForClaudeRemoteRenderedRunExit(client, run.id, { sessionId: session.id, agentId: agent.id, debug: debugNativeClaude }, exitController.signal)
+    void exited.then(() => readiness.fail(new Error(
+      "Claude native TUI ended before its input composer was ready. Complete onboarding and trust the workspace, then retry.",
+    )), (error: unknown) => readiness.fail(error instanceof Error ? error : new Error(String(error))))
 
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude remote-native-tui",
       session,
       agent,
@@ -468,8 +478,9 @@ async function runClaudeRemoteRendered(
         readiness,
       })
     }
-    await waitForClaudeRemoteRenderedRunExit(client, run.id, { sessionId: session.id, agentId: agent.id, debug: debugNativeClaude })
+    await exited
   } finally {
+    exitController.abort()
     restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()

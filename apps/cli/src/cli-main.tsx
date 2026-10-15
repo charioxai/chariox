@@ -1,4 +1,5 @@
 import process from "node:process"
+import { runContextCommand } from "./context-command.js"
 import { runCloudClientCommand } from "./cloud-client-command.js"
 import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import { runSudoCommand } from "./sudo-command.js"
@@ -28,6 +29,7 @@ import { assertSolidClientBuild } from "./solid-client-build.js"
 async function main() {
   assertSolidClientBuild()
   const argv = process.argv.slice(2)
+  if (await runContextCommand(argv)) return
   if (await runCloudClientCommand(argv)) return
   if (await runSudoCommand(argv)) return
   if (await runAccessCommand(argv)) return

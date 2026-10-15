@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: human, history and worker hold wire at allocated local439.
+//! MP-08/MP-10/MP-11: human, history and worker hold wire at current local444.
 use super::*;
 use crate::local::{RoomEnvironmentHumanAction, SubmitRoomEnvironmentActionRequest};
 use crate::transport::room_browser_controller::{

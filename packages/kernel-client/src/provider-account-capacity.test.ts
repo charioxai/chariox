@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import test from "node:test"
 
-import { providerAccountCapacity, providerAccountCapacityLabel } from "./provider-account-capacity.js"
+import { providerAccountAdmissionBlocked, providerAccountCapacity, providerAccountCapacityLabel } from "./provider-account-capacity.js"
 import type { ProviderAccountProfile, ProviderAccountUsageMeter } from "./kernel-types-provider.js"
 
 const nowMs = 10_000
@@ -127,7 +127,7 @@ test("presentation capacity matches the shared kernel admission fixtures", () =>
     }))
     const state = providerAccountCapacity(profile(fixture.provider, meters), fixture.now_ms, fixture.model).state
     assert.equal(state, fixture.expected_state, fixture.name)
-    assert.equal(state === "exhausted", fixture.expected_blocked, `${fixture.name} presentation/admission contract`)
+    assert.equal(providerAccountAdmissionBlocked(profile(fixture.provider, meters), fixture.now_ms, fixture.model), fixture.expected_blocked, `${fixture.name} admission contract`)
   }
 })
 

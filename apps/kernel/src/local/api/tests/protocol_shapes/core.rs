@@ -640,6 +640,30 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
         Some(&serde_json::json!("agent-1"))
     );
 
+    assert!(active_cancel_snapshot
+        .pointer("/CancelActivePrompt/expected_prompt_id")
+        .is_none());
+    let conditional =
+        LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: "session-1".into(),
+            attachment_id: "attachment-1".into(),
+            target_agent_id: Some("agent-1".into()),
+            expected_prompt_id: Some("prompt-A".into()),
+        });
+    assert_eq!(
+        serde_json::to_value(conditional).unwrap(),
+        serde_json::json!({
+            "CancelActivePrompt": {"session_id":"session-1", "attachment_id":"attachment-1",
+                "target_agent_id":"agent-1", "expected_prompt_id":"prompt-A"}
+        })
+    );
+    let legacy: crate::local::CancelActivePromptRequest =
+        serde_json::from_value(serde_json::json!({
+            "session_id":"session-1", "attachment_id":"attachment-1", "target_agent_id":"agent-1"
+        }))
+        .unwrap();
+    assert_eq!(legacy.expected_prompt_id, None);
+
     let steer_request =
         LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
             session_id: "session-1".to_string(),

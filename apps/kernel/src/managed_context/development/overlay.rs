@@ -5,7 +5,32 @@ pub(super) fn export_overlay(
     repository_id: &str,
     staging_root: &Path,
     manifest_budget: &mut ManifestMemoryBudget,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<(Vec<DevelopmentOverlayEntry>, u64), DaemonError> {
+    let (entries, size, pending) = collect_overlay(
+        worktree,
+        repository_id,
+        staging_root,
+        manifest_budget,
+        vault.is_some(),
+    )?;
+    stage_objects(staging_root, &entries, pending, vault)?;
+    Ok((entries, size))
+}
+
+type CollectedOverlay = (
+    Vec<DevelopmentOverlayEntry>,
+    u64,
+    BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+);
+
+pub(super) fn collect_overlay(
+    worktree: &Path,
+    repository_id: &str,
+    staging_root: &Path,
+    manifest_budget: &mut ManifestMemoryBudget,
+    vault_enabled: bool,
+) -> Result<CollectedOverlay, DaemonError> {
     let mut paths = BTreeSet::new();
     for args in [
         &[
@@ -19,25 +44,12 @@ pub(super) fn export_overlay(
         &["diff", "--name-only", "--no-renames", "-z", "--"][..],
         &["ls-files", "--others", "--exclude-standard", "-z", "--"][..],
     ] {
-        stream_git_nul_records(worktree, args, MAX_OVERLAY_FILES_PER_REPOSITORY, |path| {
+        stream_git_nul_records(worktree, args, usize::MAX, |path| {
             if paths.insert(path.clone()) {
                 manifest_budget.consume(path.len().saturating_add(256))?;
             }
-            if paths.len() > MAX_OVERLAY_FILES_PER_REPOSITORY {
-                return Err(context_error(format!(
-                    "repository `{}` has more than {MAX_OVERLAY_FILES_PER_REPOSITORY} dirty paths",
-                    worktree.display()
-                )));
-            }
             Ok(())
         })?;
-    }
-    if paths.len() > MAX_OVERLAY_FILES_PER_REPOSITORY {
-        return Err(context_error(format!(
-            "repository `{}` has {} dirty paths; maximum is {MAX_OVERLAY_FILES_PER_REPOSITORY}",
-            worktree.display(),
-            paths.len()
-        )));
     }
     let ignore_patterns = read_context_ignore_patterns(worktree)?;
     let includes: Vec<_> = ignore_patterns
@@ -54,8 +66,8 @@ pub(super) fn export_overlay(
             "--",
         ];
         args.extend(includes);
-        stream_git_nul_records(worktree, &args, MAX_OVERLAY_FILES_PER_REPOSITORY, |path| {
-            if !context_force_excluded_path(&path)
+        stream_git_nul_records(worktree, &args, usize::MAX, |path| {
+            if !excluded_for_export(&path, vault_enabled)
                 && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
                     &path,
                     &ignore_patterns,
@@ -68,11 +80,12 @@ pub(super) fn export_overlay(
         })?;
     }
     let mut stored_objects = BTreeSet::new();
+    let mut pending = BTreeMap::new();
     let mut overlay_size_bytes = 0_u64;
     let mut entries = Vec::new();
     for path in paths {
         validate_relative_path(&path)?;
-        if context_force_excluded_path(&path)
+        if excluded_for_export(&path, vault_enabled)
             || crate::workspace_live_sync_ignore::user_rules_exclude_path(&path, &ignore_patterns)
         {
             continue;
@@ -84,6 +97,7 @@ pub(super) fn export_overlay(
             staging_root,
             &mut stored_objects,
             &mut overlay_size_bytes,
+            &mut pending,
         )?;
         let worktree_state = worktree_file_state(
             worktree,
@@ -92,6 +106,7 @@ pub(super) fn export_overlay(
             staging_root,
             &mut stored_objects,
             &mut overlay_size_bytes,
+            &mut pending,
         )?;
         let entry = DevelopmentOverlayEntry {
             path,
@@ -102,7 +117,7 @@ pub(super) fn export_overlay(
         manifest_budget.consume(file_state_manifest_bytes(&entry.worktree))?;
         entries.push(entry);
     }
-    Ok((entries, overlay_size_bytes))
+    Ok((entries, overlay_size_bytes, pending))
 }
 
 fn index_file_state(
@@ -112,6 +127,7 @@ fn index_file_state(
     staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
+    pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<DevelopmentFileState, DaemonError> {
     let output = git_output(worktree, &["ls-files", "--stage", "-z", "--", path])?;
     let records = split_nul(&output.stdout)?;
@@ -160,6 +176,7 @@ fn index_file_state(
         staging_root,
         stored_objects,
         overlay_size_bytes,
+        pending,
     )
 }
 
@@ -170,6 +187,7 @@ fn worktree_file_state(
     staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
+    pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<DevelopmentFileState, DaemonError> {
     reject_symlink_ancestors(worktree, path)?;
     let absolute = worktree.join(path);
@@ -209,6 +227,7 @@ fn worktree_file_state(
         staging_root,
         stored_objects,
         overlay_size_bytes,
+        pending,
     )
 }
 
@@ -239,9 +258,10 @@ pub(super) fn store_overlay_object(
     repository_id: &str,
     bytes: Vec<u8>,
     executable: bool,
-    staging_root: &Path,
+    _staging_root: &Path,
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
+    pending: &mut BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<DevelopmentFileState, DaemonError> {
     let size_bytes = bytes.len() as u64;
     if size_bytes > MAX_OVERLAY_FILE_BYTES {
@@ -258,11 +278,7 @@ pub(super) fn store_overlay_object(
                 "repository dirty overlay exceeds {MAX_OVERLAY_BYTES_PER_REPOSITORY} bytes"
             )));
         }
-        let destination = staging_root.join(&object_path);
-        if let Some(parent) = destination.parent() {
-            create_private_directory(parent)?;
-        }
-        write_private_file(&destination, &bytes)?;
+        pending.insert(object_path.clone(), zeroize::Zeroizing::new(bytes));
     }
     Ok(DevelopmentFileState::File {
         object_path,
@@ -317,11 +333,19 @@ pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
+fn excluded_for_export(path: &str, vault_enabled: bool) -> bool {
+    context_force_excluded_path(path)
+        || (!vault_enabled
+            && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path))
+}
+
 pub(super) fn context_force_excluded_path(path: &str) -> bool {
     if path.split('/').any(is_portable_git_admin_component) {
         return true;
     }
-    if crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path) {
+    // MP-08 / MP-11: live-sync secret exclusions do not apply to an owner
+    // Copy: selected secret files use the Vault. Keep runtime/admin exclusions.
+    if crate::workspace_live_sync_ignore::workspace_runtime_excluded_path(path) {
         return true;
     }
     path.split('/').any(|part| {
@@ -535,4 +559,50 @@ fn mp11_overlay_ancestor_swap_is_refused_at_descriptor_open() {
         refused,
         "validation/open ancestor swap read outside the workspace"
     );
+}
+
+// MP-08 / MP-11: classify all logical aliases before writing shared file objects.
+pub(super) fn stage_objects(
+    staging: &Path,
+    entries: &[DevelopmentOverlayEntry],
+    pending: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
+) -> Result<(), DaemonError> {
+    for (object, bytes) in pending {
+        let items = items_for_object(&object, &bytes, entries);
+        if let Some(vault) = vault {
+            vault.stage(staging, &object, &bytes, items)?;
+        } else {
+            let destination = staging.join(&object);
+            if let Some(parent) = destination.parent() {
+                create_private_directory(parent)?;
+            }
+            write_private_file(&destination, &bytes)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn items_for_object(
+    object: &str,
+    bytes: &[u8],
+    entries: &[DevelopmentOverlayEntry],
+) -> Vec<vault_artifacts::VaultItem> {
+    let mut items = Vec::new();
+    for entry in entries {
+        for (kind, state) in [
+            ("index file", &entry.index),
+            ("workspace file", &entry.worktree),
+        ] {
+            if matches!(state, DevelopmentFileState::File { object_path, .. } if object_path == object)
+                && super::super::credential_free::validate_bytes(&entry.path, bytes).is_err()
+            {
+                items.push(vault_artifacts::VaultItem {
+                    path: entry.path.clone(),
+                    kind: kind.into(),
+                });
+            }
+        }
+    }
+    items
 }

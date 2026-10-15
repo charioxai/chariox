@@ -194,7 +194,7 @@ test("sudo popup describes a fresh one-turn decision without grant lifetime cont
   } finally { harness.renderer.destroy() }
 })
 
-test("MP-08 / MP-10 / MP-11 access popup describes the whole local kernel without a session", async () => {
+test("MP-08 / MP-10 / MP-11 access popup for the local kernel shows no session or scope line", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30 })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
@@ -205,8 +205,7 @@ test("MP-08 / MP-10 / MP-11 access popup describes the whole local kernel withou
       lifetime_minutes: 480, max_lifetime_minutes: 1440 } }, { width: 90, height: 30 })
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
-    assert.match(frame, /Local kernel/)
-    assert.doesNotMatch(frame, /Session:|Session kernel-access/)
+    assert.doesNotMatch(frame, /Local kernel|Session|kernel-access|expires/)
   } finally { harness.renderer.destroy() }
 })
 
@@ -227,28 +226,53 @@ for (const kind of ["access_grant", "access_extension"] as const) {
   })
 }
 
-for (const kind of ["access_grant", "access_extension"] as const) {
-  test(`MP-08 / MP-10 / MP-11 ${kind} labels the structured requester independently of message text`, async () => {
+// EXT-UX-01 / EXT-UX-02: the owner sees one short question; pid, path, process
+// start and scope stay in the requester record and the kernel's audit.
+for (const [kind, title, message] of [
+  ["access_grant", "External agent access", "Claude Code (an external agent) wants access to Chariox. Allow?"],
+  ["access_extension", "Extend external agent access", "Claude Code's access ends in 5 minutes. Extend?"],
+] as const) {
+  test(`EXT-UX ${kind} shows only the kernel's short question`, async () => {
     const h = await createTestRenderer({ width: 100, height: 50, useThread: false })
     const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
     h.renderer.root.add(box)
     const surface = createPasskeyPopupRenderer(h.renderer, noActions)
     surface.assign(box)
     try {
-      surface.render({ ...view, prompt: { ...prompt, kind, session_id: "kernel-access", session_alias: null,
-        message: "Display text mentions Claude (pid 999) but cannot supply the requester label.",
-        requester: { executable: "/opt/codex\n\u001b[31m\u202e", pid: 42, process_start_id: "18446744073709551615", process_exec_version: 7, provider_harness: "codex" },
+      surface.render({ ...view, passkey: { length: 6, rememberMinutes: 0, accessLifetimeMinutes: 30 }, prompt: { ...prompt, kind, session_id: "kernel-access", session_alias: null, title, message,
+        requester: { executable: "/opt/codex\n\u001b[31m\u202e", pid: 42, process_start_id: "18446744073709551615", process_exec_version: 7, provider_harness: "claude" },
         lifetime_minutes: 30, max_lifetime_minutes: 1440,
       } }, { width: 100, height: 50 })
       await h.renderOnce()
       const frame = h.captureCharFrame()
-      assert.match(frame, /Requester: Codex · PID 42/)
-      assert.match(frame, /Executable: "\/opt\/codex\\n\\u001b\[31m\\u202e"/)
-      assert.match(frame, /Process start: 18446744073709551615 · exec version 7/)
-      assert.match(frame, /Display text mentions Claude/)
-      surface.render({ ...view, prompt: { ...prompt, kind, requester: null } }, { width: 100, height: 50 })
-      await h.renderOnce()
-      assert.match(h.captureCharFrame(), /Requester identity unavailable/)
+      assert.match(frame, new RegExp(title))
+      assert.ok(frame.includes(message))
+      assert.match(frame, /Access for: 30 minutes/)
+      assert.doesNotMatch(frame, /PID|pid|Executable|Process start|exec version|Local kernel|expires|maximum|Requester/)
     } finally { h.renderer.destroy() }
   })
 }
+
+// EXT-UX-04: the TUI's status row is always present, so "Waiting for the kernel…" moves nothing.
+test("EXT-UX-04 the pending status takes the hint row's place and no row moves", async () => {
+  const h = await createTestRenderer({ width: 100, height: 40, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  const rowOf = (frame: string, text: RegExp) => frame.split("\n").findIndex((line) => text.test(line))
+  try {
+    const access = { ...prompt, kind: "access_grant" as const, session_id: "kernel-access", session_alias: null,
+      title: "External agent access", message: "An external agent wants access to Chariox. Allow?", lifetime_minutes: 30, max_lifetime_minutes: 1440 }
+    const idle = { ...view, passkey: { length: 0, rememberMinutes: 0, accessLifetimeMinutes: 30 }, prompt: access }
+    surface.render(idle, { width: 100, height: 40 })
+    await h.renderOnce()
+    const before = h.captureCharFrame()
+    surface.render({ ...idle, pending: true }, { width: 100, height: 40 })
+    await h.renderOnce()
+    const after = h.captureCharFrame()
+    assert.match(after, /Waiting for the kernel…/)
+    for (const marker of [/External agent access/, /Passkey:/, /\[ Approve \]/]) assert.equal(rowOf(after, marker), rowOf(before, marker))
+    assert.equal(rowOf(after, /Waiting for the kernel…/), rowOf(before, /Enter approves/))
+  } finally { h.renderer.destroy() }
+})

@@ -1308,3 +1308,7 @@ mod metadata_discovery_tests {
         assert_eq!(params["config"]["web_search"], "disabled");
     }
 }
+
+#[cfg(test)]
+#[path = "codex_client/thread_history_tests.rs"]
+mod thread_history_tests;

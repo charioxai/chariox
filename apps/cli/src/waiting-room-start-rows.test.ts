@@ -45,7 +45,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "local")
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
-  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
@@ -214,7 +214,7 @@ test("waiting room start rows mark provider choices from local fallback catalog"
   )
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
-  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4 (local list)")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
 

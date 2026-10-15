@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: protocol510 Browser artifact snapshot and hash.
+//! MP-08/MP-10/MP-11: protocol531 Browser artifact snapshot and hash.
 use super::*;
 
 #[test]

@@ -11,6 +11,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
     pub event_runtime: &'a Arc<RelayEventRuntime>,
     pub command_result_cache: &'a RelayCommandResultCache,
     pub reconnect_gate: &'a Arc<RelayReconnectGate>,
+    pub local_browser: &'a Arc<LocalBrowserDirect>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +96,7 @@ pub(super) async fn handle_incoming_envelope(
         event_runtime,
         command_result_cache,
         reconnect_gate,
+        local_browser,
     } = context;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
         DaemonError::LocalTransport {
@@ -123,6 +125,7 @@ pub(super) async fn handle_incoming_envelope(
             let outgoing_tx = outgoing_tx.clone();
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
+            let local_browser = Arc::clone(local_browser);
             tokio::spawn(async move {
                 let relay_response = handle_daemon_request(
                     &router,
@@ -130,6 +133,7 @@ pub(super) async fn handle_incoming_envelope(
                     caller_identity,
                     encrypted_request,
                     &command_result_cache,
+                    Some(&local_browser),
                 )
                 .await;
                 if let Err(error) = send_outgoing_envelope(
@@ -409,11 +413,12 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
     config: &crate::config::DaemonConfig,
 ) -> Result<RelayReconnectDecision, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
-        RelayConfigContinuity::Continue => Ok(RelayReconnectDecision::Unchanged),
-        // Token-only renewal is reauthenticated on this socket by the
-        // connector heartbeat. A peer reply must not race that heartbeat by
-        // closing every attached browser/native subscription.
-        RelayConfigContinuity::Reauthenticate => Ok(RelayReconnectDecision::Unchanged),
+        // MP-08/MP-10/MP-11: heartbeat registration reauthenticates this socket
+        // in-band. A peer task may retain a pre-renewal snapshot for its whole
+        // transfer; closing here would destroy requests and subscription routes.
+        RelayConfigContinuity::Continue | RelayConfigContinuity::Reauthenticate => {
+            Ok(RelayReconnectDecision::Unchanged)
+        }
         RelayConfigContinuity::Reconnect(reason) => {
             defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, reason)
         }
@@ -476,42 +481,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mp08_token_rotation_after_peer_response_preserves_live_socket() {
-        for active_daemon_request in [false, true] {
+    fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
+        // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
+        // captured before renewal. Neither idle nor busy clients may be closed.
+        for active_requests in 0..=2 {
             let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
-            let reconnect_gate = RelayReconnectGate::default();
-            if active_daemon_request {
-                assert!(reconnect_gate.begin_daemon_request());
+            let gate = RelayReconnectGate::default();
+            for _ in 0..active_requests {
+                assert!(gate.begin_daemon_request());
             }
             let mut config = crate::config::DaemonConfig::for_tests();
             config.relay_url = Some("wss://relay.example.test".into());
             config.relay_token = Some("renewed-token".into());
-
             assert_eq!(
                 enqueue_dynamic_relay_reconnect_if_changed(
                     &outgoing_tx,
-                    &reconnect_gate,
+                    &gate,
                     "wss://relay.example.test",
-                    "original-token",
+                    "old-token",
                     &config,
                 )
-                .expect("token-only renewal leaves reauthentication to the connector"),
+                .unwrap(),
                 RelayReconnectDecision::Unchanged,
+                "token renewal must use the existing heartbeat reauthentication path",
             );
-            if active_daemon_request {
-                assert_eq!(
-                    reconnect_gate.finish_daemon_request(&outgoing_tx).unwrap(),
-                    None
-                );
+            for _ in 0..active_requests {
+                assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
             }
             assert!(
                 priority_rx.try_recv().is_err(),
-                "no Close after token-only renewal"
+                "renewal must not queue Close"
             );
             assert!(
-                reconnect_gate.begin_daemon_request(),
-                "renewal must keep admission open"
+                gate.begin_daemon_request(),
+                "new requests must remain admitted"
             );
+            assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
         }
     }
 
@@ -530,7 +535,7 @@ mod tests {
         )
         .expect("peer response should enqueue");
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://other-relay.example.test".to_string());
+        config.relay_url = Some("wss://new-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let reason = enqueue_dynamic_relay_reconnect_if_changed(
@@ -582,7 +587,7 @@ mod tests {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://other-relay.example.test".to_string());
+        config.relay_url = Some("wss://new-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let decision = enqueue_dynamic_relay_reconnect_if_changed(

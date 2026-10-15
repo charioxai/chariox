@@ -1,3 +1,4 @@
+import { OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION } from "@chariox/kernel-client/ipc-managed-context-requests"
 import { isProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "@chariox/kernel-client"
 import * as requests from "@chariox/kernel-client/ipc-requests"
 import { projectEnvironmentReviewMinimumProtocolVersion } from "@chariox/kernel-client/project-environment-review"
@@ -7,6 +8,8 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
+  RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
@@ -69,6 +72,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
       ? requests.roomEnvironmentBrowserTabActionsMinimumProtocolVersion : requests.roomEnvironmentBrowserHistoryMinimumProtocolVersion }
   } else if (name === "CreateManagedEnvironment" && payload?.managedRepositoryRoot != null) {
     feature = { feature: "Custom managed repository root", minimum: requests.managedEnvironmentCreateMinimumProtocolVersion }
+  } else if (name === "StartManagedContextTransfer" && payload?.ownerManaged != null) {
+    feature = { feature: "Owner context copy", minimum: OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {
     feature = { feature: "Project export review", minimum: projectEnvironmentReviewMinimumProtocolVersion }
   } else if (name === "RespondToInteraction" && payload?.session_id === "kernel-access") {

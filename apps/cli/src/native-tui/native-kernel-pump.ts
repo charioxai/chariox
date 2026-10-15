@@ -13,7 +13,7 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
-    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void) | undefined
+    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void | Promise<void>) | undefined
     onInteractions?: ((interactions: RuntimeInteraction[]) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
@@ -66,7 +66,7 @@ export function startNativeKernelPumpLoop(
       }
       traceCodexLifecycle("pump_tick", { outputDrained })
       if (!stopped && state?.SessionState?.agent_activity) {
-        for (const activity of settlement.release(outputDrained)) options.onAgentActivity?.(activity)
+        for (const activity of settlement.release(outputDrained)) await options.onAgentActivity?.(activity)
       }
       // Permission projections establish their own prompt-scoped display
       // barrier. Another agent's output must not hold their approval hostage.

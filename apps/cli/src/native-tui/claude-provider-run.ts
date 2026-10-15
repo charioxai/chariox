@@ -68,18 +68,20 @@ export async function waitForClaudeRemoteRenderedRunExit(
   client: LocalIpcClient,
   providerRunId: string,
   context?: { sessionId: string, agentId: string, debug?: (label: string, fields: unknown) => void },
+  signal?: AbortSignal,
 ): Promise<void> {
   let sawProviderRun = false
   let endedAt: number | undefined
   while (true) {
     const readAt = Date.now()
     context?.debug?.("exit_run_read_start", { at: readAt })
+    signal?.throwIfAborted()
     const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
-      if (sawProviderRun) throw error
+      if (sawProviderRun || signal?.aborted) throw error
       return null
     })
     if (!run) {
-      await sleep(500)
+      await sleep(500, undefined, { signal })
       continue
     }
     sawProviderRun = true
@@ -99,7 +101,7 @@ export async function waitForClaudeRemoteRenderedRunExit(
           && (!activity?.active_turn?.provider_run_id || sameRun(activity.active_turn.provider_run_id))) {
           endedAt ??= Date.now()
           if (Date.now() - endedAt >= 20_000) throw new Error("Claude provider run ended before its active turn settled.")
-          await sleep(25)
+          await sleep(25, undefined, { signal })
           continue
         }
         const exactRun = sameRun(turn?.provider_run_id)
@@ -110,7 +112,7 @@ export async function waitForClaudeRemoteRenderedRunExit(
       }
       return
     }
-    await sleep(1_000)
+    await sleep(1_000, undefined, { signal })
   }
 }
 

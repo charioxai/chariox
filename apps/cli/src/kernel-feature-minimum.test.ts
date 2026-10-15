@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import { addSshMachineRequest, removeSshMachineRequest, sshMachineMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
@@ -70,6 +70,12 @@ test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated proto
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
 })
 
+test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", () => {
+  const request = { StartManagedContextTransfer: { interactive: true, ownerManaged: {} } }
+  assert.throws(() => requireKernelFeatureProtocol(request, 519), /Owner context copy needs protocol ≥520/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
+})
+
 // MP-08 / MP-10: VERSION(P01).
 test("standalone and reserved Project Environment operations require protocol 487", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
@@ -110,4 +116,14 @@ test("native provider launches reject missing settlement support while ordinary 
   }
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ LaunchProviderRun: { native_tui: false } }, 491))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ LaunchProviderRuns: { launches: [{ native_tui: false }] } }, 491))
+})
+
+// MP-07 / MP-08 / MP-11: SSH variants first shipped in the allocated C5 union.
+test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before transport", () => {
+  for (const request of [addSshMachineRequest("linux-lan"), removeSshMachineRequest("owned-install")]) {
+    for (const version of [491, sshMachineMinimumProtocolVersion - 1]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥520.*update the kernel/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
+  }
 })

@@ -428,3 +428,10 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+
+test("MP-08 native TUI projects a local-only carrier indicator outside provider output", () => {
+  const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel: "Local connection" }
+  assert.match(formatNativeTuiRuntimeBanner(input), /connection:     Local connection/)
+  assert.doesNotMatch(formatNativeTuiRuntimeBanner({ ...input, connectionLabel: null }), /connection:/)
+})

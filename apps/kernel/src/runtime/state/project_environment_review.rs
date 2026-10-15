@@ -22,8 +22,25 @@ impl KernelRuntimeState {
         target: &str,
         code: String,
         vault: &dyn crate::secret::CredentialVaultStore,
+        owner_context_id: Option<&str>,
+        vault_transfer: bool,
     ) -> Result<ProjectPrivateFileAdditions, DaemonError> {
-        let id = format!("project-environment:{}", rand::random::<u64>());
+        // MP-11: credential-free owner copies use the same human-only guard as kernel-only copies.
+        let id = owner_context_id.map_or_else(
+            || format!("project-environment:{}", rand::random::<u64>()),
+            |context| format!("owner-context:{context}"),
+        );
+        // MP-08 / MP-11: only context transfers move history through Vault and admit it.
+        let vault_items = if vault_transfer {
+            let scan_roots = roots.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::managed_context::development::vault_artifacts::review_items(&scan_roots)
+            })
+            .await
+            .map_err(|_| environment_failure("Vault review task failed"))??
+        } else {
+            Vec::new()
+        };
         let mut expanded = false;
         let mut revise = false;
         let mut supply: Option<String> = None;
@@ -41,7 +58,7 @@ impl KernelRuntimeState {
                         missing.status
                     });
             }
-            let review = ProjectEnvironmentReview::build(
+            let mut review = ProjectEnvironmentReview::build(
                 state,
                 project,
                 target,
@@ -49,6 +66,15 @@ impl KernelRuntimeState {
                 expanded,
                 false,
             );
+            if !vault_items.is_empty() {
+                review.rows.push(ProjectEnvironmentReviewRow { label: "Vault".into(), summary: "Secret-bearing files and history will travel through your Chariox Vault. Unlock the source and target Vaults before copying.".into() });
+                for item in &vault_items {
+                    review.rows.push(ProjectEnvironmentReviewRow {
+                        label: "Vault".into(),
+                        summary: format!("{} · {}", item.path, item.kind),
+                    });
+                }
+            }
             let mut choices = vec![
                 RuntimeInteractionChoice::new(
                     "continue",
@@ -146,22 +172,32 @@ impl KernelRuntimeState {
                 "cancel",
                 Some(RuntimeInteractionChoiceStyle::Danger),
             ));
+            let message = if owner_context_id.is_some() {
+                "Review your Project files and any selected kernel extensions and personal instructions before continuing: automatic credential checks cannot identify every secret in free-form files."
+            } else {
+                "Review your Project setup"
+            };
             let interaction = RuntimeInteraction::new(
                 &id,
                 agent_id,
                 RuntimeInteractionKind::Choice,
                 RuntimeInteractionLevel::Info,
                 Some(format!("Ready to move {project} to {target}")),
-                "Review your Project setup",
+                message,
                 choices,
                 custom,
                 Some(900),
                 Some("cancel".into()),
             )
             .with_project_environment_review(review.clone());
-            let receiver = self
-                .create_runtime_interaction(session_id, interaction)
-                .await?;
+            // MP-11: keep Project editing controls on the existing terminal UI,
+            // bind its human owner and never dispatch this review to a Meta agent.
+            let receiver = if owner_context_id.is_some() {
+                self.create_terminal_credential_interaction(session_id, interaction)?
+            } else {
+                self.create_runtime_interaction(session_id, interaction)
+                    .await?
+            };
             let resolution = match tokio::time::timeout(Duration::from_secs(900), receiver).await {
                 Ok(Ok(resolution)) => resolution,
                 _ => {

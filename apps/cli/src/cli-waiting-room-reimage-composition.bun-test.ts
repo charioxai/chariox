@@ -706,7 +706,7 @@ function createHarness(router: TestRouter, options: {
           KernelClientConnectionResolved: {
             connection: {
               relay_url: old ? OLD_ENDPOINT : REPLACEMENT_ENDPOINT,
-              relay_token: old ? "old-token" : "replacement-token",
+              relay_token: boundRelayToken(payload, old ? "old" : "replacement"),
               target_daemon_id: old ? "kernel-old" : options.stoppedEnrolled ? "kernel-selected" : "kernel-new",
               target_daemon_alias: old ? "old" : "replacement",
               machine_id: old || options.stoppedEnrolled ? "machine-old" : "machine-new",
@@ -750,7 +750,7 @@ function createHarness(router: TestRouter, options: {
       case "ResolveKernelClientConnection":
         assert.equal(requestPayload(request, "ResolveKernelClientConnection").kernel_ref, "kernel-local")
         return { KernelClientConnectionResolved: { connection: {
-          relay_url: LOCAL_ENDPOINT, relay_token: "local-test-token", target_daemon_id: "kernel-local",
+          relay_url: LOCAL_ENDPOINT, relay_token: boundRelayToken(requestPayload(request, "ResolveKernelClientConnection"), "local"), target_daemon_id: "kernel-local",
           kernel_id: "kernel-local", machine_id: "machine-local",
         } } }
       case "ListSlices":
@@ -1015,6 +1015,12 @@ function requestKind(request: unknown): string {
   const keys = Object.keys(request)
   assert.equal(keys.length, 1)
   return keys[0]!
+}
+
+// MP-08/MP-11: the CLI requires kernel-issued relay tokens bound to its own key.
+function boundRelayToken(payload: Record<string, unknown>, label: string): string {
+  const claims = Buffer.from(JSON.stringify({ sub: label, public_key_thumbprint: payload.public_key_thumbprint })).toString("base64url")
+  return `header.${claims}.signature`
 }
 
 function requestPayload(request: unknown, kind: string): Record<string, unknown> {

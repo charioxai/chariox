@@ -219,10 +219,12 @@ where
         RelayConfigContinuity::Continue => Ok(None),
         RelayConfigContinuity::Reconnect(reason) => Err(reason),
         RelayConfigContinuity::Reauthenticate => {
-            let registration = registration().await;
-            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
-                return Err("relay token changed while building registration");
-            }
+            let mut registration = registration().await;
+            // MP-08/MP-10/MP-11: registration may read a newer config while
+            // awaiting runtime metadata. Authenticate the credential belonging
+            // to this continuity snapshot, then pick up further renewal on the
+            // next heartbeat. Never close a live socket for that harmless race.
+            registration.auth_token = config.relay_token.clone().ok_or("relay token missing")?;
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
@@ -647,6 +649,13 @@ async fn run_daemon_relay_connector_inner(
             }
         };
     let command_sequence = Arc::new(AtomicU64::new(1));
+    let local_browser = LocalBrowserDirect::new(
+        Arc::clone(&router),
+        Arc::clone(&command_sequence),
+        Arc::clone(&event_runtime),
+        Arc::clone(&command_result_cache),
+        shutdown.clone(),
+    );
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
 
@@ -1043,6 +1052,7 @@ async fn run_daemon_relay_connector_inner(
                                             event_runtime: &event_runtime,
                                             command_result_cache: &command_result_cache,
                                             reconnect_gate: &reconnect_gate,
+                                            local_browser: &local_browser,
                                         },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),

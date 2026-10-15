@@ -87,6 +87,8 @@ export type CliSessionLifecycleCompositionDeps = {
   reconcileWaitingRoom: AnyFn
   refreshWaitingRoomData: AnyFn
   applyWaitingRoomTransportClosed: AnyFn
+  onKernelTransportClosed: (message: string) => void
+  onKernelTransportRecovered: () => void
   requestRootRender: AnyFn
   clearPromptInput: AnyFn
   blurPromptInput: AnyFn
@@ -173,14 +175,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.appLogger?.error("waiting room inventory subscription failed", {
         error: deps.formatError(error),
       })
-      deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
-      if (deps.isAttached()) {
-        deps.appendNotice(`Waiting room inventory subscription failed: ${deps.formatError(error)}`, "warning")
-      } else {
-        deps.applyWaitingRoomTransportClosed()
-      }
-      deps.updateSessionChrome()
+      deps.onKernelTransportClosed("Waiting room inventory subscription failed")
     },
     onSessionSubscriptionFailed: (sessionId, attachmentId, error) => {
       deps.appLogger?.error("kernel event subscription failed", {
@@ -188,13 +183,20 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         attachment_id: attachmentId,
         error: deps.formatError(error),
       })
-      deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
-      deps.appendNotice(`Kernel event subscription failed: ${deps.formatError(error)}`, "warning")
-      deps.updateSessionChrome()
+      deps.onKernelTransportClosed("Kernel event subscription failed")
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
+  const currentSessionEventBindingReady = () => {
+    if (!deps.supportsKernelEventStream || !deps.isAttached()) return true
+    const binding = kernelEventSubscriptionController.state()
+    return binding.scope === "session" && binding.sessionId === deps.sessionState().id
+      && binding.attachmentId === deps.attachmentState()?.id
+  }
+  const syncValidatedKernelEventSubscription = async () => {
+    await syncKernelEventSubscription()
+    if (!currentSessionEventBindingReady()) throw new Error("Session event binding has not recovered")
+  }
 
   const kernelRestartRecoveryController = createKernelRestartRecoveryController({
     isClosing: deps.closingStateController.isClosing,
@@ -207,17 +209,14 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     applyAttachment: deps.setAttachmentState,
     applySession: deps.applySessionState,
     resetKernelEventSubscription: kernelEventSubscriptionController.reset,
-    syncKernelEventSubscription,
+    syncKernelEventSubscription: syncValidatedKernelEventSubscription,
     refreshAgentPanes: () => deps.refreshAgentPanes(deps.sessionState()),
     clearLocalBusyStateForAuthoritativeIdle: () => {
       deps.clearLocalBusyStateForAuthoritativeIdle(deps.sessionState())
     },
     onRecovered: () => {
-      deps.recordDaemonActivity("kernel_restart_recovered")
-      deps.setDaemonDisconnected(false)
-      deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
-      deps.updateSessionChrome()
-      deps.appendNotice("Reconnected to the Chariox kernel.")
+      if (!currentSessionEventBindingReady()) throw new Error("Session event binding changed during recovery")
+      deps.onKernelTransportRecovered()
     },
     onAttemptFailed: (sessionId, error) => {
       deps.appLogger?.debug("kernel restart recovery attempt failed", {
@@ -481,6 +480,9 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     kernelEventSubscriptionController,
     syncKernelEventSubscription,
     recoverAttachedSessionAfterKernelRestart,
+    sessionBindingRepairInFlight: kernelRestartRecoveryController.isInFlight,
+    currentSessionEventBindingReady,
+    syncValidatedKernelEventSubscription,
     transitionToNoSession,
     detachCurrentAttachment,
     rollbackAttachedSession,

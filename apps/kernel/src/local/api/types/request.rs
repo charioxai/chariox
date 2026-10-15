@@ -2,6 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    AddSshMachine(AddSshMachineRequest),
+    RemoveSshMachine(RemoveSshMachineRequest),
     RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
     AttachWorkflowNotification(AttachWorkflowNotificationRequest),
     ListWorkflowNotifications(ListWorkflowNotificationsRequest),

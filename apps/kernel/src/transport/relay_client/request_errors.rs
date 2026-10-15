@@ -57,6 +57,13 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             };
             relay_error(code, &error.to_string(), false)
         }
+        // MP-08 / MP-10 / MP-11: profile absence/isolation needs an explicit
+        // account action; repeating the same launch cannot repair it.
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "resolve account profile" =>
+        {
+            relay_error("transport_error", &error.to_string(), false)
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -195,6 +202,23 @@ mod tests {
         RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
         UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
     };
+
+    #[test]
+    fn missing_account_resolution_is_definitive_on_relay() {
+        let error = DaemonError::LocalTransport {
+            operation: "resolve account profile",
+            message: "account is absent on this kernel; copy login or sign in".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "transport_error");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
+        let transient = DaemonError::LocalTransport {
+            operation: "read account profile registry",
+            message: "temporary read failure".into(),
+        };
+        assert!(map_relay_error(&transient).retryable);
+    }
 
     #[test]
     fn room_environment_state_uses_the_shared_relay_request_path() {

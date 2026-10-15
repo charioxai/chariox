@@ -135,7 +135,7 @@ test("session-scoped Unix requests never probe global RelayStatus for a protocol
     requests.push(frame.request)
     socket.send(JSON.stringify({ type: "response", request_id: frame.request_id,
       response: "RelayStatus" in frame.request ? null : { ok: true },
-      error: "RelayStatus" in frame.request ? "Unix peer has no live authority for this request" : null }))
+      error: "RelayStatus" in frame.request ? "This process has no access. Only the agent you approved, and the programs it starts, are covered." : null }))
   }))
   const path = join(root, "kernel.sock")
   await new Promise<void>(resolve => server.listen(path, resolve))
@@ -202,5 +202,52 @@ test("MP-08 MP-10 native settlement checks the attached kernel before launch", a
       await client.send(request)
       assert.deepEqual(sent, [{ RelayStatus: null }, request], "the attached kernel capability admits the normal launch")
     }
+  }
+})
+
+// MP-08 / MP-10 / MP-11: cross both CLI and shared gates without replacing send.
+test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", async context => {
+  const root = mkdtempSync(join(tmpdir(), "chariox-exact-cancel-"))
+  const previous = process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+  process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = root
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let capabilities = ["exact_prompt_cancellation_v499"]
+  const requests: unknown[] = []
+  server.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(String(data))
+    requests.push(frame.request)
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, error: null,
+      response: "RelayStatus" in frame.request
+        ? { RelayStatus: { status: { daemon_id: "k", machine_id: "m", capabilities } } }
+        : { PromptCancelled: {} } }))
+  }))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}/kernel`)
+  context.after(async () => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+    else process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR = previous
+    rmSync(root, { recursive: true, force: true })
+  })
+  const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "home-prompt" } }
+  // Unknown version: both fresh capability probes must admit main's sole marker.
+  assert.deepEqual(await client.send(request), { PromptCancelled: {} })
+  assert.deepEqual(requests, [{ RelayStatus: null }, { RelayStatus: null }, request])
+  // Numeric 491 and later advertisements never bypass a missing capability.
+  for (const version of [491, 520]) {
+    await client.close()
+    writeFileSync(join(root, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "k",
+      machine_id: "m", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(),
+      local_daemon_protocol_version: version }))
+    assert.deepEqual(await client.send(request), { PromptCancelled: {} })
+    capabilities = []
+    const before: number = requests.length
+    await assert.rejects(client.send(request), /does not support exact_prompt_cancellation_v499/)
+    assert.deepEqual(requests.slice(before), [{ RelayStatus: null }])
+    capabilities = ["exact_prompt_cancellation_v499"]
   }
 })

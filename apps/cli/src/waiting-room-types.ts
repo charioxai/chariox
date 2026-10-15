@@ -152,6 +152,7 @@ export type WaitingRoomRemoteState = {
     connected: boolean
     relay_url?: string | null
     daemon_id?: string | null
+    daemon_alias?: string | null
     machine_id?: string | null
   } | null
   machines?: WaitingRoomRemoteMachine[]
