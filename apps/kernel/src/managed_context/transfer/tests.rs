@@ -2628,8 +2628,8 @@ fn r9_owner_history_migrates_v5_near_byte_capacity_without_losing_authority() {
     assert!(store.lock_state().consumed_context_ids.is_empty());
     assert_eq!(
         store.lock_state().schema_version,
-        6,
-        "old kernels must reject split history"
+        5,
+        "old kernels must retain a readable disposable index"
     );
     drop(store);
     let store = ManagedContextTransferStore::open(root.clone()).unwrap();
@@ -2770,5 +2770,140 @@ fn r9_owner_history_rejects_unsafe_directory_and_record_inputs() {
         fs::remove_file(&path).unwrap();
         rejected
     });
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp07_rollback_state_keeps_schema5_and_owner_transfers_separate() {
+    let root = test_root("rollback-schema5-owner");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let target = commit_owner_copy(&store, &root, "rollback-owner", now, false, |_| {});
+    let bytes = read_private_state_file(&root.join("state.json"))
+        .unwrap()
+        .unwrap();
+    let predecessor: PersistedTransferState = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(predecessor.schema_version, 5);
+    assert!(
+        predecessor.entries.is_empty(),
+        "491 cannot read owner destinations"
+    );
+    assert!(predecessor.consumed_context_ids.is_empty());
+    assert!(predecessor.applied_contexts.is_empty());
+    // A predecessor startup/write must not erase owner receipts or authority.
+    write_private_state_file(&root.join("state.json"), &bytes).unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert_eq!(store.lock_state().entries.len(), 1);
+    assert_eq!(
+        store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .unwrap(),
+        target
+    );
+    store
+        .authorize_owner_launch_target(
+            &target.context_id,
+            "user-1",
+            "realm-1",
+            &sha256_bytes(b"target-key"),
+        )
+        .unwrap();
+    assert!(store
+        .lock_state()
+        .entries
+        .values()
+        .all(|entry| entry.phase == ManagedContextTransferPhase::Consumed));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp07_rollback_empty_v5_store_stays_predecessor_readable() {
+    let root = test_root("rollback-empty-schema5");
+    let state = PersistedTransferState {
+        schema_version: 5,
+        ..Default::default()
+    };
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    drop(ManagedContextTransferStore::open(root.clone()).unwrap());
+    let bytes = read_private_state_file(&root.join("state.json"))
+        .unwrap()
+        .unwrap();
+    let persisted: PersistedTransferState = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(persisted.schema_version, 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp07_rollback_migrates_schema6_and_resumes_interrupted_split() {
+    let root = test_root("rollback-schema6-split");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let target = commit_owner_copy(&store, &root, "rollback-schema6-owner", now, false, |_| {});
+    let mut legacy = store.lock_state().clone();
+    legacy.schema_version = 6;
+    let state_path = root.join("state.json");
+    let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+    write_private_state_file(&state_path, &legacy_bytes).unwrap();
+    fs::remove_file(root.join("owner-transfers.json")).unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert_eq!(
+        store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .unwrap(),
+        target
+    );
+    // Sidecar committed, legacy main-index replacement interrupted.
+    write_private_state_file(&state_path, &legacy_bytes).unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert_eq!(store.lock_state().schema_version, 5);
+    let disk: PersistedTransferState =
+        serde_json::from_slice(&read_private_state_file(&state_path).unwrap().unwrap()).unwrap();
+    assert_eq!(disk.schema_version, 5);
+    assert!(disk.entries.is_empty());
+    assert_eq!(
+        store
+            .launch_target(&target.context_id, &target.plan_digest)
+            .unwrap(),
+        target
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mp07_rollback_splits_active_v5_owner_transfers_and_rejects_sidecar_conflicts() {
+    let root = test_root("rollback-active-owner");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    let mut request = arm_request(b"archive", now + 10_000);
+    request.plan.destination = owner_destination();
+    request.target_environment_id.clear();
+    request.destination_parent = root.join("destinations");
+    let armed = store.arm(request, now).unwrap();
+    let legacy = store.lock_state().clone();
+    let state_path = root.join("state.json");
+    write_private_state_file(&state_path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+    fs::remove_file(root.join("owner-transfers.json")).unwrap();
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert_eq!(store.lock_state().entries.len(), 1);
+    let disk: PersistedTransferState =
+        serde_json::from_slice(&read_private_state_file(&state_path).unwrap().unwrap()).unwrap();
+    assert!(disk.entries.is_empty());
+    let mut hostile = legacy;
+    hostile
+        .entries
+        .get_mut(&armed.transfer_id)
+        .unwrap()
+        .owner_user_id = "foreign-owner".into();
+    write_private_state_file(&state_path, &serde_json::to_vec(&hostile).unwrap()).unwrap();
+    drop(store);
+    assert!(ManagedContextTransferStore::open(root.clone()).is_err());
     fs::remove_dir_all(root).unwrap();
 }

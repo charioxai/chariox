@@ -12,6 +12,7 @@ mod cleanup;
 mod model;
 mod owner_history;
 mod policy;
+mod rollback_storage;
 mod storage;
 
 pub(crate) use model::{
@@ -30,7 +31,8 @@ use storage::{
     write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 6;
+// MP-07: the admitted protocol-491 rollback must still read the main index.
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 5;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
@@ -74,7 +76,7 @@ impl Default for PersistedTransferState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedTransfer {
     capability_sha256: String,
     #[serde(default = "legacy_plan_binding")]
@@ -176,38 +178,22 @@ impl ManagedContextTransferStore {
         recovery: Option<&ManagedContextLaunchRecoveryBinding>,
     ) -> Result<Self, DaemonError> {
         ensure_private_directory(&root)?;
-        let state_path = root.join("state.json");
-        let state = match read_private_state_file(&state_path)? {
-            Some(bytes) => {
-                serde_json::from_slice::<PersistedTransferState>(&bytes).map_err(|error| {
-                    transfer_error(format!("parse managed context transfer state: {error}"))
-                })?
-            }
-            None => PersistedTransferState::default(),
-        };
-        if !matches!(
-            state.schema_version,
-            1 | 2 | 3 | 4 | 5 | TRANSFER_STATE_SCHEMA_VERSION
-        ) {
-            return Err(transfer_error(format!(
-                "unsupported managed context transfer state version {}",
-                state.schema_version
-            )));
-        }
+        let state = rollback_storage::read_state(&root)?;
         let store = Self {
             root,
             state: Arc::new(Mutex::new(state)),
             active_imports: Arc::new(Mutex::new(HashSet::new())),
         };
-        if store.lock_state().schema_version < TRANSFER_STATE_SCHEMA_VERSION {
+        if store.lock_state().schema_version != TRANSFER_STATE_SCHEMA_VERSION {
             store.migrate_legacy_state(recovery)?;
         }
         {
             let mut state = store.lock_state();
             validate_persisted_state(&state)?;
-            if store.externalize_owner_history(&mut state)? {
-                store.persist_locked(&state)?;
-            }
+            store.externalize_owner_history(&mut state)?;
+            // Also split legacy active owner transfers, which have no completed
+            // authority to externalize yet, before an admitted rollback can run.
+            store.persist_locked(&state)?;
         }
         store.cleanup_failed_transfers();
         store.prune_expired_transfers(current_time_ms())?;
@@ -840,7 +826,7 @@ impl ManagedContextTransferStore {
         recovery: Option<&ManagedContextLaunchRecoveryBinding>,
     ) -> Result<(), DaemonError> {
         let mut state = self.lock_state();
-        if state.schema_version >= TRANSFER_STATE_SCHEMA_VERSION {
+        if state.schema_version == TRANSFER_STATE_SCHEMA_VERSION {
             return Ok(());
         }
         let legacy_version = state.schema_version;
@@ -934,10 +920,7 @@ impl ManagedContextTransferStore {
 
     fn persist_locked(&self, state: &PersistedTransferState) -> Result<(), DaemonError> {
         ensure_state_file_capacity(state)?;
-        let bytes = serde_json::to_vec(state).map_err(|error| {
-            transfer_error(format!("serialize managed context transfer state: {error}"))
-        })?;
-        write_private_state_file(&self.root.join("state.json"), &bytes)
+        rollback_storage::persist_state(&self.root, state)
     }
 
     fn reconcile_uncertain_chunk_persist(
@@ -948,10 +931,7 @@ impl ManagedContextTransferStore {
         appended_offset: u64,
         archive: &std::fs::File,
     ) -> Result<(), DaemonError> {
-        let bytes = read_private_state_file(&self.root.join("state.json"))?
-            .ok_or_else(|| transfer_error("managed context transfer state disappeared"))?;
-        let durable = serde_json::from_slice::<PersistedTransferState>(&bytes)
-            .map_err(|error| transfer_error(format!("parse durable transfer state: {error}")))?;
+        let durable = rollback_storage::read_state(&self.root)?;
         if durable.schema_version != TRANSFER_STATE_SCHEMA_VERSION {
             return Err(transfer_error(
                 "durable managed context transfer state version changed",
