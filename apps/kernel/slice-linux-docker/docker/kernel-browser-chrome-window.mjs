@@ -172,16 +172,18 @@ export class InputArbiter {
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
     };
+    // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
+    const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
-      if (bandChord(keysym, modifiers)) await activeAdmitted(); else await textTarget();
+      if (bandChord(keysym, modifiers)) await switching(); else await textTarget();
       return dispatched(() => source.chord(keysym, modifiers));
     };
-    if (input.kind === 'click') { await activeAdmitted(); return dispatched(() => source.click(input.x, input.y)); }
+    if (input.kind === 'click') { await switching(); return dispatched(() => source.click(input.x, input.y)); }
     if (input.kind === 'scroll') {
       const nx = notches(input.delta_x), ny = notches(input.delta_y);
       if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
-      await activeAdmitted(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
+      await switching(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
     }
     if (input.kind === 'key') {
       const key = typeof input.key === 'string' ? input.key : '';
