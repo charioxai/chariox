@@ -18,6 +18,8 @@ try{
  if(!settled)throw Error('Real Provider Accounts refresh did not settle');
  await r.capture('independent-account-read');result.accountRead={footer};
  const observed=await r.client.send({GetProviderAccountProfile:{provider:'codex',account_profile:profile.profile_id}});result.secondaryAuthState=observed.ProviderAccountProfile?.profile.auth_state;
+ // Clear the retained refresh footer with the ordinary read-only agent control.
+ await r.command('agent inspect '+(await r.tui.send('snapshot')).session.focusedAgentId);
  await r.turn('Without tools, give the same source path you just cited in one sentence.','CX13_PRIMARY_AFTER');
  result.after=await r.binding();if(result.after.nativeId!==before.nativeId)throw Error('Secondary-account refresh replaced the primary native thread');result.primaryUnaffected=true;
  if(footer?.tone==='error'){
