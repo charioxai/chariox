@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { blockedUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
 import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
-import { browserLauncher, namespaceLauncher, policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
+import { browserLauncher, candidates, namespaceLauncher, pinnedChromium, policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
 
 test("MP-11 the policy layer carries every compiled Chromium policy root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-policy-"));
@@ -82,6 +82,16 @@ test("MP-11 an https home page override sets the native new tab and home page", 
     for (const value of ["http://duckduckgo.com/", "chrome://settings", "https://user:pw@example.com/", "not a url"])
       assert.equal((await read({ CHARIOX_KERNEL_BROWSER_HOME_URL: value })).NewTabPageLocation, managedPolicy.NewTabPageLocation, value);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// Miguel 2026-10-14: the Setup installs one pinned Chromium; the kernel prefers it.
+test("MP-11 the kernel browser prefers the Setup's pinned Chromium when it is root-owned", async () => {
+  const lock = JSON.parse(await readFile(new URL("../../../../deploy/local-linux/kernel-browser-chromium.lock.json", import.meta.url), "utf8"));
+  assert.equal(pinnedChromium, `/usr/lib/chariox/browser/chromium/${lock.version}/${lock.linux64.executable}`);
+  const file = (uid, mode) => () => ({ isFile: () => true, uid, mode: 0o100000 | mode });
+  assert.equal(candidates({}, file(0, 0o755))[0], pinnedChromium);
+  assert.equal(candidates({}, file(1000, 0o755))[0], "/usr/bin/chromium", "a user-owned file is never preferred");
+  assert.equal(candidates({}, () => { throw new Error("missing"); })[0], "/usr/bin/chromium");
 });
 
 test("MP-11 blocked schemes", () => {

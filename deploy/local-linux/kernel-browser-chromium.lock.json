@@ -1,0 +1,11 @@
+{
+  "schema": "chariox.kernel-browser-chromium.v1",
+  "distribution": "chrome-for-testing",
+  "version": "155.0.8059.79",
+  "linux64": {
+    "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.79/linux64/chrome-linux64.zip",
+    "sha256": "bcd9a79130d7e44d70f93be87042e9bcee7fe0f0b3898e06b8c9bed5fb619dcd",
+    "size": 198413482,
+    "executable": "chrome-linux64/chrome"
+  }
+}

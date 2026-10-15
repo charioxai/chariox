@@ -23,3 +23,9 @@ profile chariox-app-domain-entry "/{usr/lib/chariox/app-runtimes/[0-9a-f]*/chari
 profile chariox-browser-unshare /usr/lib/chariox/browser/chariox-browser-unshare flags=(unconfined) {
   userns,
 }
+
+# The pinned kernel Chromium (kernel-browser-chromium.lock.json), installed read-only
+# by install-root.sh, keeps its own namespace sandbox.
+profile chariox-browser-chromium /usr/lib/chariox/browser/chromium/*/chrome-linux64/chrome flags=(unconfined) {
+  userns,
+}

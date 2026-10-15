@@ -78,7 +78,7 @@ esac
   await script(join(bin, "apparmor_parser"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/apparmor"
 profiles="$CHARIOX_LOCAL_INSTALL_ROOT/sys/kernel/security/apparmor/profiles"
-case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\nchariox-browser-unshare (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
+case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\nchariox-browser-unshare (unconfined)\\nchariox-browser-chromium (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
 `)
   // Ownership is the only thing a non-root test cannot give; the rest is real install(1).
   await script(join(bin, "install"), `#!/bin/sh
@@ -103,7 +103,21 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
   await writeFile(join(runtime, "runtime-inventory.json"), inventory)
   await writeFile(join(runtime, "runtime-inventory.sig"), "b".repeat(128))
   const digest = createHash("sha256").update(inventory).digest("hex")
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_STATE: state }
+  // The pinned kernel Chromium: a small archive of the same layout, never the real download.
+  const archive = join(base, "chrome-linux64.zip")
+  const zipped = spawnSync("python3", ["-c", `import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+exe = zipfile.ZipInfo("chrome-linux64/chrome"); exe.external_attr = 0o100755 << 16
+z.writestr(exe, "#!/bin/sh\\necho chromium 1.2.3\\n")
+z.writestr("chrome-linux64/resources.pak", "data")
+z.close()`, archive])
+  assert.equal(zipped.status, 0, zipped.stderr?.toString())
+  const archiveBytes = await readFile(archive)
+  const browserLock = join(base, "kernel-browser-chromium.lock.json")
+  const browserPin = (sha256 = createHash("sha256").update(archiveBytes).digest("hex")) => writeFile(browserLock, JSON.stringify({ schema: "chariox.kernel-browser-chromium.v1", distribution: "fixture", version: "1.2.3",
+    linux64: { url: `file://${archive}`, sha256, size: archiveBytes.length, executable: "chrome-linux64/chrome" } }))
+  await browserPin()
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
   const run = (args, extra = {}) => {
     const result = spawnSync("bash", [installer, ...args], { env: { ...env, ...extra }, encoding: "utf8" })
     return { ...result, out: result.stdout + result.stderr }
@@ -113,7 +127,7 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
       "--runtime-key", KEY, "--runtime-digest", digest, ...extra], env)
   const log = async (name) => (existsSync(join(state, name)) ? readFile(join(state, name), "utf8") : "")
   const reset = (name) => rm(join(state, name), { force: true })
-  return { base, root, bin, pkg, runtime, digest, run, install, log, reset }
+  return { base, root, bin, pkg, runtime, digest, run, install, log, reset, browserPin }
 }
 
 const p = (h, path) => join(h.root, path)
@@ -197,6 +211,12 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.ok((await readFile(launcher)).equals(await readFile("/usr/bin/unshare")))
     assert.match(await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"),
       /^profile chariox-browser-unshare \/usr\/lib\/chariox\/browser\/chariox-browser-unshare flags=\(unconfined\) \{\n  userns,\n\}$/m)
+    // Miguel 2026-10-14: the Setup downloads one pinned Chromium, verifies it, installs it read-only.
+    const chrome = p(h, "usr/lib/chariox/browser/chromium/1.2.3/chrome-linux64/chrome")
+    assert.equal((await stat(chrome)).mode & 0o777, 0o755)
+    assert.match(first.out, /install the pinned kernel Chromium 1\.2\.3/)
+    assert.match(await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"),
+      /^profile chariox-browser-chromium \/usr\/lib\/chariox\/browser\/chromium\/\*\/chrome-linux64\/chrome flags=\(unconfined\) \{\n  userns,\n\}$/m)
 
     const admissionLocks = ["memory", "disk"].map((resource) => p(h, `tmp/chariox-docker-${resource}-admission.lock`))
     const admissionInodes = []
@@ -212,6 +232,7 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.equal(again.status, 0, again.out)
     assert.doesNotMatch(again.out, /\] (install|write|load|enable|start|restart) /)
     assert.match(again.out, /unchanged runtime [0-9a-f]{64} revision 1 \(re-verified\)/)
+    assert.match(again.out, /unchanged .*\/usr\/lib\/chariox\/browser\/chromium\/1\.2\.3/)
     assert.match(again.out, /unchanged .*app-storage\.json/)
     assert.match(again.out, /unchanged chariox-app-storage\.service \(running\)/)
     assert.doesNotMatch(await h.log("systemctl"), /restart|start /)
@@ -300,7 +321,8 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
 test("local Linux root install refuses GID zero before changing shared enrollment", { skip: !linux }, async () => {
   const h = await harness()
   try {
-    assert.equal(h.install(["alice"]).status, 0)
+    const alice = h.install(["alice"])
+    assert.equal(alice.status, 0, alice.out)
     const enrollment = await readFile(p(h, "etc/chariox/app-storage.json"), "utf8")
     const logs = Object.fromEntries(await Promise.all(
       ["runtime-install", "systemctl", "loginctl", "apparmor"].map(async (name) => [name, await h.log(name)]),
@@ -438,6 +460,20 @@ test("unrestricted kernel unloads a previously loaded native-entry profile befor
     assert.equal(await h.log("apparmor"), `-R ${profile}\n`)
     assert.equal(await readFile(loaded, "utf8"), "")
     assert.equal(existsSync(profile), false)
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+test("a pinned Chromium whose bytes differ from the pin is refused before anything is installed", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await h.browserPin("0".repeat(64))
+    const refused = h.install(["alice"])
+    assert.equal(refused.status, 1, refused.out)
+    assert.match(refused.out, /has SHA-256 [0-9a-f]{64} \(\d+ bytes\), not the pinned 0{64}/)
+    assert.equal(existsSync(p(h, "usr/lib/chariox/browser/chromium/1.2.3")), false)
+    assert.equal(existsSync(p(h, "etc/chariox/app-storage.json")), false, "refused before the first change")
   } finally {
     await rm(h.base, { recursive: true, force: true })
   }

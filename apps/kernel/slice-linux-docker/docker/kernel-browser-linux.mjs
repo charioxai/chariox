@@ -1,8 +1,14 @@
 // MD-2: Linux host policy. The renderer sandbox is never disabled.
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
-export function candidates() {
-  return ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"];
+// install-root.sh installs the pinned Chromium (deploy/local-linux/kernel-browser-chromium.lock.json)
+// read-only under /usr/lib/chariox; the kernel prefers it over a system browser.
+export const pinnedChromium = "/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome";
+function rootOwned(file, stat) {
+  try { const entry = stat(file); return entry.isFile() && entry.uid === 0 && (entry.mode & 0o022) === 0; } catch { return false; }
+}
+export function candidates(_environment, stat = statSync) {
+  return [...(rootOwned(pinnedChromium, stat) ? [pinnedChromium] : []), "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"];
 }
 export function launchEnvironment(environment, uid = process.getuid?.()) {
   if (uid === 0) throw new Error("MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported");
@@ -20,11 +26,7 @@ const script = 'set -e; launcher=$1; layer=$2; uid=$3; gid=$4; shift 4; /usr/bin
 // profile (chariox-browser-unshare) is the only userns exception the lockdown needs.
 export const browserLauncher = "/usr/lib/chariox/browser/chariox-browser-unshare";
 export function namespaceLauncher(stat = statSync) {
-  try {
-    const file = stat(browserLauncher);
-    if (file.isFile() && file.uid === 0 && (file.mode & 0o022) === 0) return browserLauncher;
-  } catch {}
-  return "/usr/bin/unshare";
+  return rootOwned(browserLauncher, stat) ? browserLauncher : "/usr/bin/unshare";
 }
 export function policyNamespaceAvailable(run = spawnSync, launcher = namespaceLauncher()) {
   const probe = run(launcher, ["--user", "--map-root-user", "--mount", "--", "/bin/true"], { stdio: "ignore", timeout: 5000 });
