@@ -62,6 +62,9 @@ export class VideoSink {
    // Hidden documents cannot run rAF. Preserve their latest base immediately:
    // the presenter advances/ACKs the cursor and retires the borrowed images.
    if(this.canvas.ownerDocument?.hidden){this.commitPending(false);return;}
+   // MP-08/MP-10/MP-11: an intermediate region canvas is copied into a
+   // visible surface by onPresented; only that surface needs a paint boundary.
+   if(this.canvas.isConnected===false){this.commitPending(true);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
    const commit=()=>this.commitPending(!this.canvas.ownerDocument?.hidden);
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);

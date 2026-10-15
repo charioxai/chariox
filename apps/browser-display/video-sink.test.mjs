@@ -79,3 +79,19 @@ test('MP-08/MP-10 hidden key retires old repairs, then a newer complete delta re
  const delta=sink.commit(image,{...frame,key:false});raf();await delta;
  assert.equal(sink.overlayActive,false);assert.equal(canvas.style.opacity,'0');assert.equal(cleared,3);sink.close();
 });
+
+// MP-08/MP-10/MP-11: the mirror's driver canvas is disconnected from layout;
+// its accepted pixels are copied into the visible region's captureStream.
+// Waiting for a display rAF here adds a second compositor boundary per frame.
+test('MP-08/MP-10/MP-11 a disconnected region driver commits before the visible-surface animation frame',async()=>{
+ const draws=[],canvas={isConnected:false,width:8,height:8,ownerDocument:{hidden:false,defaultView:{requestAnimationFrame(){assert.fail('an intermediate canvas has no presentation frame to wait for')}}},getContext:()=>({drawImage:image=>draws.push(image)})};
+ const image={close(){},clone(){return {close(){}}}},sink=new VideoSink(canvas,()=>{});
+ try{const outcome=await sink.commit({image,decodedAt:1},{width:8,height:8});assert.equal(outcome.drawn,true);assert.deepEqual(draws,[image]);assert(Number.isFinite(outcome.committedAt));}
+ finally{sink.close()}
+});
+test('MP-08/MP-10/MP-11 hidden disconnected driver keeps its latest base without a visible-paint claim',async()=>{
+ const draws=[],canvas={isConnected:false,width:8,height:8,ownerDocument:{hidden:true},getContext:()=>({drawImage:image=>draws.push(image)})};
+ const image={close(){},clone(){return {close(){}}}},sink=new VideoSink(canvas,()=>{});
+ try{const outcome=await sink.commit({image,decodedAt:1},{width:8,height:8});assert.equal(outcome.drawn,false);assert.deepEqual(draws,[image]);assert.equal(outcome.committedAt,undefined);}
+ finally{sink.close()}
+});
