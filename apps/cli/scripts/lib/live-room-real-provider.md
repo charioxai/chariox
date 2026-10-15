@@ -272,7 +272,9 @@ For normal native user exit, send real Ctrl-C through the PTY and require wrappe
 exit within five seconds plus Ended on the provider. Record PID/start-generation
 process trees before and after, including worker children. Record input, kernel
 admission, encrypted event queue, receiver arrival/decryption and browser paint
-timestamps for cross-client visibility; require P95 at most 150 ms. Keep every
+timestamps for cross-client visibility; require P95 at most measured wire RTT
+plus 60 ms. Use a quiet host or a KVM guest with its own virtio disk for timing,
+and record RTT alongside P95. Keep every
 run's source and binary hashes separate. Source checks and successful setup
 never substitute for these live verdicts.
 
@@ -309,7 +311,8 @@ its exact definitive settlement, the rendered result, console/log classes, and
 Enter-to-other-client-paint timings. Require every provider turn to complete;
 an idle counter alone is insufficient. Measure P95 over the complete five
 samples with an 8 Mbit/s WAN client uplink and at least 60 ms RTT; the limit is
-150 ms. Preserve the baseline failure and exact-head screenshots. Kernel
+measured wire RTT plus 60 ms, measured on a quiet host or a KVM guest with its
+own virtio disk. Preserve the baseline failure and exact-head screenshots. Kernel
 receipt/lane fixtures are supplementary checks and cannot establish acceptance.
 
 
@@ -337,3 +340,46 @@ provider result is still pending, delivering the predecessor's Completed
 projection must leave the successor active. An idle run or output text cannot
 supply that proof. Validate this ordering on the real native queued-steer path
 before marking the cell accepted.
+
+### MP-08 / MP-10 / MP-11: off-box Codex upstream and reload
+
+Use the real built CLI, home kernel, isolated worker kernel, relay and web entry
+at recorded source and binary hashes. Require local protocol 526 and peer 134.
+Keep the worker's official Codex 0.159.3 endpoint on worker loopback, unreachable
+from the client. Use a Docker container or KVM guest for isolation; a second
+physical machine is needed only for geographic or timing acceptance. Do not
+configure an SSH endpoint bridge. Import the approved account through the normal
+product commands without printing its credential material.
+
+First run the pre-bridge CLI against that topology. Preserve its initialization
+failure before running the candidate. With the candidate, approve folder trust
+through the actual native UI, require the ordinary native composer to appear,
+and verify the resolved model is `gpt-6-luna` with low reasoning effort. The
+normal official plugin catalog must remain intact; do not hide a large catalog
+to make initialization pass.
+
+Join the exact home session through the web waiting-room controls at DPR 1 and
+2. Submit a native prompt that reads the public MDN WebSockets documentation
+and Chariox GitHub repository. Queue a web follow-up, click its visible Steer
+control, then queue another prompt. Require completed work, an exact steering
+binding in the completed parent history, one canonical turn for each ordinary
+prompt, and no duplicated visible native input. Repeat with native Claude using
+`claude-haiku-5-5` to exercise queued promotion across its Stop hook.
+
+Record normal reloads at DPR 1 in 1440×900 and 1920×1080 windows and DPR 2 in a
+1440×900 window. Require visible loading until authoritative conversation,
+account and model return, with no blank frame or false disconnected state.
+Expand and scroll completed turns using normal controls to verify retained
+steering text. Inspect recordings and screenshots, including first paint;
+DOM assertions and sampled screenshots alone cannot establish this gate.
+
+Keep the real off-box session attached through hosted WSS for at least two
+hours with an 8 Mbit/s client uplink and at least 60 ms RTT. Require no unexpected
+socket closure or stuck native/web view. Then submit a normal workspace tool
+request, require its definitive completion and preserved conversation, and exit
+the native client using Ctrl-C. Finally stop the exact owned home kernel and
+reload: require a definitive unavailable state with working Retry session and
+Choose another session controls. Preserve baseline failures, source identities,
+per-step screenshots, redacted logs, resource samples and exact cleanup receipts.
+This functional/stability drill does not establish a latency gate or the full
+ordinary-versus-managed provider matrix.
