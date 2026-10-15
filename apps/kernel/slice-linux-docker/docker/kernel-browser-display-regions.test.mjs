@@ -11,7 +11,7 @@ function fixture(kind='region') {
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
  const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,scale:2,isCurrent:()=>alive};
  const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
-  chromium:{display:{},child:{pid:42},scale:2},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
+  chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
   mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
   arbiter:{isActiveTab:async()=>true},chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),resolve:async()=>{throw Error("MP-11 viewer must not mutate the window binding")},band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
@@ -34,6 +34,23 @@ test('MP-08/MP-11 chrome band uses owner constructor shape and window epoch',asy
  const f=fixture('browser_chrome'),result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
  assert.equal(result.css_width,1280);assert.equal(result.css_height,87);assert.equal(result.sequence,7);assert.notEqual(result.document_id,'doc');
  const s=[...f.host.displays.values()][0];assert.equal(s.regionSource.options.surface,'browser_chrome');await s.close();
+});
+test('MP-11 a guessed Chrome window epoch cannot subscribe without managed lockdown',async()=>{
+ for(const policy of ['unavailable',null,undefined]){
+  const f=fixture('browser_chrome');f.host.chromium.policy=policy;
+  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));
+  assert.equal(f.calls.length,0);assert.equal(f.host.displays.size,0);
+ }
+});
+test('MP-11 Chrome capture and input retire if managed lockdown is lost',async()=>{
+ const f=fixture('browser_chrome'),r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const s=[...f.host.displays.values()][0];f.host.chromium.policy='unavailable';
+ try{
+  assert.equal(s.regionSource.options.isCurrent(),false);
+  assert.equal(s.regionLease.isAlive(),false);assert.equal(await s.regionCurrent(),false);
+  await assert.rejects(regionInputTarget(f.host,{op:'input',tab_id:'t',generation:2,document_id:r.document_id,
+   binding_id:r.binding_id,sequence:r.sequence,input:{kind:'click',x:1,y:2}},'terminal:a'));
+ }finally{await s.close();}
 });
 for(const extra of ['rect','xid','pid','selector'])test(`MP-11 rejects client ${extra} before resolving`,async()=>{
  const f=fixture();f.command.target[extra]=1;await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));assert.equal(f.calls.length,0);

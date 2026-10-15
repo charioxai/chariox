@@ -30,6 +30,7 @@ struct Capture {
     int attached, event, width, height, window_width, window_height, xoffset, offset, redirected, redirect_mode, desktop, retired;
     unsigned long insets[4];
     unsigned long owner;
+    Atom state_atom,fullscreen_atom;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
      * and a slot is compared before it can be overwritten by a new readback. */
@@ -68,11 +69,24 @@ static int frame_insets(Display *d,Window w,unsigned long insets[4]) {
     if(data)XFree(data);
     return valid;
 }
+/* MP-11: a WM can hide Chrome UI at unchanged window dimensions. All
+ * window-backed crops then lose their page/Chrome origin; desktop-root
+ * capture retains its ordinary protection path. Malformed state refuses. */
+static int normal_window(struct Capture *c) {
+    if(!c->state_atom)c->state_atom=XInternAtom(c->display,"_NET_WM_STATE",False);
+    if(!c->fullscreen_atom)c->fullscreen_atom=XInternAtom(c->display,"_NET_WM_STATE_FULLSCREEN",False);
+    Atom actual;int format;unsigned long count,remaining;unsigned char *data=NULL;
+    int status=XGetWindowProperty(c->display,c->window,c->state_atom,0,64,False,XA_ATOM,&actual,&format,&count,&remaining,&data);
+    int normal=status==Success&&!remaining&&(actual==None||(actual==XA_ATOM&&format==32&&count<=64&&(!count||data)));
+    if(normal&&actual!=None)for(unsigned long i=0;i<count;i++)if(((Atom*)data)[i]==c->fullscreen_atom)normal=0;
+    if(data)XFree(data);
+    return normal;
+}
 static int bound_surface(struct Capture *c) {
     XWindowAttributes attributes;unsigned long insets[4];
     if(!XGetWindowAttributes(c->display,c->window,&attributes)||attributes.map_state!=IsViewable||
         attributes.width!=c->window_width||attributes.height!=c->window_height)return 0;
-    return c->desktop||(window_pid(c->display,c->window)==c->owner&&frame_insets(c->display,c->window,insets)&&!memcmp(insets,c->insets,sizeof(insets)));
+    return c->desktop||(window_pid(c->display,c->window)==c->owner&&normal_window(c)&&frame_insets(c->display,c->window,insets)&&!memcmp(insets,c->insets,sizeof(insets)));
 }
 void cx_capture_close(struct Capture *c) {
     if (!c) return;

@@ -17,6 +17,10 @@ function checkedTarget(target) {
 export async function subscribeRegion(host,command,scope,signal,{Capture=NativeWindowRegionCapture}={}) {
  assertNotCancelled(signal);
  const target=checkedTarget(command.target);
+ // State advertisement is not admission: a terminal can guess a window epoch.
+ // Only managed lockdown proves Chrome cannot replace this unmasked band
+ // with same-size fullscreen page pixels.
+ if(target.kind==='browser_chrome'&&host.chromium?.policy!=='managed')refuse();
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
@@ -48,10 +52,11 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();
-  args=host.chromeWindows.band(window);
+  const current=()=>host.chromium.policy==='managed'&&window.isCurrent();
+  args={...host.chromeWindows.band(window),isCurrent:current};
   const binding_id=`host-chrome-region-${randomUUID()}`;
   lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}`,sequence:window.window_generation,
-   isAlive:()=>window.isCurrent(),isCurrent:async()=>window.isCurrent(),close:async()=>{}};
+   isAlive:current,isCurrent:async()=>current(),close:async()=>{}};
  }
  let source,stream;
  try {
