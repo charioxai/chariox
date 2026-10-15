@@ -2523,7 +2523,9 @@ mod tests {
             leased_agent_id: "leased".into(),
             provider_run_id: "run".into(),
             attachment_id: "attachment".into(),
-            operation: crate::local::NativeProviderTransportOperation::Open,
+            operation: crate::local::NativeProviderTransportOperation::Open {
+                request_id: "open-test".into(),
+            },
         };
         assert!(matches!(
             super::lease_resource(&request),

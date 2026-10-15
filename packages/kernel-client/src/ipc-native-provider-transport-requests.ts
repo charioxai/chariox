@@ -1,7 +1,7 @@
 import type { NativeProviderTransportOperation } from "./kernel-types-provider.js"
 
 // MP-08 / MP-10 / MP-11: coordinator-allocated native display transport.
-export const nativeProviderTransportMinimumProtocolVersion = 526
+export const nativeProviderTransportMinimumProtocolVersion = 531
 export function nativeProviderTransportRequest(options: {
   readonly sessionId: string
   readonly attachmentId: string

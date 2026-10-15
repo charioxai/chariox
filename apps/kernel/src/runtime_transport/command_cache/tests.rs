@@ -25,7 +25,9 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             attachment_id: "view".into(),
             agent_id: "agent".into(),
             provider_run_id: "run".into(),
-            operation: crate::local::NativeProviderTransportOperation::Open,
+            operation: crate::local::NativeProviderTransportOperation::Open {
+                request_id: "open-test".into(),
+            },
         });
     assert!(!request_is_cacheable(&native));
     assert!(!should_persist_completed_result(&CommandFingerprint {

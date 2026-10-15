@@ -5,7 +5,10 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
-use super::native_provider_buffer::{NativeBufferedFrame, NativeOutputBudget, OUTPUT_FRAME_BYTES};
+use super::native_provider_buffer::{
+    NativeBufferedFrame, NativeConnectionOutputBudget, NativeOutputBudget, OUTPUT_FRAME_BYTES,
+};
+use super::native_provider_exchange::NativeExchangeState;
 
 use crate::{
     error::DaemonError,
@@ -37,7 +40,9 @@ pub(crate) struct SocketScope {
 struct Connection {
     scope: SocketScope,
     sender: mpsc::Sender<String>,
-    receiver: Mutex<mpsc::Receiver<NativeBufferedFrame>>,
+    exchange: Mutex<NativeExchangeState>,
+    open_request_id: String,
+    output_budget: NativeConnectionOutputBudget,
     touched: std::sync::Mutex<std::time::Instant>,
 }
 
@@ -195,9 +200,28 @@ impl NativeProviderSockets {
     {
         authorize().await?;
         match operation {
-            NativeProviderTransportOperation::Open => {
+            NativeProviderTransportOperation::Open { request_id } => {
+                if request_id.is_empty()
+                    || request_id.len() > 64
+                    || !request_id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                {
+                    return Err(error("native open request identity is invalid"));
+                }
                 validate_endpoint(&scope.endpoint)?;
                 let mut entries = self.0.lock().await;
+                if let Some((id, _)) = entries
+                    .iter()
+                    .find(|(_, entry)| entry.scope == scope && entry.open_request_id == request_id)
+                {
+                    return Ok(NativeProviderTransportResult {
+                        connection_id: id.clone(),
+                        sequence: 0,
+                        frames: vec![],
+                        closed: false,
+                    });
+                }
                 if entries.len() >= CONNECTION_LIMIT
                     || entries
                         .values()
@@ -231,7 +255,9 @@ impl NativeProviderSockets {
                 let entry = Arc::new(Connection {
                     scope,
                     sender,
-                    receiver: Mutex::new(receiver),
+                    exchange: Mutex::new(NativeExchangeState::new(receiver)),
+                    open_request_id: request_id,
+                    output_budget: output_budget.clone(),
                     touched: std::sync::Mutex::new(std::time::Instant::now()),
                 });
                 entries.insert(connection_id.clone(), entry.clone());
@@ -262,12 +288,32 @@ impl NativeProviderSockets {
                     }
                     // Bounded close even when the official server stops reading.
                     let _ = tokio::time::timeout(Duration::from_secs(1), socket.close(None)).await;
+                    // Retain buffered output and the final receipt after upstream
+                    // close. A lost final reply must remain recoverable under the
+                    // same authorization and idle/byte bounds as a live socket.
+                    drop(inbound);
+                    drop(outbound);
+                    loop {
+                        interval.tick().await;
+                        let Some(entries) = weak_entries.upgrade() else {
+                            break;
+                        };
+                        if !entries.lock().await.contains_key(&id) {
+                            break;
+                        }
+                        let idle = entry.touched.lock().expect("native touch lock").elapsed()
+                            > Duration::from_secs(120);
+                        if idle || authorize().await.is_err() {
+                            break;
+                        }
+                    }
                     if let Some(entries) = weak_entries.upgrade() {
                         entries.lock().await.remove(&id);
                     }
                 });
                 Ok(NativeProviderTransportResult {
                     connection_id,
+                    sequence: 0,
                     frames: vec![],
                     closed: false,
                 })
@@ -275,6 +321,7 @@ impl NativeProviderSockets {
             NativeProviderTransportOperation::Exchange {
                 connection_id,
                 frames,
+                sequence,
             } => {
                 if frames.len() > QUEUE_FRAMES
                     || frames.iter().map(String::len).sum::<usize>() > FRAME_BYTES
@@ -283,11 +330,11 @@ impl NativeProviderSockets {
                 }
                 let mut rejected = Vec::new();
                 let mut admitted = Vec::new();
-                for frame in frames {
+                for frame in &frames {
                     // Optional native features may receive an RPC refusal without
                     // tearing down the display connection or forwarding a turn.
                     if validate_scoped_frame(&frame, &scope).is_ok() {
-                        admitted.push(frame);
+                        admitted.push(frame.clone());
                     } else {
                         let value: serde_json::Value = serde_json::from_str(&frame)
                             .map_err(|_| error("native frame must be JSON"))?;
@@ -314,25 +361,33 @@ impl NativeProviderSockets {
                 if entry.scope != scope {
                     return Err(error("native connection attachment or run mismatch"));
                 }
+                let mut exchange = entry.exchange.lock().await;
+                authorize().await?;
                 *entry.touched.lock().expect("native touch lock") = std::time::Instant::now();
-                for frame in admitted {
-                    entry.sender.try_send(frame).map_err(|_| {
+                if let Some(result) = exchange.begin(&connection_id, sequence, &frames)? {
+                    return Ok(result);
+                }
+                let mut output = rejected
+                    .into_iter()
+                    .map(|data| entry.output_budget.reserve(data))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Reserve the whole batch before enqueueing any frame. A full
+                // queue must never leave a partially repeated operation.
+                if !admitted.is_empty() {
+                    let permits = entry.sender.try_reserve_many(admitted.len()).map_err(|_| {
                         error("native input backpressure; reattach without replaying input")
                     })?;
-                }
-                let mut receiver = entry.receiver.lock().await;
-                let mut result = rejected;
-                // A single bounded upstream frame per response keeps the relay envelope bounded.
-                if result.is_empty() {
-                    if let Ok(frame) = receiver.try_recv() {
-                        result.push(frame.data);
+                    for (permit, frame) in permits.zip(admitted) {
+                        permit.send(frame);
                     }
                 }
-                Ok(NativeProviderTransportResult {
-                    connection_id,
-                    frames: result,
-                    closed: receiver.is_closed(),
-                })
+                if output.is_empty() {
+                    if let Some(frame) = exchange.take_frame() {
+                        output.push(frame);
+                    }
+                }
+                // No await between enqueue/drain and retaining its receipt.
+                Ok(exchange.complete(&connection_id, sequence, frames, output))
             }
             NativeProviderTransportOperation::Close { connection_id } => {
                 let mut entries = self.0.lock().await;
@@ -347,6 +402,7 @@ impl NativeProviderSockets {
                 }
                 Ok(NativeProviderTransportResult {
                     connection_id,
+                    sequence: 0,
                     frames: vec![],
                     closed: true,
                 })
@@ -455,20 +511,23 @@ mod tests {
         let id = sockets
             .execute(
                 scope.clone(),
-                NativeProviderTransportOperation::Open,
+                NativeProviderTransportOperation::Open {
+                    request_id: "open-test".into(),
+                },
                 || async { Ok(()) },
             )
             .await
             .unwrap()
             .connection_id;
         let mut received = false;
-        for _ in 0..500 {
+        for index in 0..500 {
             let result = sockets
                 .execute(
                     scope.clone(),
                     NativeProviderTransportOperation::Exchange {
                         connection_id: id.clone(),
                         frames: vec![],
+                        sequence: index + 1,
                     },
                     || async { Ok(()) },
                 )
@@ -501,23 +560,104 @@ mod tests {
             .unwrap();
     }
 
+    // MP-08 / MP-10 / MP-11: a final reply must survive upstream closure and reply loss.
+    #[tokio::test]
+    async fn mp08_native_closed_upstream_retains_final_receipt() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            socket
+                .send(Message::Text(r#"{"id":7,"result":{}}"#.into()))
+                .await
+                .unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let sockets = NativeProviderSockets::default();
+        let scope = SocketScope {
+            session_id: "room".into(),
+            agent_id: "agent".into(),
+            attachment_id: "view".into(),
+            provider_run_id: "run".into(),
+            leased_agent_id: None,
+            endpoint: format!("ws://{address}"),
+            working_directory: Some("/workspace".into()),
+        };
+        let opened = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Open {
+                    request_id: "open-final".into(),
+                },
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        upstream.await.unwrap();
+        // Wait until the owner observes the upstream close rather than racing its final frame.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let operation = NativeProviderTransportOperation::Exchange {
+            connection_id: opened.connection_id.clone(),
+            sequence: 1,
+            frames: vec![],
+        };
+        let first = sockets
+            .execute(scope.clone(), operation.clone(), || async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(first.frames, [r#"{"id":7,"result":{}}"#]);
+        assert!(first.closed);
+        let repeated = sockets
+            .execute(scope.clone(), operation, || async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(repeated, first);
+        let repeated_open = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Open {
+                    request_id: "open-final".into(),
+                },
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        assert_eq!(repeated_open.connection_id, opened.connection_id);
+        sockets
+            .execute(
+                scope,
+                NativeProviderTransportOperation::Close {
+                    connection_id: opened.connection_id,
+                },
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn mp08_native_socket_fences_attachment_and_passive_run_revocation() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (ended_tx, ended_rx) = tokio::sync::oneshot::channel();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let writes_observed = writes.clone();
         let upstream = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
             while let Some(Ok(message)) = socket.next().await {
                 match message {
-                    Message::Text(_) => socket
-                        .send(Message::Text(
-                            r#"{"id":1,"result":{"userAgent":"official-test-seam"}}"#.into(),
-                        ))
-                        .await
-                        .unwrap(),
+                    Message::Text(_) => {
+                        writes_observed.fetch_add(1, Ordering::SeqCst);
+                        socket
+                            .send(Message::Text(
+                                r#"{"id":1,"result":{"userAgent":"official-test-seam"}}"#.into(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
                     Message::Close(_) => break,
                     _ => {}
                 }
@@ -551,12 +691,28 @@ mod tests {
         let id = sockets
             .execute(
                 scope.clone(),
-                NativeProviderTransportOperation::Open,
+                NativeProviderTransportOperation::Open {
+                    request_id: "open-test".into(),
+                },
                 guard.clone(),
             )
             .await
             .unwrap()
             .connection_id;
+        let replayed_open = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Open {
+                    request_id: "open-test".into(),
+                },
+                guard.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_open.connection_id, id,
+            "lost Open acknowledgement cannot create another upstream"
+        );
         let mut foreign = scope.clone();
         foreign.attachment_id = "foreign".into();
         assert!(sockets
@@ -575,19 +731,34 @@ mod tests {
                 NativeProviderTransportOperation::Exchange {
                     connection_id: id.clone(),
                     frames: vec![r#"{"id":1,"method":"initialize"}"#.into()],
+                    sequence: 1,
                 },
                 guard.clone(),
             )
             .await
             .unwrap();
+        let replayed = sockets
+            .execute(
+                scope.clone(),
+                NativeProviderTransportOperation::Exchange {
+                    connection_id: id.clone(),
+                    frames: vec![r#"{"id":1,"method":"initialize"}"#.into()],
+                    sequence: 1,
+                },
+                guard.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replayed.sequence, 1);
         let mut observed = false;
-        for _ in 0..100 {
+        for index in 0..100 {
             let result = sockets
                 .execute(
                     scope.clone(),
                     NativeProviderTransportOperation::Exchange {
                         connection_id: id.clone(),
                         frames: vec![],
+                        sequence: index + 2,
                     },
                     guard.clone(),
                 )
@@ -600,7 +771,25 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(observed);
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            1,
+            "duplicate exchange cannot resend official frames"
+        );
         allowed.store(false, Ordering::SeqCst);
+        assert!(
+            sockets
+                .execute(
+                    scope.clone(),
+                    NativeProviderTransportOperation::Open {
+                        request_id: "open-test".into()
+                    },
+                    guard.clone()
+                )
+                .await
+                .is_err(),
+            "replay cannot bypass revoked run authority"
+        );
         tokio::time::timeout(Duration::from_secs(3), ended_rx)
             .await
             .unwrap()

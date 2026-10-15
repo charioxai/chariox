@@ -346,13 +346,14 @@ export type QueuedPromptUpdatedPayload = {
   agent_activity_revision: number
 }
 
-// MP-08 / MP-10 / MP-11: scoped official Codex display transport, local526/peer134.
+// MP-08 / MP-10 / MP-11: scoped official Codex display transport, local531/peer139.
 export type NativeProviderTransportOperation =
-  | { readonly kind: "open" }
-  | { readonly kind: "exchange"; readonly connection_id: string; readonly frames: readonly string[] }
+  | { readonly kind: "open"; readonly request_id: string }
+  | { readonly kind: "exchange"; readonly connection_id: string; readonly frames: readonly string[]; readonly sequence: number }
   | { readonly kind: "close"; readonly connection_id: string }
 export type NativeProviderTransportResult = {
   readonly connection_id: string
+  readonly sequence: number
   readonly frames: readonly string[]
   readonly closed: boolean
 }

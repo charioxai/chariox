@@ -268,13 +268,14 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
-MP-08 / MP-10 / MP-11: allocated local protocol 526 and peer protocol 134
+MP-08 / MP-10 / MP-11: allocated local protocol 531 and peer protocol 139
 add `NativeProviderTransport` for the official Codex native display upstream.
 The client supplies session, attachment, agent and current projected run, never
 an endpoint URL. The home kernel admits the attachment owner and session;
 remote execution uses the existing authenticated leased-agent peer admission.
 The owning kernel selects its current official loopback WebSocket. Open returns
-an opaque connection ID; Exchange sends and drains bounded JSON frames; Close
+an opaque connection ID for a client-generated scoped `request_id`; duplicate Open
+returns that same live connection. Exchange sends and drains bounded JSON frames; Close
 retires it. Every operation and socket heartbeat fences the attachment/run or
 lease/backing run. Connections expire after 120 seconds without exchange, are
 limited to two per exact scope and 32 per kernel, and use 32-frame queues with
@@ -283,14 +284,19 @@ and use the existing encrypted relay large-message framing (64 MiB envelope
 ceiling). Kernel-to-relay envelopes use bounded RFC 6455 continuation frames,
 so encryption/base64 expansion cannot exceed a peer WebSocket frame limit.
 Queued output has byte budgets of 32 MiB per connection and 256 MiB
-per kernel. Backpressure closes or rejects without replay. Native transport
-requests are never replayed after being written; a lost answer has an unknown
-outcome and requires reattachment. Provider frames are excluded from the
+per kernel, including output retained in receipts. Each Exchange carries the next
+positive safe-integer `sequence`; its exact input and reply are retained until the
+next sequence acknowledges it. An identical repeated sequence returns that reply
+without re-enqueueing input or draining later output. Conflicting, older and skipped
+sequences are rejected. The client retries only the same receipted Open or Exchange
+through a transient relay outage, for at most 15 seconds; authorization is rechecked
+on replay. A full input queue is rejected before any batch frame is enqueued.
+Generic IPC replay remains disabled. Provider frames are excluded from the
 in-memory command cache and persistent command-result history.
 This is a display/read/control transport: prompt start/steer/interrupt, arbitrary
 tool execution, login mutation and provider approval replies still use the
 normal kernel-owned prompt and RuntimeInteraction paths. Unsupported methods
-are rejected. Old clients/workers require an actionable 526/134 update and
+are rejected. Old clients/workers require an actionable 531/139 update and
 reattach, never an SSH tunnel or a caller-selected provider endpoint.
 Native folder trust may persist one `config/batchWrite` replacement of
 `projects."<owning working directory>".trust_level` (`trusted`/`untrusted`)

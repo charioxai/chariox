@@ -274,5 +274,6 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-/// MP-08 / MP-10 / MP-11: coordinator-allocated owning-kernel native Codex transport.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 526;
+/// MP-08 / MP-10 / MP-11: version 526 introduced owning-kernel native Codex transport.
+/// Version 531 adds scoped Open identities and bounded sequential Exchange receipts.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 531;

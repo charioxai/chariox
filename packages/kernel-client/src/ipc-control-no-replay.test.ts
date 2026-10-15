@@ -36,7 +36,7 @@ async function kernel(t: TestContext, onRequest: (socket: WebSocket, frame: { re
 for (const request of [
   { ControlAppWorker: { installation_id: "todo", action: "restart" } },
   { UninstallApp: { installation_id: "todo", expected_generation: "3" } },
-  { NativeProviderTransport: { session_id: "room", attachment_id: "view", agent_id: "agent", provider_run_id: "run", operation: { kind: "exchange", connection_id: "socket", frames: [] } } },
+  { NativeProviderTransport: { session_id: "room", attachment_id: "view", agent_id: "agent", provider_run_id: "run", operation: { kind: "exchange", connection_id: "socket", frames: [], sequence: 1 } } },
 ]) {
   const kind = Object.keys(request)[0]
 

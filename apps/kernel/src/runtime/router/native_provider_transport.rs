@@ -171,7 +171,7 @@ impl CommandRouter {
             return match response {
                 RelayPeerResponse::NativeProviderTransport { result } => Ok(result),
                 _ => Err(error(
-                    "worker requires native provider transport protocol 134; update and rebind",
+                    "worker requires native provider transport protocol 139; update and rebind",
                 )),
             };
         }

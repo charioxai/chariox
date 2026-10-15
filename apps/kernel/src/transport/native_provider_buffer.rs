@@ -23,6 +23,7 @@ impl NativeOutputBudget {
         }
     }
 }
+#[derive(Clone)]
 pub(crate) struct NativeConnectionOutputBudget {
     kernel: Arc<Semaphore>,
     connection: Arc<Semaphore>,

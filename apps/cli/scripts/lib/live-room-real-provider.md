@@ -344,7 +344,7 @@ before marking the cell accepted.
 ### MP-08 / MP-10 / MP-11: off-box Codex upstream and reload
 
 Use the real built CLI, home kernel, isolated worker kernel, relay and web entry
-at recorded source and binary hashes. Require local protocol 526 and peer 134.
+at recorded source and binary hashes. Require local protocol 531 and peer 139.
 Keep the worker's official Codex 0.159.3 endpoint on worker loopback, unreachable
 from the client. Use a Docker container or KVM guest for isolation; a second
 physical machine is needed only for geographic or timing acceptance. Do not
@@ -372,6 +372,18 @@ account and model return, with no blank frame or false disconnected state.
 Expand and scroll completed turns using normal controls to verify retained
 steering text. Inspect recordings and screenshots, including first paint;
 DOM assertions and sampled screenshots alone cannot establish this gate.
+
+Before the stability run, use the real Chariox TUI on the home kernel to run
+`/relay disable`, leave a short gap, then `/relay cloud connect`. Keep the native
+client open throughout. Require the same provider-run and thread binding, a
+usable native composer, and a fresh normal workspace-tool prompt that completes
+exactly once after recovery. Capture the pre-fix native-unavailable failure and
+the fixed native/Web/TUI screens. A component receipt test is supplementary.
+At the protocol seam, reject predecessor Open without `request_id` and Exchange
+without `sequence`. Simulate a lost Open and Exchange reply: repeated requests
+must reuse one scoped upstream and return the exact retained reply; conflicts,
+sequence gaps and revoked authority must fail. Receipts include final buffered
+output after upstream close and remain subject to byte limits and expiry.
 
 Keep the real off-box session attached through hosted WSS for at least two
 hours with an 8 Mbit/s client uplink and at least 60 ms RTT. Require no unexpected

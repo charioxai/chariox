@@ -95,4 +95,5 @@ impl TransportService {
 }
 
 pub(crate) mod native_provider_buffer;
+mod native_provider_exchange;
 pub(crate) mod native_provider_socket;

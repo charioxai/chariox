@@ -60,7 +60,7 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
       case "GetSessionState": return { SessionState: { agent_activity: {} } }
       case "NativeProviderTransport": {
         transportScopes.push(payload)
-        const op = payload.operation as { kind: string; connection_id?: string; frames?: string[] }
+        const op = payload.operation as { kind: string; connection_id?: string; frames?: string[]; sequence?: number }
         let connectionId = op.connection_id
         if (op.kind === "open") {
           connectionId = `connection-${connections.size}`
@@ -74,7 +74,7 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
         if (op.kind === "close") connection.socket.close()
         else for (const frame of op.frames ?? []) connection.socket.send(frame)
         await new Promise(resolve => setTimeout(resolve, 5))
-        return { NativeProviderTransport: { result: { connection_id: connectionId, frames: connection.frames.splice(0), closed: op.kind === "close" } } }
+        return { NativeProviderTransport: { result: { connection_id: connectionId, sequence: op.sequence ?? 0, frames: connection.frames.splice(0), closed: op.kind === "close" } } }
       }
       case "PollRuntimeNotices": return { RuntimeNotices: { notices: [] } }
       case "PumpTerminalOutput": return { TerminalOutput: { records: [] } }

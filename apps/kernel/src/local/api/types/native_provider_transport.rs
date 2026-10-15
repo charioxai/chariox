@@ -15,10 +15,13 @@ pub struct NativeProviderTransportRequest {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeProviderTransportOperation {
-    Open,
+    Open {
+        request_id: String,
+    },
     Exchange {
         connection_id: String,
         frames: Vec<String>,
+        sequence: u64,
     },
     Close {
         connection_id: String,
@@ -28,6 +31,7 @@ pub enum NativeProviderTransportOperation {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeProviderTransportResult {
     pub connection_id: String,
+    pub sequence: u64,
     pub frames: Vec<String>,
     pub closed: bool,
 }
@@ -37,7 +41,7 @@ pub struct NativeProviderTransportResult {
 impl std::fmt::Debug for NativeProviderTransportOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Open => f.write_str("Open"),
+            Self::Open { .. } => f.write_str("Open"),
             Self::Close { .. } => f.write_str("Close"),
             Self::Exchange { frames, .. } => f
                 .debug_struct("Exchange")
@@ -62,10 +66,12 @@ mod tests {
         let operation = NativeProviderTransportOperation::Exchange {
             connection_id: "private-handle-canary".into(),
             frames: vec!["private-provider-config-canary".into()],
+            sequence: 1,
         };
         let result = NativeProviderTransportResult {
             connection_id: "private-handle-canary".into(),
             frames: vec!["private-provider-config-canary".into()],
+            sequence: 1,
             closed: false,
         };
         for debug in [format!("{operation:?}"), format!("{result:?}")] {
