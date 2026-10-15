@@ -5,11 +5,8 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn mp08_mp10_mp11_display_resumption_525_133_snapshot_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 525);
-    assert_eq!(
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        133
-    );
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
     let requests = [
         KernelBrowserCommand::DisplaySuspend {
             subscription_id: "delivery-old".into(),
@@ -25,8 +22,8 @@ fn mp08_mp10_mp11_display_resumption_525_133_snapshot_hash() {
     .map(|request| serde_json::to_value(request).unwrap())
     .collect::<Vec<_>>();
     let snapshot = serde_json::json!({
-        "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,
-        "peer_protocol": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        "local_protocol": 525,
+        "peer_protocol": 133,
         "requests": requests,
     });
     assert_eq!(
@@ -55,11 +52,13 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
         "2992b9a6951f5ba8b5b44619af39e9e91231f60e802694c56a4527fb635d066b"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(snapshot["local_protocol"], 525);
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
     assert_eq!(
         snapshot["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        133
     );
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
     let endpoint: LocalDaemonResponse =

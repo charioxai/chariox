@@ -246,7 +246,7 @@ fn room_selkies_worker_admission_contract_is_versioned() {
 
 #[test]
 fn mp08_mp10_mp11_room_shared_display_offer_survives_the_wire() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 525);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 528);
     let value = serde_json::json!({"GetSliceDisplayEndpoint":{
       "slice_ref":"slice-1","session_id":"room-1","attachment_id":"attachment-1","viewer_public_key":"viewer-key",
       "shared_display":{"codecs":["avc1.420033","png","chariox-relay-binary-v96"],"bitrate":8000000,"device_scale_factor":2,"resume_hint":"room-display-old"}

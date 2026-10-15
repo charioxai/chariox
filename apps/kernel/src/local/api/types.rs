@@ -319,4 +319,6 @@ pub use workspace::*;
 /// author CSS, live controls, compact deltas, native density and long-poll credits.
 /// MP-08/MP-10/MP-11: allocated 525 carries shared producer resumption on
 /// the display integration train (519 region clients precede this final step).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 525;
+/// MP-08/MP-10/MP-11: allocated 528 adds the Browser state's `chrome_window` (the
+/// native band's window epoch and active Tab) and `browser_lockdown` fields.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 528;

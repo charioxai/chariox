@@ -352,3 +352,24 @@ fn mp08_mp10_mp11_browser_display_region_519_snapshot() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
     }
 }
+
+// MP-08/MP-10/MP-11 (BROWSER-UX-14/-16): allocated 528/136 adds the Browser state's
+// `chrome_window` (the native band's window epoch and active Tab, or null) and
+// `browser_lockdown`. The host's state keys are pinned to this fixture by a Node test.
+#[test]
+fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 528);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 136);
+    let bytes = include_bytes!("browser-chrome-state-528.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "ff8cb6bbc22c9002844ea72538a801501ef9fd8dacc870e56bd5e366086383e8"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}

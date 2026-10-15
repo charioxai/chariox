@@ -115,7 +115,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// waiting-room and Room workflow contracts (#974). Generated consumers follow
 /// this allocated version.
 /// MP-08/MP-10/MP-11: allocated 133 carries the local 525 resumption union.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 133;
+/// MP-08/MP-10/MP-11: allocated 136 carries the local 528 Browser state fields.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 136;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

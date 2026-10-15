@@ -23,6 +23,13 @@ regions. Retire a crop on resize, changed tile geometry/identity, protection,
 navigation and browser restart. Old input and late frames must be refused;
 new subscriptions paint without selecting a viewer rectangle.
 
+Native band (528): open the web Browser on a kernel with display on; the band
+must paint from the state's `chrome_window` without a viewer-chosen window. Switch
+Tabs in Chrome's own strip and confirm the page follows `active_tab_id`; start a
+kernel with display off and confirm `chrome_window` is null and the web shows its
+own strip and address bar. On a host without the AppArmor profile the state's
+`browser_lockdown` is `unavailable` and the session bar says so.
+
 Use the hosted WSS path, shaped ~8 Mbit/s and measured RTT ≥60 ms. Strict
 paired Selkies reruns use the same integrated head on the coordinator's quiet
 host (HOST_REQUEST), with matching geometry. Record P95 ≤ measured RTT+60 ms,

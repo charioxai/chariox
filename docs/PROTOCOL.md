@@ -3984,3 +3984,20 @@ response metadata. The focused drill is
 `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`. The region client's floor is519;
 whole-page and mirror clients retain their existing floors. This contract is
 source implementation, not real-path acceptance.
+
+## MP-08 / MP-10 / MP-11 Browser chrome state (528 / peer 136)
+
+Allocated local528/peer136 adds two fields to the `KernelBrowser` `state`
+result. `chrome_window` is `{window_generation, active_tab_id}` when the kernel
+has a live, bound native tabbed window and its display is enabled, otherwise
+`null`; a viewer uses `window_generation` for the 519
+`{kind:"browser_chrome",window_generation}` subscription and follows
+`active_tab_id` when the person switches Tabs in Chrome's own strip.
+`browser_lockdown` is `"managed"` when the kernel's managed Chromium policies
+apply and `"unavailable"` when only the kernel's CDP fail-closed layer applies
+(for example Ubuntu ≥23.10 without the Setup's AppArmor profile); viewers show
+the second case. Clients feature-detect both fields, so no client floor moves.
+`browser-chrome-state-528.json` pins the public state keys (Rust hash test
+`mp08_mp10_mp11_browser_chrome_state_528_snapshot`; the host's Node test
+compares its real state keys to the fixture). The focused drill is the native
+band section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.

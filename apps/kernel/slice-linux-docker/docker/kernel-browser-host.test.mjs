@@ -1374,6 +1374,24 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
 }));
 
+// MP-08/MP-10/MP-11 (protocol 528/136): the public Browser state keys are the hashed
+// Rust fixture's; a new key needs a protocol bump and a new fixture.
+test('MP-08 public Browser state keys match the protocol 528 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-state-528.json', import.meta.url), 'utf8'));
+  const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
+  try {
+    const tab = await host.request({ op: 'open', url: 'https://example.com/' });
+    host.chromeWindows.bound = { tabbed: { window_generation: 3, isCurrent: () => true }, auxiliary: [] };
+    host.tabGroups = { active: async () => host.tabs.get(tab.tab_id).target_id };
+    host.chromium.policy = 'managed';
+    const state = await host.request({ op: 'state' });
+    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
+    assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
+    assert(fixture.browser_lockdown.includes(state.browser_lockdown));
+  } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
+}));
+
 // MP-11 (Ubuntu >= 23.10 without the Setup's AppArmor profile): a browser without its
 // managed policies says so to every viewer, not only in the kernel log.
 test('MP-11 state reports whether the managed browser policies apply', () => using(async ({ host }) => {
