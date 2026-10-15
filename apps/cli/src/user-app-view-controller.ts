@@ -4,6 +4,7 @@ import { kernelBrowserRequest } from "@chariox/kernel-client/ipc-requests"
 import type { UserAppView, KernelBrowserInput } from "@chariox/kernel-client/kernel-types"
 import type { PasskeyPopupKey, PasskeyPopupPaste } from "./passkey-popup-controller.js"
 import { appViewText, formatUserAppViewOutline } from "./user-app-view-outline.js"
+import { appHostOperationId } from "./kernel-approval-controller.js"
 
 export type UserAppViewClient = { send(request: any): Promise<any> }
 export type UserAppViewPanel = { open: boolean; text: string }
@@ -85,11 +86,22 @@ export function createUserAppViewController(deps: {
     if (active?.view.view_id === bound.view.view_id && active.client === bound.client) { active = undefined; hide() }
     deps.notify("App view closed")
   }
-  async function handle(args: string[], sessionId?: string): Promise<boolean> {
-    const waitingOpen = !sessionId && args[0] === "open" && args.length === 2
-    if (!waitingOpen && args[0] !== "view" && args[0] !== "views") return false
+  /** Pending host offers of this owner's App Tabs (detached, sessionless decisions). */
+  async function hostOfferIds(): Promise<string[]> {
     const client = deps.client()
-    const [action, ...rest] = waitingOpen ? ["open", args[1]!] : args[0] === "views" ? ["list", ...args.slice(1)] : args.slice(1)
+    const result = field(await client.send(subscribeUserAppViewsRequest(undefined, 0)), "UserAppViewsChanged")
+    current(client)
+    return (Array.isArray(result.interactions) ? result.interactions : []).flatMap((item: any) => {
+      const operation = appHostOperationId(item)
+      return operation ? [operation] : []
+    })
+  }
+  async function handle(args: string[]): Promise<boolean> {
+    // MP-08/MP-11: an attached Room does not change the App's browser host.
+    const appOpen = args[0] === "open" && args.length === 2
+    if (!appOpen && args[0] !== "view" && args[0] !== "views") return false
+    const client = deps.client()
+    const [action, ...rest] = appOpen ? ["open", args[1]!] : args[0] === "views" ? ["list", ...args.slice(1)] : args.slice(1)
     if (action === "list" && !rest.length) {
       const views = await list(client); active = undefined
       show(["User-domain App views", ...views.map(v => `${appViewText(v.view_id)}  ${appViewText(v.installation_id)}  ${v.browser ? "text projection" : "client native"}`),
@@ -170,7 +182,7 @@ export function createUserAppViewController(deps: {
     void refresh(active).catch(() => { hide(); deps.notify("App view unavailable; select a view on the current kernel") }).finally(() => { refreshPending = false })
   }, 750)
   timer.unref()
-  return { handle, handleKey, handlePaste, hide, ownsInput: () => open, view: () => ({open,text}),
+  return { handle, hostOfferIds, handleKey, handlePaste, hide, ownsInput: () => open, view: () => ({open,text}),
     async idle() { await work },
     async dispose() {
       disposed = true; clearInterval(timer); hide(); active = undefined

@@ -130,8 +130,11 @@ pub(super) async fn handle_incoming_envelope(
             // requests keep the existing independent concurrent path.
             let display_sender = encrypted_request.sender_public_key.clone();
             let mut prepared = prepare_daemon_request(&router, caller_identity, encrypted_request);
-            let mut turn = None;
-            if let Some(key) = prepared.as_ref().ok().and_then(|p| p.browser_input_key()) {
+            let (mut turn, mut read) = (None, false);
+            if let Some((key, mirror_read)) =
+                prepared.as_ref().ok().and_then(|p| p.browser_input_key())
+            {
+                read = mirror_read;
                 turn = reconnect_gate.input_order.reserve(key);
                 if turn.is_none() {
                     prepared = Err(super::daemon_requests::RelayRequestOutcome {
@@ -146,9 +149,10 @@ pub(super) async fn handle_incoming_envelope(
                 }
             }
             tokio::spawn(async move {
-                if let Some(turn) = turn.as_mut() {
-                    turn.ready().await;
-                }
+                let turn = match turn {
+                    Some(turn) => turn.enter(read).await,
+                    None => None,
+                };
                 let mut relay_response = match prepared {
                     Ok(prepared) => {
                         handle_prepared_daemon_request(

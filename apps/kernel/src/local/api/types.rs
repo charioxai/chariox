@@ -301,5 +301,7 @@ pub use workspace::*;
 /// Version 506 integrates those contracts, including main's 491, with the 493
 /// agent-model union; generated consumers follow this coordinator-allocated
 /// acceptance version.
-/// Version 513 normalizes admitted paired display callers and owner-only, read-only historical workflow projections (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 513;
+/// Version 513 normalizes paired display callers and historical workflow projections.
+/// Version 516 orders mirror reads behind earlier input from the same viewer;
+/// the allocated floor is above the unordered target's 513 (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 516;

@@ -12,7 +12,7 @@ import { assertCurrentDocument,assertNotCancelled } from './browser-controller-a
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
 
-const lifetime=60000,maxWire=4*1024*1024;
+const lifetime=60000,maxWire=4*1024*1024,refineQuietMs=1000;
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:geometry.width,height:geometry.height},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
 // Trusted admission error: never constructed from page/CDP error strings.
 export class MirrorInputEpochRefusal extends Error {
@@ -28,9 +28,6 @@ export class MirrorService {
     this.expire();const stream=this.streams.get(id);
     if(!stream || stream.scope!==scope || generation!==this.host.generation) throw new Error('MP-11: stale or foreign mirror');
     stream.expires=Date.now()+lifetime;return stream;
-  }
-  assertWebTab(tab) {
-    if([...(this.host.browser.appTabs?.apps?.values()??[])].some(app=>app.targetId===tab.target_id))throw new Error('MP-11: App views require the native App capability path');
   }
   async world(tab) {
     const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
@@ -58,7 +55,6 @@ export class MirrorService {
     if(this.host.scales.has(tab.tab_id) && this.host.scales.get(tab.tab_id)!==scale)throw new Error('MP-08: canonical mirror geometry already selected');
     // MP-08/MP-10: target() reconciles the kernel-owned viewport. An
     // attached mirror is an observer and must never resize the shared page.
-    this.assertWebTab(tab);
     this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
@@ -75,7 +71,7 @@ export class MirrorService {
     const mark=name=>{this.host.timing?.(`mirror_${name}`,stage);stage=timestamp();};
     const stream=this.require(command.subscription_id,scope,command.generation),tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
     mark('target');
-    this.assertWebTab(tab);assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
+    assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
     mark('world');
     if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
@@ -169,8 +165,10 @@ export class MirrorService {
       // MP-08/MP-10: motion uses the negotiated PNG crop; the next idle
       // credit performs native full-frame verification/refinement, as display
       // does. Chromium's DPR2 cropped raster can differ at glyph/shape edges.
-      const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0;
-      const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch;
+      // While the user types, a blinking caret must not turn every other read into
+      // a full-frame refinement that the next echo queues behind: refine once input settles.
+      const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0,typedAt=this.host.inputChangedAt?.get(tab.tab_id)??-Infinity;
+      const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&performance.now()-typedAt>=refineQuietMs;
       const clip=refine?{x:0,y:0,width:geometry.width,height:geometry.height,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
       const masks=await captureRegionMasks(world.connection,world.sessionId);
       mark('tile_masks_before');
@@ -213,7 +211,7 @@ export class MirrorService {
     return packet;
   }
   async resolveInput(tab,input,scope,signal) {
-    this.assertWebTab(tab);const stream=this.require(input.subscription_id,scope,this.host.generation);
+    const stream=this.require(input.subscription_id,scope,this.host.generation);
     if(stream.tab_id!==tab.tab_id||stream.document_id!==tab.document_id)throw new Error('MP-11: stale mirror input document');
     if(stream.policy!==this.host.protection)throw new Error('MP-11: stale mirror protection policy');
     stream.epochs=stream.epochs.filter(e=>this.now()-e.issuedAt<=2000).slice(-8);

@@ -99,6 +99,26 @@ through its own renderer; if it cannot render the signed frontend it uses a
 kernel Chromium fallback. The Cloud native frontend remains a separate flagged
 prototype; no replacement display transport is selected here.
 
+## Apps as kernel-browser Tabs (MP-08 / MP-10 / MP-11, 2026-10-13)
+
+Owner direction: an App is a Tab of the owner's kernel browser, projected like
+any Tab (DOM mirror under the same observation protection, display stream,
+screenshots). Web and TUI open Apps with `host: "kernel_browser"`; the web
+client shows that Tab in its browser modal and needs no isolated App origin.
+With the App-view feature enabled, `/app open` uses this host both from the
+waiting room and while a Room is attached. The TUI projects the same Tab as
+text and sends its input through the kernel browser.
+A focused or granted agent may input in, navigate within the App origin and
+close an App Tab after the kernel claimed `UserDomainResource::AppView` in its
+own grant; the host refuses agent mutations without that claim. Each page call
+carries who drove the Tab. An agent-driven call runs as that agent
+(`Actor::Agent`, `agent_id`, `room_id`, running turn) and only while the agent
+still holds the App view and its own App grant (rechecked at enqueue and
+reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
+authority. Critical effects still need the owner's validation and passkey.
+Existing Room-hosted instances keep the Room rule below; opening an App from
+a client no longer selects that host merely because a Room is attached.
+
 ## Agent access and migration
 
 MP-08 / MP-10 / MP-11: the owner-approved
@@ -108,27 +128,18 @@ used while focused. New resources and sensitive actions require focus or the
 existing human approval path. Cross-kernel tools refuse control and window
 metadata exposes reachability.
 
-The App-agent MCP adapter remains proposed. It must consume the shared kernel
-grant authority rather than introducing another selector or focus epoch. An
-admission must bind the home kernel, owner, session, agent, exact provider run and
-grant epoch, with resource checks before dispatch and revocation checks during
-awaits/commit. Browser mutations cannot act through the human App channel.
-
-Proposed tool names in that single table: `chariox_user_app_views_list`,
-`chariox_user_app_view_read`, and `chariox_user_app_view_call`, loaded as the
-on-demand `user-app-views` runtime capability. List/read project owner instances
-and declared App data; read never exports a frontend bundle for execution in
-an agent. Call invokes the same installation tool queue with the admitted agent
-actor, exact run/turn provenance and no inferred room_id; it does not impersonate
-a human view. All three recheck grant authority, resource scope and owner, and none can answer
-RuntimeInteractions, fetch Vault material or gain window grants. View ids remain
-routing ids, not provider tokens. This is a proposal for the registry/MCP lane,
-not an implemented or allocated protocol extension. Keep the tool-name table in one responsibility module and reuse the shared
-user-domain authority.
+MP-08 / MP-10 / MP-11: agents reach App tabs through the existing kernel-browser
+tools and shared user-domain grant authority. No separate App-view MCP adapter
+or tool table is required. The kernel claims the exact App view before input,
+navigation or close, and authorizes resulting bridge calls with the agent's
+own App binding. Browser mutations cannot borrow the human App channel. View
+ids remain routing ids; they cannot answer RuntimeInteractions, fetch Vault
+material or grant window access.
 
 Existing `OpenAppView` and Room tab identities keep their behavior and wire
 shape. Room views do not silently move to the user domain. A client opening an
-App without a session explicitly chooses `OpenUserAppView`; moving a view
+App explicitly chooses `OpenUserAppView` when the App-view feature is enabled;
+moving an existing Room view
 means opening a new instance in the destination and closing the old one. App
 backend/data remain installation-scoped; transient frontend state remains
 per instance. Human/agent simultaneous frontend editing remains deferred.
@@ -137,8 +148,6 @@ per instance. Human/agent simultaneous frontend editing remains deferred.
 
 - Final display-tier choice, transport and Mac acceptance; Linux kernel Chromium
   is bound through lane kbrowser's 417 seam in MULTIDOMAIN_INTEGRATION.md.
-- Implement the proposed App tool-name table over the shared grant service when
-  the App-agent MCP adapter lane is allocated.
 - Production native web origin provisioning and mobile/TUI frontend rendering
   policy. Cloud prototype b64dacb3 stays off by default.
 - Kernel browser profile selection, display transport and App multi-interaction

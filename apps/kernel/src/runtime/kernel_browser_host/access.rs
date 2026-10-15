@@ -466,6 +466,42 @@ impl KernelBrowserHost {
                 .grant(&admission.user, agent)
                 .is_ok_and(|grant| grant.resources.contains(resource))
     }
+    /// MP-08/MP-11: whether the agent's own grant still holds `resource`.
+    pub(crate) fn holds_resource(
+        &self,
+        user: &str,
+        agent: &str,
+        resource: &UserDomainResource,
+    ) -> bool {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .access
+            .grant(user, agent)
+            .is_ok_and(|grant| grant.resources.contains(resource))
+    }
+    /// Capture membership and epoch under the same grant lock. A later grant
+    /// for the same resource cannot revive a call admitted under this one.
+    pub(crate) fn retain_resource_grant(
+        &self,
+        user: &str,
+        agent: &str,
+        resource: UserDomainResource,
+    ) -> Result<KernelBrowserResourceGrant, ()> {
+        let state = self.inner.lock().map_err(|_| ())?;
+        let grant = state.access.grant(user, agent).map_err(|_| ())?;
+        if !grant.resources.contains(&resource) {
+            return Err(());
+        }
+        Ok(KernelBrowserResourceGrant {
+            host: self.clone(),
+            user: user.into(),
+            agent: agent.into(),
+            resource,
+            epoch: grant.epoch.clone(),
+            expires_at: grant.expires_at,
+        })
+    }
+
     pub(crate) fn resource_notice(
         &self,
         admission: Option<&KernelBrowserAdmission>,

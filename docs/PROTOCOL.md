@@ -611,6 +611,14 @@ never creates invoker proof or removes the historical label. New admissions reta
 the transactional immutable proof. Managed upgrade policy retains 506 as an
 explicit predecessor; the consuming web floor is 513.
 
+MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
+(`mirror_next`) behind every earlier `mirror_input` of the same mirror
+subscription and generation that reached the kernel first; the read never holds
+later input. A 516 client writes the read right behind a key, so the key's echo
+shares one relay round trip with input; kernels through 515 retain the
+input-reply-then-read path. The target's 513/121 lacked this ordering, so the
+coordinator allocated 516/124 above it; 511 is no longer an ordering floor.
+
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
 `chariox.query_recall`, used while room agent tools are off) keep the
 `scope` values `current_session` and `all`; the argument shape is unchanged.
@@ -3543,7 +3551,9 @@ The accepting terminal performs the action on its own machine. TUI users type
 `/app host accept` after closing the approval panel selects the sole pending
 host offer in the attached session only when it matches the last offer displayed
 in that terminal's approval panel. Unviewed/replaced offers require re-opening
-the panel or an explicit ID. Multiple offers require
+the panel or an explicit ID. An offer from an owner's user-domain App Tab is a
+detached owner decision with session `""` (listed by `/app view approvals`);
+the TUI takes it only by explicit ID, sending `session_id: ""`. Multiple offers require
 `/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
 clipboard helper and always shows the escaped text as a visible fallback
 because OSC 52 has no acknowledgement; link opening

@@ -56,6 +56,40 @@ pub(crate) struct KernelBrowserAdmission {
     elevated: bool,
 }
 
+/// MP-08/MP-11: exact resource authority retained by an asynchronous App call.
+#[derive(Clone)]
+pub(crate) struct KernelBrowserResourceGrant {
+    host: KernelBrowserHost,
+    user: String,
+    agent: String,
+    resource: UserDomainResource,
+    epoch: Arc<BrowserCancellation>,
+    expires_at: Option<std::time::Instant>,
+}
+impl KernelBrowserResourceGrant {
+    /// Safe in a durable queue budget even while commit holds the host lock.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.epoch.requested()
+            || self
+                .expires_at
+                .is_some_and(|at| std::time::Instant::now() >= at)
+    }
+    pub(crate) fn commit<T>(&self, call: impl FnOnce() -> T) -> Result<T, ()> {
+        let state = self.host.inner.lock().map_err(|_| ())?;
+        let grant = state
+            .access
+            .grant(&self.user, &self.agent)
+            .map_err(|_| ())?;
+        if self.cancelled()
+            || !Arc::ptr_eq(&grant.epoch, &self.epoch)
+            || !grant.resources.contains(&self.resource)
+        {
+            return Err(());
+        }
+        Ok(call())
+    }
+}
+
 impl KernelBrowserAdmission {
     pub(crate) fn is_agent(&self) -> bool {
         self.agent.is_some()
@@ -580,7 +614,17 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
-        let mut result = if display || (method == "host.browser" && params["op"] == "input") {
+        // MP-08/MP-10: an idle App drain waits for page enqueue. Keep its
+        // existing admission/cancellation, but release the controller mutex
+        // while waiting so input, observations and App replies can proceed.
+        // MP-08/MP-10/MP-11: a read-only state poll waits for the page's reconcile; input
+        // must not queue behind it. The ledger ignores observations older than its newest.
+        let state = method == "host.browser" && params["op"] == "state";
+        let mut result = if display
+            || method == "browser.app.calls"
+            || state
+            || (method == "host.browser" && params["op"] == "input")
+        {
             let signal = cancellation
                 .clone()
                 .unwrap_or_else(|| Arc::new(BrowserCancellation::default()));
@@ -628,9 +672,14 @@ impl KernelBrowserHost {
                 state.remove("_tab_creation_actions")
             })
             .unwrap_or(Value::Null);
-        if let Ok(state) = &result {
+        if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             ledger.reconcile_inventory(state, &tab_creation_actions)?;
+            // The observation order is controller-internal; replies keep their shape
+            // (a Notes selection's own `observation` result passes through).
+            if let Some(state) = state.as_object_mut() {
+                state.remove("_observation");
+            }
         }
         if let Ok(payload) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;

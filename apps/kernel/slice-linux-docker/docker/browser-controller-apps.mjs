@@ -22,6 +22,9 @@ const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
+// MP-08/MP-11: calls a page makes this soon after an agent's input stay the
+// agent's even if a person touches the Tab meanwhile.
+const AGENT_CALL_WINDOW_MS = 5_000;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -133,6 +136,33 @@ export class AppTabs {
     this.nextFullscreenCheck = 0;
     this.restoreGraceMs = restoreGraceMs;
     this.orphanRestores = new Map();
+    this.now = () => performance.now();
+  }
+
+  // MP-08/MP-10/MP-11: the kernel host reports who drives an App Tab (an
+  // agent id, or null for a person). A call runs as the agent while its input
+  // is in flight, within a short window after it, and until a person's input
+  // follows; the kernel then authorizes it as that agent, never as the owner.
+  beginInput(targetId, agent) {
+    const app = [...this.apps.values()].find(open => open.targetId === targetId);
+    if (!app) return () => {};
+    const mark = () => {
+      if (agent) Object.assign(app, { agent, agentAt: this.now() });
+      else app.humanAt = this.now();
+    };
+    mark();
+    if (agent) app.agentInputs = (app.agentInputs ?? 0) + 1;
+    return () => {
+      if (agent) app.agentInputs--;
+      mark();
+    };
+  }
+
+  callActor(app) {
+    if (!app.agent) return undefined;
+    const driving = app.agentInputs > 0 || this.now() - app.agentAt < AGENT_CALL_WINDOW_MS
+      || !(app.humanAt > app.agentAt);
+    return driving ? { kind: "agent", id: app.agent } : undefined;
   }
 
   async open(params) {
@@ -312,6 +342,8 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    // Attribute at binding time, before any await can admit other input.
+    const actor = this.callActor(app);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
@@ -327,7 +359,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {} });
+      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
     this.wakeCalls();
   }
 
@@ -435,8 +467,8 @@ export class AppTabs {
 
   // Keep the existing RPC and batch shape. Enqueue wakes an outstanding drain;
   // the bounded timeout still projects closed targets and maintains windows.
-  async waitForCalls() {
-    if (this.calls.length || !this.apps.size) return;
+  async waitForCalls(eligible) {
+    if (this.calls.some(eligible) || !this.apps.size) return;
     await new Promise((resolve) => {
       const wake = () => {
         clearTimeout(timer);
@@ -448,14 +480,19 @@ export class AppTabs {
     });
   }
 
-  async takeCalls() {
+  async takeCalls(params = {}) {
+    // MP-08/MP-11: only drain targets whose kernel binding was published.
+    // An existing owner's idle drain may wake while another Open is in flight.
+    const targets = params.target_ids == null ? null : new Set(params.target_ids);
+    const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
-    await this.waitForCalls();
+    await this.waitForCalls(eligible);
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
-    const calls = this.calls.filter((call) => current.has(call.target_id)
+    const currentCalls = this.calls.filter((call) => current.has(call.target_id)
       && (call.document_id == null || current.get(call.target_id) == null || call.document_id === current.get(call.target_id)));
-    this.calls = [];
+    const calls = currentCalls.filter(eligible);
+    this.calls = currentCalls.filter(call => !eligible(call));
     // Keep App windows fullscreen (someone may press Esc), so the panel beside
     // each page covers exactly the desktop the page leaves free.
     this.maintainFullscreen();

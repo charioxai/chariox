@@ -1,6 +1,6 @@
 import {displayGeometry as geometry,displayDeviceMetrics,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
-import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -34,9 +34,15 @@ import { displayCredit, displayPushCredit } from './kernel-browser-display-credi
 // to one attempt a minute.
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
-export function scheduleHostRequest(request) {
-  return request.method === 'host.browser' && request.params?.op === 'screenshot' &&
-    typeof request.params.display_subscription_id === 'string'
+export function scheduleHostRequest(request, browser) {
+  // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
+  // stay independent of input and lifecycle barriers on the host as in Rooms.
+  // A state poll waits for every page's reconcile: once the viewport is applied
+  // it only observes, so input does not queue behind it.
+  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+    request.method === 'host.browser' && (request.params?.op === 'screenshot' &&
+    typeof request.params.display_subscription_id === 'string' ||
+    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(hostViewport(), { browserBarVisible: false }) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -61,6 +67,7 @@ export class KernelBrowserHost {
     this.browserFactory = browserFactory;
     this.browser = null;
     this.generation = 0;
+    this.observations = 0; this.observed = 0;
     this.tabs = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.streams = new Map();
@@ -123,6 +130,7 @@ export class KernelBrowserHost {
     this.streams.clear();
     this.tabs.clear();
     this.popupEvidence.clear();
+    this.observed = ++this.observations;
     this.observedDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -220,7 +228,16 @@ export class KernelBrowserHost {
     this.timing.flush?.();
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
+  // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
+  // apply in start order: an older observation reports the newer current tabs.
+  tabState() {
+    // MP-08: private creation evidence for the kernel, stripped before client projection.
+    const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
+  }
   async reconcile() {
+    const observation = ++this.observations;
     let state;
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
@@ -231,6 +248,8 @@ export class KernelBrowserHost {
         await delay(25);
       }
     }
+    if (observation < this.observed) return this.tabState();
+    this.observed = observation;
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
     this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
@@ -246,12 +265,10 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
-    // MP-08: private creation evidence for the kernel, stripped before client projection.
-    const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
-    return redactObservation({ state: "ready", generation: this.generation, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport() }, this.protection.values);
+    return result;
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
@@ -260,6 +277,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    this.observed = ++this.observations;
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
@@ -447,8 +465,13 @@ export class KernelBrowserHost {
     let tab = command.op === 'input' && typeof command.document_id === 'string'
       ? await this.displayTarget(command) : await this.target(command);
     assertNotCancelled(signal);
-    if (["input", "navigate", "close"].includes(command.op) && (command.focused_agent || command._agent_input)
-      && [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id)) {
+    // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
+    // claimed that App view in the agent's own grant. The page stays on its origin.
+    const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
+    const agent = command.focused_agent || command._agent_input
+      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
+    if (app && (["input", "navigate", "close"].includes(command.op) && agent && command._app_view_tab !== tab.tab_id
+      || command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin)) {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
@@ -483,7 +506,10 @@ export class KernelBrowserHost {
       return this.reconcile();
     }
     if (command.op === "navigate") {
-      await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      // MP-08/MP-11: the reloaded App page's calls run as whoever navigated it.
+      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
+      try { await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal }); }
+      finally { appInput?.(); }
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
@@ -506,6 +532,7 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         this.compositors.get(tab.tab_id)?.source?.wake?.();
       };
+      const appInput = app ? this.browser.appTabs.beginInput?.(tab.target_id, agent) : null;
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -532,6 +559,7 @@ export class KernelBrowserHost {
         }
         throw error;
       }
+      finally { appInput?.(); }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       const result = this.observe(await this.reconcile(), null, scope);
@@ -618,7 +646,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof PointerOutsideViewport ? error.message : "MD-2: host browser operation failed; refresh state or check host browser readiness" } }; }
   }
 }
 
@@ -628,5 +656,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer({ scheduleRequest: scheduleHostRequest, handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer({ scheduleRequest: request => scheduleHostRequest(request, host.browser), handleRequest: (request, options) => host.handle(request, options) }).run().finally(() => host.stop());
 }

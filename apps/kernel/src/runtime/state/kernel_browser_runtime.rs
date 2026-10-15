@@ -241,14 +241,14 @@ impl KernelRuntimeState {
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if matches!(command, KernelBrowserCommand::Stop) {
                     let views = self.app_control().user_views();
-                    for view in self
-                        .user_domain_owner_aliases(&user)
-                        .iter()
-                        .flat_map(|owner| views.browser_views(owner))
-                    {
-                        self.forget_user_app_view(&user, &view.view_id);
+                    for owner in self.user_domain_owner_aliases(&user) {
+                        for view in views.browser_views(&owner) {
+                            self.suspend_user_app_view(&owner, &view.view_id);
+                        }
                     }
                 }
+                #[allow(unused_variables)]
+                let stop = matches!(command, KernelBrowserCommand::Stop);
                 let mut params = serde_json::to_value(command)
                     .map_err(|_| host_error("MD-2: invalid command".into()))?;
                 params["observed_by"] = serde_json::json!(actor);
@@ -271,6 +271,11 @@ impl KernelRuntimeState {
                             .unwrap()
                             .clone(),
                     );
+                }
+                // MP-08/MP-11: the owner's live browser brings back its App Tabs.
+                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+                if !stop {
+                    self.restore_user_app_tabs(&user);
                 }
                 return Ok(result);
             }
@@ -429,8 +434,27 @@ impl KernelRuntimeState {
         request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
         generation: Option<u64>,
     ) -> Result<serde_json::Value, DaemonError> {
-        let user = self.provider_account_authority_owner_user_id(&user);
         let mut params = request.params();
+        if matches!(
+            request,
+            crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
+        ) {
+            // MP-08/MP-11: the controller retains calls for opening targets until
+            // their owner binding is published. Room drains remain unfiltered.
+            let instances = self.app_control().user_views();
+            let targets: Vec<String> = instances
+                .browser_views(&user)
+                .iter()
+                .filter(|view| {
+                    view.browser
+                        .as_ref()
+                        .is_some_and(|b| Some(b.generation) == generation)
+                })
+                .filter_map(|view| instances.browser_target(&user, &view.view_id))
+                .collect();
+            params["target_ids"] = serde_json::json!(targets);
+        }
+        let user = self.provider_account_authority_owner_user_id(&user);
         if let Some(generation) = generation {
             params["_host_generation"] = generation.into();
         }
@@ -475,7 +499,7 @@ impl KernelRuntimeState {
                     input_schema: serde_json::json!({"type":"object","properties":{"agent":{"type":"string","minLength":1},"resources":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["browser_tab","note","app_view"]},"tab_id":{"type":"string"},"note_id":{"type":"string"},"view_id":{"type":"string"}},"required":["kind"]}}},"required":["agent","resources"],"additionalProperties":false}), });
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
-                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll. Vault input is separate.".into(),
+                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Vault input is separate.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools.extend(self.notes_tool_specs(run, &agent));
@@ -595,9 +619,10 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        let params = browser_tool_params(arguments)?;
+        #[allow(unused_mut)]
+        let mut params = browser_tool_params(arguments)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-        if let Some(tab) = params["tab_id"].as_str() {
+        if let Some(tab) = params["tab_id"].as_str().map(str::to_owned) {
             let views = self.app_control().user_views();
             for view in self
                 .user_domain_owner_aliases(&user)
@@ -617,6 +642,9 @@ impl KernelRuntimeState {
                         false,
                     )
                     .map_err(host_error)?;
+                    // MP-08/MP-11: the host lets an agent drive an App Tab
+                    // only with this claim; its bridge calls run as the agent.
+                    params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }

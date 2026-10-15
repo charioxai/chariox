@@ -1,6 +1,6 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
-import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
@@ -125,7 +125,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         // MP-08: paired releases keep document and live cancellation checks.
         await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
       } else {
-        if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
+        if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
         if (input.kind === "click") {
           // MP-08/MP-10: a viewer click on the owned display goes through
           // XTest after the same fences (no renderer acknowledgement wait).

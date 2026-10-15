@@ -8,10 +8,11 @@ import readline from "node:readline";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
 import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
-import { KernelBrowserHost, navigationUrl } from "./kernel-browser-host.mjs";
+import { KernelBrowserHost, navigationUrl, scheduleHostRequest } from "./kernel-browser-host.mjs";
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium } from "./kernel-browser-process.mjs";
+import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
 
 function fixture(root) {
   const pages = new Map();
@@ -64,6 +65,37 @@ async function using(callback) {
   const context = fixture(root);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-10 idle App bridge drains do not hold host input or replies", { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: scheduleHostRequest,
+    handleRequest: async (request, options) => {
+      if (request.method === "browser.app.calls") { entered.resolve(); await release.promise; return {id: request.id, ok: true, result: {calls: []}}; }
+      if (request.method === "browser.app.respond") return {id: request.id, ok: true, result: {delivered: true}};
+      return host.handle(request, options);
+    } });
+  const running = server.run();
+  const rpc = (id, method, params = {}) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(JSON.stringify({id, method, params}) + "\n"); return result.promise;
+  };
+  try {
+    const drain = rpc(1, "browser.app.calls"); await entered.promise;
+    const result = await Promise.race([Promise.all([
+      rpc(2, "host.browser", {op: "input", tab_id: opened.tab_id, generation: opened.generation,
+        document_id: opened.tabs[0].document_id, input: {kind: "text", text: "typed"}}),
+      rpc(3, "browser.app.respond"),
+    ]), new Promise(resolve => setTimeout(() => resolve(null), 200))]);
+    assert(result, "host input and App replies must finish while the idle drain is still held");
+    assert(result.every(reply => reply.ok));
+    assert(sent.some(call => call.method === "Input.insertText"));
+    release.resolve(); await drain;
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
 
 test('MP-08/MP-10/MP-11 agent wheel awaits Chromium even with an attached display',()=>using(async({host,connection})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
@@ -530,19 +562,36 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
   assert.fail("bound stream frame never arrived");
 }));
 
-test("MD integration: focused browser input cannot impersonate a human App call; App tabs are not restored", () => using(async ({ host, sent }, root) => {
+test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target}]])};
-  const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,input:{kind:"click",x:12,y:20}};
+  const inputs = [];
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
+    beginInput: (targetId, agent) => { inputs.push([targetId, agent]); return () => inputs.push(["done", targetId]); }};
+  const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
+  const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
-    await assert.rejects(host.request({...command,op,url:"https://app.a.invalid/",_agent_input:true}), error => error.code === "user_domain_not_granted");
+    await assert.rejects(host.request({...command,...agent,op,url:"https://app.a.invalid/"}), error => error.code === "user_domain_not_granted");
   }
   assert(!sent.some(call=>call.method==="Input.dispatchMouseEvent"));
-  await host.request(command);
+  const claimed = {...command,...agent,_app_view_tab:opened.tab_id};
+  await host.request(claimed);
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
+  assert.deepEqual(inputs, [[target, "agent-7"], ["done", target]]);
+  await host.request({...command});
+  assert.deepEqual(inputs.slice(2), [[target, null], ["done", target]]);
+  // The App page stays on its own origin, whoever navigates it.
+  await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
+  await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
+  // A navigation is input too: the reloaded page's calls run as whoever navigated it.
+  inputs.length = 0;
+  await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
+  await host.request({...command,op:"navigate",url:"https://app.a.invalid/"});
+  assert.deepEqual(inputs, [[target, "agent-7"], ["done", target], [target, null], ["done", target]]);
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
+  await host.request({...claimed,op:"close"});
+  assert(!host.tabs.has(opened.tab_id));
 }));
 
 test("MD integration: stale-generation App drains cannot reach the new controller", () => using(async ({ host, sent }) => {
@@ -719,7 +768,7 @@ test("MP-11: mirror reads and cleanup never start or recover Chromium", () => us
   }
 }));
 
-test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitization', () => using(async ({host,sent}) => {
+test('MP-11: only typed pre-dispatch refusals survive host error sanitization', () => using(async ({host,sent}) => {
   const opened=await host.request({op:'open',url:'about:blank'});
   const tab=host.tabs.get(opened.tab_id),scope='epoch-test';
   host.mirror.streams.set('epoch-test',{scope,tab_id:tab.tab_id,document_id:tab.document_id,expires:Date.now()+60000,policy:host.protection,epochs:[]});
@@ -730,11 +779,23 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
   assert.equal(refused.error.code,'kernel_browser_failed');
   assert.equal(refused.error.message,'MP-11: stale mirror input epoch');
   assert.equal(sent.length,before,'admission must not focus or dispatch');
-  for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
+  for(const error of [new Error('MP-11: stale mirror input epoch'),new Error(new PointerOutsideViewport().message),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
     host.request=async()=>{throw error};
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
     assert.equal(rejected.error.message,'MD-2: host browser operation failed; refresh state or check host browser readiness');
   }
+}));
+
+test('MP-08/MP-10/MP-11 an agent click outside the viewport says so, in CSS pixels, without dispatch', () => using(async ({host, sent}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],viewport=(await host.request({op:'state'})).viewport;
+ const before=sent.filter(x=>x.method==='Input.dispatchMouseEvent').length;
+ // A device-pixel guess from a DPR 2 screenshot lands beyond the CSS viewport.
+ const refused=await host.handle({id:'outside',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:viewport.css_width+158,y:355}}});
+ assert.equal(refused.ok,false);
+ assert.equal(refused.error.code,'kernel_browser_failed');
+ assert.equal(refused.error.message,'MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)');
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before,'nothing is dispatched');
+ assert.equal(host.browser?.connection!==undefined,true,'a refused coordinate does not stop the browser');
 }));
 
 test('private CDP pipe loss retires the browser generation even while child is live', () => using(async ({host,chromium,connection}) => {
@@ -931,3 +992,65 @@ test('MP-08/MP-10/MP-11 canonical native 1920 display accepts a DPR2 viewer',asy
  const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-08/MP-10/MP-11 canonical native display accepts',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'},encoding:'utf8'});
  assert.match(run.stdout,/ok 1 - MP-08\/MP-10\/MP-11 canonical native display accepts/);assert.equal(run.status,0,run.stdout+run.stderr);
 });
+
+// MP-08/MP-10/MP-11: a client's state poll waits for every page's reconcile
+// (~40 ms on a busy page); a keystroke arriving meanwhile must not queue behind it.
+test("MP-08/MP-10/MP-11 a state poll in flight does not hold input", { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  host.browser.canReconcileConcurrently = () => true;
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, method, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method, params })}\n`);
+    return result.promise;
+  };
+  const reconcile = host.browser.reconcile, entered = Promise.withResolvers(), release = Promise.withResolvers();
+  let held = true;
+  host.browser.reconcile = async (...args) => {
+    const observed = await reconcile(...args);
+    if (held) { held = false; entered.resolve(); await release.promise; }
+    return observed;
+  };
+  try {
+    const state = rpc(1, "host.browser", { op: "state" });
+    await entered.promise;
+    const typed = await Promise.race([
+      rpc(2, "host.browser", { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+        document_id: opened.tabs[0].document_id, input: { kind: "text", text: "a" } }),
+      new Promise(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    assert.ok(typed?.ok, "input waited behind the state poll");
+    assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
+    release.resolve();
+    const polled = await state;
+    assert.equal(polled.ok, true);
+    assert.ok(polled.result._observation <= typed.result._observation, "the later input observation stays the newest");
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
+
+test("MP-11 an older tab observation never replaces a newer one", () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  const reconcile = host.browser.reconcile, release = Promise.withResolvers();
+  let first = true;
+  host.browser.reconcile = async (...args) => {
+    const observed = await reconcile(...args);
+    if (first) { first = false; await release.promise; }
+    return observed;
+  };
+  const older = host.reconcile();
+  await new Promise(resolve => setImmediate(resolve));
+  pages.set("target-new", { url: "about:blank" });
+  const newer = await host.reconcile();
+  release.resolve();
+  const stale = await older;
+  assert.equal(newer.tabs.length, 2);
+  assert.equal(stale._observation, newer._observation, "a stale observation reports the current tabs");
+  assert.equal(stale.tabs.length, 2);
+  assert.equal(host.tabs.size, 2);
+  assert.ok(host.tabs.has(opened.tab_id));
+}));

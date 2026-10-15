@@ -11,6 +11,7 @@ use tabs::BrowserTabActivity;
 pub(crate) struct KernelBrowserActors {
     tab_activity: BrowserTabActivity,
     generation: u64,
+    observation: u64,
     viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
@@ -35,6 +36,7 @@ impl Default for KernelBrowserActors {
         Self {
             tab_activity: BrowserTabActivity::default(),
             generation: 0,
+            observation: 0,
             viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
@@ -61,6 +63,15 @@ impl KernelBrowserActors {
         let Some(tabs) = state["tabs"].as_array() else {
             return Ok(());
         };
+        // MP-08/MP-10/MP-11: concurrent controller reads finish out of order; the
+        // controller numbers its observations within a generation.
+        let observation = state["_observation"].as_u64();
+        if generation == self.generation
+            && observation.is_some_and(|observation| observation <= self.observation)
+        {
+            return Ok(());
+        }
+        self.observation = observation.unwrap_or(0);
         if generation != self.generation {
             for cancellation in self.active.values() {
                 cancellation.request_cancel();

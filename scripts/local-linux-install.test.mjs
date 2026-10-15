@@ -282,6 +282,9 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
   // prepared from the supervisor subgroup: an ExecStartPre enabling controllers
   // makes systemd 259 fail the main process spawn, and a Post races the kernel.
   assert.doesNotMatch(unit, /^ExecStart(Pre|Post)=/m)
+  // A stop must reach the kernel before its App workers: a worker that systemd
+  // signals first exits as a failure and stays down after the restart.
+  assert.ok(unit.split("\n").includes("KillMode=mixed"), "chariox-kernel.service stops the kernel before its Apps")
   assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
   assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)

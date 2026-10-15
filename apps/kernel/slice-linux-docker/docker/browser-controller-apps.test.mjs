@@ -663,3 +663,97 @@ test("user-domain instances of one App have independent targets and do not adopt
     await assert.rejects(tabs.open({...params,instance_id}));
   }
 });
+
+// MP-08/MP-10/MP-11: an App receives who drove each bridge call.
+test("bridge calls an agent's input drives run as that agent until a person drives the Tab", async () => {
+  const { tabs, connection } = await opened();
+  let now = 1_000;
+  tabs.now = () => now;
+  const bind = id => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo" }) } });
+  const actors = async () => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
+  const agent = { kind: "agent", id: "agent-7" };
+  await bind("load");
+  assert.deepEqual(await actors(), [null]);
+  const done = tabs.beginInput("t1", "agent-7");
+  await bind("during");
+  done();
+  now += 60_000;
+  // A timer the agent's click armed still runs as the agent.
+  await bind("later");
+  assert.deepEqual(await actors(), [agent, agent]);
+  const human = tabs.beginInput("t1", null);
+  human();
+  await bind("person");
+  assert.deepEqual(await actors(), [null]);
+  // A person's input right after the agent's does not take its calls over.
+  tabs.beginInput("t1", "agent-7")();
+  now += 1_000;
+  tabs.beginInput("t1", null)();
+  await bind("too-soon");
+  now += 5_000;
+  await bind("person-again");
+  assert.deepEqual(await actors(), [agent, null]);
+  assert.equal(typeof tabs.beginInput("unknown", "agent-7"), "function");
+});
+
+// MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
+test("a held second open retains its load-time call until its binding is published", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { tabs, connection } = await opened();
+  const drain = tabs.takeCalls({ target_ids: ["t1"] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tabs.callWaiters.size, 1);
+  const send = connection.send.bind(connection);
+  let release, entered;
+  const held = new Promise(resolve => { release = resolve; });
+  const navigating = new Promise(resolve => { entered = resolve; });
+  connection.send = async (method, params, session) => {
+    const result = await send(method, params, session);
+    if (method === "Page.navigate" && session === "s-t2") { entered(); await held; }
+    return result;
+  };
+  const second = tabs.open({ origin_label: "second", installation_id: "inst-2", instance_id: "view-2", assets: [asset("index.html", "hi")] });
+  await navigating;
+  await navigated(connection, "doc-2", "s-t2");
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s-t2",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "on-load", method: "usage" }) } });
+  assert.deepEqual((await drain).calls, [], "A's outstanding drain cannot consume unbound B");
+  release();
+  const openedB = await second;
+  const batch = await tabs.takeCalls({ target_ids: ["t1", openedB.target_id] });
+  assert.equal(batch.calls.length, 1);
+  assert.equal(batch.calls[0].call_id, "on-load");
+  assert.deepEqual(await tabs.respond({ target_id: openedB.target_id, call_id: "on-load", result: { ok: true } }), { delivered: true });
+  assert.deepEqual(await tabs.respond({ target_id: openedB.target_id, call_id: "on-load", result: { ok: true } }), { delivered: false });
+  const next = tabs.takeCalls({ target_ids: ["t1", openedB.target_id] });
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(250);
+  assert.deepEqual((await next).calls, [], "one invocation only");
+});
+
+test("retained unpublished calls are discarded after failed Open or document replacement", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const failOpen of [true, false]) {
+    const { tabs, connection } = await opened();
+    const send = connection.send.bind(connection);
+    connection.send = async (method, params, session) => {
+      const result = await send(method, params, session);
+      if (method === "Page.navigate" && session === "s-t2") {
+        await navigated(connection, "doc-old", session);
+        await connection.emit({ method: "Runtime.bindingCalled", sessionId: session,
+          params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "discard", method: "usage" }) } });
+        if (failOpen) throw Error("navigation failed");
+      }
+      return result;
+    };
+    const open = tabs.open({ origin_label: "second", installation_id: "inst-2", instance_id: "view-2", assets: [asset("index.html", "hi")] });
+    if (failOpen) await assert.rejects(open, /navigation failed/);
+    else { await open; await navigated(connection, "doc-new", "s-t2"); }
+    const drain = tabs.takeCalls({ target_ids: ["t1"] });
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(250);
+    assert.deepEqual((await drain).calls, []);
+    assert.deepEqual(tabs.calls, [], "a failed opening or old document cannot regain authority");
+  }
+});
