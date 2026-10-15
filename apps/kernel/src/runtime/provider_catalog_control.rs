@@ -24,6 +24,11 @@ pub(crate) async fn execute_provider_catalog_request(
             )
             .await
         }
+        LocalDaemonRequest::GetClientCatalogSnapshot(request) => {
+            super::client_catalog_revisions::catalog_snapshot(
+                provider_catalog_projection, config_projection, account_profiles, owner_user_id, request,
+            ).await
+        }
         LocalDaemonRequest::GetClientCatalogRevisions(request) => {
             super::client_catalog_revisions::catalog_revisions(
                 provider_catalog_projection,
@@ -115,6 +120,7 @@ pub(super) async fn load_catalog(
         return Ok(catalog);
     }
 
+    let generation = provider_catalog_projection.invalidation_generation();
     let config = config_projection.snapshot();
     let registry = account_profiles.clone();
     let load_started = Instant::now();
@@ -135,7 +141,12 @@ pub(super) async fn load_catalog(
             "connected_provider_count": catalog.connected.len(),
         }),
     );
-    provider_catalog_projection.update_scoped(&cache_key, catalog.clone());
+    if !provider_catalog_projection.update_scoped_if_generation(&cache_key, catalog.clone(), generation) {
+        return Err(DaemonError::LocalTransport {
+            operation: "load provider catalog",
+            message: "Catalog changed while it was being read; retry the catalog request.".to_string(),
+        });
+    }
     Ok(catalog)
 }
 

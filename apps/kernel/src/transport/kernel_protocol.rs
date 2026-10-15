@@ -147,6 +147,7 @@ pub(crate) enum KernelEvent {
         sessions: Vec<WaitingRoomPublicSessionSummary>,
         removed_session_ids: Vec<String>,
     },
+    ClientCatalogChanged { revision: u64 },
     ProviderCatalogChanged {
         generated_at_ms: u64,
         catalog: OpenCodeProviderCatalog,
@@ -336,6 +337,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
                 })
             }).collect::<Vec<_>>(),
         }),
+        KernelEvent::ClientCatalogChanged { revision } => serde_json::json!({ "event_id": event_id, "event": "client_catalog_changed", "revision": revision }),
         KernelEvent::ProviderCatalogChanged {
             generated_at_ms,
             catalog,
@@ -647,6 +649,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
         KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
         KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
+        KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
@@ -678,6 +681,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
         KernelEvent::WaitingRoomRowsChanged { .. } => None,
+        KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
@@ -739,6 +743,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
         | KernelEvent::WaitingRoomRowsChanged { .. }
+        | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }

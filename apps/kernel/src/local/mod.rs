@@ -79,7 +79,7 @@ pub use api::{
     GetMcpServerRequest, GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest,
     GetProjectEnvironmentManifestRequest, GetProjectEnvironmentRequest,
     GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
-    ClientCatalogRevisions, GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+    ClientCatalogSnapshot, GetClientCatalogSnapshotRequest, ClientCatalogRevisions, GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
     GetProviderLoginStatusRequest, GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest,
     GetRoomEnvironmentTabAccessibilityRequest, GetScriptRequest,

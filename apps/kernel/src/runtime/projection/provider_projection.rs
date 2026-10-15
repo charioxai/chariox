@@ -461,6 +461,8 @@ fn filter_provider_processes(
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
     catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
+    changes: Arc<tokio::sync::Notify>,
+    revision: Arc<std::sync::atomic::AtomicU64>,
     refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
     generation: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -498,17 +500,37 @@ impl ProviderCatalogProjectionStore {
         self.update_scoped("", catalog);
     }
 
+    pub(crate) fn invalidation_generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn change_sequence(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn changed(&self) {
+        self.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.changes.notify_waiters();
+    }
+
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
+        loop {
+            let notified = self.changes.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.change_sequence() != sequence { return; }
+            notified.await;
+        }
+    }
+
     pub(crate) fn update_scoped(&self, cache_key: &str, catalog: OpenCodeProviderCatalog) {
-        self.catalogs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                cache_key.to_string(),
-                CachedProviderCatalogProjection {
-                    cached_at: Instant::now(),
-                    catalog,
-                },
-            );
+        let changed = {
+            let mut catalogs = self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let changed = catalogs.get(cache_key).is_none_or(|previous| previous.catalog != catalog);
+            catalogs.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), catalog });
+            changed
+        };
+        if changed { self.changed(); }
     }
 
     pub(crate) fn cached(&self) -> Option<OpenCodeProviderCatalog> {
@@ -551,6 +573,7 @@ impl ProviderCatalogProjectionStore {
         if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
             return false;
         }
+        let changed = cached.get(cache_key).is_none_or(|previous| previous.catalog != catalog);
         cached.insert(
             cache_key.to_string(),
             CachedProviderCatalogProjection {
@@ -558,6 +581,8 @@ impl ProviderCatalogProjectionStore {
                 catalog,
             },
         );
+        drop(cached);
+        if changed { self.changed(); }
         true
     }
 
@@ -573,6 +598,7 @@ impl ProviderCatalogProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.changed();
     }
 
     pub(crate) fn health_snapshot(&self, ttl: Duration) -> ProviderCatalogHealthSnapshot {
@@ -676,5 +702,24 @@ mod provider_catalog_projection_tests {
                 .connected,
             vec!["codex-owner-b"]
         );
+    }
+}
+
+#[cfg(test)]
+mod client_catalog_change_tests {
+    use super::*;
+    #[tokio::test]
+    async fn mp08_mp10_catalog_changes_wake_without_polling_and_ignore_identical_refreshes() {
+        let store = ProviderCatalogProjectionStore::default();
+        let sequence = store.change_sequence();
+        let changed = store.wait_for_change_after(sequence);
+        store.invalidate();
+        tokio::time::timeout(Duration::from_millis(50), changed).await.expect("invalidation wakes even without a warmed catalog");
+        let catalog = OpenCodeProviderCatalog { all: vec![], default: Default::default(), connected: vec![] };
+        store.update_scoped("owner", catalog.clone());
+        let sequence = store.change_sequence();
+        store.update_scoped("owner", catalog);
+        assert_eq!(store.change_sequence(), sequence, "an unchanged refresh must not create an event/fetch loop");
+        assert!(tokio::time::timeout(Duration::from_millis(10), store.wait_for_change_after(sequence)).await.is_err());
     }
 }

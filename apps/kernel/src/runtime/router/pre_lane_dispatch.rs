@@ -348,6 +348,7 @@ impl CommandRouter {
                     .map(Some);
             }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetClientCatalogSnapshot(_)
             | LocalDaemonRequest::GetClientCatalogRevisions(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
                 return execute_provider_catalog_request(

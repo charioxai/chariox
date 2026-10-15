@@ -174,6 +174,31 @@ Older kernels retain ordinary full catalog requests. Projection subscriptions
 send activity/metadata before terminal output batches on the same wake; the relay
 still routes opaque packets and owns no session state.
 
+
+### Conditional client catalogs (MP-08 / MP-10 / MP-11, protocol534 / peer142)
+
+`GetClientCatalogSnapshot` takes the ordinary `GetProviderCatalog` selection in
+`scope` plus nullable `known: ClientCatalogRevisions`. The response has
+`ClientCatalogSnapshot.snapshot.revisions` and only changed sections:
+`provider_accounts`, `provider_catalog`, `provider_commands`, `terminal_commands`.
+An omitted section means unchanged only when its returned revision equals the
+client's revision. No cache means `known: null`, returning all four sections.
+Provider kinds/availability are projected from `provider_catalog`; a session's
+live agent roster is never part of this cache. Account selection and admission
+remain kernel-owned and caller-scoped.
+
+Both local and relay session/waiting-room subscriptions emit
+`client_catalog_changed { revision }` on catalog invalidation or changed model
+metadata. `revision` is a process-local change sequence, not a cross-restart
+content hash. It contains no account data. Clients fetch conditional snapshots
+on first connection, reconnect, and this event; they do not poll catalog data.
+Authorized user/kernel-scoped cached catalogs can paint while revalidation
+runs. Sign-out/account switch clears private browser caches; cache values never
+include bootstrap credentials, provider authentication state files or clients.
+Older kernels use the preexisting catalog requests rather than receiving a
+protocol534 request.
+
+
 MP-08 / MP-10: complete owned output/thought groups in initial history pages
 also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
 and `sequence_indices` retain each original row identity, including gaps left

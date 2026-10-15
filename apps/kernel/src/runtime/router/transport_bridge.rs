@@ -248,6 +248,14 @@ impl CommandRouter {
         machines
     }
 
+    pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
+        self.provider_catalog_projection.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_client_catalog_change_after(&self, sequence: u64) {
+        self.provider_catalog_projection.wait_for_change_after(sequence).await;
+    }
+
     pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {
         self.provider_catalog_projection.cached()
     }

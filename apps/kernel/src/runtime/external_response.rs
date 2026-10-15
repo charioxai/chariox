@@ -241,6 +241,7 @@ response_policies! {
         ProviderRunSelectionUpdated,
         ProviderCatalog,
         ClientCatalogRevisions,
+        ClientCatalogSnapshot,
         ProviderCommandCatalogs,
         McpServerUninstalled,
         EnvironmentRegistered,

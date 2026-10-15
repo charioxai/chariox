@@ -147,6 +147,7 @@ pub enum LocalDaemonResponse {
     ProviderRunSelectionUpdated { provider_run: PublicProviderRun, },
     ProviderCatalog { catalog: OpenCodeProviderCatalog, },
     ClientCatalogRevisions { revisions: ClientCatalogRevisions, },
+    ClientCatalogSnapshot { snapshot: ClientCatalogSnapshot, },
     ProviderCommandCatalogs { catalogs: BTreeMap<String, ProviderCommandCatalog>, },
     McpServerInstalled { mcp: CharioxMcpServerConfig, path: PathBuf, },
     McpServerUpdated { mcp: CharioxMcpServerConfig, path: PathBuf, },

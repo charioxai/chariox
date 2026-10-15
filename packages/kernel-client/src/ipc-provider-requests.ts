@@ -263,3 +263,9 @@ export type ClientCatalogRevisions = { provider_accounts: string; provider_catal
 export function getClientCatalogRevisionsRequest(options: Parameters<typeof getProviderCatalogRequest>[0] = {}) {
   return { GetClientCatalogRevisions: getProviderCatalogRequest(options).GetProviderCatalog }
 }
+
+// MP-08 / MP-10: shared conditional inventories, including provider availability.
+export const clientCatalogSnapshotMinimumProtocolVersion = 534
+export function getClientCatalogSnapshotRequest(options: Parameters<typeof getProviderCatalogRequest>[0] = {}, known: ClientCatalogRevisions | null = null) {
+  return { GetClientCatalogSnapshot: { scope: getProviderCatalogRequest(options).GetProviderCatalog, known } }
+}

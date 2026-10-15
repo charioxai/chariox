@@ -147,3 +147,32 @@ fn mp08_mp10_mp11_catalog_revisions_use_owned_projection_without_app_lock() {
         assert!(serde_json::to_vec(&revisions).unwrap().len() < 400);
     });
 }
+
+#[test]
+fn mp08_mp10_conditional_catalog_snapshot_retains_unchanged_sections() {
+    run_provider_projection_large_stack_test("conditional-catalog-snapshot", || async {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let scope = GetProviderCatalogRequest::default();
+        let key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(crate::session::DEFAULT_LOCAL_USER_ID, &scope);
+        app.provider_catalog_projection_store().update_scoped(&key, OpenCodeProviderCatalog { all: Vec::new(), default: Default::default(), connected: Vec::new() });
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let guard = app.lock().await;
+        let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"GetClientCatalogSnapshot": {"scope": scope, "known": null}})).expect("conditional catalog snapshot request must be supported");
+        let command = KernelCommand::from_local_request("catalog-full", None, None, &request);
+        let response = tokio::time::timeout(Duration::from_secs(1), router.dispatch(command, request)).await.expect("catalog read must not wait on app mutex").unwrap();
+        let full = serde_json::to_value(response).unwrap();
+        let snapshot = &full["ClientCatalogSnapshot"]["snapshot"];
+        assert!(snapshot["provider_catalog"].is_object());
+        assert!(snapshot["provider_accounts"].is_array());
+        assert!(snapshot["provider_commands"].is_object());
+        assert!(snapshot["terminal_commands"].is_object());
+        let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"GetClientCatalogSnapshot": {"scope": scope, "known": snapshot["revisions"]}})).unwrap();
+        let command = KernelCommand::from_local_request("catalog-unchanged", None, None, &request);
+        let response = tokio::time::timeout(Duration::from_secs(1), router.dispatch(command, request)).await.unwrap().unwrap();
+        drop(guard);
+        let unchanged = serde_json::to_value(response).unwrap();
+        assert_eq!(unchanged["ClientCatalogSnapshot"]["snapshot"], serde_json::json!({"revisions": snapshot["revisions"]}));
+        assert!(serde_json::to_vec(&unchanged).unwrap().len() < 460);
+    });
+}

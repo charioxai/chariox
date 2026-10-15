@@ -399,6 +399,7 @@ pub(super) async fn run_relay_subscription_loop(
     }
     let mut passkey_prompts =
         PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
+    let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
@@ -426,6 +427,12 @@ pub(super) async fn run_relay_subscription_loop(
             {
                 break;
             }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if emit_relay_event(&router, &outgoing_tx, &subscription_id, &client_public_key,
+                &event_runtime, &event_stream_id, KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence }).await.is_err() { break; }
         }
         let terminal_attachment_change_sequence =
             router.terminal_attachment_change_sequence(&session_id, &attachment_id);
@@ -676,6 +683,7 @@ pub(super) async fn run_relay_subscription_loop(
                     _ = router.wait_for_workflow_design_change_after(
                         workflow_design_change_sequence
                     ) => {}
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                 }
             },
@@ -783,6 +791,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
 ) {
     let mut passkey_prompts =
         PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
+    let mut previous_catalog_revision = None;
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
@@ -817,6 +826,12 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             {
                 break;
             }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if emit_relay_event(&router, &outgoing_tx, &subscription_id, &client_public_key,
+                &event_runtime, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE, KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence }).await.is_err() { break; }
         }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
@@ -972,6 +987,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                         ),
                     ) => true,
                     // Popups are sent at once, without the inventory coalescing.
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => false,
                     _ = passkey_prompts.changed(&router) => false,
                 }
             },

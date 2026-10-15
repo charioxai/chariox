@@ -1,18 +1,18 @@
-//! MP-08 / MP-10 / MP-11: coordinator-allocated 518/126 catalog contract.
+//! MP-08 / MP-10 / MP-11: coordinator-allocated 534/142 catalog contract.
 use super::*;
 #[test]
-fn client_catalog_revisions_518_126_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
+fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        126
+        142
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
         ),
-        "a9beb2a0337fa1db9c4e3dc0e7bcd249f70e92703b08fa3fd4aa47c754d0b7a1"
+        "52f11878f2d826086da330ee6db7d67f0faf321c41c20bb5a3cba352fb3b93f1"
     );
     let request =
         LocalDaemonRequest::GetClientCatalogRevisions(crate::local::GetProviderCatalogRequest {
@@ -37,4 +37,18 @@ fn client_catalog_revisions_518_126_are_versioned_and_hashed() {
         serde_json::from_value::<LocalDaemonRequest>(value["request"].clone()).unwrap(),
         request
     );
+}
+
+#[test]
+fn client_catalog_snapshot_and_change_event_534_142_are_versioned_and_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 142);
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"GetClientCatalogSnapshot": {"scope": {"provider": null, "account_profiles": {}, "execution_location": {"kind": "local"}}, "known": null}})).unwrap();
+    let response = LocalDaemonResponse::ClientCatalogSnapshot { snapshot: crate::local::ClientCatalogSnapshot {
+        revisions: crate::local::ClientCatalogRevisions { provider_accounts: "a".repeat(64), provider_catalog: "b".repeat(64), provider_commands: "c".repeat(64), terminal_commands: format!("sha256:{}", "d".repeat(64)) },
+        provider_accounts: None, provider_catalog: None, provider_commands: None, terminal_commands: None,
+    }};
+    let event = crate::transport::kernel_protocol::KernelEvent::ClientCatalogChanged { revision: 7 };
+    let value = serde_json::json!({"request": request, "response": response, "event": event});
+    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())), "5428acbd98f1edab6cb0b2a4fc56d871adba63f1917477c0ee2599e90e792eab");
 }
