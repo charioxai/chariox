@@ -238,6 +238,10 @@ async fn persistent_event_store_recovers_after_transient_append_failure() {
     let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
         .expect("persistent event store should initialize");
 
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     log.append("session:a", "failed".to_string())
         .await
@@ -357,6 +361,10 @@ async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible(
         EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
             .expect("persistent event store should initialize"),
     );
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
 
     let gate = log.pause_next_persistent_append_for_tests();
