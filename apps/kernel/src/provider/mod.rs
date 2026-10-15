@@ -87,7 +87,8 @@ pub use command_catalog::{
 };
 pub(crate) use credential_environment::ProviderCredentialEnvironment;
 pub(crate) use external_observation::{
-    clean_observed_turn_text, clean_provider_prompt, normalized_observed_prompt_text,
+    claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
+    normalized_observed_prompt_text,
     observed_role, text_from_content, ExternalProviderObservationPolicy,
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };

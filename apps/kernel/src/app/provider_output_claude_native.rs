@@ -249,25 +249,8 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
     if expected.trim() == observed {
         return true;
     }
-    // Official UserPromptSubmit expands a collapsed paste using an inline or
-    // multiline tag pair. Match one complete wrapper around the injected text.
-    let Some(tag) = observed.strip_prefix("<pasted_content id=\"") else {
-        return false;
-    };
-    let Some((id, body)) = tag.split_once("\">") else {
-        return false;
-    };
-    if id.is_empty()
-        || id.len() > 64
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return false;
-    }
-    let closing = format!("</pasted_content id=\"{id}\">");
-    body.strip_suffix(&closing)
-        .is_some_and(|body| body.trim() == expected.trim())
+    crate::provider::claude_native_pasted_prompt_body(observed)
+        .is_some_and(|body| body == expected.trim())
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {

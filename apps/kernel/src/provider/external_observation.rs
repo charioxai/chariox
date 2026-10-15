@@ -412,7 +412,23 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
     current.as_u64()
 }
 
+/// Decode one complete official Claude collapsed-paste envelope. Both hook
+/// acknowledgement and observed-history ownership use this exact wrapper rule.
+pub(crate) fn claude_native_pasted_prompt_body(text: &str) -> Option<&str> {
+    let tag = text.trim().strip_prefix("<pasted_content id=\"")?;
+    let (id, body) = tag.split_once("\">")?;
+    if id.is_empty()
+        || id.len() > 64
+        || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    let closing = format!("</pasted_content id=\"{id}\">");
+    body.strip_suffix(&closing).map(str::trim)
+}
+
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
+    let text = claude_native_pasted_prompt_body(text).unwrap_or(text);
     let without_account_handoff = strip_observed_account_handoff(text);
     let without_provider_attachment_suffix =
         strip_observed_provider_attachment_suffix(without_account_handoff);

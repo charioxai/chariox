@@ -1043,3 +1043,14 @@ fn observed_external_completion_does_not_dispatch_queued_chariox_prompt() {
         1
     );
 }
+
+#[test]
+fn observed_native_paste_consumes_only_one_owned_prompt() {
+    let prompt = "Audit the native prompt path.";
+    let mut counts = BTreeMap::from([(prompt.to_string(), 1)]);
+    let wrapped = format!("<pasted_content id=\"71b3\"> {prompt} </pasted_content id=\"71b3\">");
+    assert!(consume_chariox_owned_prompt_text_match(&mut counts, &wrapped));
+    assert!(counts.is_empty());
+    assert!(!consume_chariox_owned_prompt_text_match(&mut counts, &wrapped));
+    assert!(!consume_chariox_owned_prompt_text_match(&mut counts, prompt));
+}
