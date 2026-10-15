@@ -13,7 +13,6 @@ use crate::error::DaemonError;
 use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
 use stdio::stdio_mcp_supervisor;
-use streamable_http::forward_streamable_http_mcp_request;
 
 const PROXY_PATH_PREFIX: &str = "/mcp/proxy/";
 
@@ -125,26 +124,38 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    dispatch_provider_mcp_proxy_request_with_excluded_roots(
+        owner_provider_run_id,
+        owner_session_id,
+        backing,
+        payload,
+        &[],
+    )
+}
+
+// MP-08 / MP-10 / MP-11: Check keeps its host execution exclusions through
+// the shared HTTP adapter, including resolver/interpreter aliases and redirects.
+pub(crate) fn dispatch_provider_mcp_proxy_request_with_excluded_roots(
+    owner_provider_run_id: &str,
+    owner_session_id: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+    excluded_roots: &[std::path::PathBuf],
+) -> Result<serde_json::Value, DaemonError> {
     let is_tools_list = payload
         .get("method")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|method| method == "tools/list");
     let mut response = match &backing.transport {
-        CharioxMcpTransportConfig::StreamableHttp {
-            url,
-            bearer_token_env_var,
-            bearer_token_credential: _,
-            http_headers,
-            credential_http_headers: _,
-            env_http_headers,
-        } => forward_streamable_http_mcp_request(
-            url,
-            bearer_token_env_var.as_deref(),
-            http_headers,
-            env_http_headers,
-            payload,
-            backing.tool_timeout_sec,
-        ),
+        CharioxMcpTransportConfig::StreamableHttp { .. } => {
+            streamable_http::dispatch_with_excluded_roots(
+                owner_provider_run_id,
+                owner_session_id,
+                backing,
+                payload,
+                excluded_roots,
+            )
+        }
         CharioxMcpTransportConfig::Stdio { .. } => {
             let key = backing.definition_hash()?;
             let process = stdio_mcp_supervisor()
@@ -172,6 +183,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
 }
 
 pub(crate) fn shutdown_provider_mcp_proxy_session(session_id: &str) {
+    streamable_http::release_session(session_id);
     let released_processes = stdio_mcp_supervisor()
         .lock()
         .expect("stdio MCP supervisor mutex poisoned")
@@ -191,6 +203,7 @@ pub(crate) fn shutdown_provider_mcp_proxy_session(session_id: &str) {
 }
 
 pub(crate) fn shutdown_provider_mcp_proxy_run(provider_run_id: &str) {
+    streamable_http::release_run(provider_run_id);
     let released_processes = stdio_mcp_supervisor()
         .lock()
         .expect("stdio MCP supervisor mutex poisoned")

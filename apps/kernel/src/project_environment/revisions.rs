@@ -273,12 +273,22 @@ fn validate_draft(
         }
     }
     for r in requirements(draft) {
+        let service_dependencies = match &r.spec {
+            RequirementSpec::Services { depends_on, .. } => depends_on.as_slice(),
+            _ => &[],
+        };
         if r.depends_on
             .iter()
+            .chain(service_dependencies)
             .any(|id| id == &r.requirement_id || !ids.contains(id))
         {
             return Err(environment_error("invalid requirement dependency"));
         }
+    }
+    if !super::dependency_graph::blocked(requirements(draft)).is_empty() {
+        return Err(environment_error(
+            "Environment requirement dependencies contain a cycle",
+        ));
     }
     super::scope_conflicts::validate_scopes(draft)?;
     Ok(())

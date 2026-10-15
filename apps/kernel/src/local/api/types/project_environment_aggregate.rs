@@ -6,6 +6,9 @@ use crate::project_environment::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetProjectEnvironmentRequest {
     pub project_id: String,
+    /// MP-08 / MP-10 / MP-11: absent preserves the complete legacy read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<EnvironmentViewRead>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

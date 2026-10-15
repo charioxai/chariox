@@ -7,7 +7,7 @@ pub(super) struct Descendant {
     fd: OwnedFd,
 }
 impl Descendant {
-    fn alive(&self) -> bool {
+    pub(super) fn alive(&self) -> bool {
         let mut p = libc::pollfd {
             fd: self.fd.as_raw_fd(),
             events: libc::POLLIN,

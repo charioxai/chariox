@@ -3177,3 +3177,26 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+### MP-08 / MP-10 / MP-11: Environment compact reads (local 505, peer 113)
+
+`GetProjectEnvironment { projectId }` retains the complete aggregate. Optional
+`view: { knownDigest, proposals }` returns `ProjectEnvironmentView { view }`.
+A summary retains the complete saved specification, current observations and
+operation headers and reports proposal/operation item counts. Proposal bodies
+load only when review begins. `observed_at_ms` supplies a kernel-clock reference for remote-client freshness.
+Unchanged summaries omit `environment`; clients may
+reuse only a matching Project/kernel-bound cached digest. Full operation
+details are loaded explicitly through the ordinary full read.
+
+Proposal-only reads use `proposals: { snapshotDigest, offset, limit }` with
+limit 1–20. Pages target 32 KiB, preserving complete individual requirements,
+provenance and Secret defaults; an individually larger requirement remains
+whole. `next_proposal_offset` is authoritative. The snapshot digest covers
+Project identity, attachments, revision, discovery and observations. A changed
+snapshot rejects the page explicitly. Paging does not change Save's revision,
+content digest or opaque proposal-token fences. Web and local/remote TUI share
+this path; complete mutation replies are retained only in the active editor,
+while cold-open caches retain compact or small snapshots.
+
+MP-08 / MP-10 / MP-11, local protocol 505 / relay peer 113: `GetProviderCatalog.summary_only` optionally returns provider identities, connectivity and their default model metadata without other model bodies. Omission keeps the complete unscoped read. An explicit provider request returns that provider's models and default metadata for the other provider rows. Both projections use the same authorized catalog and profile/execution scope; startup summaries and full model reads share its cache. Clients request full models when selecting/reviewing that provider.

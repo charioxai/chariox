@@ -7,6 +7,7 @@ pub enum Command {
     Version,
     ProtocolVersion,
     PrepareProtectedSliceIdentity(u16),
+    MeasureEnvironmentFiles(std::path::PathBuf, std::path::PathBuf, std::time::Duration),
 }
 
 pub const USAGE: &str = "usage: chariox-kernel [--help | --version | --print-local-daemon-protocol-version | --prepare-protected-slice-identity PORT]
@@ -31,6 +32,23 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ("--help" | "-h", 1) => Ok(Command::Help),
         ("--version", 1) => Ok(Command::Version),
         ("--print-local-daemon-protocol-version", 1) => Ok(Command::ProtocolVersion),
+        ("--measure-environment-files", 4) => {
+            let budget = args[3]
+                .to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|budget| *budget > 0 && *budget <= 60_000)
+                .ok_or("Files Check worker requires a budget from 1 to 60000 ms")?;
+            let request = std::path::PathBuf::from(&args[1]);
+            let result = std::path::PathBuf::from(&args[2]);
+            if !request.is_absolute() || !result.is_absolute() || request == result {
+                return Err("Files Check worker requires distinct absolute metadata paths".into());
+            }
+            Ok(Command::MeasureEnvironmentFiles(
+                request,
+                result,
+                std::time::Duration::from_millis(budget),
+            ))
+        }
         ("--prepare-protected-slice-identity", 2) => {
             let port = args[1]
                 .to_str()

@@ -255,3 +255,15 @@ pub fn project_environment_protected_name(name: &str) -> bool {
                 | "ENV"
         )
 }
+
+// MP-08 / MP-10 / MP-11: a public alias cannot declassify its actual source.
+pub(crate) fn project_environment_public_source_protected(
+    locator: &ProjectEnvironmentLocator,
+) -> bool {
+    let name = match locator {
+        ProjectEnvironmentLocator::WorkspaceEnvironment { name } => name,
+        ProjectEnvironmentLocator::EnvFile { key, .. } => key,
+        _ => return false,
+    };
+    project_environment_protected_name(name) || crate::secret::secret_like_env_name(name)
+}

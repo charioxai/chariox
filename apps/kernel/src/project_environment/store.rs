@@ -269,7 +269,12 @@ impl ProjectEnvironmentStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(environment_error("remove revision history failed")),
         }
-        for extension in ["detect.json", "detect-model.json"] {
+        for extension in [
+            "detect.json",
+            "detect-model.json",
+            "checks.json",
+            "checks.wal",
+        ] {
             match fs::remove_file(self.path(project).with_extension(extension)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -320,6 +325,14 @@ impl ProjectEnvironmentStore {
         project: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         self.acquire_lock(project, false, "identity.lock")
+    }
+    // MP-08 / MP-10 / MP-11: readers wait only for Check publication,
+    // independently of a Project lock held throughout a provider Detect.
+    pub(super) fn check_journal_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "checks.lock")
     }
     /// Saves and mutation snapshots queue behind each other for a bounded time,
     /// while a longer Detect, export or adjustment holder reports busy.
@@ -374,8 +387,14 @@ impl ProjectEnvironmentStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
-                .map_err(|_| environment_error("secure environment directory failed"))?;
+            // MP-08 / MP-10 / MP-11: reads must not dirty private directory metadata.
+            let permissions = fs::metadata(&self.root)
+                .map_err(|_| environment_error("environment directory unavailable"))?
+                .permissions();
+            if permissions.mode() & 0o7777 != 0o700 {
+                fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+                    .map_err(|_| environment_error("secure environment directory failed"))?;
+            }
         }
         let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
@@ -405,6 +424,33 @@ impl ProjectEnvironmentStore {
 
 #[cfg(test)]
 mod lock_tests {
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_reads_do_not_dirty_an_already_secure_directory() {
+        use std::os::unix::fs::MetadataExt;
+        let root = crate::test_support::TestWorktree::new("envp03-lock-read-metadata");
+        let store = super::ProjectEnvironmentStore::new(root.path());
+        drop(store.identity_lock("project").unwrap());
+        let before = std::fs::metadata(&store.root).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        drop(store.identity_lock("project").unwrap());
+        let after = std::fs::metadata(&store.root).unwrap();
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec()),
+            "a read lock must not rewrite secure directory metadata"
+        );
+        std::fs::set_permissions(
+            &store.root,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        drop(store.identity_lock("project").unwrap());
+        assert_eq!(
+            std::fs::metadata(&store.root).unwrap().mode() & 0o7777,
+            0o700
+        );
+    }
     use super::*;
 
     #[test]

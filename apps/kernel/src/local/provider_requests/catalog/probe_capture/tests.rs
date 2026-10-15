@@ -206,6 +206,9 @@ mod escaped {
             );
             return;
         }
+        // MP-08 / MP-10 / MP-11: initialize the single supervised reaper
+        // before measuring growth across repeated capture timeouts.
+        capture(shell("printf warm"), Duration::from_secs(2)).unwrap();
         let before = std::fs::read_dir("/proc/self/task").unwrap().count();
         for _ in 0..10 {
             let error = capture(shell("sleep 30"), Duration::from_millis(10)).unwrap_err();
@@ -236,6 +239,62 @@ fn windows_captures_both_streams_and_times_out() {
         Err(CaptureError::TimedOut)
     ));
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+// MP-08 / MP-10 / MP-11: owning capture retains redirected descendants as well as pipe writers.
+#[cfg(target_os = "linux")]
+#[test]
+fn review0212_timeout_settles_descendants_with_both_streams_redirected() {
+    let root = crate::test_support::TestWorktree::new("review0212-redirected");
+    let pid_path = root.path().join("child-pid");
+    let script = format!(
+        "sleep 30 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{}'; wait",
+        pid_path.display()
+    );
+    let error = capture(shell(&script), Duration::from_millis(100)).unwrap_err();
+    assert!(matches!(error, CaptureError::TimedOut));
+    let pid = std::fs::read_to_string(&pid_path)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert!(pid > 1);
+    let running_now = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .trim_start()
+                .starts_with('Z')
+        })
+    };
+    for _ in 0..20 {
+        if !running_now() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let running = running_now();
+    if running {
+        // Pin this known fixture child before settling a fail-first leak; never signal a group.
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        assert!(fd >= 0);
+        let pinned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pinned.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            );
+        }
+    }
+    assert!(
+        !running,
+        "redirected owned descendant survived capture timeout"
+    );
 }
 
 // MP-08 / MP-10 / MP-11: synchronized helpers close both capture pipes.
@@ -279,9 +338,12 @@ fn review0821_redirected_descendants_stop_after_success_and_timeout() {
 fn review0821_probe_group_rejects_unrelated_siblings() {
     use std::{os::unix::process::CommandExt, process::Stdio};
     let mut command = shell("sleep 1");
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut probe = super::platform::Process::spawn(&mut command).unwrap();
-    let pid = probe.child.id();
+    let pid = probe.child_mut().id();
     assert!(pid > 1 && pid <= i32::MAX as u32);
     let mut sibling = shell("sleep .1");
     unsafe {
@@ -304,5 +366,8 @@ fn review0821_probe_group_rejects_unrelated_siblings() {
         }
     };
     probe.stop().unwrap();
-    assert!(rejected, "unrelated sibling could join the probe's cleanup group");
+    assert!(
+        rejected,
+        "unrelated sibling could join the probe's cleanup group"
+    );
 }
