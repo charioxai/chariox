@@ -879,3 +879,36 @@ test('MP-10 a continued page containing only an open shadow root can paint', asy
   assert.equal(await page.locator('#c > iframe').count(),1);assert.equal(await page.evaluate(()=>window.r.painted),true);
  }finally{await page.close();}
 });
+
+// MP-08/MP-10/MP-11: an already acknowledged prefix can arrive while a person extends their drag.
+test('MP-10: a selection echo cannot move an in-progress pointer range',async()=>{
+ const page=await viewer();
+ try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The full released selection'}])));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument,p=d.querySelector('p'),t=p.firstChild;p.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1}));d.getSelection().setBaseAndExtent(t,0,t,17)});
+  await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));await page.evaluate(()=>window.r.settleInput());
+  await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','the old kernel prefix must not replace the person’s held range');
+  await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));
+  await apply(page,delta(3,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after release another actor’s selection still projects');
+ }finally{await page.close()}
+});
+
+test('MP-10: a cancelled or externally released drag cannot keep later kernel selections frozen',async()=>{
+ for(const release of ['cancel','outside','blur','navigation']){
+  const page=await viewer();
+  try{
+   const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The full released selection'}]);
+   await apply(page,snapshot(nodes));
+   await page.evaluate(()=>{const d=window.r.frame.contentDocument,p=d.querySelector('p'),t=p.firstChild;p.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1}));d.getSelection().setBaseAndExtent(t,0,t,17)});
+   await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));await page.evaluate(()=>window.r.settleInput());
+   if(release==='navigation')await apply(page,{...snapshot(nodes),document_id:'replacement',selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}});
+   else{
+    await page.evaluate(release=>{if(release==='cancel')window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointercancel',{bubbles:true}));else if(release==='outside')document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));else window.dispatchEvent(new Event('blur'))},release);
+    await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+   }
+   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The',release);
+  }finally{await page.close()}
+ }
+});

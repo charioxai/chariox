@@ -59,6 +59,8 @@ export class BrowserMirror2Renderer {
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
   private pendingInputs = 0
   private focusSent: string | null = null // the focus the kernel has (applied from it, or sent to it)
+  private pointerDown = false // a held viewer gesture owns its range, even between input receipts
+  private releasePointer = (): void => { this.pointerDown = false }
   private pointerFocus: string | null = null // a focus taken by a pointer press: its click focuses in the kernel
   // After the kernel acknowledged a viewer focus, packets already in flight (one per credit) may have been drained
   // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
@@ -78,6 +80,10 @@ export class BrowserMirror2Renderer {
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     this.empty = URL.createObjectURL(new Blob([]))
     this.navigation = new Mirror2Navigation(container)
+    const owner = container.ownerDocument
+    owner.addEventListener('pointerup', this.releasePointer, true)
+    owner.addEventListener('pointercancel', this.releasePointer, true)
+    owner.defaultView?.addEventListener('blur', this.releasePointer)
   }
   async ready(): Promise<void> {
     await this.navigation.loaded
@@ -144,7 +150,7 @@ export class BrowserMirror2Renderer {
     if(this.documentId!==documentId)throw Error('MP-08: mirror document changed')
   }
   private settleFocus(): void {
-    if (this.pendingInputs || this.disposed) return
+    if (this.pendingInputs || this.disposed || this.pointerDown) return
     const withheld = this.focusWithheld; this.focusWithheld = undefined
     if (withheld !== undefined && !this.pointerFocus && !this.focusHold) this.takeFocus(withheld)
   }
@@ -204,9 +210,10 @@ export class BrowserMirror2Renderer {
     // MP-08/MP-10: its target's box is read at the press, while layout is clean from the press's hit test; read at
     // the click it forces the style and layout the press dirtied (focus, :active; 5-6 ms on a large page) ahead of the input.
     let origin: { x: number; y: number } | null = null, dragged = false, pressed: { el: Element; box: DOMRect } | null = null
-    on('pointerdown', event => { const e = event as PointerEvent; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null; const hit = element(event); pressed = hit ? { el: hit.el, box: hit.el.getBoundingClientRect() } : null })
+    on('pointerdown', event => { const e = event as PointerEvent; if (e.button === 0) this.pointerDown = true; origin = { x: e.clientX, y: e.clientY }; dragged = false; this.pointerFocus = null; const hit = element(event); pressed = hit ? { el: hit.el, box: hit.el.getBoundingClientRect() } : null })
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
-    on('pointerup', () => { origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
+    on('pointerup', () => { this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
+    on('pointercancel', () => { this.releasePointer(); origin = null; this.pointerFocus = null; pressed = null; dragged = false })
     on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
@@ -572,7 +579,7 @@ export class BrowserMirror2Renderer {
     // root wheel intent. Preserve it and submit only under the new epoch.
     const rootScroll = packet.reset && packet.document_id === this.documentId && this.rootScrolling()
       ? this.wheel.rootTarget(this.doc) ?? [this.frame.contentWindow!.scrollX, this.frame.contentWindow!.scrollY] : null
-    if (packet.reset && packet.document_id !== this.documentId) this.localRootScrollAt = -Infinity
+    if (packet.reset && packet.document_id !== this.documentId) { this.localRootScrollAt = -Infinity; this.releasePointer() }
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
@@ -608,7 +615,7 @@ export class BrowserMirror2Renderer {
       const hold = this.focusHold
       if (hold && (packet.focused !== hold.previous || packet.sequence > hold.until)) this.focusHold = null
       this.focusWithheld = this.pendingInputs && !this.pointerFocus && !this.focusHold ? packet.focused : undefined
-      if (!this.pendingInputs && !this.pointerFocus && !this.focusHold) {
+      if (!this.pendingInputs && !this.pointerFocus && !this.focusHold && !this.pointerDown) {
         this.takeFocus(packet.focused)
         // Once the kernel's selection clears (or moves to another document) its old range goes too.
         // Only there: a viewer's own range the kernel never had stays, and so does a focused text
@@ -719,7 +726,11 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    const owner = this.container.ownerDocument
+    owner.removeEventListener('pointerup', this.releasePointer, true)
+    owner.removeEventListener('pointercancel', this.releasePointer, true)
+    owner.defaultView?.removeEventListener('blur', this.releasePointer)
     if(options?.preserveFrame) {this.navigation.preserve();return}
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)

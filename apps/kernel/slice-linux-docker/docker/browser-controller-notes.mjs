@@ -14,12 +14,15 @@ const OWNER_PROTECTED_FUNCTION = `function() {
 function installNoteObserver() {
   if (globalThis.__charioxNotes) return true;
   const maxText = 2 * 1024 * 1024;
+  // MP-08/MP-10/MP-11: ordinary ad-heavy pages exceed 64 open roots.
+  // Keep a finite complete search, including late contextual/ambiguous matches.
+  const maxRoots = 256;
   const roots = () => {
     const result=[document.body??document.documentElement];
     for (let i=0;i<result.length;i++) {
       const walker=document.createTreeWalker(result[i],NodeFilter.SHOW_ELEMENT);
       for (let node=walker.nextNode();node;node=walker.nextNode()) if (node.shadowRoot) {
-        if (result.length>=64) throw new Error('MD-N2: shadow root limit reached');
+        if (result.length>=maxRoots) throw new Error('MD-N2: shadow root limit reached');
         result.push(node.shadowRoot);
       }
     }
@@ -132,6 +135,22 @@ function installNoteObserver() {
   return true;
 }
 
+// MP-08/MP-10/MP-11: CDP descriptions may contain page values; carry only
+// closed exception classes and positions inside our shipped observer function.
+function noteObservationFailure(result) {
+  const details=result?.exceptionDetails, exception=details?.exception;
+  const classes=new Map([['TypeError','type_error'],['ReferenceError','reference_error'],['RangeError','range_error'],['SyntaxError','syntax_error'],['DOMException','dom_exception']]);
+  const known=new Map([['Error: MD-N2: shadow root limit reached','note_shadow_root_limit'],['Error: MD-N2: page text limit reached','note_text_limit']]);
+  const first=typeof exception?.description==='string'?exception.description.split('\n',1)[0]:'';
+  const code=!details?'note_observer_result_unavailable':known.get(first)??('note_observer_'+(classes.get(exception?.className)??'exception'));
+  const error=Object.assign(Error('MD-N2: selection observation failed'),{code});
+  const names=new Set(['capture','Object.capture','roots','index','offset','contextBoundary','protectedSpan','box','matchQuote','reanchor','Object.reanchor']);
+  const frames=details?.stackTrace?.callFrames;
+  const frame=Array.isArray(frames)?frames.slice(0,32).find(frame=>names.has(frame.functionName)&&Number.isSafeInteger(frame.lineNumber)&&frame.lineNumber>=0&&frame.lineNumber<installNoteObserver.toString().split('\n').length):undefined;
+  if(frame)error.noteObserverLine=frame.lineNumber+1;
+  return error;
+}
+
 export async function observeBrowserNote(browser, request) {
   if (typeof request?.target_id !== 'string' || typeof request?.document_id !== 'string') throw new Error('MD-N2: observed target/document required');
   if (request.quote && (!request.quote.exact || new TextEncoder().encode(request.quote.exact).length>16384 || [request.quote.prefix,request.quote.suffix].some(s=>typeof s!=='string'||new TextEncoder().encode(s).length>512))) throw new Error('MD-N2: invalid quote');
@@ -194,7 +213,7 @@ export async function observeBrowserNote(browser, request) {
       for (const {item,world} of worlds) {
         const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)}${exactOnly?',true':''})` : `globalThis.__charioxNotes.capture(${protectedVariants.length?JSON.stringify(protectedVariants):''})`;
         const result=await connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true,awaitPromise:false},item.sessionId);
-        if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw new Error('MD-N2: selection observation failed');
+        if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw noteObservationFailure(result);
         const value=result.result.value;
         if (value?.anchor_state==='ambiguous') ambiguous=true;
         if (!value || (request.quote && value.anchor_state!=='attached')) continue;
