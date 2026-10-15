@@ -196,6 +196,7 @@ impl KernelRuntimeOwnedState {
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
         for mut output in outputs {
+            self.collect_private_assessment(session_id, &output);
             output.bytes = self
                 .room_secret_observations
                 .protect_unframed_bytes(session_id, &output.bytes);

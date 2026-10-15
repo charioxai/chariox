@@ -92,7 +92,7 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
-    if subscription_scope.as_deref() == Some("kernel_browser_display") {
+    if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
         return super::browser_display::handle_subscribe(
             router,
             outgoing_tx,
@@ -105,6 +105,7 @@ pub(super) async fn handle_relay_subscribe(
                 identity: caller_identity,
                 public_key: client_public_key,
                 resume: resume_from_event_id,
+                recover: subscription_scope.as_deref()==Some(chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE),
             },
         )
         .await;

@@ -138,6 +138,22 @@ pub(crate) enum Operation {
         wake: AgentWake,
         binding: super::LeasedProcessBinding,
     },
+    BeginContinuation {
+        task: String,
+        room: String,
+        agent: String,
+        prompt: String,
+        run: Option<String>,
+        now: u64,
+    },
+    PrepareCatalogContinuation {
+        room: String,
+        agent: String,
+        prompt: String,
+        run: String,
+        next_prompt: String,
+        now: u64,
+    },
     EnableCompletionCheck {
         task: String,
     },

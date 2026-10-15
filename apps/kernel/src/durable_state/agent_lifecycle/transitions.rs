@@ -9,6 +9,22 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             wake,
             binding,
         } => super::leased_processes::create_home_wake(tx, task, prompt, wake, binding),
+        Operation::BeginContinuation {
+            task,
+            room,
+            agent,
+            prompt,
+            run,
+            now,
+        } => super::continuations::begin(tx, task, room, agent, prompt, run, now),
+        Operation::PrepareCatalogContinuation {
+            room,
+            agent,
+            prompt,
+            run,
+            next_prompt,
+            now,
+        } => super::continuations::prepare_catalog(tx, room, agent, prompt, run, next_prompt, now),
         Operation::EnableCompletionCheck { task } => super::completion::admit(tx, task),
         Operation::AdoptGoal {
             owner,

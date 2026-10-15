@@ -9,7 +9,7 @@ function fixture(){
  const source={closed:false,sample:()=>null,valid:()=>!source.closed,close:async()=>{source.closed=true;closes++}};
  const display=new RoomSharedDisplay({binding:async()=>surface},{desktop:{createSource:async binding=>{assert.equal(binding,surface);sources++;return source}},sessions:{now:()=>now,clock:()=>now}});
  const request=params=>display.request({...params,policy});
- return {display,request,source,counts:()=>({sources,closes}),replace:()=>{surface={...surface,generation:'desktop-two'}},advance:ms=>now+=ms};
+ return {display,request,source,counts:()=>({sources,closes}),replace:()=>{surface={...surface,generation:'desktop-two'}},advance:ms=>now+=ms,syncClock:()=>{now=Date.now()}};
 }
 test('MP-08 Room display binds the existing desktop; two leases share its protected source',async()=>{
  const f=fixture();try{
@@ -56,5 +56,19 @@ test('MP-11 Room desktop target comes from the bound worker observation, never a
   for(const target of [{kind:'desktop',surface_id:'slice:foreign',generation:'desktop-one'},{kind:'desktop',surface_id:'slice:one',generation:'stale'},{kind:'region',binding_id:'foreign'}])await assert.rejects(f.request({...offer,target}));
   assert.equal(f.counts().sources,0);
   const result=await f.request({...offer,target:{kind:'desktop',surface_id:'slice:one',generation:'desktop-one'}});assert.equal(result.source.surface_id,'slice:one');
+ }finally{await f.display.close()}
+});
+
+test('MP-08/MP-10/MP-11 535 registration resumes and attaches through the sole 525 session authority',async()=>{
+ const f=fixture();try{
+  const old=await f.request({...offer,lease_id:'room-display-'+'a'.repeat(32),observed_by:'room-display-'+'a'.repeat(32)});
+  await f.request({op:'display_attach',subscription_id:old.subscription_id,observed_by:old.subscription_id,generation:old.generation});
+  f.syncClock();
+  const resumed=await f.request({op:'display_resume_attach',subscription_id:old.subscription_id,observed_by:old.subscription_id,generation:old.generation});
+  assert.equal(resumed.resumed,true);assert.notEqual(resumed.subscription_id,old.subscription_id);
+  assert.deepEqual(f.counts(),{sources:1,closes:0});
+  const stream=f.display.displays.get(resumed.subscription_id);assert.equal(stream.observed_by,resumed.subscription_id);assert.equal(stream.suspended,false);
+  await assert.rejects(f.request({op:'display_resume_attach',subscription_id:old.subscription_id,observed_by:old.subscription_id,generation:old.generation}));
+  await f.request({op:'display_attach',subscription_id:resumed.subscription_id,observed_by:resumed.subscription_id,generation:resumed.generation});
  }finally{await f.display.close()}
 });
