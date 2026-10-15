@@ -79,7 +79,7 @@ test("MP-11 two equal tabbed windows or none never bind", async t => {
 });
 
 test("MP-11 band input acts on the kernel-observed active Tab; agents and stale windows are refused", async () => {
-  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) } };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" } };
   const binding = { window_generation: 2, isCurrent: () => true };
   const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
   assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: "host-tab-b", document_id: "db", generation: 3 });
@@ -97,7 +97,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const evaluated = [];
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
     : method === "Runtime.evaluate" ? (evaluated.push(params), { result: { value: focus } }) : {} };
-  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) },
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
     browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {});
   const calls = [];

@@ -4024,6 +4024,15 @@ negative or out-of-element placement refuses video and preserves the existing
 still. Geometry, identity, protection and current-window fences remain kernel
 owned. Stream resumption retains the same admitted placement.
 
+The native producer derives the visible page rectangle from the owned window's
+validated GTK frame insets and the browser-owned active Tab dimensions, independently
+of page emulation. Its exact native page origin can have odd device-pixel coordinates;
+only the disjoint Chrome band rounds inward to even codec rows. Native page readback
+adds that origin, while protected CDP reference crops and mirror input remain page
+relative. The native origin is not added to element-relative `region_offset`.
+Missing or changed native page geometry refuses or retires the page stream; crops
+remain inside the visible native page. Exact pixel attestation remains required.
+
 Only page opaque-region video requires529. Native Chrome band clients retain
 519; whole-page video and mirror clients retain their existing floors. The
 historical519 snapshot is unchanged. `browser-display-placement-529.json`,
