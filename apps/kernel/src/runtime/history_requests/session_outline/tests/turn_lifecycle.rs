@@ -2452,3 +2452,142 @@ async fn r16_inbox_only_agent_retains_its_answer_without_a_user_instruction() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+// MP-08 / MP-10 / MP-11, review P2 @5b3426798: grouped tools span the
+// hidden assessment/correction. Expansion must apply the same public projection.
+#[tokio::test]
+async fn r16_spanning_tool_blob_never_restores_internal_turn_text() {
+    let context = |prompt: &str| HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some(prompt.into()),
+        prompt_id: Some(prompt.into()),
+        provider_run_id: Some("run-1".into()),
+        ..Default::default()
+    };
+    let prompt =
+        |text: &str| SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", text);
+    let output = |kind, text: &str| {
+        SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            kind,
+            None,
+            text,
+        )
+    };
+    let events = vec![
+        HistoryEvent::transcript(1, &prompt("original user request"), context("prompt-1")),
+        HistoryEvent::transcript(
+            2,
+            &output(TerminalOutputKind::ProviderTool, "public tool before"),
+            context("prompt-1"),
+        ),
+        HistoryEvent::transcript(
+            3,
+            &output(
+                TerminalOutputKind::ProviderOutput,
+                "first public work answer",
+            ),
+            context("prompt-1"),
+        ),
+        HistoryEvent::transcript(
+            4,
+            &prompt("internal completion_check instruction"),
+            context("goal-check-prompt-1-1-1"),
+        ),
+        HistoryEvent::transcript(
+            5,
+            &output(
+                TerminalOutputKind::ProviderOutput,
+                r#"{"status":"continue","reason":"internal assessment JSON"}"#,
+            ),
+            context("goal-check-prompt-1-1-1"),
+        ),
+        HistoryEvent::transcript(
+            6,
+            &prompt("internal correction instruction"),
+            context("task-correction-prompt-1"),
+        ),
+        HistoryEvent::transcript(
+            7,
+            &output(TerminalOutputKind::ProviderTool, "public tool after"),
+            context("task-correction-prompt-1"),
+        ),
+        HistoryEvent::transcript(
+            8,
+            &output(
+                TerminalOutputKind::ProviderOutput,
+                "corrected public work answer",
+            ),
+            context("task-correction-prompt-1"),
+        ),
+    ];
+    let path = std::env::temp_dir().join(format!(
+        "chariox-r16-spanning-blob-{}-{}.db",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    store.append_many(&events).unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } =
+        execute_session_history_outline_request(
+            store.clone(),
+            GetSessionHistoryOutlineRequest {
+                session_id: "session-1".into(),
+                agent_ids: Some(vec!["agent-1".into()]),
+                latest_prompt_count: Some(4),
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(agents[0].turns.len(), 1);
+    let blob = agents[0].turns[0]
+        .blobs
+        .iter()
+        .find(|blob| blob.sequence_start == 2 && blob.sequence_end == 7)
+        .expect("the actual outline must generate a spanning tool blob");
+    let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } =
+        execute_session_history_blob_content_request(
+            store,
+            GetSessionHistoryBlobContentRequest {
+                session_id: "session-1".into(),
+                agent_id: "agent-1".into(),
+                blob_id: blob.blob_id.clone(),
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let text = serde_json::to_string(&entries).unwrap();
+    assert!(
+        text.contains("public tool before")
+            && text.contains("public tool after")
+            && text.contains("first public work answer"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("internal completion_check")
+            && !text.contains("internal assessment JSON")
+            && !text.contains("internal correction"),
+        "{text}"
+    );
+    assert_eq!(
+        agents[0].turns[0].summary.as_ref().unwrap().entry.text,
+        "corrected public work answer"
+    );
+    for p in [
+        path.clone(),
+        path.with_extension("db-wal"),
+        path.with_extension("db-shm"),
+    ] {
+        let _ = std::fs::remove_file(p);
+    }
+}

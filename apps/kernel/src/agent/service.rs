@@ -350,7 +350,19 @@ impl AgentService {
     ) -> Result<AgentInstance, DaemonError> {
         let request = CreateAgentRequest::new(session_id, provider).with_worktree(worktree_id);
 
-        self.create_agent(request, sessions)
+        let mut agent = self.create_agent(request, sessions)?;
+        // Public aliases reserve legacy numeric IDs. This kernel-assigned name
+        // uses the same actual-reference collision check, without claiming an ID.
+        let alias = (1..)
+            .map(|n| format!("agent-{n}"))
+            .find(|alias| !self.is_reference_taken_by_other(session_id, agent.id(), alias))
+            .expect("a finite session always has a free agent name");
+        agent.set_alias(Some(alias.clone()));
+        self.store
+            .get_mut(agent.id())
+            .expect("new default agent is stored")
+            .set_alias(Some(alias));
+        Ok(agent)
     }
 
     /// Destroy an agent
@@ -1122,6 +1134,11 @@ impl AgentService {
         }) {
             return true;
         }
+        self.is_reference_taken_by_other(session_id, agent_id, alias)
+    }
+
+    fn is_reference_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
+        let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized
@@ -1558,5 +1575,57 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
+    }
+}
+
+#[cfg(test)]
+mod r16_default_alias_tests {
+    use super::*;
+    use crate::{config::DaemonConfig, session::CreateSessionRequest};
+
+    // MP-08 / MP-10 / MP-11: a fresh Room's first agent gets its name from
+    // the kernel, regardless of the client that created the Room.
+    #[test]
+    fn r16_default_agent_has_a_collision_free_automatic_alias() {
+        for legacy_collision in [false, true] {
+            let mut agents = AgentService::new();
+            let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+            let session = sessions
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .unwrap();
+            if legacy_collision {
+                agents.store.insert(AgentInstance::new(
+                    "agent-1",
+                    "legacy-ref",
+                    session.id(),
+                    None,
+                    "codex",
+                    None,
+                    None,
+                    None,
+                    GridPosition::new(0, 0, 1, 1),
+                ));
+            }
+            let agent = agents
+                .create_default_agent(session.id(), "worktree", "codex", &mut sessions)
+                .unwrap();
+            let expected = if legacy_collision {
+                "agent-2"
+            } else {
+                "agent-1"
+            };
+            assert_eq!(agent.alias(), Some(expected));
+            assert_eq!(
+                agents.get_agent(agent.id()).unwrap().alias(),
+                Some(expected)
+            );
+            assert_eq!(
+                sessions
+                    .get_session(session.id())
+                    .unwrap()
+                    .focused_agent_id(),
+                Some(agent.id())
+            );
+        }
     }
 }

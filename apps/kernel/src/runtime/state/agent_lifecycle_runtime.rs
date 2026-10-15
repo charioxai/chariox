@@ -187,14 +187,15 @@ impl KernelRuntimeOwnedState {
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
                         work_answer: ledger::completion::evaluation(&task).map(|check| {
-                            super::agent_task_projection::task_public_outputs(
+                            let output = super::agent_task_projection::task_public_outputs(
                                 &entries,
                                 &check.work_prompt_id,
                                 super::agent_task_projection::task_answer_history_run(
                                     check.work_provider_run_id.as_deref(),
                                 ),
                             )
-                            .concat()
+                            .concat();
+                            super::agent_task_projection::answer_tail(output.trim(), 1_024)
                         }),
                         task: task.task_id,
                         prompt: prompt.id().into(),

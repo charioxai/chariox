@@ -120,7 +120,7 @@ pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     })
 }
 
-fn answer_tail(text: &str, limit: usize) -> String {
+pub(super) fn answer_tail(text: &str, limit: usize) -> String {
     let count = text.chars().count();
     if count <= limit {
         return text.into();
@@ -149,7 +149,7 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
         text.push_str(&format!(" Completion has already arrived for these obligations: {}. Read chariox.events.inbox and call chariox.events.ack with handled:true for each completion receipt you have reviewed; that settles them.", serde_json::to_string(&settling).unwrap_or_default()));
     }
     if !running.is_empty() {
-        text.push_str(&format!(" These are still running: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms.", serde_json::to_string(&running).unwrap_or_default()));
+        text.push_str(&format!(" These are still running: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms. A child reply, provider Idle or assistant-message-completed does not close these obligations: the child may still be confirming its result. While those registrations are live, yield on them instead of answering. After the registered source_completed receipt arrives, review its public result in chariox.events.inbox and call chariox.events.ack with handled:true; only then report the final answer.", serde_json::to_string(&running).unwrap_or_default()));
     }
     if !failed.is_empty() {
         text.push_str(&format!(" These failed: {}. Handle the failure, or call chariox.events.blocked with the exact owner action.", serde_json::to_string(&failed).unwrap_or_default()));
@@ -246,6 +246,15 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("chariox.events.yield"), "{text}");
+    }
+    // MP-08 / MP-10 / MP-11: live Codex read the reply while the child
+    // was still confirming completion, then ended its sole correction early.
+    #[test]
+    fn r16_running_source_correction_covers_the_later_completion_receipt() {
+        let text = task_correction_text(&correction_task(&["open"]));
+        assert!(text.contains("provider Idle") && text.contains("registrations are live"));
+        assert!(text.contains("source_completed") && text.contains("chariox.events.inbox"));
+        assert!(text.contains("chariox.events.ack with handled:true"));
     }
     #[test]
     fn correction_lists_only_unresolved_obligations_and_names_the_wait_route() {
