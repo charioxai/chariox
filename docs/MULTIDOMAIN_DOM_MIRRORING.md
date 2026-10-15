@@ -332,6 +332,24 @@ public push events were added; the reserved439/83 pair is not consumed.
 
 ## MP-11 protection boundaries
 
+MP-08/MP-10/MP-11, coordinator decision 2026-10-15: native region attestation
+proves window/Tab/document identity and the authoritative page origin, not the
+decoded media pixels. Native compositing and CDP can rasterize video differently.
+Only live video, canvas (including WebGL), object and embed boxes reported by
+the kernel's isolated DOM observer are excluded from the pixel comparison.
+Their geometry and issued node identity are checked before and after capture;
+the viewer cannot supply exclusions. Every non-media, unprotected pixel must
+match exactly, with no tolerance or media padding. These exclusions never mask
+the displayed media or change Vault protection.
+
+When a region has fewer than 10% (and at least 64) usable identity pixels, an
+unadvertised readback attests surrounding visible page pixels at the same
+native origin, using the same owned PID/XID and current lease. It closes before
+the region is advertised. A full-bleed page without enough surrounding anchors
+refuses. Wrong windows/Tabs, stale documents or generations, shifted origins,
+non-media pixel changes and unreported media still refuse. Admission, delivery
+and input retain the native-window, active-Tab, geometry and protection fences.
+
 Page scripts, event attributes, origin addresses, navigation/form destinations,
 active markup, custom CSS properties and executable/network CSS are absent from
 the wire. Computed style is the CSS representation; source stylesheets never run

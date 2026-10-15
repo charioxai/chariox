@@ -187,7 +187,7 @@ export class MirrorFrames {
       for(const b of boxes){
         const [x,y,bw,bh]=b.clip,left=Math.max(x+ox,ox,clip[0]),top=Math.max(y+oy,oy,clip[1]);
         const right=Math.min(x+ox+bw,ox+w,clip[0]+clip[2]),bottom=Math.min(y+oy+bh,oy+h,clip[1]+clip[3]);
-        if(right>left&&bottom>top)out.push({id:rebaseId(b.id,entry.slot),box:[b.box[0]+ox,b.box[1]+oy,b.box[2],b.box[3]],clip:[left,top,right-left,bottom-top],distorted:b.distorted||geometry.distorted});
+        if(right>left&&bottom>top)out.push({id:rebaseId(b.id,entry.slot),box:[b.box[0]+ox,b.box[1]+oy,b.box[2],b.box[3]],clip:[left,top,right-left,bottom-top],distorted:b.distorted||geometry.distorted,media:b.media===true});
       }
     }
     return out;

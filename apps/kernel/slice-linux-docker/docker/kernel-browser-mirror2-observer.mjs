@@ -689,7 +689,7 @@ export function installMirror2(sanitizeMirrorCss) {
         clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
       }
       if(!(clip[2]>0&&clip[3]>0))throw new Error('mirror2 region offscreen');
-      const out={id,box:bounds,clip,distorted:distorted(node)};
+      const out={id,box:bounds,clip,distorted:distorted(node),media:node.namespaceURI===HTML&&['video','canvas','object','embed'].includes(node.localName)};
       if(foreign.has(id)){
         const style=getComputedStyle(node),left=node.clientLeft+(parseFloat(style.paddingLeft)||0),top=node.clientTop+(parseFloat(style.paddingTop)||0);
         const width=node.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0),height=node.clientHeight-(parseFloat(style.paddingTop)||0)-(parseFloat(style.paddingBottom)||0);

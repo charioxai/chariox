@@ -2,11 +2,9 @@
 // A consumer supplies an admitted kernel lease and kernel-resolved window
 // geometry. This is not a client API for naming windows, PIDs or policies.
 import {setTimeout as delay} from 'node:timers/promises';
-import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
+import {LinuxCapture} from './kernel-browser-native.mjs';
 import {startNativeReadback} from './kernel-browser-native-readback.mjs';
-import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
-import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {attestNativeRegion,regionProtection} from './kernel-browser-region-attestation.mjs';
 
 export function windowRegionGeometry(surface,window,rect,contentHeight,scale,contentRect){
  const {width,height}=rect,top=rect.top,left=rect.left;
@@ -48,10 +46,10 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
-  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
+  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect);
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
@@ -67,11 +65,8 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   try{
    const region=this.region;
    if(this.surface==='page'){
-    this.regions=new NativeRegionProtection(this.connection,this.sessionId,
-     {policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
-    const measure=this.regions.measure.bind(this.regions);
-    this.regions.measure=async()=> (await measure()).map(([x,y,w,h])=>
-     [x-region.pageLeft,y-region.pageTop,w,h]);
+    this.regions=regionProtection(this,region.pageLeft,region.pageTop);
+    await attestNativeRegion(this);
    }else{
     // Chrome UI is proved disjoint from page pixels: the band boundary or
     // a whole separate auxiliary window selected by the browser owner.
@@ -87,23 +82,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.surface==='page'){
-    const shot=await this.screenshot();
-    const clip={x:region.pageLeft/this.scale,y:region.pageTop/this.scale,
-     width:region.css_width,height:region.css_height};
-    const reference=decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
-    const raw=this.latest?.raw;
-    if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native region attestation geometry');
-    const fullBand=statusBand({width:region.contentRect.width,height:region.contentHeight},this.hostScale);
-    const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
-    const masked=attestationMask(masks,raw.width,raw.height);
-    if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');
-    const pixels=raw.pixels;
-    for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
-     (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))
-      throw Error('MP-11: native region attestation mismatch');
-    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
-   }
+
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){await this.close();throw error;}

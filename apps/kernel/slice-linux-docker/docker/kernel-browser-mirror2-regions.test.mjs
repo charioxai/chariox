@@ -80,3 +80,19 @@ test('MP-11: a children delta retains issued opaque siblings and removes departe
   f.regions.record(f.stream,{ops:[{op:'children',id:'n1',children:[],nodes:[]}]});
   await assert.rejects(f.regions.resolve(f.target,'owner'));
 });
+
+test('MP-11: only current kernel-reported media gets a comparison exclusion',async()=>{
+ const f=fixture(),lease=await f.regions.resolve(f.target,'owner');
+ assert.deepEqual(await lease.attestationState(),{media:[]});
+ f.boxes[0].media=true;
+ assert.deepEqual((await lease.attestationState()).media.map(({id,box})=>({id,box})),[{id:'n3',box:[10,20,200,100]}]);
+ await assert.rejects(f.regions.resolve({...f.target,media:[f.boxes[0]]},'owner'));
+ f.boxes.push({id:'n4',box:[0,0,10,10],media:true});
+ await assert.rejects(lease.attestationState(),/region_target/,'unissued media cannot supply an exclusion');
+});
+test('MP-11: stale documents and wrong target identities refuse attestation evidence',async()=>{
+ for(const mutate of [f=>f.tab.document_id='next',f=>f.host.tabs.set('tab',{...f.tab,target_id:'other'}),f=>f.stream.identity.set('n3',6)]){
+  const f=fixture(),lease=await f.regions.resolve(f.target,'owner');f.boxes[0].media=true;mutate(f);
+  await assert.rejects(lease.attestationState(),/retired/);
+ }
+});

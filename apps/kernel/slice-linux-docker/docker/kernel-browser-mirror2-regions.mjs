@@ -104,6 +104,18 @@ export class Mirror2Regions {
         // isAlive is a cheap synchronous fence; isCurrent re-measures live bounds.
         // A native consumer MUST await isCurrent before readback/delivery/input.
         isAlive:alive,isCurrent:()=>this.locked(stream,validate),close:retire,
+        // Private attestation evidence from our isolated observer, never from
+        // the subscribe request or the viewer's tile/mask coordinates.
+        attestationState:()=>this.locked(stream,async()=>{
+          if(!await validate())refuse('region_retired');
+          const boxes=await this.mirror.regionBoxes(stream,tab,signal),media=[];
+          for(const b of boxes)if(b.media===true&&!b.distorted){
+            const checked=this.check({...request,sequence:stream.issued,region_id:b.id},scope,stream);
+            media.push({id:b.id,box:[...(b.clip??b.box)],identities:checked.identities});
+          }
+          if(!alive())refuse('region_retired');
+          return {media};
+        }),
         attachDisplay:current=>{
           if(display || !alive() || current.observed_by !== scope || current.tab_id !== tab.tab_id || typeof current.subscription_id !== 'string') refuse('region_display');
           display=current; this.host.displays.set(current.subscription_id,current);

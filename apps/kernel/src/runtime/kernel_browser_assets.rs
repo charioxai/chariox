@@ -79,6 +79,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-region.mjs"),
     ),
     (
+        "kernel-browser-region-attestation.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-region-attestation.mjs"),
+    ),
+    (
         "kernel-browser-display-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-regions.mjs"),
     ),

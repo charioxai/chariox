@@ -57,6 +57,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    if(![placement.x,placement.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
     rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
+    attestationState:lease.attestationState,
     isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
   }catch(error){await lease.close();throw error;}
  } else {
