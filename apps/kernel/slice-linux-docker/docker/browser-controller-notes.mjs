@@ -212,7 +212,7 @@ export async function observeBrowserNote(browser, request) {
     const identities=tree=>{
       const result=new Map();
       const visit=tree=>{
-        if(required.has(tree.frame.id))result.set(tree.frame.id,[tree.frame.loaderId,tree.frame.parentId]);
+        if(required.has(tree.frame.id))result.set(tree.frame.id,[tree.frame.loaderId,tree.frame.parentId,tree.frame.url]);
         for(const child of tree.childFrames??[])visit(child);
       };
       visit(tree);return result;

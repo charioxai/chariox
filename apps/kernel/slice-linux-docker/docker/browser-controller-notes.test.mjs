@@ -149,3 +149,15 @@ test('MP-08/MP-11 selected frame replacement still refuses same-process and isol
 test('MP-08/MP-11 a newly protected frame owner refuses the captured selection',async()=>{
  for(const oopif of [false,true])await assert.rejects(protectedFrameFixture({oopif,protectOnRead:true}).read(),/MD-N2: frame changed during capture/);
 });
+
+test('MP-08/MP-11 a selected document URL change still retires its captured anchor',async()=>{
+ let reads=0;
+ const connection={async send(method,params){
+  if(method==='Page.getFrameTree')return{frameTree:{frame:{id:'top',loaderId:'doc',url:++reads>=3?'https://fixture.test/new-path':'https://fixture.test/'}}};
+  if(method==='Target.getTargets')return{targetInfos:[]};
+  if(method==='Runtime.evaluate')return{result:{value:params.expression===NOTE_OBSERVER_EXPRESSION?true:{quote:{exact:'selected',prefix:'',suffix:''},box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
+  throw Error('unexpected '+method);
+ }};
+ const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
+ await assert.rejects(observeBrowserNote(browser,{target_id:'tab',document_id:'doc'}),/MD-N2: frame changed during capture/);
+});
