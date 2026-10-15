@@ -60,14 +60,15 @@ export class BrowserMirror2Renderer {
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
+  private inputReplies = new Set<Promise<void>>() // MP-10: at most two written, unacknowledged inputs
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
   private localRootScrollAt = -Infinity
-  private rootScrollSending: string | null = null
+  private rootScrollReplies = new Set<{epoch:{document_id:string}}>()
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
-  constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }) => Promise<unknown>, _failure?: (error: unknown) => void) {
+  constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
     this.frame = owner.createElement('iframe')
@@ -112,17 +113,33 @@ export class BrowserMirror2Renderer {
     if (this.sending) return
     this.sending = true
     try {
-      for (let next = this.queue.shift(); next; next = this.queue.shift()) {
-        // A refused input (stale epoch, changed or protected target) is dropped:
-        // the kernel stays authoritative and packets keep flowing (plan 4.3).
+      while (this.queue.length && !this.disposed) {
+        if (this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
+        const next = this.queue.shift(); if (!next || this.disposed) break
         const before = this.kernelFocus
-        this.rootScrollSending = next.action.kind === 'scroll_to' && next.action.node_id === null ? next.epoch.document_id : null
-        try { if (!this.disposed) { await this.send(next.action, next.epoch); this.holdFocus(next.action, before) } } catch { this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) } finally { this.pendingInputs--; this.rootScrollSending = null }
+        if (next.action.kind === 'scroll_to' && next.action.node_id === null) this.rootScrollReplies.add(next)
+        let written = () => {}
+        const sent = new Promise<void>(resolve => { written = resolve })
+        // MP-08/MP-10/MP-11: preserve actual write order, including asynchronous
+        // encryption/admission. The kernel has ordered this viewer's input since
+        // protocol516 (v2 requires517). Legacy transports release only on reply.
+        const replied:Promise<void> = Promise.resolve().then(() => {
+          if (!this.disposed) return this.send(next.action, next.epoch, written)
+        }).then(() => { if (!this.disposed) this.holdFocus(next.action, before) })
+          .catch(() => { if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
+          .finally(() => {
+            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
+            written(); this.settleFocus()
+          })
+        this.inputReplies.add(replied)
+        await sent
       }
-    } finally { this.sending = false }
-    // A focus that packets moved while inputs were pending (an echo can overtake its input's reply) is taken now.
+    } finally { this.sending = false; this.settleFocus() }
+  }
+  private settleFocus(): void {
+    if (this.pendingInputs || this.disposed) return
     const withheld = this.focusWithheld; this.focusWithheld = undefined
-    if (withheld !== undefined && !this.pendingInputs && !this.pointerFocus && !this.focusHold && !this.disposed) this.takeFocus(withheld)
+    if (withheld !== undefined && !this.pointerFocus && !this.focusHold) this.takeFocus(withheld)
   }
   private holdFocus(action: Mirror2Action, before: string | null): void {
     // A packet since the input was sent already moved the kernel's focus: it reflects the input, nothing to hold.
@@ -152,7 +169,7 @@ export class BrowserMirror2Renderer {
     this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
   }
   private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
-  private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || this.rootScrollSending === this.documentId || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
+  private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || [...this.rootScrollReplies].some(q => q.epoch.document_id === this.documentId) || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
     return undefined
@@ -665,7 +682,7 @@ export class BrowserMirror2Renderer {
   }
 }
 
-export interface Mirror2Transport { protocolVersion: number; request(request: unknown): Promise<unknown> }
+export interface Mirror2Transport { protocolVersion: number; request(request: unknown, options?: {onWritten?:()=>void}): Promise<unknown> }
 // Protocol 489: the kernel deflates packet bodies in the subscription's
 // context (sync flush per packet, a fresh context per reset), so the viewer
 // inflates them strictly in sequence order. Inflation is bounded before parsing.
@@ -694,7 +711,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 517')
-  const request = async (command: unknown): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } }) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
+  const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
@@ -722,7 +739,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment') } as Mirror2Packet)
   }
-  const renderer = createRenderer(container, async (action, epoch) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action }) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own

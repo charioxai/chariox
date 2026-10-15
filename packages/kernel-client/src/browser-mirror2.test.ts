@@ -509,3 +509,38 @@ test('a refused input reports its reason without retiring paint or replaying the
   assert.equal(inputs,1);assert.deepEqual(refusals,[error]);assert.deepEqual(failures,[])
  }finally{await mirror.close()}
 })
+
+// MP-08/MP-10/MP-11: release the next input after the real write, not its
+// round-trip reply; retain a bounded window and drop refusals without replay.
+test('mirror input preserves write order with at most two unresolved replies',async()=>{
+ const frame={style:{},dataset:{} as Record<string,string>,setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};
+ const sent:Array<{action:any;written:(()=>void)|undefined;resolve:()=>void;reject:(e:Error)=>void}>=[];
+ const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((action:any,_epoch:any,written?:()=>void)=>new Promise<void>((resolve,reject)=>sent.push({action,written,resolve,reject}))) as any) as any;
+ renderer.documentId='d';renderer.sequence=1;
+ for(const text of ['a','b','c'])renderer.enqueue({kind:'text',text});
+ await until(()=>sent.length===1);assert.equal(sent.length,1);assert.equal(typeof sent[0]!.written,'function');
+ sent[0]!.written!();await until(()=>sent.length===2);assert.equal(sent.length,2,'second input must not wait for the first reply');
+ sent[1]!.written!();await new Promise(resolve=>setTimeout(resolve,15));assert.equal(sent.length,2,'two unacknowledged inputs is the bound');
+ sent[1]!.resolve();await until(()=>sent.length===3);assert.deepEqual(sent.map(s=>s.action.text),['a','b','c']);
+ sent[2]!.written!();sent[2]!.reject(Error('refused'));sent[0]!.resolve();await until(()=>renderer.pendingInputs===0);
+ assert.equal(renderer.pendingInputs,0);assert.equal(frame.dataset.mirrorRefusals,'1');assert.equal(sent.length,3,'a refused input is never replayed');renderer.close();
+})
+
+// MP-08/MP-10/MP-11: an old transport that lacks write receipts stays serial.
+test('mirror inputs without a write notification wait for replies and stop at disposal',async()=>{
+ const frame={style:{},dataset:{},setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};const replies:Array<()=>void>=[],texts:string[]=[];
+ const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((a:any)=>new Promise<void>(resolve=>{texts.push(a.text);replies.push(resolve)})) as any) as any;renderer.documentId='d';renderer.sequence=1;
+ renderer.enqueue({kind:'text',text:'a'});renderer.enqueue({kind:'text',text:'b'});renderer.enqueue({kind:'text',text:'c'});await until(()=>texts.length===1);await new Promise(r=>setTimeout(r,15));assert.deepEqual(texts,['a']);replies[0]!();await until(()=>texts.length===2);renderer.close();replies[1]!();await until(()=>renderer.pendingInputs===0);assert.deepEqual(texts,['a','b']);assert.equal(renderer.pendingInputs,0);
+})
+
+// MP-08/MP-10/MP-11: the union's root-scroll hold lasts through its own reply.
+test('overlapping input replies do not release another root scroll or hold a new document',async()=>{
+ const frame={style:{},dataset:{},setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};
+ const sent:Array<{written:(()=>void)|undefined;resolve:()=>void}>=[];
+ const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((_a:any,_e:any,written?:()=>void)=>new Promise<void>(resolve=>sent.push({written,resolve}))) as any) as any;renderer.documentId='d';renderer.sequence=1;
+ renderer.enqueue({kind:'scroll_to',node_id:null,x:0,y:200});await until(()=>sent.length===1);sent[0]!.written!();
+ renderer.enqueue({kind:'text',text:'a'});await until(()=>sent.length===2);sent[1]!.written!();sent[1]!.resolve();await until(()=>renderer.pendingInputs===1);
+ assert.equal(renderer.rootScrolling(),true,'a text reply cannot release the root scroll');
+ renderer.documentId='next';assert.equal(renderer.rootScrolling(),false,'old-document replies do not hold the new document');
+ renderer.documentId='d';sent[0]!.resolve();await until(()=>renderer.pendingInputs===0);assert.equal(renderer.rootScrolling(),false);renderer.close();
+})
