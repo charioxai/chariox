@@ -1292,3 +1292,35 @@ test('MP-10 M2: a document that grows after an early small snapshot switches to 
     const grown=await next();assert(grown.reset);assert(!grown.fallback);assert(grown.nodes.length<4096);
     assert(texts(grown).has('Early paint'));assert((await next()).ops.some(op=>op.op==='children'));
   }));
+
+test('MP-10/MP-11 M2: snapshot preparation fences old inputs before replacing the observer tree',()=>mirrored(
+  '<div style="height:3000px">scrollable</div>',async({next,input,host})=>{
+    const first=await next(),mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror);let enter,release;
+    const entered=new Promise(r=>enter=r),gate=new Promise(r=>release=r);let held=true;
+    mirror.evaluate=async(w,expression,...args)=>{if(held&&expression.endsWith('.snapshot()')){held=false;enter();await gate}return original(w,expression,...args)};
+    const reset=next(0,true);
+    try{await entered;await assert.rejects(input(first.sequence,{kind:'scroll_to',node_id:null,x:0,y:10}),/stale mirror input epoch/);}
+    finally{release();await reset;mirror.evaluate=original}
+  }));
+
+test('MP-10/MP-11 M2: a cancelled snapshot stays fenced and the next credit rebuilds its full base',()=>mirrored(
+  '<div style="height:3000px">scrollable</div>',async({next,input,host,subscription_id,generation})=>{
+    const first=await next(),mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror),controller=new AbortController();let enter,release;
+    const entered=new Promise(r=>enter=r),gate=new Promise(r=>release=r);let held=true;
+    mirror.evaluate=async(w,expression,...args)=>{if(held&&expression.endsWith('.snapshot()')){held=false;enter();await gate}return original(w,expression,...args)};
+    const reset=host.request({op:'mirror_next',subscription_id,generation,after_sequence:0,drift_nodes:[],wait_ms:0},{signal:controller.signal});
+    try{await entered;controller.abort();release();await assert.rejects(reset,/cancel/i);mirror.evaluate=original;
+      await assert.rejects(input(first.sequence,{kind:'scroll_to',node_id:null,x:0,y:10}),/stale mirror input epoch/);
+      const recovered=await next();assert.equal(recovered.reset,true,'a private cancelled snapshot never becomes a delta base');assert(!recovered.fallback);
+      await input(recovered.sequence,{kind:'scroll_to',node_id:null,x:0,y:10});
+    }finally{release();await reset.catch(()=>{});mirror.evaluate=original}
+  }));
+
+test('MP-10 M2: repeated full resnapshots of a large document stay mirrored',()=>mirrored(
+  '<h1>Viewport</h1>'+('<section>'+'<p>Content</p>'.repeat(100)+'</section>').repeat(1000)+'<p>Final paragraph</p>',async({next})=>{
+    for(let epoch=0;epoch<6;epoch++){
+      const first=await next(0,true);assert(!first.fallback);let tail=texts(first).has('Final paragraph');
+      for(let n=0;n<2500&&!tail;n++){const packet=await next();assert(!packet.fallback,`full snapshot ${epoch+1} stays DOM mirrored`);tail=packet.ops.some(op=>op.op==='children'&&op.nodes.some(row=>row[2]===0&&row[3]==='Final paragraph'));}
+      assert(tail,`full snapshot ${epoch+1} reaches the document end`);
+    }
+  }));

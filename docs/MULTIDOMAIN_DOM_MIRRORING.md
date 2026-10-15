@@ -33,7 +33,12 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   the byte bound), so a busy first task cannot cut a detailed header before
   its visible viewport. Document limits remain
   finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
-  one record is bounded at 1 MiB. A small document has a 20,000-record/4 MiB
+  one record is bounded at 1 MiB. Local node ids restart on a full snapshot
+  only after the producer advances its input/region epoch fence. Old scroll
+  suppression and frame slots are retired before rebuilding. Cancellation
+  keeps the fence ahead of the published sequence, forcing the next credit
+  to rebuild a full base. Resource keys retain their document lifetime.
+  A small document has a 20,000-record/4 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
   continuation records. A same-document reset preserves an active root wheel
   target and submits that position through normal input under the newly applied

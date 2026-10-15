@@ -275,7 +275,7 @@ export class Mirror2 {
     if (after > 0 && after <= stream.issued) stream.acked = Math.max(stream.acked ?? 0, after);
     // Bytes the viewer acknowledged are kept by it for the document's lifetime: the kernel drops its copy.
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
@@ -286,10 +286,15 @@ export class Mirror2 {
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
-    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; } }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
+        // A snapshot may reuse local ids. Refuse old inputs/region leases
+        // before touching the observer, including resyncs found during drain.
+        // If cancelled, resetAt > issued forces the next credit to rebuild.
+        stream.resetAt = stream.issued + 1;
+        stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
+        for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         await this.protectTargets(world, tab, policy);
         const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;

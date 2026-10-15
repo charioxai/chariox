@@ -108,7 +108,8 @@ export function installMirror2(sanitizeMirrorCss) {
     // they are plain text fields (a password field shows dots; its value never leaves) and only while they
     // hold the fill (fills). No page-text, attribute or CSS value scanning.
     let serial = 0, targets = new Set(), records = [], overflow = false, revision = 0;
-    const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
+    let ids = new WeakMap();
+    const nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
     const checkedClosed = new WeakMap(), closedTodo = new Set();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
@@ -463,7 +464,9 @@ export function installMirror2(sanitizeMirrorCss) {
     const snapshot = () => {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
+      // The producer fences the old epoch before calling snapshot. Reclaim the
+      // local id range without walking the previous (possibly huge) document.
+      ids = new WeakMap(); serial = 0;
       nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
