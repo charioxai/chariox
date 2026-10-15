@@ -225,7 +225,7 @@ test("ENV P01 V opens exactly the selected Project and ignores release/modifiers
 
 // MP-08 / MP-10 / MP-11: editable Workspace takes precedence over inventory defaults.
 for (const workspaceId of ["/inventory/folder-a", undefined]) test(`Environment opens current form folder with inventory ${workspaceId}`,()=>{
-  const harness=createHarness({state:waitingRoomState({focus:"workspace"}),remote:{workspaceId},workspacePath:"/selected/folder-b"})
+  const harness=createHarness({state:waitingRoomState({focus:"workspace"}),remote:workspaceId ? {workspaceId} : {},workspacePath:"/selected/folder-b"})
   assert.equal(harness.controller.handleKey({name:"v",eventType:"press"}),true)
   assert.deepEqual(harness.calls(),["environment:null:/selected/folder-b"])
 })
