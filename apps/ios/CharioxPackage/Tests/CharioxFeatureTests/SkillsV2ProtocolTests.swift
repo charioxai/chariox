@@ -55,3 +55,20 @@ import Testing
     #expect(detailsWire["action"] as? String == "native_details")
     #expect(detailsWire["agent_id"] as? String == "a")
 }
+
+@Test func skillsV2CreatesAProjectWithoutInventingAWorkspace() throws {
+    let encoded = try JSONEncoder().encode(SkillsV2CreateProjectRequest(name: "No folders"))
+    let wire = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    let payload = wire["CreateProject"] as! [String: Any]
+    #expect(payload["name"] as? String == "No folders")
+    #expect(payload["workspace_id"] == nil)
+    let response = Data(#"{"ProjectCreated":{"project":{"id":"project-empty","workspace_id":"","workspace_ids":[]}}}"#.utf8)
+    _ = try JSONDecoder().decode(SkillsV2ProjectCreatedResponse.self, from: response)
+}
+
+// MP-08 / MP-10 / MP-11: foundation versions cannot route users into unavailable RPCs.
+@Test func skillsV2RuntimeRequiresWiredKernelAndProtocol() {
+    #expect(!supportsSkillsV2Runtime(protocolVersion: 533, capabilities: []))
+    #expect(!supportsSkillsV2Runtime(protocolVersion: 532, capabilities: ["skills_v2_runtime"]))
+    #expect(supportsSkillsV2Runtime(protocolVersion: 533, capabilities: ["skills_v2_runtime"]))
+}

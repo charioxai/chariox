@@ -129,6 +129,14 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn create_project(
+        &self,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write().create_project(name, caller_user_id)
+    }
+
     pub(crate) fn rename_project(
         &self,
         project_id: &str,

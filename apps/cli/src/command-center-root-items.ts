@@ -13,7 +13,7 @@ export function buildCommandCenterRootItems(
     rootNodes.push(providerNamespaceRootItem(context.focusedProvider, context.providerCommandCatalogs))
   }
   const miscNodes = context.commandTree.find((node) => node.id === "misc")?.children?.map(mapNodeToItem) ?? []
-  return [...rootNodes, ...miscNodes, {
+  return [...rootNodes, ...miscNodes, ...(!rootNodes.some(n=>n.value.trim()==="/skills")?[{id:"skills-v2",label:"/skills",description:"Manage Chariox and Project skills",kind:"command" as const,value:"/skills"}]:[]), {
     id: "approvals", label: "/approvals", description: "Open pending approvals (Ctrl+G or F8)",
     kind: "command" as const, value: "/approvals",
   }]

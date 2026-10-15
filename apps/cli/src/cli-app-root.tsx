@@ -1,3 +1,6 @@
+import { tuiSkillsContext } from "./skills-context.js"
+import { SkillsComposerController } from "@chariox/kernel-client/skills-composer-controller"
+import { providerLabel, type SkillChip } from "@chariox/kernel-client/skills-client"
 import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
@@ -164,7 +167,7 @@ import {
   createStatusIndicatorRenderState,
 } from "./status-indicator-renderer.js"
 import { createRenderScheduler } from "./render-scheduler.js"
-import { createTranscriptSyntaxStyle } from "./theme.js"
+import { theme, createTranscriptSyntaxStyle } from "./theme.js"
 import {
   deriveWorkspaceShellContextForSession,
 } from "./workspace-shell-controller.js"
@@ -488,7 +491,19 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const workflowRegistrySuggestions = createWorkflowRegistrySuggestionController({
     client, sessionState, formatError,
   })
+  const [skillChips,setSkillChips]=createSignal<SkillChip[]>([])
+  let removeSkillChip:(index:number)=>void=()=>{}
+  const skillDrafts=new Map<string,{text:string;chips:SkillChip[]}>()
+  const skillsComposer=new SkillsComposerController({
+    draft:{key:()=>`${sessionState().id}:${focusedAgentId()??""}`,read:key=>skillDrafts.get(key)??null,write:(key,draft)=>skillDrafts.set(key,{text:draft.text,chips:draft.chips.map(c=>({...c}))})},
+    context:()=>tuiSkillsContext(sessionState(),focusedAgentId(),isAttached(),waitingRoomState().projectSelectionId,daemonDisconnected()),
+    provider:()=>focusedBackendProvider()??"",
+    read:()=>({text:promptTextController.currentText(),cursor:promptTextController.cursorOffset()}),
+    write:(text,cursor)=>{promptTextController.setText(text);promptTextController.setCursorOffset(cursor)},
+    send:r=>client.send(r),changed:()=>commandCenterController.sync(),render:(chips,remove)=>{setSkillChips(chips);removeSkillChip=remove},
+  })
   const commandCenterController = createCommandCenterController<BoxRenderable>({
+    skills:skillsComposer,
     getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState(), {
       surface: isAttached() ? "session" : "waiting_room",
       executionTargets: isAttached()
@@ -532,6 +547,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       })
     },
   })
+  createEffect(()=>{focusedAgentId();currentProviderSelection();daemonDisconnected();skillsComposer.sync(promptTextController.currentText())})
+  const disposeSkillsEvents=client.onKernelEvent(event=>{if(event.event==="skills_changed"){skillsComposer.invalidate();commandCenterController.sync()}})
+  onCleanup(disposeSkillsEvents)
   const syncCommandCenter = commandCenterController.sync
   const commandCenterOpen = commandCenterController.open
   const clearCommandCenter = commandCenterController.clear
@@ -1001,6 +1019,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    skillsComposer,
     onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
     handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
@@ -1158,6 +1177,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       fatalError={fatalError() !== null}
       themeRevision={themeRevision()}
       responsePaneRows={responsePaneRows}
+      skillChips={()=><box flexDirection="row">{skillChips().map((c,i)=><text fg={theme.textMuted} onMouseDown={()=>removeSkillChip(i)}>{` [$${c.selection.name} · ${c.selection.source==="native"?`From ${providerLabel(c.selection.provider)}`:"Chariox"}${c.invalid?" · RESELECT":""} ×] `}</text>)}</box>}
       promptPlaceholder={promptPlaceholder()}
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}

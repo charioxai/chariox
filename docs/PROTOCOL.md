@@ -373,6 +373,12 @@ binding the mutation hash, resolved source revisions and complete-content digest
 `mutate` requires that receipt ID. Home must verify its owner, scope, revision,
 expiry and reviewed staged bytes; approval must not fetch newer source content.
 
+MP-08 / MP-10 / MP-11: Project-scoped skills bind the Project ID, independent
+of Workspace membership. Local 533 adds `CreateProject { name }` /
+`ProjectCreated { project }` through the ordinary Project service/actor. A named
+Project can have `workspace_ids: []`; its legacy `workspace_id` shadow is empty,
+never an executable cwd. Add a Workspace before starting a provider session.
+
 Native TUI MCP and skill placement:
 
 - MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants
@@ -3693,6 +3699,11 @@ executable bits in their complete content identity. Old peers cannot omit the
 manifest: they require an upgrade before a v2 transfer or skill-using turn.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
+
+MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
+`skills_v2_runtime` capability in kernel status/relay discovery before routing
+Skills actions to V2. The unreleased 533/141 foundation does not advertise that
+capability: wire decoding alone is not a working list/load/dispatch runtime.
 
 The wire foundation alone is not an implemented catalog, destructive reset,
 provider delivery path or acceptance claim. Runtime rollout removes the old

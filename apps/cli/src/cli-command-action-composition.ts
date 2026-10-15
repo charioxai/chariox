@@ -1,3 +1,5 @@
+import { tuiSkillsContext } from "./skills-context.js"
+import { SkillsTuiController } from "./skills-tui-controller.js"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
@@ -50,21 +52,25 @@ import {
   unsetUserConfigValue,
 } from "./config-api.js"
 import {
+  listSkills,
+  installSkill,
+  updateSkill,
+  uninstallSkill,
+  importSkills,
+  getSkill,
+  grantAgentSkill,
+  revokeAgentSkill,
   getMcpServer,
   getConnector,
   getConnectorAdapter,
   getCredential,
   getEnvironment,
   getScript,
-  getSkill,
   grantAgentMcp,
   grantAgentConnector,
   grantAgentScript,
-  grantAgentSkill,
   importMcpServers,
-  importSkills,
   installMcpServer,
-  installSkill,
   listEnvironments,
   listConnectors,
   listConnectorAdapters,
@@ -72,7 +78,6 @@ import {
   listMcpServers,
   listHomeExtensionAudit,
   listScripts,
-  listSkills,
   registerEnvironment,
   registerConnector,
   registerConnectorAdapter,
@@ -86,12 +91,9 @@ import {
   revokeAgentMcp,
   revokeAgentConnector,
   revokeAgentScript,
-  revokeAgentSkill,
   syncRemoteExtensionManifest,
   uninstallMcpServer,
-  uninstallSkill,
   updateMcpServer,
-  updateSkill,
   validateScript,
   testConnector,
 } from "./extension-api.js"
@@ -199,6 +201,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  waitingRoomState?: () => {projectSelectionId?:string}
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
@@ -720,6 +723,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getMcpServer: (name) => getMcpServer(client, pendingWorkspaceTarget(), name),
     grantAgentMcp: (agentRef, name) => grantAgentMcp(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentMcp: (agentRef, name) => revokeAgentMcp(client, agentRef, name),
+    // Foundation callbacks remain reachable only while runtime admission is absent.
     listSkills: () => listSkills(client, pendingWorkspaceTarget()),
     installSkill: (sourcePath) => installSkill(client, pendingWorkspaceTarget(), sourcePath),
     updateSkill: (sourcePath) => updateSkill(client, pendingWorkspaceTarget(), sourcePath),
@@ -728,6 +732,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
     grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
+    skillsV2: new SkillsTuiController({
+      context:()=>tuiSkillsContext(sessionState(),focusedAgentId(),isAttached(),deps.waitingRoomState?.().projectSelectionId),
+      provider:()=>(sessionState() as RuntimeSession).agents.find(a=>a.id===focusedAgentId())?.provider??"",notice:appendNotice,send:r=>client.send(r),
+    }),
     listEnvironments: () => listEnvironments(client, pendingWorkspaceTarget()),
     getEnvironment: (name) => getEnvironment(client, pendingWorkspaceTarget(), name),
     registerEnvironment: (config) => registerEnvironment(client, pendingWorkspaceTarget(), config),

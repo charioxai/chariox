@@ -857,3 +857,100 @@ fn skills_v2_review_manual_active_load_survives_other_agents_receipt_tail() {
         "old acknowledgement remains idempotent"
     );
 }
+
+#[test]
+fn skills_v2_review_model_load_becoming_manual_does_not_block_continuation() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\n---\nBODY\n",
+    );
+    let skill = &set.catalogs[0].skills[0];
+    let receipt = SkillLoadRecord {
+        skill_id: skill.id.clone(),
+        digest: skill.digest.clone(),
+        session_id: "s".into(),
+        agent_id: "a".into(),
+        run_id: "r".into(),
+        prompt_id: "p".into(),
+        reason: SkillLoadReason::Model,
+        context_generation: "g1".into(),
+        delivered_at_ms: 1,
+    };
+    f.storage.record_load(&receipt).unwrap();
+    f.storage
+        .publish(
+            &SkillCatalogMutation {
+                scope: SkillScope::Chariox,
+                expected_revision: set.revision,
+                actions: vec![SkillCatalogAction::SetState {
+                    skill_id: skill.id.clone(),
+                    state: Some(SkillState::Manual),
+                }],
+            },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    for generation in ["g2", "after-reset"] {
+        let turn = service
+            .pinned_turn(
+                None,
+                "a",
+                "s",
+                "continue",
+                &[],
+                &[],
+                Some(128_000),
+                1.0,
+                8192,
+                generation,
+            )
+            .expect("past automatic delivery cannot block ordinary work after Manual");
+        assert!(turn.loaded.is_empty());
+        assert!(turn.metadata.is_empty());
+    }
+    let explicit = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "g4",
+        )
+        .unwrap();
+    assert_eq!(explicit.loaded.len(), 1);
+    assert_eq!(explicit.loaded[0].reason, SkillLoadReason::Explicit);
+    f.storage
+        .record_load(&SkillLoadRecord {
+            reason: SkillLoadReason::Explicit,
+            prompt_id: "p4".into(),
+            context_generation: "g4".into(),
+            delivered_at_ms: 4,
+            ..receipt
+        })
+        .unwrap();
+    let restored = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "continue",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "g5",
+        )
+        .unwrap();
+    assert_eq!(
+        restored.loaded.len(),
+        1,
+        "an acknowledged explicit Manual load stays active"
+    );
+}

@@ -1,3 +1,5 @@
+import { hasSkillReferences } from "@chariox/kernel-client/skills-client"
+import type { SkillSelection } from "@chariox/kernel-client/kernel-types-skills-v2"
 import type {
   PromptAttachmentPart,
   RuntimeAttachment,
@@ -43,11 +45,14 @@ export type NormalPromptSubmitControllerDeps = {
   beginSubmittedPromptUi: (rawPrompt: string) => SubmittedPromptUiSnapshot
   renderPromptTranscript: (prompt: string) => string
   appendUserPrompt: (text: string, agentId?: string | null, metadata?: TranscriptPromptMetadata) => void
+  skillsRuntimeAvailable?: () => Promise<boolean>
+  prepareSkillSelections?: (prompt:string,agentId:string)=>{selections:SkillSelection[]|null;restore():void}
   submitPrompt: (
     attachmentId: string,
     targetAgentId: string | null,
     prompt: string,
     attachments: PromptAttachmentPart[],
+    selections?: SkillSelection[] | null,
   ) => Promise<PromptSubmissionResult>
   applySessionState: (session: RuntimeSession) => void
   setStreamingAgentId: (agentId: string | null) => void
@@ -83,6 +88,7 @@ export function createNormalPromptSubmitController(
       const renderedPrompt = aliasRoute?.prompt ?? prompt
       const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
       let rejectedTarget: {sessionId: string; agentId: string} | undefined
+      let skillsPrompt: {selections:SkillSelection[]|null;restore():void}|null=null
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
         await deps.waitForPendingAgentFocusTransition()
@@ -122,8 +128,20 @@ export function createNormalPromptSubmitController(
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
+        skillsPrompt = deps.prepareSkillSelections?.(rawPrompt, addressedAgent?.id ?? targetAgentId ?? "") ?? null
+        let selections = skillsPrompt?.selections
+        const needsSkills = selections !== null && selections !== undefined || hasSkillReferences(prompt)
+        const selectedSkills = needsSkills && await deps.skillsRuntimeAvailable?.() === true
+        if (needsSkills && !selectedSkills) {
+          if (selections?.length) throw new Error("Skills v2 runtime is unavailable. Upgrade the kernel and reselect Skills chips.")
+          selections = null
+          skillsPrompt = null
+        }
+        if (aliasRoute && selectedSkills && !addressedAgent) {
+          throw new Error(`Agent alias @${aliasRoute.alias} is unavailable. Refresh and choose an agent before sending Skills.`)
+        }
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
-        const submission = await deps.submitPrompt(attachment.id, targetAgentId, prompt, attachments)
+        const submission = await deps.submitPrompt(attachment.id, selectedSkills ? addressedAgent?.id ?? targetAgentId : targetAgentId, prompt, attachments, selections)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(payload.session)
@@ -156,7 +174,7 @@ export function createNormalPromptSubmitController(
         deps.logError?.("prompt submission failed", {
           error: message,
         })
-        deps.restoreFailedPromptUi(submissionUi)
+        if(deps.restoreFailedPromptUi(submissionUi)) skillsPrompt?.restore()
         const transition = promptSubmissionFailureTransition({
           session: deps.getSession(),
           submittingAgentId: deps.getSubmittingAgentId(),

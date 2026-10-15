@@ -24,6 +24,8 @@ function commandNodesFromCatalogNodes(
   options: TerminalCommandCatalogProjectionOptions,
 ): CommandNode[] {
   return nodes.flatMap((node) => {
+    // MP-08 / MP-10 / MP-11: retired skill grants never become client controls.
+    if (/^\/skill(?:\s|$)/.test(node.value) || /^\/extension (?:grant|revoke|grants) skill(?:\s|$)/.test(node.value)) return []
     if (options.includeNode && !options.includeNode(node)) {
       return []
     }

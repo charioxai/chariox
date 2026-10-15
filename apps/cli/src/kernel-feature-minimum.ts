@@ -43,6 +43,7 @@ const features: Record<string, FeatureMinimum> = {
   RetryRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   GetManagedEnvironmentReimagePreflight: { feature: "Managed environment reimage preflight", minimum: requests.managedEnvironmentReimagePreflightMinimumProtocolVersion },
   AdjustProjectEnvironment: { feature: "Project environment adjustment", minimum: projectEnvironmentAdjustmentMinimumProtocolVersion },
+  SkillsV2: { feature: "Skills v2", minimum: 533 },
   GetKernelResourceTelemetry: { feature: "Kernel resource telemetry", minimum: requests.kernelResourceTelemetryMinimumProtocolVersion },
 }
 
@@ -86,7 +87,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Skills v2") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

@@ -582,6 +582,22 @@ impl SessionRuntimeStore {
         (Ok(LocalDaemonResponse::ProjectsListed { projects }), None)
     }
 
+    pub(super) async fn create_project(
+        &self,
+        request: crate::local::CreateProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .create_project(request.name, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectCreated { project });
+        (result, None)
+    }
+
     pub(super) async fn rename_project(
         &self,
         request: RenameProjectRequest,

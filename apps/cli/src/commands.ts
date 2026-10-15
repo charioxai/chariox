@@ -331,7 +331,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     return {
       kind: "skill",
       raw: trimmed,
-      args: trimmed.replace(/^\/skills?\s*/, "").trim().split(/\s+/).filter(Boolean),
+      args: skillsSlashArgs(trimmed.replace(/^\/skills?\s*/, "")),
     }
   }
   if (trimmed.startsWith("/env") || trimmed.startsWith("/environment")) {
@@ -606,4 +606,30 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     default:
       return false
   }
+}
+
+// MP-08 / MP-10 / MP-11: shell quoting for locators, exact JSON for content.
+function skillsSlashArgs(input: string): string[] {
+  const args: string[] = []
+  let start = 0
+  while (start < input.length) {
+    if (/\s/.test(input[start]!)) { start++; continue }
+    let end = start
+    let quote: string | null = null
+    let escaped = false
+    for (; end < input.length; end++) {
+      const char = input[end]!
+      if (escaped) { escaped = false; continue }
+      if (char === "\\" && quote !== "'") { escaped = true; continue }
+      if (quote) { if (char === quote) quote = null; continue }
+      if (char === '"' || char === "'") { quote = char; continue }
+      if (/\s/.test(char)) break
+    }
+    if (quote) throw new Error("Unterminated Skills source quote")
+    const raw = input.slice(start, end)
+    const content = args.at(-1) === "content" && (args[0] === "install" || args[0] === "update")
+    args.push(content && raw.startsWith('"') ? raw : tokenizeShellLine(raw)[0] ?? "")
+    start = end
+  }
+  return args
 }

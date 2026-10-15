@@ -254,3 +254,22 @@ for (const caller of ["owner", "relay-owner", "collaborator"] as const) {
     assert.match(text, /kernel=offline in Cloud/)
   })
 }
+
+// MP-08 / MP-10 / MP-11: every reachable foundation callback is wired in production.
+test("composed skill management retains all six foundation API callbacks", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const skill = { name: "review", description: "Review", path: "/owned/review", source: "installed", files: [] };
+    const client = { send: async (request: Record<string, unknown>) => {
+        requests.push(request);
+        if ("RelayStatus" in request) return {RelayStatus:{status:{capabilities:[]}}};
+        if ("SkillsV2" in request) throw new Error("foundation endpoint must not be called");
+        return { SkillsListed: { skills: [skill] }, Skill: { skill }, SkillInstalled: { skill }, SkillUpdated: { skill }, SkillUninstalled: { skill }, SkillsImported: { outcome: { provider: "codex", imported: [skill], skipped: [], errors: [] } } };
+    } };
+    const base = { ...makeCommandDeps(), client, options: {}, preferencesState: () => ({}), waitingRoomState: () => ({projectSelectionId: "default"}), sessionState: () => makeSession(), focusedAgentId: () => "agent-1", isAttached: () => true, pendingWorkspaceTarget: () => "/workspace", appendNotice: () => {}, flashFooter: () => {} };
+    const deps = new Proxy(base, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} });
+    const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps);
+    for (const args of [["list"], ["show", "review"], ["install", "/source"], ["update", "/source"], ["remove", "review"], ["import", "codex"]]) {
+        await handlers.handleSkillCommand({ kind: "skill", raw: "/skill " + args.join(" "), args });
+    }
+    assert.deepEqual(requests.filter(r => !("RelayStatus" in r)).map(r => Object.keys(r)[0]), ["ListSkills", "GetSkill", "InstallSkill", "UpdateSkill", "UninstallSkill", "ImportSkills"]);
+});

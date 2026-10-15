@@ -18,6 +18,7 @@ export type WorkspaceLayoutProps = {
   fatalError: boolean
   themeRevision: number
   responsePaneRows: () => number[][]
+  skillChips?: (()=>JSX.Element) | undefined
   promptPlaceholder: string
   promptInputMaxHeight: number
   promptKeyBindings: KeyBinding[]
@@ -335,6 +336,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
           gap={0}
           paddingTop={1}
         >
+          {props.skillChips?.()}
           <box overflow="hidden">
             <textarea
               ref={props.onPromptInputRef}

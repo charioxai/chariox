@@ -17,6 +17,7 @@ export type PromptTextController = {
   setSnapshot(text: string): void
   isProgrammaticMutation(): boolean
   syncSnapshot(): string
+  setCursorOffset(offset:number):void
   setText(text: string): void
   clear(): void
   cursorOffset(): number
@@ -69,6 +70,7 @@ export function createPromptTextController(
       snapshot = options.getPromptInput()?.plainText ?? ""
       return snapshot
     },
+    setCursorOffset(offset){const input=options.getPromptInput();if(input)input.cursorOffset=Math.max(0,Math.min(input.plainText.length,offset))},
     setText,
     clear() {
       const promptInput = options.getPromptInput()

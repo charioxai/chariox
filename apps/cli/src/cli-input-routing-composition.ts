@@ -1,3 +1,4 @@
+import { skillsRuntimeAvailable } from "@chariox/kernel-client/skills-client"
 import { cloudShellClient } from "./cloud-shell-client.js"
 import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
@@ -34,6 +35,7 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  skillsComposer?: import("@chariox/kernel-client/skills-composer-controller").SkillsComposerController
   cloudClient?: import("./cloud-client.js").CloudClient
 
   roomWorkflowsOwnsInput?: () => boolean
@@ -426,7 +428,9 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
     renderPromptTranscript,
     appendUserPrompt: deps.appendUserPrompt,
-    submitPrompt: (attachmentId, targetAgentId, prompt, attachments) =>
+    skillsRuntimeAvailable: () => skillsRuntimeAvailable(request => deps.client.send(request)),
+    prepareSkillSelections:(prompt,agentId)=>deps.skillsComposer?.submission(prompt,agentId)??{selections:null,restore:()=>{}},
+    submitPrompt: (attachmentId, targetAgentId, prompt, attachments,selections) =>
       submitPromptWithRecovery(
         deps.client,
         deps.sessionState().id,
@@ -437,6 +441,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         deps.sessionState,
         deps.options,
         deps.appLogger,
+        selections,
       ),
     applySessionState: deps.applySessionState,
     setStreamingAgentId: deps.setStreamingAgentId,

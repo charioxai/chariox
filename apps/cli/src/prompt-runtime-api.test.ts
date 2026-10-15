@@ -276,3 +276,57 @@ function agent(id: string, overrides: Partial<RuntimeSession["agents"][number]> 
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 / MP-11: v2 selection identity stays on the existing prompt lifecycle.
+test("Skills selections submit once with typed source identity and authoritative activity", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const selection = { source: "chariox" as const, skill_id: "skill", name: "review", catalog_revision: 7 };
+    const client = { send: async (request: Record<string, unknown>) => { if ("RelayStatus" in request) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}; requests.push(request); return "SkillsV2" in request ? { SkillsV2: { result: { kind: "submitted", outcome: { Started: { prompt: { id: "prompt", source_attachment_id: "attachment", target_agent_id: "agent-1", prompt: "$review", status: "Running" } } } } } } : { SessionState: { session: runtimeSession("session-1"), agent_activity: { "agent-1": { status: "working", busy: true } }, agent_activity_revision: 3 } }; } } as unknown as LocalIpcClient;
+    const result = await submitPromptWithRecovery(client, "session-1", "attachment", "agent-1", "$review", [], () => runtimeSession("session-1"), {} as CliOptions, null, [selection]);
+    assert.equal(requests.length, 2);
+    assert.deepEqual((requests[0] as {
+        SkillsV2: {
+            selections: unknown[];
+        };
+    }).SkillsV2.selections, [selection]);
+    assert.equal(result.payload.session.agent_activity_revision, 3);
+});
+test("Skills refusal does not fall through to the retired prompt/grant path", async () => {
+    const requests: unknown[] = [];
+    const client = { send: async (request: any) => { if ("RelayStatus" in request) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}; requests.push(request); throw Error("Skills revision changed"); } } as unknown as LocalIpcClient;
+    await assert.rejects(() => submitPromptWithRecovery(client, "session-1", "attachment", "agent-1", "$review", [], () => runtimeSession("session-1"), {} as CliOptions, null, []), /revision changed/);
+    assert.equal(requests.length, 1);
+    assert.ok("SkillsV2" in (requests[0] as object));
+});
+
+// MP-08 / MP-10 / MP-11: compatible kernels need no Skills feature for dollars.
+test("literal dollars use SubmitPrompt on a pre-533 kernel", async () => {
+  for (const prompt of ["Explain $HOME", "Pay $20", String.raw`Escape \$review`, "Use `$review`", "```sh\n$review\n```", "Only $", "Explain the string \"hello $review world\"", "Explain 'hello $review world'", "    $review", "Paragraph\n    $review", "[read $review](https://example.com)", "[read](https://example.com/ $review )", "~~~\n$review\n~~~ not a closing fence\n$review", "``a ` $review``"]) {
+    const requests: unknown[]=[]
+    const client={send:async (request:Record<string,unknown>)=>{requests.push(request); if("SkillsV2" in request) throw Error("requires protocol 533");return {PromptSubmitted:{session:runtimeSession("session-1"),agent_activity:{},agent_activity_revision:1}}}} as unknown as LocalIpcClient
+    await submitPromptWithRecovery(client,"session-1","attachment","agent-1",prompt,[],()=>runtimeSession("session-1"),{} as CliOptions)
+    assert.ok("SubmitPrompt" in (requests[0] as object),prompt)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: a protocol foundation is not runtime admission.
+test("plain dollar skill text retains SubmitPrompt without advertised runtime", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const client = { send: async (request: Record<string, unknown>) => {
+        requests.push(request);
+        if ("RelayStatus" in request) return { RelayStatus: { status: { capabilities: [] } } };
+        if ("SkillsV2" in request) throw Error("foundation endpoint must not be called");
+        return { PromptSubmitted: { session: runtimeSession("session-1"), agent_activity: {}, agent_activity_revision: 1 } };
+    } } as unknown as LocalIpcClient;
+    await submitPromptWithRecovery(client, "session-1", "attachment", "agent-1", "Use $review", [], () => runtimeSession("session-1"), {} as CliOptions);
+    assert.equal(requests.filter(r => "SkillsV2" in r).length, 0);
+    assert.deepEqual(requests.at(-1), { SubmitPrompt: { session_id: "session-1", attachment_id: "attachment", target_agent_id: "agent-1", prompt: "Use $review", attachments: [] } });
+});
+
+// MP-08 / MP-10 / MP-11: never downgrade typed source identities.
+test("typed TUI chip refuses unadvertised runtime without a turn", async () => {
+  const calls:unknown[]=[];
+  const client={send:async(request:unknown)=>{calls.push(request);return {RelayStatus:{status:{capabilities:[]}}}}} as unknown as LocalIpcClient;
+  await assert.rejects(()=>submitPromptWithRecovery(client,"session-1","attachment","agent-1","Use $review",[],()=>runtimeSession("session-1"),{} as CliOptions,null,[{source:"chariox",skill_id:"s",name:"review",catalog_revision:1}]),/runtime.*unavailable/);
+  assert.deepEqual(calls,[{RelayStatus:null}]);
+});

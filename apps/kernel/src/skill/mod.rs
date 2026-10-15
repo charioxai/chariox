@@ -7,27 +7,28 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
-pub mod v2;
 pub mod catalog;
-pub mod frontmatter;
-pub mod resolver;
-pub mod selection;
-pub mod storage;
-pub mod service;
 #[cfg(test)]
 mod catalog_tests;
+pub mod frontmatter;
+mod package;
 #[cfg(test)]
 mod package_tests;
-mod package;
 mod provider_import;
+pub mod resolver;
+pub mod review;
+pub mod selection;
+pub mod service;
+pub mod storage;
 #[cfg(test)]
 mod tests;
+pub mod v2;
 
-pub(crate) use package::{package_skill_directory, verify_package as verify_skill_package};
 #[cfg(test)]
 pub(crate) use package::package_digest;
 pub(crate) use package::remote_skill_materialization_base;
 pub use package::{materialize_skill_package, CharioxSkillPackage, CharioxSkillPackageFile};
+pub(crate) use package::{package_skill_directory, verify_package as verify_skill_package};
 pub use provider_import::{
     discover_provider_skill_import_candidates, import_claude_skills, import_codex_skills,
     import_opencode_skills, ProviderSkillImportCandidate, ProviderSkillImportDiscovery,
