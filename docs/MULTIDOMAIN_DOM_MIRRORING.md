@@ -687,10 +687,10 @@ Controller fixtures supplement these drills and do not close their acceptance.
 ### MP-08 / MP-10 / MP-11: ordinary first-snapshot cap (2026-10-15)
 
 Ordinary documents (at most 10,000 native elements) serialize atomically until
-completion or 4 MiB of record data. This keeps a site's header/templates from
+completion or 8 MiB of record data. This keeps a site's header/templates from
 replacing the previous page before its form or file list arrives. The cap is
 evaluated between records: one record is bounded at 1 MiB, so this is not a
-strict 4 MiB serialized-message limit. An open shadow tree also switches to
+strict 8 MiB serialized-message limit. An open shadow tree also switches to
 continuation at 20,000 records. Larger documents retain the existing 1,024-visit
 first prefix and bounded, viewer-credited continuation. Browserux 91599e472's
 bounded head-CSS exception remains on that large-document path.
@@ -705,6 +705,10 @@ This internal snapshot budget changes no serialized shape or client floor.
 The initial 2 MiB candidate failed real hosted GitHub login at 1920×1080 DPR2:
 later CSS made resets stop at 2,117,536–2,119,117 record bytes with continuation
 pending. That record-work cap can be reached before the form despite much
-smaller deduplicated/compressed wire data. The final 4 MiB cap covers this
-ordinary-document range; over-cap documents still continue. Resets for lost
-base/recovery use the same producer policy as first attachment/navigation.
+smaller deduplicated/compressed wire data. A later hosted GitHub repository
+check also exhausts 4 MiB after 946–955 records, while the complete native page
+has 2,346–2,518 elements. Its viewer shows only the header. The 8 MiB cap covers
+that larger ordinary-document range; over-cap documents still continue.
+Resets for lost base/recovery use the same producer policy as first
+attachment/navigation. These observations and source regressions do not close
+the strict hosted fidelity, interactivity or stability gates.

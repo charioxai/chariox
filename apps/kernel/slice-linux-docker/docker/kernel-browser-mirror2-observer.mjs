@@ -403,19 +403,19 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
       return mirrored(node) ?? null;
     };
-    // MP-08/MP-10: ordinary documents stay atomic up to 4 MiB of records. A
+    // MP-08/MP-10: ordinary documents stay atomic up to 8 MiB of records. A
     // head/header prefix is not a usable navigation. Large documents keep the
     // bounded viewport prefix and viewer-driven continuations. The 532 transport
     // interleaves every reply in 16 KiB frames; atomic here never means one wire write.
     const chunk = (visits = 4096, minimum = 256) => {
-      const atomic = !progressive, limit = atomic ? 4 * 1024 * 1024 : 128 * 1024;
+      const atomic = !progressive, limit = atomic ? 8 * 1024 * 1024 : 128 * 1024;
       const out = [], end = performance.now() + 8; let bytes = budget.bytes;
       for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
         // Carry bounded head CSS with the first large-document viewport prefix
-        // (browserux 91599e472); ordinary resets count it inside their 4 MiB cap.
+        // (browserux 91599e472); ordinary resets count it inside their 8 MiB cap.
         if (!atomic && budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
         // Open shadow trees are absent from the native element count. The node
         // backstop and byte cap switch those documents to bounded continuation too.

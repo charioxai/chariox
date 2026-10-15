@@ -1337,10 +1337,10 @@ test('MP-08/MP-10 M2: large head style sheets do not push the visible viewport o
 }));
 
 test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still continue in bounded packets',()=>mirrored(
- '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(1500)+'</main>',async({next})=>{
+ '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(1000))+'</p>'+('<p>'+('content '.repeat(1000))+'</p>').repeat(1500)+'</main>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Visible heading'),'viewport heading precedes continuation');
- assert(JSON.stringify(first).length<5*1024*1024,'an ordinary reset stops at 4 MiB plus at most one bounded record');
+ assert(JSON.stringify(first).length<9*1024*1024,'an ordinary reset stops at 8 MiB plus at most one bounded record');
  const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
 }));
 
@@ -1362,4 +1362,14 @@ test('MP-10 M2: an ordinary document between two and four MiB is still one usabl
  const world=host.mirror.streams.get(subscription_id).world;
  assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the four MiB cap');
  assert(JSON.stringify(first).length<5*1024*1024,'record/message backstop remains bounded');
+}));
+
+// MP-08/MP-10/MP-11: current GitHub styles now exhaust 4 MiB before the file list.
+test('MP-10 M2: an ordinary document between four and eight MiB includes its destination in the reset',()=>mirrored(
+ '<body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(600)+'</header><main><h1>Complete destination after current site head</h1><input id="destination"></main></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Complete destination after current site head'),'a complete native page cannot be replaced by its header prefix');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false);
+ assert(JSON.stringify(first).length<9*1024*1024,'the ordinary reset retains a bounded byte cap');
 }));
