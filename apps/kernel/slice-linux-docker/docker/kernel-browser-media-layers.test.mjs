@@ -5,7 +5,8 @@ function fixture(){
  let listener,loader='doc',nodeName='VIDEO',backend=42,layers=[{backendNodeId:42,drawsContent:true,width:40,height:20}],paintOnly=false;const calls=[];
  const connection={subscribe(fn){listener=fn;return()=>{listener=null}},async send(method,p,sessionId){calls.push({method,sessionId});
   if(method==='LayerTree.enable')listener({sessionId,method:'LayerTree.layerTreeDidChange',params:{layers:paintOnly?[]:layers}});
-  if(method==='Page.captureScreenshot'&&paintOnly)listener({sessionId,method:'LayerTree.layerTreeDidChange',params:{layers}});
+  if(method==='Page.captureScreenshot')throw Error('MP-08: compositor evidence must not resize the visible surface');
+  if(method==='Runtime.evaluate'&&p.awaitPromise){if(paintOnly)listener({sessionId,method:'LayerTree.layerTreeDidChange',params:{layers}});return{result:{value:true}}}
   if(method==='Runtime.evaluate')return{result:{objectId:'media'}};
   if(method==='DOM.describeNode')return{node:{nodeType:1,nodeName,backendNodeId:backend}};
   return{};
@@ -15,9 +16,9 @@ function fixture(){
  const boxes=[{id:'n3',box:[20,20,40,20],media:true}];
  return{mirror,stream,boxes,calls,world,setLoader:v=>loader=v,setNode:v=>nodeName=v,setBackend:v=>backend=v,setLayers:v=>layers=v,afterPaint:()=>paintOnly=true,subscribed:()=>!!listener};
 }
-test('MP-08/MP-10/MP-11 static media needs a private paint before compositor evidence arrives',async()=>{
+test('MP-08/MP-10/MP-11 static media needs a frame commit without a screenshot resize',async()=>{
  const f=fixture();f.afterPaint();assert.equal((await mediaLayerEvidence(f.mirror,f.stream,f.boxes)).length,1);
- assert.equal(f.calls.filter(c=>c.method==='Page.captureScreenshot').length,1);
+ assert.equal(f.calls.filter(c=>c.method==='Page.captureScreenshot').length,0);
 });
 test('MP-11 only a real current media node in its compositor tree proves exclusion',async()=>{
  const f=fixture(),[proof]=await mediaLayerEvidence(f.mirror,f.stream,f.boxes);

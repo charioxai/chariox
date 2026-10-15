@@ -26,9 +26,11 @@ export async function mediaLayerEvidence(mirror,stream,boxes){
   });
   try{
    await connection.send('LayerTree.enable',{},sessionId);
-   // Enabling LayerTree alone may not commit a static visible page. This
-   // private readback requests a paint; discard its bytes, never publish them.
-   await connection.send('Page.captureScreenshot',{format:'png',fromSurface:true,clip:{x:0,y:0,width:1,height:1,scale:1}},sessionId);
+   // Enabling LayerTree alone may not commit a static visible page. Await
+   // its own frame ticks without a screenshot's temporary surface resize.
+   const tick=await connection.send('Runtime.evaluate',{contextId:nodes[0].world.contextId,awaitPromise:true,returnByValue:true,
+    expression:'new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),500);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})'},sessionId);
+   if(tick.exceptionDetails||tick.result?.value!==true)continue;
    if(!layers?.length)await Promise.race([ready,new Promise(r=>timer=setTimeout(r,500))]);
    if(!layers?.length)continue;
    for(const {box,world,loader,key} of nodes){

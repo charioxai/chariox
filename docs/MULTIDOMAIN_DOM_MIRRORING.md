@@ -356,6 +356,9 @@ world and requires its backend node in the same CDP session's current content
 layer tree, with the document loader unchanged before and after the read. OOPIF
 media needs that child's own observer/session; an unattached frame remains in
 the exact comparison. Missing or oversized layer evidence supplies no exclusion.
+Static layer evidence waits for the observed document's own animation-frame
+commit, with a bounded timeout. It does not take a screenshot that could resize
+the native surface merely to request layer metadata.
 
 Exclusions are clipped to the attested visible page, never native Chrome, and
 cover at most 75% of that page. Each box needs an exact three-device-pixel ring

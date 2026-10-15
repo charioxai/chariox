@@ -11,9 +11,9 @@ function fixture() {
     introduced: new Map([['n1', 3], ['n2', 3], ['n3', 3]]), identity: new Map(), world: { ref: 'observer', connection: { isOpen: () => true }, frame: { loaderId: 'doc' } } };
   stream.world.sessionId='s';stream.world.contextId=77;stream.world.frame.id='frame';
   let layerListener;
-  Object.assign(stream.world.connection,{subscribe(fn){layerListener=fn;return()=>{layerListener=null}},async send(method){
+  Object.assign(stream.world.connection,{subscribe(fn){layerListener=fn;return()=>{layerListener=null}},async send(method,params){
     if(method==='LayerTree.enable')layerListener?.({sessionId:'s',method:'LayerTree.layerTreeDidChange',params:{layers:[{backendNodeId:42,drawsContent:true,width:200,height:100}]}});
-    if(method==='Runtime.evaluate')return{result:{objectId:'media'}};
+    if(method==='Runtime.evaluate')return{result:params.awaitPromise?{value:true}:{objectId:'media'}};
     if(method==='DOM.describeNode')return{node:{nodeType:1,nodeName:'CANVAS',backendNodeId:42}};
     return{};
   }});
