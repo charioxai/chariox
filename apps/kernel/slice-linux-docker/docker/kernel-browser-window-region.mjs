@@ -51,8 +51,9 @@ export function overlayAttestation(reference,raw,masked){
  for(let i=0;i<n.length;i+=4)if(!masked?.[i/4]){compared++;
   if(Math.abs(n[i+2]-r[i]*k)<=2&&Math.abs(n[i+1]-r[i+1]*k)<=2&&Math.abs(n[i]-r[i+2]*k)<=2)inliers++;}
  if(compared<n.length/40)throw Error('MP-11: native overlay attestation masked');
- if(!(k>=0.25&&k<=0.75))throw Object.assign(Error('MP-11: native overlay without a scrim'),{scrim:k});
- if(inliers<compared*0.8)throw Error('MP-11: native overlay attestation mismatch');
+ const counts={scrim:k,inliers:inliers/compared};
+ if(!(k>=0.25&&k<=0.75))throw Object.assign(Error('MP-11: native overlay without a scrim'),counts);
+ if(inliers<compared*0.8)throw Object.assign(Error('MP-11: native overlay attestation mismatch'),counts);
  return {scrim:k,inliers:inliers/compared};
 }
 export function projectRegionMasks(regions,left,top){
@@ -115,7 +116,12 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
     const masked=attestationMask(masks,raw.width,raw.height);
     if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');
-    if(this.pageOverlay){const {scrim}=overlayAttestation(reference,raw,masked);this.timing(`native_overlay_admitted ${scrim.toFixed(3)}`,performance.timeOrigin+performance.now());}
+    // The scrim fades in: a refused frame is retried on a later readback (counts only are recorded).
+    if(this.pageOverlay)for(let attempt=0;;attempt++){
+     try{const {scrim,inliers}=overlayAttestation(reference,this.latest?.raw??raw,masked);this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${attempt}`,performance.timeOrigin+performance.now());break;}
+     catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${reference.width}x${reference.height}`,performance.timeOrigin+performance.now());
+      if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}
+    }
     else{const pixels=raw.pixels;
     for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
      (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))

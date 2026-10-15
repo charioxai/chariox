@@ -317,8 +317,9 @@ test("MP-08/MP-11 a scrim over the band's toolbar row offers the page area as on
     host.chromium.display = real;
     await windows.resolve();
     windows.refreshAuxiliary([{ id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 }]);
-    const width = 2560, frame = (value, dialog = null) => {
+    const width = 2560, frame = (value, dialog = null, strip = value) => {
       const pixels = Buffer.alloc(width * 174 * 4, value);
+      pixels.fill(strip, 0, width * 40 * 4); // the tab strip rows
       if (dialog) for (let y = 160; y < 174; y++) pixels.fill(255, (y * width + dialog[0]) * 4, (y * width + dialog[1]) * 4);
       return { width, height: 174, readRegion: (x, y, w, h) => Buffer.from(pixels.subarray((y * width + x) * 4, (y * width + x + w) * 4)) };
     };
@@ -326,6 +327,8 @@ test("MP-08/MP-11 a scrim over the band's toolbar row offers the page area as on
     assert.deepEqual(windows.auxiliaryState(), [], "clear toolbar");
     windows.observeBand(frame(242));
     assert.deepEqual(windows.auxiliaryState(), [], "a light change (the dropdown's shadow) is not a scrim");
+    windows.observeBand(frame(90, null, 255));
+    assert.deepEqual(windows.auxiliaryState(), [], "a dark toolbar row under a clear tab strip (the omnibox list) is not a scrim");
     windows.observeBand(frame(102, [832, 1728]));
     const [overlay] = windows.auxiliaryState();
     assert.deepEqual(overlay, { auxiliary_id: overlay.auxiliary_id, x: 0, y: 87, width: 1280, height: 800 }, "the whole page area below the band");

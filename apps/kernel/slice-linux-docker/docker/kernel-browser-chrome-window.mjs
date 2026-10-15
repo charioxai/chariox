@@ -27,9 +27,10 @@ export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windo
 
 // MP-08/MP-11 (coordinator 12:22Z): a browser-modal Chrome dialog (the Web Store's 'Add "…"?') draws a
 // scrim over the whole window, band included, and hangs from the toolbar: no X window, no CDP event.
-// The band's toolbar row just above it tells: its colour, learned while clear, dimmed (real Chrome 155:
-// 255 -> 102). While it holds, the page area streams natively as one more popup (Vault-masked, attested).
-export const TOOLBAR_ROW = 6;
+// The band tells: its tab strip row and its toolbar row just above the dialog, each a colour learned
+// while clear, both dimmed (real Chrome 155: 255 -> 102; the omnibox dropdown never covers the strip).
+// While it holds, the page area streams natively as one more popup (Vault-masked, attested).
+export const SCRIM_ROWS = [2, 81]; // DIP from the window top: the strip above its Tabs, the toolbar's bottom
 export function rowMode(bgr0) {
   const counts = new Map();
   for (let i = 0; i + 3 < bgr0.length; i += 4) { const key = bgr0[i] | bgr0[i + 1] << 8 | bgr0[i + 2] << 16; counts.set(key, (counts.get(key) ?? 0) + 1); }
@@ -139,18 +140,21 @@ export class ChromeWindows {
   }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
   observeBand(raw) {
-    const tabbed = this.bound?.tabbed, y = tabbed ? tabbed.content_top - TOOLBAR_ROW * tabbed.scale : -1;
-    if (!tabbed?.isCurrent() || !raw || y < 0 || raw.width !== tabbed.bounds.width) return;
-    let row;
-    try { row = typeof raw.readRegion === 'function' ? raw.readRegion(0, y, raw.width, 1) : raw.pixels.subarray(y * raw.width * 4, (y + 1) * raw.width * 4); } catch { return; }
-    const {luminance, share} = rowMode(row);
-    if (share < 0.6) return;
-    if (!this.modal) this.toolbar = Math.max(this.toolbar ?? 0, luminance);
-    const modal = this.toolbar >= 384 && luminance <= this.toolbar * 0.75 && luminance >= this.toolbar * 0.2;
+    const tabbed = this.bound?.tabbed;
+    if (!tabbed?.isCurrent() || !raw || raw.width !== tabbed.bounds.width || raw.height < SCRIM_ROWS[1] * tabbed.scale) return;
+    const modes = [];
+    for (const dip of SCRIM_ROWS) {
+      const y = dip * tabbed.scale;
+      try { modes.push(rowMode(typeof raw.readRegion === 'function' ? raw.readRegion(0, y, raw.width, 1) : raw.pixels.subarray(y * raw.width * 4, (y + 1) * raw.width * 4))); } catch { return; }
+    }
+    if (modes.some(mode => mode.share < 0.6)) return;
+    this.clear ??= SCRIM_ROWS.map(() => 0);
+    if (!this.modal) modes.forEach((mode, i) => { this.clear[i] = Math.max(this.clear[i], mode.luminance); });
+    const modal = modes.every((mode, i) => this.clear[i] >= 384 && mode.luminance <= this.clear[i] * 0.75 && mode.luminance >= this.clear[i] * 0.2);
     if (modal !== !!this.modal) { this.modal = modal; this.refreshAuxiliary(this.rows); }
   }
-  /** The page overlay's attestation found no scrim (e.g. a darker theme): learn the toolbar again. */
-  relearnToolbar() { this.toolbar = 0; if (this.modal) { this.modal = false; this.refreshAuxiliary(this.rows); } }
+  /** The page overlay's attestation found no scrim (e.g. a darker theme): learn the band again. */
+  relearnToolbar() { this.clear = null; if (this.modal) { this.modal = false; this.refreshAuxiliary(this.rows); } }
   /** The omnibox dropdown's WebUI: visibility and geometry only (never its content). */
   async readOmnibox() {
     const connection = this.host.browser.connection;
