@@ -690,10 +690,11 @@ impl KernelBrowserHost {
         // MP-08/MP-10/MP-11: a read-only state poll waits for the page's reconcile; input
         // must not queue behind it. The ledger ignores observations older than its newest.
         let state = method == "host.browser" && params["op"] == "state";
-        let long_poll =
-            method == "host.browser" && params["op"] == "mirror_next" && params["wait_ms"].is_u64();
+        // MP-08/MP-10: an implicit/zero-wait credit can still wait for a
+        // reset snapshot or CDP. It must leave the same input lane free.
+        let mirror_credit = method == "host.browser" && params["op"] == "mirror_next";
         let mut result = if display
-            || long_poll
+            || mirror_credit
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")
