@@ -48,6 +48,8 @@ pub struct NativeSkillInventory {
     pub revision: String,
     // Execution-local paths are deliberately absent from the serialized entry.
     paths: BTreeMap<String, PathBuf>,
+    physical_digests: BTreeMap<String, String>,
+    provenance: NativeSkillProvenance,
 }
 
 fn failure(message: &str) -> DaemonError {
@@ -92,6 +94,7 @@ impl NativeSkillInventory {
         binding.validate()?;
         let mut entries = Vec::new();
         let mut paths = BTreeMap::new();
+        let mut physical_digests = BTreeMap::new();
         for candidate in candidates {
             let entry_id =
                 hash(format!("{}\0{}", candidate.name, candidate.skill_file.display()).as_bytes());
@@ -115,6 +118,7 @@ impl NativeSkillInventory {
                     .ok_or_else(|| failure("native skill has no package root"))
                     .and_then(package_skill_directory);
                 if let Ok(package) = packaged {
+                    physical_digests.insert(entry_id.clone(), package.version_hash.clone());
                     use base64::Engine;
                     let body = package
                         .files
@@ -204,7 +208,7 @@ impl NativeSkillInventory {
         // The fingerprint binds all discovery inputs and package contents/modes.
         let revision = hash(
             format!(
-                "{binding:?}\0{}",
+                "{binding:?}\0{}\0{physical_digests:?}",
                 serde_json::to_string(&entries)
                     .map_err(|_| failure("cannot fingerprint native inventory"))?
             )
@@ -222,6 +226,8 @@ impl NativeSkillInventory {
             entries,
             revision,
             paths,
+            physical_digests,
+            provenance: binding.into(),
         })
     }
 
@@ -372,6 +378,8 @@ pub fn codex_skill_candidates(
         .collect())
 }
 
+mod details;
+pub use details::{NativeSkillDetails, NativeSkillProvenance};
 mod execution;
 pub(crate) use execution::capture_launch_skill_environment;
 pub use execution::{inventory_for_run, NativeSkillDiscoveryRequest};

@@ -90,7 +90,10 @@ for (const origin of ["native", "chariox", "stale", "provider", "pending", "user
       upstreamEndpoint: `ws://127.0.0.1:${address.port}`,
       client: { send: async (request: Record<string, unknown>) => {
         requests.push(Object.keys(request)[0]!)
-        if ("SubmitPrompt" in request) return { PromptSubmitted: { outcome: { Started: { prompt: { id: "kernel-prompt" } } }, session } }
+        if ("SkillsV2" in request) {
+          assert.equal((request.SkillsV2 as { action: string }).action, "submit")
+          return { SkillsV2: { result: { kind: "submitted", outcome: { Started: { prompt: { id: "kernel-prompt" } } } } } }
+        }
         if ("GetSessionState" in request) return { SessionState: { session: structuredClone(session) } }
         if ("CancelActivePrompt" in request) {
           if (origin === "transition") {
