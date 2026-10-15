@@ -37,9 +37,29 @@ test('MP-08/MP-10/MP-11 scheduler attribution records only input waiting time',(
  assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);adapter.scheduleRequest(native);
  assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});adapter.handleRequest(native,{});
  assert.equal(events.length,2);for(const event of events){assert.equal(event.length,2);assert.equal(event[0],'host_input_queue');assert(Number.isFinite(event[1]));}assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
- const read={method:'host.browser',params:{op:'state'}};
- assert.deepEqual(adapter.scheduleRequest(input),{kind:'barrier'});adapter.scheduleRequest(read);
- assert.equal(adapter.handleRequest(input,{signal:null}),'result');adapter.handleRequest(read,{});
- assert.equal(events.length,1);assert.equal(events[0].length,2);assert.equal(events[0][0],'host_input_queue');assert(Number.isFinite(events[0][1]));
  assert.equal(handled[0][0],input);assert.equal(handled[1][0],read);
+});
+
+test('MP-08/MP-10/MP-11 region target attribution spans completion without exposing the request',async()=>{
+ const events=[],gate=Promise.withResolvers();
+ const query={method:'host.browser',params:{op:'display_input_target',binding_id:'private-binding',input:{text:'private-input'}}};
+ const host={timing:(...args)=>events.push(args),handle:()=>gate.promise};
+ const adapter=timedHostRequests(host,()=>({kind:'barrier'}));
+ adapter.scheduleRequest(query);const result=adapter.handleRequest(query,{});
+ assert.deepEqual(events.map(e=>e[0]),['host_input_target_queue']);
+ gate.resolve('target');assert.equal(await result,'target');
+ assert.deepEqual(events.map(e=>e[0]),['host_input_target_queue','host_input_target']);
+ for(const e of events){assert.equal(e.length,2);assert(Number.isFinite(e[1]))}
+ assert(!JSON.stringify(events).includes('private-'));
+});
+
+test('MP-08/MP-10/MP-11 target attribution preserves sync results and failures',async()=>{
+ const query={method:'host.browser',params:{op:'display_input_target'}},events=[];
+ const failure=Error('private-failure');
+ const adapter=handle=>timedHostRequests({timing:(...args)=>events.push(args),handle},()=>null);
+ assert.equal(adapter(()=>7).handleRequest(query,{}),7);
+ assert.throws(()=>adapter(()=>{throw failure}).handleRequest(query,{}),error=>error===failure);
+ await assert.rejects(adapter(()=>Promise.reject(failure)).handleRequest(query,{}),error=>error===failure);
+ assert.equal(events.length,3);for(const e of events){assert.equal(e[0],'host_input_target');assert.equal(e.length,2);assert(Number.isFinite(e[1]))}
+ assert(!JSON.stringify(events).includes('private-'));
 });

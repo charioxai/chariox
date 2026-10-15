@@ -54,13 +54,22 @@ export function timedHostRequests(host, scheduleRequest) {
   const queued = new WeakMap();
   return {
     scheduleRequest(request) {
-      if (['host.browser','host.computer'].includes(request.method) && request.params?.op === 'input') queued.set(request, timestamp());
+      const target=request.method==='host.browser'&&request.params?.op==='display_input_target';
+      if (target||['host.browser','host.computer'].includes(request.method)&&request.params?.op==='input')
+        queued.set(request,{at:timestamp(),stage:target?'host_input_target_queue':'host_input_queue'});
       return scheduleRequest(request);
     },
     handleRequest(request, options) {
       const started = queued.get(request);
-      if (started !== undefined) { queued.delete(request); host.timing('host_input_queue', started); }
-      return host.handle(request, options);
+      if (started !== undefined) { queued.delete(request); host.timing(started.stage, started.at); }
+      if(request.method!=='host.browser'||request.params?.op!=='display_input_target')return host.handle(request,options);
+      // Native region input resolves its active Tab before ledger admission.
+      // Attribute that separate seam without logging a binding, key or payload.
+      const at=timestamp(),complete=()=>host.timing('host_input_target',at);
+      let result;
+      try{result=host.handle(request,options)}catch(error){complete();throw error}
+      if(result&&typeof result.then==='function')return Promise.resolve(result).finally(complete);
+      complete();return result;
     },
   };
 }
