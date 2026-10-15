@@ -90,6 +90,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
 
   try {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
+    // An explicit endpoint may name another machine or a local port forward.
+    // Its provider loopback address belongs to the owning kernel in both cases.
+    const useKernelTransport = remotePlacement || Boolean(options.relayUrl || options.kernelUrl
+      || process.env.CHARIOX_KERNEL_URL || process.env.CHARIOX_KERNEL_HOST)
     const created = options.sessionRef
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
@@ -124,7 +128,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     bindState.promise = Promise.resolve(run)
     bindState.run = run
-    const bridgedEndpoint = remotePlacement || options.relayUrl
+    const bridgedEndpoint = useKernelTransport
       ? await startCodexKernelTransport({ client, sessionId: session.id, attachmentId: attachment.id, agentId: agent.id, providerRunId: run.id })
       : { endpoint: run.structured_endpoint, close: async () => {} }
     const upstreamEndpoint = bridgedEndpoint.endpoint
@@ -138,7 +142,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       model: options.model,
       effort: options.effort,
       bindState,
-      inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
+      inlineLocalAttachments: useKernelTransport || promptAttachmentTransferIsForced(),
       debug: debugNativeCodex,
     })
     const proxyAddress = proxy.address()
