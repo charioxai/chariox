@@ -187,7 +187,27 @@ fn numbers(v: &str) -> Option<Vec<u32>> {
         .ok()
         .filter(|v| !v.is_empty() && v.len() <= 4)
 }
-pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum VersionSemantics {
+    Numeric,
+    Npm,
+}
+impl VersionSemantics {
+    pub(super) fn software(identity: &str, source: Option<&str>) -> Self {
+        if source == Some("npm package")
+            || matches!(identity, "node" | "npm" | "pnpm" | "yarn" | "bun" | "deno")
+        {
+            Self::Npm
+        } else {
+            Self::Numeric
+        }
+    }
+}
+pub(super) fn satisfies(
+    version: &str,
+    constraint: &str,
+    semantics: VersionSemantics,
+) -> Option<bool> {
     let v = numbers(version)?;
     let constraint = constraint.trim();
     if constraint == "*" {
@@ -196,7 +216,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
     if constraint.contains("||") {
         let mut accepted = false;
         for part in constraint.split("||") {
-            accepted |= satisfies(version, part)?;
+            accepted |= satisfies(version, part, semantics)?;
         }
         return Some(accepted);
     }
@@ -245,8 +265,8 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
         let e = numbers(expected)?;
         // MP-08 / MP-10: partial strict/upper comparators have the same bounds
         // as their explicit wildcard form; zero padding changes npm's meaning.
-        if e.len() < 3 && matches!(op, ">" | "<=") {
-            accepted &= satisfies(version, &format!("{op}{expected}.*"))?;
+        if semantics == VersionSemantics::Npm && e.len() < 3 && matches!(op, ">" | "<=") {
+            accepted &= satisfies(version, &format!("{op}{expected}.*"), semantics)?;
             continue;
         }
         let padded = |n: &[u32]| {
@@ -276,12 +296,16 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
 /// The admitted numeric grammar consists of unions of intervals/prefixes.
 /// A nonempty intersection contains zero, a declared boundary, or its successor.
 /// Unknown syntax stays unproven for Check rather than becoming a Save conflict.
-pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bool> {
+pub(super) fn constraints_overlap(
+    a: Option<&str>,
+    b: Option<&str>,
+    semantics: VersionSemantics,
+) -> Option<bool> {
     let (Some(a), Some(b)) = (a, b) else {
         return Some(true);
     };
-    satisfies("0.0.0.0", a)?;
-    satisfies("0.0.0.0", b)?;
+    satisfies("0.0.0.0", a, semantics)?;
+    satisfies("0.0.0.0", b, semantics)?;
     let mut candidates = std::collections::BTreeSet::from([[0u32; 4]]);
     for token in [a, b]
         .into_iter()
@@ -317,7 +341,7 @@ pub(super) fn constraints_overlap(a: Option<&str>, b: Option<&str>) -> Option<bo
     }
     for candidate in candidates {
         let version = candidate.map(|n| n.to_string()).join(".");
-        if satisfies(&version, a)? && satisfies(&version, b)? {
+        if satisfies(&version, a, semantics)? && satisfies(&version, b, semantics)? {
             return Some(true);
         }
     }

@@ -85,7 +85,7 @@ pub(super) fn check_platform(
                     facts.version = Some(v.clone());
                     match version_constraint
                         .as_deref()
-                        .map(|c| inventory::satisfies(&v, c))
+                        .map(|c| inventory::satisfies(&v, c, inventory::VersionSemantics::software(identity, install_source.as_deref())))
                     {
                         Some(Some(false)) => {
                             outcome(if owned{Outdated}else{Conflict},"version_mismatch","Installed version does not meet the requirement; Check never replaces or upgrades it")

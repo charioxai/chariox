@@ -138,9 +138,16 @@ fn envp04_inventory_constraints_and_unknowns_fail_closed() {
         ("1.5.0", "~1.4.0", false),
         ("1.4.9", "1.4.*", true),
     ] {
-        assert_eq!(inventory::satisfies(v, c), Some(want), "{v} {c}");
+        assert_eq!(
+            inventory::satisfies(v, c, inventory::VersionSemantics::Npm),
+            Some(want),
+            "{v} {c}"
+        );
     }
-    assert_eq!(inventory::satisfies("22.3.1", "latest"), None);
+    assert_eq!(
+        inventory::satisfies("22.3.1", "latest", inventory::VersionSemantics::Npm),
+        None
+    );
     assert_eq!(
         inventory::version("opaque-shell-check", &[]),
         Err("unsupported_inventory")

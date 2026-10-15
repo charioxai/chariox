@@ -47,10 +47,6 @@ impl Cache {
         {
             return (previous, false);
         }
-        // At most two refreshes; repeated snapshots never queue unbounded I/O.
-        if entries.values().filter(|e| e.refreshing).count() >= 2 {
-            return (previous, false);
-        }
         if entries.len() >= 128 && !entries.contains_key(query) {
             let victim = entries
                 .iter()
@@ -62,12 +58,17 @@ impl Cache {
                 return (previous, false);
             }
         }
-        let entry = entries.entry(query.clone()).or_insert_with(|| Entry {
+        // Retain a bounded pending entry even when both worker slots are busy.
+        entries.entry(query.clone()).or_insert_with(|| Entry {
             value: None,
             expires: Instant::now(),
             refreshing: false,
         });
-        entry.refreshing = true;
+        // At most two refreshes; repeated snapshots never queue unbounded I/O.
+        if entries.values().filter(|e| e.refreshing).count() >= 2 {
+            return (previous, false);
+        }
+        entries.get_mut(query).unwrap().refreshing = true;
         (previous, true)
     }
     fn finish(&self, query: Query, fresh: Option<Value>) {
@@ -104,6 +105,25 @@ impl Cache {
         }
         previous
     }
+    fn refresh_expired(self: &Arc<Self>) {
+        // MP-08 / MP-10: projection fast paths also call revision(). Schedule
+        // retries there so a failed/capacity-skipped cold read cannot strand
+        // its labels behind an unchanged successful-value generation.
+        let pending = self
+            .entries
+            .lock()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(_, e)| !e.refreshing && e.expires <= Instant::now())
+                    .map(|(query, _)| query.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for query in pending {
+            self.get(query);
+        }
+    }
     fn prime(&self, query: Query) -> Option<Value> {
         let (previous, refresh) = self.begin(&query);
         if !refresh {
@@ -128,6 +148,7 @@ fn refresh_query(query: Query) -> Option<Value> {
     }
 }
 pub(crate) fn revision() -> u64 {
+    cache().refresh_expired();
     cache().revision.load(Ordering::Acquire)
 }
 pub(crate) fn prime_launch_target() {
