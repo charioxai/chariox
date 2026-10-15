@@ -97,13 +97,14 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         if (payload.action === "catalog") return { SkillsV2: { result: {
           kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1,
         } } }
-        assert.equal(payload.action, "submit")
+        throw new Error("unexpected v2 submission in an ordinary native turn")
+      case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })
         if (["lifecycle", "steering-echo", "projected-cancel"].includes(mode)) {
           records.push(record("prompt_echo", "long prompt"), record("provider_reasoning", "thinking"))
         }
-        return { SkillsV2: { result: { kind: "submitted", outcome: { Started: { prompt: { id: "home-prompt", target_agent_id: "agent" } } } } } }
+        return { PromptSubmitted: { outcome: { Started: { prompt: { id: "home-prompt", target_agent_id: "agent" } } } } }
       case "SteerActivePrompt":
         assert.deepEqual(payload, {
           session_id: "session", attachment_id: "attachment", target_agent_id: "agent",

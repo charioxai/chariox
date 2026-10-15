@@ -1,4 +1,4 @@
-import { optionalNativeSkillCatalog, projectCodexSkillList } from "./skills-v2.js"
+import { nativeSkillCatalog, projectCodexSkillList } from "./skills-v2.js"
 import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import http from "node:http"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -252,13 +252,14 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     skillRefreshInFlight = true
     skillRefreshAt = Date.now()
     try {
-      const catalog = await optionalNativeSkillCatalog(options.client, options.sessionId, options.agentId)
+      const catalog = await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
       const fingerprint = JSON.stringify(catalog)
       if (skillCatalogFingerprint !== null && skillCatalogFingerprint !== fingerprint) {
         broadcastToNativeTuis({ method: "skills/changed", params: {} })
       }
       skillCatalogFingerprint = fingerprint
     } catch (error) {
+      skillCatalogFingerprint ??= "unavailable"
       options.debug("native_skill_refresh_failed", { error: formatError(error) })
     } finally { skillRefreshInFlight = false }
   }
@@ -307,12 +308,19 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
         }
       }
       if (pending.method === "skills/list" && pending.downstream.kind !== "kernel" && message.result) {
-        void optionalNativeSkillCatalog(options.client, options.sessionId, options.agentId).then(catalog => {
+        void nativeSkillCatalog(options.client, options.sessionId, options.agentId).then(catalog => {
           skillCatalogFingerprint = JSON.stringify(catalog)
           sendDownstream(pending.downstream, { ...routedMessage,
-            result: catalog ? projectCodexSkillList(message.result!, catalog) : message.result })
-        }).catch(error => sendDownstream(pending.downstream, { id: pending.originalId,
-          error: { code: -32000, message: formatError(error) } }))
+            result: projectCodexSkillList(message.result!, catalog) })
+        }).catch(error => {
+          // MP-08 / MP-10 / MP-11: this is an optional completion overlay.
+          // The upstream harness listing succeeded; preserve it even when a
+          // foundation/relay cannot expose the home catalog. Actual selections
+          // still require kernel validation before any provider turn starts.
+          skillCatalogFingerprint ??= "unavailable"
+          options.debug("native_skill_projection_failed", { error: formatError(error) })
+          sendDownstream(pending.downstream, routedMessage)
+        })
         return
       }
       sendDownstream(pending.downstream, routedMessage)

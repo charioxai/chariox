@@ -44,7 +44,7 @@ test("Off skill rejects the native turn before prompt admission", async () => {
 // than pretending the protocol foundation implements catalog/submit.
 const unavailable = () => new LocalIpcError("handle kernel response",
   "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build",
-  "local_transport_error", false)
+  "local_transport_error", true)
 for (const queued of [false, true]) test(`ordinary native text retains home admission without v2 (${queued ? "queued" : "started"})`, async () => {
   const requests: any[] = [], replies: any[] = [], started: string[] = []
   const client = { send: async (request: any) => {
@@ -91,7 +91,7 @@ for (const failure of [unavailable(), new Error("catalog authorization denied"),
 
 for (const failure of [new Error("catalog authorization denied"), new Error("socket closed"),
   new LocalIpcError("handle kernel response", "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build", "authorization_denied", false)]) {
-  test(`ordinary prompt does not hide a real catalog failure: ${failure.message}`, async () => {
+  test(`ordinary prompt preserves admission errors: ${failure.message}`, async () => {
     const requests: any[] = [], replies: any[] = []
     const client = { send: async (request: any) => {
       requests.push(request)
@@ -104,7 +104,8 @@ for (const failure of [new Error("catalog authorization denied"), new Error("soc
     ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
       bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
     assert.ok(replies[0].error)
-    assert.equal(requests.some(r => r.SubmitPrompt || r.SkillsV2?.action === "submit"), false)
+    assert.equal(requests.filter(r => r.SubmitPrompt).length, 1)
+    assert.equal(requests.some(r => r.SkillsV2), false)
   })
 }
 test("a v2 submission refusal never retries through legacy admission", async () => {
@@ -119,7 +120,7 @@ test("a v2 submission refusal never retries through legacy admission", async () 
   } } as unknown as LocalIpcClient
   const run = { id: "run" } as RuntimeProviderRun
   await handleCodexNativeTurnStart({ id: 21, method: "turn/start", params: { threadId: "display", input: [
-    { type: "text", text: "ordinary text" },
+    { type: "text", text: "use $review" },
   ] } }, { client, sessionId: "session", attachmentId: "attachment", agentId: "agent",
     bindState: { promise: Promise.resolve(run), run }, inlineLocalAttachments: false, debug: () => {} }, reply => replies.push(reply))
   assert.ok(replies[0].error)

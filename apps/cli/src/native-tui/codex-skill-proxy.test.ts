@@ -6,7 +6,8 @@ import WebSocket, { WebSocketServer } from "ws"
 import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import { startCodexProxy } from "./codex-proxy.js"
 
-for (const foundation of [false, true]) test(`native skill completion and hot reload (${foundation ? "foundation" : "v2"})`, { timeout: 5_000 }, async (t) => {
+for (const failureMode of ["none", "foundation", "relay-filtered", "transport"]) test(`native skill completion and hot reload (${failureMode})`, { timeout: 5_000 }, async (t) => {
+  const foundation = failureMode !== "none"
   const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   await once(upstream, "listening")
   const address = upstream.address()
@@ -24,7 +25,9 @@ for (const foundation of [false, true]) test(`native skill completion and hot re
       assert.equal(request.SkillsV2.action, "catalog")
       assert.equal(request.SkillsV2.agent_id, "agent")
       catalogRequests++
-      if (unavailable) throw new LocalIpcError("handle kernel response", "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build", "local_transport_error", false)
+      if (unavailable && failureMode === "transport") throw new Error("socket closed")
+      if (unavailable && failureMode === "relay-filtered") throw new LocalIpcError("handle kernel response", "external request failed; details are available only in the host terminal", "local_transport_error", true)
+      if (unavailable) throw new LocalIpcError("handle kernel response", "local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build", "local_transport_error", true)
       return { SkillsV2: { result: { kind: "catalog", revision, packages: [], native: [], metadata_budget_percent: 1,
         skills: [{ skill: { id: "home-skill", name: `chariox-${revision}`, description: "Current home instruction", short_description: null },
           effective_state: "manual", delivery: { kind: "chariox" }, project_override: null, also_in_provider: null }] } } }
