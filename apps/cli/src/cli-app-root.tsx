@@ -850,7 +850,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   onCleanup(recordPaneFirstFrame(renderer, () => primaryTranscriptRuntimeStore.transcriptRenderables.size > 0
     || responseVisibleAgents().some(agent => (agentPaneRuntimeStore.entryRenderables.get(agent.id)?.size ?? 0) > 0),
-    () => [...primaryTranscriptRuntimeStore.transcriptRenderables.values()].map(value => value.entry), false, props.bootstrap.onTranscriptFrame))
+    () => [...primaryTranscriptRuntimeStore.transcriptRenderables.values()].map(value => value.entry), false, props.bootstrap.onTranscriptFrame,
+    () => primaryTranscriptRuntimeStore.hasMountedSurface()
+      || responseVisibleAgents().some(agent => agentPaneRuntimeStore.hasMountedSurface(agent.id))))
   const {
     hydrateComposer, hydratePromptInputHistory, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,

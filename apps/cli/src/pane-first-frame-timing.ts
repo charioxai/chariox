@@ -29,6 +29,7 @@ export function recordPaneFirstFrame(
   mountedEntries: () => Iterable<TranscriptEntry> = () => [],
   cached = false,
   onFirstFrame?: () => void,
+  hasMountedSurface: () => boolean = hasMountedTranscript,
 ): () => void {
   const destination = process.env.CHARIOX_PANE_TIMING_FILE
   if (!destination && !onFirstFrame) return () => {}
@@ -37,16 +38,21 @@ export function recordPaneFirstFrame(
   const seen = new Set<string>()
   const seenUsers = new Set<string>()
   let recorded = false
+  let handedOff = false
   const write = (value: Record<string, unknown>) => {
     if (destination) appendFileSync(destination,
       JSON.stringify({ ...value, epochMs: Date.now(), elapsedMs: process.uptime() * 1000, pid: process.pid }) + "\n", { mode: 0o600 })
   }
   const sample = () => {
+    if (!handedOff && hasMountedSurface()) {
+      handedOff = true
+      onFirstFrame?.()
+      if (!destination) renderer.removePostProcessFn(sample)
+    }
     if (!recorded && hasMountedTranscript()) {
       recorded = true
-      onFirstFrame?.()
       write({ event: "pane_first_frame", ...(cached ? { cached: true } : {}) })
-      if (!prefix) renderer.removePostProcessFn(sample)
+      if (destination && !prefix) renderer.removePostProcessFn(sample)
     }
     if (!tagPattern) return
     const entries = [...mountedEntries()]

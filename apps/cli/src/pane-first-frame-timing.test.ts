@@ -100,3 +100,25 @@ test("MP-08 / MP-10 / MP-11 canonical frame handoff runs once without diagnostic
     else process.env.CHARIOX_PANE_TIMING_FILE = previous
   }
 })
+
+
+test("MP-08 / MP-10 / MP-11 empty surface handoff is not a first transcript receipt", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pane-empty-frame-")), path = join(root, "receipt.jsonl")
+  const oldPath = process.env.CHARIOX_PANE_TIMING_FILE, oldPrefix = process.env.CHARIOX_PANE_TIMING_PREFIX
+  process.env.CHARIOX_PANE_TIMING_FILE = path; delete process.env.CHARIOX_PANE_TIMING_PREFIX
+  let sample = () => {}, transcriptMounted = false, callbacks = 0
+  const renderer = { addPostProcessFn: (f: () => void) => { sample = f }, removePostProcessFn: () => {} } as unknown as CliRenderer
+  const dispose = recordPaneFirstFrame(renderer, () => transcriptMounted, () => [], false, () => { callbacks++ }, () => true)
+  try {
+    sample(); sample(); assert.equal(callbacks, 1); assert.equal(existsSync(path), false)
+    transcriptMounted = true; sample(); sample()
+    assert.equal(callbacks, 1)
+    const rows = readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line))
+    assert.equal(rows.length, 1); assert.equal(rows[0].event, "pane_first_frame")
+  } finally {
+    dispose()
+    if (oldPath === undefined) delete process.env.CHARIOX_PANE_TIMING_FILE; else process.env.CHARIOX_PANE_TIMING_FILE = oldPath
+    if (oldPrefix === undefined) delete process.env.CHARIOX_PANE_TIMING_PREFIX; else process.env.CHARIOX_PANE_TIMING_PREFIX = oldPrefix
+    rmSync(root, { recursive: true })
+  }
+})
