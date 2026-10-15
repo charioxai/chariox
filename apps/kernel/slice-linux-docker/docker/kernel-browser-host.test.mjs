@@ -558,13 +558,16 @@ test("MD-3 b220: cancelled pending input never inserts text", () => using(async 
   assert(!sent.some(call => call.method === "Input.insertText"));
 }));
 
-test("MD-3 b220: revocation between key transitions prevents further physical input", () => using(async ({ host, sent, connection }) => {
+test("MP-08/MP-11: revocation after a key press permits only its non-text release", () => using(async ({ host, sent, connection }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const cancel = new AbortController();
   connection.beforeSend = async (method, params) => { if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") cancel.abort(); };
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "key", key: "Enter" } }, { signal: cancel.signal }), error => error.code === "browser_action_cancelled");
-  assert.equal(sent.filter(call => call.method === "Input.dispatchKeyEvent").length, 1);
+  const keys=sent.filter(call => call.method === "Input.dispatchKeyEvent");
+  assert.deepEqual(keys.map(call=>call.params.type),["keyDown","keyUp"]);
+  assert.equal(keys[1].params.text,undefined);
+  assert.equal(keys[1].params.unmodifiedText,undefined);
 }));
 
 test("MD-3 b220: input rejects replacement documents and missing observation binding", () => using(async ({ host, sent, pages }) => {
