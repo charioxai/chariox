@@ -28,10 +28,12 @@ pub(crate) fn request_session_scope(
                 SkillsV2Request::Loads { session_id, .. }
                 | SkillsV2Request::List { session_id, .. }
                 | SkillsV2Request::Load { session_id, .. }
-                | SkillsV2Request::Submit { session_id, .. } => Some(SessionMembershipScope::SessionId(session_id.clone())),
+                | SkillsV2Request::Submit { session_id, .. } => {
+                    Some(SessionMembershipScope::SessionId(session_id.clone()))
+                }
                 _ => None,
             }
-        },
+        }
         LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -641,6 +643,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::CreateProject(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)

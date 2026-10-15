@@ -174,6 +174,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::ListProjects(request) => {
                 self.store.list_projects(request, caller_user_id).await
             }
+            LocalDaemonRequest::CreateProject(request) => {
+                self.store.create_project(request, caller_user_id).await
+            }
             LocalDaemonRequest::RenameProject(request) => {
                 self.store.rename_project(request, caller_user_id).await
             }

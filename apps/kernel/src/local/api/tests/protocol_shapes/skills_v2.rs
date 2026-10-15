@@ -1,5 +1,6 @@
 //! MP-08 / MP-10 / MP-11: Skills v2 wire regression checks; no live acceptance.
 use super::*;
+use crate::local::CreateProjectRequest;
 use crate::skill::v2::*;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
@@ -170,4 +171,29 @@ fn skills_v2_review_receipt_is_required_for_mutations_and_native_details_are_bou
         wire["review_receipt"]["sources"][0]["digest"],
         "b".repeat(64)
     );
+}
+
+#[test]
+fn skills_v2_folderless_project_protocol_533_snapshot() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
+    let request = LocalDaemonRequest::CreateProject(CreateProjectRequest {
+        name: "No folders".into(),
+    });
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"CreateProject":{"name":"No folders"}})
+    );
+    let project = crate::session::RuntimeProject::new(
+        "project-empty",
+        "owner",
+        "",
+        "No folders",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let wire = serde_json::to_value(LocalDaemonResponse::ProjectCreated { project }).unwrap();
+    assert_eq!(
+        wire["ProjectCreated"]["project"]["workspace_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(wire["ProjectCreated"]["project"]["workspace_id"], "");
 }
