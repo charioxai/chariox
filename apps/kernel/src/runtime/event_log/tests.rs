@@ -691,13 +691,13 @@ fn compaction_serializes_borrowed_events_in_global_order() {
     for (stream_id, event_ids) in [("a", vec![2, 4]), ("b", vec![1, 3])] {
         let mut stream = super::EventStream::default();
         for event_id in event_ids {
-            stream.retained.push_back(LoggedEvent {
+            stream.retained.push_back(Box::new(LoggedEvent {
                 event_id,
                 stream_id: stream_id.to_string(),
                 stream_seq: event_id,
                 recorded_at_ms: 1,
                 event: BorrowOnlyEvent("payload"),
-            });
+            }));
         }
         streams.insert(stream_id.to_string(), stream);
     }
@@ -890,6 +890,8 @@ fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
         path: path.clone(),
         file: None,
         file_bytes: Arc::new(AtomicU64::new(0)),
+        append_space: None,
+        space_reservation_started: false,
     };
     writer.append(b"first\nsecond\n").unwrap();
     std::fs::write(&side, b"second\n").unwrap();
@@ -909,6 +911,62 @@ fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
     drop(retired);
     drop(writer);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn growing_a_wrapped_retention_queue_does_not_relocate_existing_payloads() {
+    let mut stream = super::EventStream::default();
+    stream.retained.reserve(8);
+    let capacity = stream.retained.capacity();
+    let event = |id| LoggedEvent {
+        event_id: id,
+        stream_id: "a".to_string(),
+        stream_seq: id,
+        recorded_at_ms: 1,
+        event: id,
+    };
+    for id in 0..capacity as u64 {
+        stream.retain(event(id), 1);
+    }
+    for id in 0..capacity as u64 / 2 {
+        stream.drop_oldest();
+        stream.retain(event(capacity as u64 + id), 1);
+    }
+    let pointers = stream
+        .retained
+        .iter()
+        .map(|event| (event.event_id, std::ptr::from_ref(&event.event)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    stream.retain(event(2 * capacity as u64), 1);
+    assert!(stream.retained.capacity() > capacity);
+    for event in &stream.retained {
+        if let Some(previous) = pointers.get(&event.event_id) {
+            assert_eq!(*previous, std::ptr::from_ref(&event.event));
+        }
+    }
+}
+
+#[test]
+fn reserving_append_space_preserves_logical_bytes_and_append_position() {
+    use std::io::{Seek, Write};
+    let root = scratch_root("reserve-event-space");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"first\n").unwrap();
+    let position = file.stream_position().unwrap();
+    super::reserve_event_file_space(&file, 1024 * 1024);
+    assert_eq!(file.metadata().unwrap().len(), 6);
+    assert_eq!(file.stream_position().unwrap(), position);
+    file.write_all(b"second\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"first\nsecond\n");
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

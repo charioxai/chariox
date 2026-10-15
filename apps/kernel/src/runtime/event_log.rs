@@ -82,7 +82,8 @@ impl EventRetentionPolicy {
 #[derive(Debug)]
 struct EventStream<E> {
     next_stream_seq: u64,
-    retained: VecDeque<LoggedEvent<E>>,
+    // Grow pointer buffers rather than relocating every retained provider event.
+    retained: VecDeque<Box<LoggedEvent<E>>>,
     /// JSONL bytes of each retained event, in step with `retained`, so
     /// retention never re-serializes the events it drops.
     retained_sizes: VecDeque<u64>,
@@ -104,12 +105,12 @@ impl<E> Default for EventStream<E> {
 
 impl<E> EventStream<E> {
     fn retain(&mut self, event: LoggedEvent<E>, jsonl_bytes: u64) {
-        self.retained.push_back(event);
+        self.retained.push_back(Box::new(event));
         self.retained_sizes.push_back(jsonl_bytes);
         self.retained_jsonl_bytes = self.retained_jsonl_bytes.saturating_add(jsonl_bytes);
     }
 
-    fn drop_oldest(&mut self) -> Option<LoggedEvent<E>> {
+    fn drop_oldest(&mut self) -> Option<Box<LoggedEvent<E>>> {
         let event = self.retained.pop_front()?;
         let jsonl_bytes = self.retained_sizes.pop_front().unwrap_or(0);
         self.retained_jsonl_bytes = self.retained_jsonl_bytes.saturating_sub(jsonl_bytes);
@@ -206,8 +207,12 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
         timing.mark("serialize");
         let logged_jsonl_bytes = append_jsonl.len() as u64;
         stream.next_stream_seq += 1;
-        stream.retain(logged.clone(), logged_jsonl_bytes);
+        let retained = logged.clone();
+        timing.mark("clone");
+        stream.retain(retained, logged_jsonl_bytes);
+        timing.mark("retain");
         let pending = persistence.register_pending_event(&logged, logged_jsonl_bytes);
+        timing.mark("pending");
         let (reply_tx, reply_rx) = oneshot::channel();
         write_permit.send(PersistentEventWrite::Append {
             append_jsonl,
@@ -315,7 +320,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
                 .filter(|event| {
                     event.event_id > cursor_event_id && Some(event.event_id) != pending_event_id
                 })
-                .cloned()
+                .map(|event| event.as_ref().clone())
                 .collect(),
         )
     }
@@ -542,8 +547,11 @@ impl PersistentEventStore {
             path: path.clone(),
             file: None,
             file_bytes: Arc::clone(&file_bytes),
+            append_space: retention.max_total_bytes,
+            space_reservation_started: false,
         };
         writer.open()?;
+        writer.reserve_append_space(false);
         spawn_persistent_event_writer(
             writer,
             write_rx,
@@ -674,6 +682,7 @@ impl PersistentEventStore {
         self.skipped_compactions.store(0, Ordering::Release);
         let path = self.path.clone();
         let compacted_prefix_bytes = self.file_bytes.load(Ordering::Acquire);
+        let append_space = self.max_file_bytes_before_compaction;
         let write_tx = self.write_tx.clone();
         let compacting = Arc::clone(&self.compacting);
         let spawned = thread::Builder::new()
@@ -685,6 +694,7 @@ impl PersistentEventStore {
                     &side_path,
                     compacted_prefix_bytes,
                     &retained_event_ids,
+                    append_space,
                 )
                 .and_then(|()| {
                     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -759,6 +769,8 @@ struct EventFileWriter {
     path: PathBuf,
     file: Option<fs::File>,
     file_bytes: Arc<AtomicU64>,
+    append_space: Option<u64>,
+    space_reservation_started: bool,
 }
 
 impl EventFileWriter {
@@ -776,8 +788,42 @@ impl EventFileWriter {
             self.file_bytes
                 .store(file.metadata()?.len(), Ordering::Release);
             self.file = Some(file);
+            self.space_reservation_started = false;
         }
         Ok(())
+    }
+
+    fn reserve_append_space(&mut self, background: bool) {
+        let Some(limit) = self.append_space.filter(|_| cfg!(target_os = "linux")) else {
+            return;
+        };
+        if self.space_reservation_started
+            || self.file_bytes.load(Ordering::Acquire) < persistent_compaction_target_bytes(limit)
+        {
+            return;
+        }
+        self.space_reservation_started = true;
+        let Some(file) = self.file.as_ref() else {
+            return;
+        };
+        let file = match file.try_clone() {
+            Ok(file) => file,
+            Err(error) => {
+                warn_event_file_reservation(&error);
+                return;
+            }
+        };
+        if background {
+            if let Err(error) = thread::Builder::new()
+                .name("chariox-event-log-reserve".to_string())
+                .spawn(move || reserve_event_file_space(&file, limit))
+            {
+                warn_event_file_reservation(&error);
+            }
+        } else {
+            // A restored near-cap file reserves before clients can append.
+            reserve_event_file_space(&file, limit);
+        }
     }
 
     fn append(&mut self, payload: &[u8]) -> io::Result<()> {
@@ -791,6 +837,8 @@ impl EventFileWriter {
                 self.file_bytes
                     .store(complete_bytes + payload.len() as u64, Ordering::Release);
                 timing.mark("write");
+                self.reserve_append_space(true);
+                timing.mark("reserve_schedule");
                 timing.finish("event_file_append", "");
                 Ok(())
             }
@@ -830,6 +878,8 @@ impl EventFileWriter {
         // Keep both descriptors live across the rename. The compactor takes
         // the retired inode; the writer immediately appends to the new one.
         let retired = self.file.replace(side);
+        // The compactor reserved the new inode before handing it to us.
+        self.space_reservation_started = true;
         self.file_bytes.store(compacted_bytes, Ordering::Release);
         timing.mark("activate");
         timing.finish("event_file_swap", "");
@@ -964,7 +1014,7 @@ fn apply_retention<E>(
     streams: &mut BTreeMap<String, EventStream<E>>,
     retention: EventRetentionPolicy,
     now_ms: u64,
-) -> Vec<LoggedEvent<E>> {
+) -> Vec<Box<LoggedEvent<E>>> {
     let mut dropped = Vec::new();
     for stream in streams.values_mut() {
         while stream.retained.len() > retention.max_stream_events {
@@ -1017,7 +1067,7 @@ fn apply_retention<E>(
 
 /// Reaching the byte cap drops megabytes of events at once; free them beside
 /// the append instead of on it.
-fn release_dropped_events<E: Send + 'static>(dropped: Vec<LoggedEvent<E>>) {
+fn release_dropped_events<E: Send + 'static>(dropped: Vec<Box<LoggedEvent<E>>>) {
     if dropped.len() > 64 {
         let count = dropped.len();
         let _ = thread::Builder::new()
@@ -1060,6 +1110,7 @@ fn write_compacted_side_file(
     side_path: &Path,
     prefix_bytes: u64,
     retained_event_ids: &HashSet<u64>,
+    append_space: Option<u64>,
 ) -> io::Result<()> {
     #[derive(Deserialize)]
     struct RecordId {
@@ -1087,9 +1138,43 @@ fn write_compacted_side_file(
     }
     // Write the side file back here: renaming over the event file with unwritten
     // data would make the writer thread's swap flush it on the append path.
-    side.into_inner()
-        .map_err(io::IntoInnerError::into_error)?
-        .sync_data()
+    let side = side.into_inner().map_err(io::IntoInnerError::into_error)?;
+    if let Some(limit) = append_space {
+        reserve_event_file_space(&side, limit);
+    }
+    side.sync_data()
+}
+
+/// Reserve extents on startup or a background thread. KEEP_SIZE preserves JSONL
+/// length and replay bytes; failure only disables this optional optimization.
+fn reserve_event_file_space(file: &fs::File, limit: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let Some(limit_i64) = i64::try_from(limit).ok().filter(|limit| *limit > 0) else {
+            return;
+        };
+        let mut timing = crate::runtime::perf_timing::Phases::new();
+        // SAFETY: this descriptor is live; KEEP_SIZE changes allocation only.
+        let result =
+            unsafe { libc::fallocate(file.as_raw_fd(), libc::FALLOC_FL_KEEP_SIZE, 0, limit_i64) };
+        let error = (result != 0).then(io::Error::last_os_error);
+        timing.mark("allocate");
+        timing.finish("event_file_reserve", if result == 0 { limit } else { 0 });
+        if let Some(error) = error {
+            warn_event_file_reservation(&error);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (file, limit);
+}
+
+fn warn_event_file_reservation(error: &io::Error) {
+    crate::logging::warn_with_fields(
+        "daemon.event_log",
+        "event file append-space reservation unavailable",
+        serde_json::json!({"error": error.to_string()}),
+    );
 }
 
 fn warn_compaction_failed(path: &Path, error: &io::Error) {
