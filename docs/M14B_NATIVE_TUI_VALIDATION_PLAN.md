@@ -499,6 +499,23 @@ verify every output page arrives before failure is visible. The home-side
 `mp08_projection_paged_workflow_waits_for_final_failure_with_valid_output`
 is a supplementary regression, not that live workflow drill.
 
+MP-08 / MP-10 / MP-11 completed-receipt recovery must also cover a lost home
+submission acknowledgement with at least64 unprojected worker history records.
+Submit through the real client, queue a successor, interrupt only the owned home
+connection before its submission reply arrives, and let the real worker finish.
+Recover the same durable Dispatching prompt through normal reconnect/restart.
+Every scoped intermediate page must be applied and acknowledged before the exact
+prompt/run completion settles home and admits the successor once. Repeat with a
+lost page acknowledgement; output and settlement must remain exactly once.
+Record base failure and candidate recovery, actual history/delivery counts,
+client screenshots/recordings and owned cleanup. The
+`mp08_completed_receipt_reconciles_history_backlog_without_resubmitting`,
+`mp08_completed_receipt_reconciles_dispatching_prompt_with_history_backlog`,
+`mp08_completed_receipt_reacks_lost_ack_without_replaying_history` and
+`mp08_completed_receipt_rejects_unadmitted_history_page` checks are supplementary
+guards through actual receipt reconciliation and worker paging, with an encrypted
+test relay and a stub provider; they are not the real hosted client/provider drill.
+
 
 ### MP-08 / MP-10 / MP-11: native catalog backpressure and reload states
 

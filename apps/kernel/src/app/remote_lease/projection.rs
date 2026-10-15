@@ -1208,7 +1208,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     prompt.id() != expected
                         || !matches!(
                             prompt.status(),
-                            PromptStatus::Running | PromptStatus::Cancelling
+                            // MP-08 / MP-10 / MP-11: exact receipt recovery
+                            // precedes the lost submit ACK's status promotion.
+                            // Worker/run admission is still required below.
+                            PromptStatus::Dispatching
+                                | PromptStatus::Running
+                                | PromptStatus::Cancelling
                         )
                 })
             {

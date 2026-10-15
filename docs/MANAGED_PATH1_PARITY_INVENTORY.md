@@ -39,6 +39,17 @@ protocol snapshot/hash and focused real hosted drill are documented in
 MP-08/MP-10 acceptance. Current semantic review of the changed relay-admission
 anchors and exact-head real provider/Web/TUI recovery evidence are required.
 
+Completed-receipt reconciliation uses that same retained delivery path when a
+lost submission acknowledgement or home restart leaves a prompt in Dispatching.
+It applies and acknowledges scoped intermediate pages before consuming the exact
+prompt/run completion. A rejected page cannot prove recovery; a repeated head is
+re-acknowledged without replaying output, then yields to read-only reconciliation.
+Success requires the exact home prompt/run settlement record. The supplementary
+recovery guards exercise 130 real history-store records, page acknowledgements,
+lost acknowledgement retry, future-sequence rejection and single successor
+admission through the reconciliation entry point. They do not establish live
+provider, client, hosted recovery or MP-10 acceptance.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

@@ -22,6 +22,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
+mod completed_pages;
+
 #[derive(Clone)]
 struct ClaimTestRelayLifecycleProbe {
     started: std::time::Instant,
@@ -651,10 +653,31 @@ async fn receive_fake_worker_peer_request(
     worker_private_key: &str,
     lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
 ) -> FakeRelayPeerRequest {
+    receive_fake_worker_peer_request_with_timeout(
+        listener,
+        worker_id,
+        worker_machine_id,
+        worker_public_key,
+        worker_private_key,
+        lifecycle_probe,
+        std::time::Duration::from_secs(3),
+    )
+    .await
+}
+
+async fn receive_fake_worker_peer_request_with_timeout(
+    listener: &TcpListener,
+    worker_id: &str,
+    worker_machine_id: &str,
+    worker_public_key: &str,
+    worker_private_key: &str,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
+    timeout: std::time::Duration,
+) -> FakeRelayPeerRequest {
     if let Some((probe, operation)) = lifecycle_probe {
         probe.record(&format!("{operation}_worker_request_receive_started"), None);
     }
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+    let (stream, _) = tokio::time::timeout(timeout, listener.accept())
         .await
         .expect("fake relay should accept metadata connection")
         .expect("fake relay metadata listener should accept");
@@ -685,7 +708,7 @@ async fn receive_fake_worker_peer_request(
     .await;
     close_claim_test_discovery(&mut discovery, lifecycle_probe).await;
 
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+    let (stream, _) = tokio::time::timeout(timeout, listener.accept())
         .await
         .expect("fake relay should accept temporary peer connection")
         .expect("fake relay peer listener should accept");
@@ -3365,6 +3388,14 @@ mod projection_drain {
         )
         .expect("delivery metadata should persist");
 
+        // MP-08 / MP-10 / MP-11: home tracks the leased projection identity,
+        // while wire output/completions still carry the worker's raw run id.
+        // A raw-id flow-control fixture cannot be cleared by home settlement.
+        let projected_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            &provider_run_id,
+        );
+
         // This is a real run binding for flow-control, not a manually inserted active turn. The
         // run is ended only after the pre-completion snapshot so the public watch cannot invoke a
         // second local PTY settlement while the worker completion is being projected.
@@ -3377,7 +3408,7 @@ mod projection_drain {
         )
         .with_agent_id(agent.id());
         let mut home_run = crate::provider::RuntimeProviderRun::new(
-            &provider_run_id,
+            &projected_run_id,
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::External,
@@ -3394,10 +3425,10 @@ mod projection_drain {
         home_run.mark_running();
         app.providers_mut().insert_run_for_test(home_run.clone());
         app.sessions_mut()
-            .set_active_provider_run(session.id(), Some(provider_run_id.clone()))
+            .set_active_provider_run(session.id(), Some(projected_run_id.clone()))
             .expect("home run should be selected for the pre-completion snapshot");
         app.update_provider_run_projection(home_run.clone());
-        crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+        crate::transport::flow_control::note_prompt_started(&mut app, &projected_run_id);
 
         let initial_snapshot =
             crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(

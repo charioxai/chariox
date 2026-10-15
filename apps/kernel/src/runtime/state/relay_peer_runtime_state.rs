@@ -1045,11 +1045,12 @@ impl KernelRuntimeState {
         }
     }
 
+    /// True when the shared projector admitted this delivery (including a replay ACK).
     pub(crate) async fn project_relay_remote_runtime_projection(
         &self,
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         event: crate::transport::relay_peer::RelayPeerEvent,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
             home_session_id,
             home_agent_id,
@@ -1075,7 +1076,7 @@ impl KernelRuntimeState {
             })
             .await?;
         if !outcome.accepted {
-            return Ok(());
+            return Ok(false);
         }
         let acknowledgement = outcome.acknowledgement.clone();
         for intent in outcome.remote_dispatches {
@@ -1087,7 +1088,9 @@ impl KernelRuntimeState {
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
-        if let Some((provider, account_profile, state)) = provider_auth_observation.filter(|_| !outcome.replayed) {
+        if let Some((provider, account_profile, state)) =
+            provider_auth_observation.filter(|_| !outcome.replayed)
+        {
             self.apply_remote_slice_provider_auth_observation(
                 &agent_id,
                 &provider,
@@ -1107,7 +1110,7 @@ impl KernelRuntimeState {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn apply_remote_slice_provider_auth_observation(
