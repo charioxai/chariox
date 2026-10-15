@@ -122,3 +122,13 @@ test('MP-08/MP-10/MP-11 Notes observer causes and bounded code positions survive
  for(const noteObserverLine of [-1,0,257,NaN,'private-canary'])assert(!hostFailureMessage({code:'note_observer_type_error',noteObserverLine}).includes('note_observer:'));
  assert(!hostFailureMessage({code:'private-canary',noteObserverLine:42,message:'private-canary'}).includes('private-canary'));
 });
+
+// MP-08/MP-10/MP-11: observed generic native-band/region errors on the live BBC path.
+test('MP-08/MP-10/MP-11 host replies retain closed user-domain and display-region refusals',async()=>{
+ const {UserDomainRefusal}=await import('./kernel-browser-refusal.mjs');
+ for(const reason of ['not_focused_agent','foreign_owner','stale_epoch','stale_reference','not_granted','sensitive_requires_focus']){
+  const error=new UserDomainRefusal(reason);assert(hostFailureMessage(error).includes(error.code));
+ }
+ assert.match(hostFailureMessage(Error('MP-11: region lease retired')),/native_region_lease_retired/);
+ for(const error of [{code:'user_domain_private_canary'},{message:'MP-11: region lease retired private-canary'}])assert(!hostFailureMessage(error).includes('private'))
+});
