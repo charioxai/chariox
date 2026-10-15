@@ -38,7 +38,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   suppression and frame slots are retired before rebuilding. Cancellation
   keeps the fence ahead of the published sequence, forcing the next credit
   to rebuild a full base. Resource keys retain their document lifetime.
-  An ordinary document has a 20,000-record/2 MiB
+  An ordinary document has a 20,000-record/4 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
   continuation records. A same-document reset preserves an active root wheel
   target and submits that position through normal input under the newly applied
@@ -687,10 +687,10 @@ Controller fixtures supplement these drills and do not close their acceptance.
 ### MP-08 / MP-10 / MP-11: ordinary first-snapshot cap (2026-10-15)
 
 Ordinary documents (at most 10,000 native elements) serialize atomically until
-completion or 2 MiB of record data. This keeps a site's header/templates from
+completion or 4 MiB of record data. This keeps a site's header/templates from
 replacing the previous page before its form or file list arrives. The cap is
 evaluated between records: one record is bounded at 1 MiB, so this is not a
-strict 2 MiB serialized-message limit. An open shadow tree also switches to
+strict 4 MiB serialized-message limit. An open shadow tree also switches to
 continuation at 20,000 records. Larger documents retain the existing 1,024-visit
 first prefix and bounded, viewer-credited continuation. Browserux 91599e472's
 bounded head-CSS exception remains on that large-document path.
@@ -701,3 +701,10 @@ events with replies; it adds no unchunked bypass or new wire flag. The client
 still stages incomplete documents from the capped/large path and fences input
 from the held prior document. Same-document protection resets remain immediate.
 This internal snapshot budget changes no serialized shape or client floor.
+
+The initial 2 MiB candidate failed real hosted GitHub login at 1920×1080 DPR2:
+later CSS made resets stop at 2,117,536–2,119,117 record bytes with continuation
+pending. That record-work cap can be reached before the form despite much
+smaller deduplicated/compressed wire data. The final 4 MiB cap covers this
+ordinary-document range; over-cap documents still continue. Resets for lost
+base/recovery use the same producer policy as first attachment/navigation.

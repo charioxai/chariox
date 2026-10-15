@@ -1337,10 +1337,10 @@ test('MP-08/MP-10 M2: large head style sheets do not push the visible viewport o
 }));
 
 test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still continue in bounded packets',()=>mirrored(
- '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(600)+'</main>',async({next})=>{
+ '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(1500)+'</main>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Visible heading'),'viewport heading precedes continuation');
- assert(JSON.stringify(first).length<3*1024*1024,'an ordinary reset stops at 2 MiB plus at most one bounded record');
+ assert(JSON.stringify(first).length<5*1024*1024,'an ordinary reset stops at 4 MiB plus at most one bounded record');
  const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
 }));
 
@@ -1352,4 +1352,14 @@ test('MP-10 M2: ordinary navigation includes the form after a byte-heavy body he
  const world=host.mirror.streams.get(subscription_id).world;
  assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation leaves no unfinished body');
  assert(JSON.stringify(first).length<3*1024*1024,'ordinary resets retain a size cap');
+}));
+
+// MP-08/MP-10/MP-11: hosted GitHub's later CSS exceeds the initial 2MiB cap.
+test('MP-10 M2: an ordinary document between two and four MiB is still one usable reset',()=>mirrored(
+ '<head><style>body{margin:0}</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(300)+'</header><form><h1>Complete destination form</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Complete destination form'),'the ordinary form cannot be deferred behind a partial reset');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the four MiB cap');
+ assert(JSON.stringify(first).length<5*1024*1024,'record/message backstop remains bounded');
 }));
