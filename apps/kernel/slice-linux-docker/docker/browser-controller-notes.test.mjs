@@ -74,8 +74,8 @@ test('MD-N2 / MP-11: frame geometry refuses a missing isolated context without m
 
 // MP-08 / MP-11: a frame inherits protection from its owner element and every
 // ancestor of that owner, in same-process and out-of-process parents.
-function protectedFrameFixture({oopif=false,protectedOwner=null,ownerFails=null,quote=null}={}) {
-  const calls=[];
+function protectedFrameFixture({oopif=false,protectedOwner=null,ownerFails=null,quote=null,retireOnRead=false,protectOnRead=false}={}) {
+  const calls=[];let captured=false;
   const grandchild={frame:{id:'grandchild',parentId:'child',loaderId:'grandchild-d',url:'https://inner.test/'}};
   const child={frame:{id:'child',parentId:'top',loaderId:'child-d',url:'https://child.test/'},childFrames:oopif?[]:[grandchild]};
   const tree={frame:{id:'top',loaderId:'d',url:'https://fixture.test/'},childFrames:[child]};
@@ -86,13 +86,14 @@ function protectedFrameFixture({oopif=false,protectedOwner=null,ownerFails=null,
     if (method==='Target.getTargets') return {targetInfos:oopif?[{type:'iframe',targetId:'child'}]:[]};
     if (method==='Target.attachToTarget') return {sessionId:params.targetId};
     if (method==='Target.detachFromTarget') return {};
-    if (method==='Page.getFrameTree') return {frameTree:structuredClone(sessionTree(session))};
+    if (method==='Page.getFrameTree') {const current=structuredClone(sessionTree(session));if(retireOnRead&&captured){const visit=t=>{if(t.frame.id==='grandchild')t.frame.loaderId='replacement';for(const child of t.childFrames??[])visit(child)};visit(current)}return {frameTree:current}};
     if (method==='Page.createIsolatedWorld') return {executionContextId:contexts[params.frameId]};
     if (method==='DOM.getFrameOwner') {
       if (ownerFails===params.frameId) throw new Error('owner unavailable');
       return {backendNodeId:params.frameId==='child'?7:8};
     }
     if (method==='DOM.resolveNode') return {object:{objectId:`owner-${params.backendNodeId}`}};
+    if (method==='Runtime.callFunctionOn'&&protectOnRead&&captured)return{result:{value:true}};
     if (method==='Runtime.callFunctionOn') return {result:{value:params.objectId===`owner-${protectedOwner==='child'?7:8}`&&protectedOwner!==null}};
     if (method==='Runtime.releaseObject') return {};
     if (method==='DOM.getBoxModel') return {model:{content:[0,0,100,0,100,100,0,100]}};
@@ -100,6 +101,7 @@ function protectedFrameFixture({oopif=false,protectedOwner=null,ownerFails=null,
       if (params.expression===NOTE_OBSERVER_EXPRESSION) return {result:{value:true}};
       if (params.expression==='({width:innerWidth,height:innerHeight})') return {result:{value:{width:100,height:100}}};
       if (params.contextId!==44) return {result:{value:null}};
+      captured=true;
       if (quote) return {result:{value:{anchor_state:'attached',box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
       return {result:{value:{quote:{exact:'synthetic-private-context',prefix:'',suffix:''},box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
     }
@@ -124,4 +126,26 @@ test('MP-08 / MP-11: protected frame owners and owner ancestors hide every neste
       assert.equal((await protectedFrameFixture({oopif,ownerFails}).read()).selection,null,`fail closed ${ownerFails}`);
     }
   }
+});
+
+test('MP-08/MP-10/MP-11 unrelated iframe churn does not invalidate a main-document selection',async()=>{
+ let reads=0;
+ const root={id:'top',loaderId:'doc',url:'https://www.bbc.com/news'};
+ const connection={async send(method,params){
+  if(method==='Page.getFrameTree')return {frameTree:{frame:root,...(++reads>=3?{childFrames:[{frame:{id:'late-ad',parentId:'top',loaderId:'ad-doc'}}]}:{})}};
+  if(method==='Target.getTargets')return{targetInfos:[]};
+  if(method==='Runtime.evaluate')return{result:{value:params.expression===NOTE_OBSERVER_EXPRESSION?true:{quote:{exact:'BBC News',prefix:'',suffix:''},box_css:{x:1,y:2,width:30,height:10},hint:'range'}}};
+  throw Error('unexpected '+method);
+ }};
+ const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
+ const result=await observeBrowserNote(browser,{target_id:'tab',document_id:'doc'});
+ assert.equal(result.selection.quote.exact,'BBC News');
+});
+
+test('MP-08/MP-11 selected frame replacement still refuses same-process and isolated captures',async()=>{
+ for(const oopif of [false,true])await assert.rejects(protectedFrameFixture({oopif,retireOnRead:true}).read(),/MD-N2: frame changed during capture/);
+});
+
+test('MP-08/MP-11 a newly protected frame owner refuses the captured selection',async()=>{
+ for(const oopif of [false,true])await assert.rejects(protectedFrameFixture({oopif,protectOnRead:true}).read(),/MD-N2: frame changed during capture/);
 });

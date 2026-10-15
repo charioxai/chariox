@@ -200,16 +200,34 @@ export async function observeBrowserNote(browser, request) {
         if (!value || (request.quote && value.anchor_state!=='attached')) continue;
         if (value.box_css) value.box_css=await projectFrameBox(connection,item,value.box_css);
         if (value.hint) value.hint=JSON.stringify({frame_id:item.frame.id,document_id:item.frame.loaderId,range:value.hint});
-        candidates.push({value,url:item.frame.url});
+        candidates.push({value,url:item.frame.url,item});
       }
       if (candidates.length || ambiguous) break;
     }
-    // Recheck every owning tree before releasing a selection. A navigation or
-    // frame replacement cannot turn a captured box into a new-document anchor.
+    // Recheck the documents that own released text and their enclosing frames.
+    // Unrelated advertising frames may change while the selected document stays
+    // current; comparing the whole tree makes ordinary selection polling fail.
+    const required=new Set([frame.id]);
+    for (const candidate of candidates) for (let item=candidate.item;item;item=item.parent) required.add(item.frame.id);
+    const identities=tree=>{
+      const result=new Map();
+      const visit=tree=>{
+        if(required.has(tree.frame.id))result.set(tree.frame.id,[tree.frame.loaderId,tree.frame.parentId]);
+        for(const child of tree.childFrames??[])visit(child);
+      };
+      visit(tree);return result;
+    };
     for (const entry of entries) {
+      const before=identities(entry.tree);
+      if(!before.size)continue;
       const current=await connection.send('Page.getFrameTree',{},entry.sessionId);
-      if (JSON.stringify(current.frameTree)!==JSON.stringify(entry.tree)) throw new Error('MD-N2: frame changed during capture');
+      if(!current.frameTree?.frame)throw new Error('MD-N2: frame changed during capture');
+      const after=identities(current.frameTree);
+      for(const [id,identity]of before)if(JSON.stringify(after.get(id))!==JSON.stringify(identity))throw new Error('MD-N2: frame changed during capture');
     }
+    // Owner protection may have changed independently of the frame tree.
+    exposed.clear();
+    for(const candidate of candidates)if(!await frameExposed(candidate.item))throw new Error('MD-N2: frame changed during capture');
     const after=await readFrame();
     if (after?.loaderId!==frame.loaderId) throw new Error('MD-N2: document changed during capture');
     const chosen=candidates.length===1 && !ambiguous?candidates[0]:null;
