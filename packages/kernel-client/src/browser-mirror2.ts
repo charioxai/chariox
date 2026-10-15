@@ -348,6 +348,9 @@ export class BrowserMirror2Renderer {
   }
   // ---- DOM construction
   private create(record: Mirror2Record, doc: Document): Node {
+    // Replacement records reuse source IDs. Retire the old index before publishing
+    // the new node, so removing the old subtree cannot forget its replacement.
+    if (this.dom.has(record.id)) this.forget(record.id)
     let node: Node
     if (record.kind === 'text') node = doc.createTextNode(record.text ?? '')
     else if (record.kind === 'document' || record.kind === 'shadow') node = doc.createDocumentFragment()

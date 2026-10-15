@@ -737,3 +737,17 @@ test('MP-08/MP-10: delayed mirror layout cannot turn scroll anchoring into user 
     assert.equal((await page.evaluate(()=>window.sent)).filter(a=>a.kind==='scroll_to').length,0,'internal hydration must not send another user scroll');
   }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: replacement records reuse their source IDs.
+test('MP-08/MP-10/MP-11 replacement subtree retains its live index for subsequent deltas',async()=>{
+ const page=await viewer();try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'div'},{id:'n5',parent:'n4',kind:'element',tag:'button',attrs:{'aria-label':'replacement action'}}];
+  await apply(page,snapshot(nodes));
+  await apply(page,delta(2,[{op:'children',id:'n3',children:['n4'],nodes:nodes.slice(3)}]));
+  assert.equal(await page.evaluate(()=>window.r.dom.get('n4')===window.r.frame.contentDocument.querySelector('div')),true,'the visible replacement owns its source ID');
+  await apply(page,delta(3,[{op:'children',id:'n4',children:['n5','n6'],nodes:[{id:'n6',parent:'n4',kind:'text',text:'live update after replacement'}]}]));
+  assert.equal(await page.frameLocator('iframe').getByText('live update after replacement').isVisible(),true);
+  await page.frameLocator('iframe').getByRole('button',{name:'replacement action'}).click();
+  assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'),'replacement input retains its node ID');
+ }finally{await page.close()}
+});
