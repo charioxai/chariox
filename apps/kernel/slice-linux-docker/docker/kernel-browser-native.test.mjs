@@ -244,3 +244,19 @@ test('MP-11 a failed native spawn reclaims its private raster directory',async()
  try{await source.close();await assert.rejects(access(root),{code:'ENOENT'});}
  finally{const {rm}=await import('node:fs/promises');await rm(root,{recursive:true,force:true})}
 });
+
+for(const retire of ['metadata','document'])test(`MP-08/MP-10/MP-11: ${retire} retires pending pixels during live validation without a publish exception`,async()=>{
+ const timings=[],source=new LinuxCapture({connection:{presentationFence:{stable:()=>assert.fail('retired pixels must not enter presentation checks')}},timing:stage=>timings.push(stage)});
+ source.valid=()=>!source.closed;source.attested=true;let released=0;
+ source.pending={captured_ms:1,release(){released++}};
+ source.validateCurrent=async()=>{
+  if(retire==='document')source.fence();
+  else {source.regionRevision++;source.pending?.release();source.pending=null;}
+  return true;
+ };
+ try{
+  await source.publish();assert.equal(released,1);assert.equal(source.closed,retire==='document');
+  assert(!timings.some(s=>s.startsWith('native_publish_failed')),'normal retirement must not become a capture failure');
+  assert.equal(source.sample(),null);assert.equal(source.publishing,false);
+ }finally{await source.close()}
+});

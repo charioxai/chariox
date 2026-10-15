@@ -125,6 +125,10 @@ export class LinuxCapture {
    // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
    // Refuse a readback before any mask, encoder offer or delivery can consume it.
    if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
+   // MP-08/MP-10/MP-11: CDP may retire these pixels while the live
+   // binding is checked. A metadata refresh waits for a new readback;
+   // document retirement stays fenced. Never consume the cleared slot.
+   if(!this.pending||!this.valid())continue;
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
