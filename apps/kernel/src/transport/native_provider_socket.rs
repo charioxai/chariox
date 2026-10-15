@@ -265,6 +265,7 @@ impl NativeProviderSockets {
                 let id = connection_id.clone();
                 tokio::spawn(async move {
                     let mut socket = socket;
+                    let mut request_methods = BTreeMap::<String, String>::new();
                     let mut interval = tokio::time::interval(Duration::from_secs(1));
                     loop {
                         tokio::select! {
@@ -274,11 +275,32 @@ impl NativeProviderSockets {
                             }
                             frame = outbound.recv() => {
                                 let Some(frame) = frame else { break; };
+                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) {
+                                    if let (Some(id), Some(method)) = (value.get("id"), value.get("method").and_then(|v| v.as_str())) {
+                                        if request_methods.len() < 256 {
+                                            request_methods.insert(id.to_string(), method.into());
+                                        }
+                                    }
+                                }
                                 if authorize().await.is_err() || tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Text(frame.into()))).await.map_or(true, |result| result.is_err()) { break; }
                             }
                             message = socket.next() => {
                                 match message {
-                                    Some(Ok(Message::Text(frame))) => { let Ok(frame) = output_budget.reserve(frame.to_string()) else { break; }; if inbound.try_send(frame).is_err() { break; } }
+                                    Some(Ok(Message::Text(frame))) => {
+                                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) {
+                                            let method = value.get("id").and_then(|id| request_methods.remove(&id.to_string()));
+                                            if frame.len() > 128 * 1024 {
+                                                // MP-11: method names came from admitted display RPCs. No
+                                                // request id, frame, configuration or response body is logged.
+                                                crate::logging::info_with_fields(
+                                                    "daemon.native_display", "large native upstream response",
+                                                    serde_json::json!({"frame_bytes": frame.len(), "method": method}),
+                                                );
+                                            }
+                                        }
+                                        let Ok(frame) = output_budget.reserve(frame.to_string()) else { break; };
+                                        if inbound.try_send(frame).is_err() { break; }
+                                    }
                                     Some(Ok(Message::Ping(data))) => { if tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Pong(data))).await.map_or(true, |result| result.is_err()) { break; } }
                                     Some(Ok(Message::Pong(_))) => {}
                                     _ => break,

@@ -296,6 +296,16 @@ pub(super) async fn handle_daemon_request(
                     };
                 }
             };
+            if plaintext.len() > 128 * 1024 {
+                // MP-11: only the local response variant is public metadata.
+                // Never log response values, native frames or configuration.
+                let response_kind = serde_json::from_slice::<serde_json::Value>(&plaintext)
+                    .ok().and_then(|value| value.as_object().and_then(|object| object.keys().next().cloned()));
+                crate::logging::info_with_fields(
+                    "daemon.relay_client", "large relay daemon response",
+                    serde_json::json!({"response_kind": response_kind, "response_bytes": plaintext.len()}),
+                );
+            }
             if std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1") {
                 crate::logging::info_with_fields(
                     "daemon.request_timing",
