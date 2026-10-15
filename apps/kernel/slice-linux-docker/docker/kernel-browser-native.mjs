@@ -64,6 +64,8 @@ export class LinuxCapture {
    this.retireFrames();
   }
  }
+ /** A cached readback masked under the current projection (startup admits only such a sample). */
+ currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
  // Retire every published, queued and in-flight pixel of the current mask projection.
  retireFrames(){
   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
@@ -153,11 +155,13 @@ export class LinuxCapture {
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
+   // Review #1016 @05a700a84 P1: a re-projection during that await retired this raster's masks.
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
-   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
+   this.latest={raw,revision,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
   }}catch(error){this.timing(`native_publish_failed ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,60)}`,performance.timeOrigin+performance.now());this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
