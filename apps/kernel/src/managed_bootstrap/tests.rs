@@ -32,8 +32,8 @@ use super::{
 use crate::config::{DaemonConfig, ManagedRuntimeIdentity, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
-mod disposable_worker;
 mod cloud_enrollment;
+mod disposable_worker;
 
 #[test]
 fn ordinary_explicit_state_ignores_host_global_managed_receipt() {

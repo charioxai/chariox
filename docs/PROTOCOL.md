@@ -3710,3 +3710,14 @@ bind the merged identity. Existing client feature minima remain unchanged.
 Signed release transition admission retains main487/490/491 and signed-R515,
 plus the prior reviewed predecessors. These source gates do not establish a
 signed-image live acceptance result or mirror-v2 support.
+
+### MP-07 / MP-08 / MP-10 / MP-11: round T landing reconciliation
+
+Round T retains the coordinator-allocated local523 / peer131 identity after
+rebasing onto main520 / peer128. The union includes main's same-machine direct
+carriers and owner-managed context receipt contract, plus Path-1 schema-5 Vault
+packages and update diagnostics. Managed lifecycle capability retention uses
+existing ownership enrollment and receipt validation; it adds no wire fields.
+Upgrade admission retains released main520 as well as signed R515 and S523.
+Existing feature minima remain unchanged. These source checks do not establish
+signed-image or live ordinary/managed acceptance.

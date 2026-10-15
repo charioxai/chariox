@@ -365,8 +365,8 @@ fn credential_vault_status(
     crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, unix))]
 #[path = "user_config_executor_existing_token_tests.rs"]
 mod existing_token_tests;
+#[cfg(test)]
+mod tests;

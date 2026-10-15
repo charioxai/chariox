@@ -1128,7 +1128,9 @@ fn encode_vault_file(
     })?;
     // MP-08/MP-11: reject unrecoverable growth before replacing the owner Vault.
     if plaintext_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES - AUTH_TAG_LEN as u64 {
-        return Err(secret_error("Chariox Vault ciphertext exceeds its size limit".to_string()));
+        return Err(secret_error(
+            "Chariox Vault ciphertext exceeds its size limit".to_string(),
+        ));
     }
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
@@ -1143,7 +1145,9 @@ fn encode_vault_file(
     let serialized = serde_json::to_vec_pretty(&file)
         .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
     if serialized.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
-        return Err(secret_error("Chariox Vault file exceeds its size limit".to_string()));
+        return Err(secret_error(
+            "Chariox Vault file exceeds its size limit".to_string(),
+        ));
     }
     Ok(serialized)
 }
