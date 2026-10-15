@@ -1119,6 +1119,28 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::AcknowledgeLeasedRuntimeProjection {
+            leased_agent_id,
+            provider_run_id,
+            delivery,
+        } => {
+            match router
+                .relay_acknowledge_leased_runtime_projection(
+                    leased_agent_id,
+                    provider_run_id,
+                    delivery,
+                )
+                .await
+            {
+                Ok(accepted) => RelayPeerResponse::LeasedRuntimeProjectionAcknowledged { accepted },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
             let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
             match completion {
@@ -2436,6 +2458,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::SteerLeasedPrompt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::AcknowledgeLeasedRuntimeProjection {
             leased_agent_id, ..
         }
         | RelayPeerRequest::DrainLeasedRuntimeProjection {

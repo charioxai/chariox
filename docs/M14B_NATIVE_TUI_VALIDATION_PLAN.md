@@ -452,3 +452,41 @@ MCP/skill drills must validate:
   provider runs, permissions, attachment materialization, history, and status.
 - Any protocol shape changes must bump `LOCAL_DAEMON_PROTOCOL_VERSION`, update
   protocol snapshot/hash tests, and add a focused drill.
+
+
+## MP-07 / MP-08 / MP-10 / MP-11: receipted output recovery drill (531/139)
+
+Use the real built CLI/native Codex 0.159.3, real home and worker kernels,
+real hosted WSS relay, and the real product-linked Codex account. Record exact
+source and binary hashes. The validation turn uses gpt-6-luna with low effort.
+A local source test is supplementary; it does not accept this drill.
+
+1. From a fresh product session, attach the native TUI to the home session and
+   select the remote worker normally. Open the same session in the real web app
+   at DPR1 (1440×900 and1920×1080) and DPR2. Start a normal workspace tool turn.
+2. During output, interrupt only the owned client's/worker's relay connection,
+   including a reply-lost interval while the transport remains open. Keep the
+   real client uplink near8Mbit/s and real RTT at least60ms. Never use an internal
+   projection RPC as a substitute for the user's native/Web flow.
+3. Restore connectivity normally. The worker must replay the same delivery
+   sequence and bytes until home acknowledges it. Push and poll must use one
+   delivery head. A stale lease/run or a skipped acknowledgement must not consume
+   that head. Provider account state, prompts and output never enter transport
+   diagnostics.
+4. Watch the native and web recordings. The complete answer and tool result
+   must appear once, before the turn settles; the next normal prompt must work.
+   Reload using ordinary browser navigation at every density/window size. The
+   model, answer, tool result and history must restore without an error/blank
+   frame. Inspect screenshots and the recording, not only DOM assertions.
+5. Retain screenshots, body-free transport/receipt logs, canonical history
+   counts and exact commands outside Git. Show the base losing output and the
+   candidate recovering it. Only a review-clean, functional candidate proceeds
+   to the dedicated-worker two-hour gate. Release only this drill's processes,
+   account copies, state, stack, containers and copied binaries.
+
+Focused supplementary guards include
+`mp08_projection_lost_reply_replays_output_after_store_reopen`,
+`mp08_projection_acknowledgement_cannot_skip_or_cross_a_binding`,
+`mp08_projection_pages_retain_output_before_settlement_and_replay_exact_bytes`,
+`mp08_projection_home_deduplicates_replayed_output_and_rechecks_admission`,
+and `mp08_projection_delivery_531_139_snapshot_and_hash`.

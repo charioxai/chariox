@@ -13,7 +13,17 @@ use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 mod completion_scope;
+mod delivery;
+#[derive(Clone)]
+pub(crate) struct RemoteProjectionAcknowledgement {
+    pub(crate) binding: crate::agent::RemoteAgentBinding,
+    pub(crate) provider_run_id: String,
+    pub(crate) delivery: crate::transport::relay_peer::RelayProjectionDelivery,
+    receipt_key: String,
+}
 
+#[cfg(test)]
+mod delivery_tests;
 #[cfg(test)]
 mod history_tests;
 #[cfg(test)]
@@ -30,6 +40,8 @@ const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
 #[derive(Default)]
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
+    pub(crate) replayed: bool,
+    pub(crate) acknowledgement: Option<RemoteProjectionAcknowledgement>,
     pub(crate) completions: Vec<PromptCompletion>,
     /// A leased workflow turn failed on the worker's provider. Substitutes
     /// rerun only local turns, so the home settles it without one.
@@ -38,6 +50,7 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    #[cfg(test)]
     pub(crate) fn drain_leased_runtime_projection(
         &mut self,
         leased_agent_id: &str,
@@ -52,12 +65,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn drain_leased_runtime_projection_with_recovery(
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
+    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        self.build_leased_runtime_projection(
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            replay_settled_completion,
+            false,
+        )
+    }
+
+    fn build_leased_runtime_projection(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        pump_output: bool,
+        replay_settled_completion: bool,
+        retain_delivery: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         #[cfg(test)]
         if test_pause::is_paused(self.app, leased_agent_id) {
@@ -159,12 +190,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
         self.app.ensure_session_history_imported(&session)?;
-        let history_events = history_store.load_leased_projection_history(
+        let history_events = history_store.load_leased_projection_history_page(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
             provider_run_id,
             history_cursor.committed_sequence,
+            if retain_delivery {
+                64
+            } else {
+                u32::MAX as usize
+            },
         )?;
+        let projection_output_backlog = retain_delivery
+            && (history_events.len() == 64
+                || self.app.terminal.has_pending_output_records(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_attachment_id,
+                ));
         let mut pending_keys = leased_agent
             .projected_output_history_keys
             .iter()
@@ -736,6 +778,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
             provider_run_id,
             &mut completions,
         );
+        if projection_output_backlog {
+            if let Some(completion) = completions.last() {
+                if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                    agent.replayable_completion = Some(crate::execution_lease::LeasedCompletionReplay {
+                        provider_run_id: provider_run_id.into(),
+                        message_id: completion.message_id.clone(), completed_at_ms: completion.completed_at_ms,
+                        home_prompt_id: completion.home_prompt_id.clone(), settlement_status: completion.settlement_status,
+                        provider_termination: completion.provider_termination.clone(),
+                    });
+                }
+            }
+            completions.clear();
+        }
         if !completions.is_empty() {
             if backing_prompt_active
                 && !requires_explicit_completion
@@ -811,6 +866,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
         if replay_settled_completion
+            && !projection_output_backlog
             && completions.is_empty()
             && !backing_prompt_active
             && !explicit_completion_waiting
@@ -833,49 +889,69 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         history_cursor.latest_home_prompt_key = latest_home_origin_prompt_key;
+        let has_event = !output_chunks.is_empty()
+            || !notices.is_empty()
+            || !completions.is_empty()
+            || !prompts.is_empty()
+            || provider_run_changed
+            || (replay_settled_completion && provider_run.is_some());
+        let event = has_event.then(|| RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: lease.home_session_id,
+            home_agent_id: lease.home_agent_id,
+            provider_run_id: provider_run_id.to_string(),
+            delivery: None,
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+        });
+        let mut deliveries = Vec::new();
+        if retain_delivery {
+            if let Some(event) = event.as_ref() {
+                let sequence = history_store
+                    .leased_projection_delivery_sequence(&projection_id)?
+                    .checked_add(1)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "retain leased projection",
+                        message: "projection sequence exhausted".into(),
+                    })?;
+                deliveries = delivery::pages(
+                    event.clone(),
+                    crate::transport::relay_peer::RelayProjectionDelivery {
+                        execution_lease_id: leased_agent.lease_id.clone(),
+                        leased_agent_id: leased_agent.id.clone(),
+                        sequence,
+                    },
+                );
+            }
+        }
         if history_cursor != initial_history_cursor
             || !pending_keys.is_empty()
             || !history_keys.is_empty()
             || !tool_states.is_empty()
+            || !deliveries.is_empty()
         {
-            history_store.commit_leased_projection_cursor(
+            history_store.commit_leased_projection_cursor_with_delivery(
                 &projection_id,
                 &history_cursor,
                 &pending_keys.into_iter().collect::<Vec<_>>(),
                 &history_keys,
                 &tool_states.into_values().collect::<Vec<_>>(),
+                &deliveries,
             )?;
         }
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys = Vec::new();
-        }
-        if output_chunks.is_empty()
-            && notices.is_empty()
-            && completions.is_empty()
-            && prompts.is_empty()
-            && !provider_run_changed
-            && !(replay_settled_completion && provider_run.is_some())
-        {
-            return Ok(None);
-        }
-        if provider_run_changed {
-            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            if provider_run_changed {
                 agent.projected_provider_run = provider_run_projection;
             }
         }
-        Ok(Some((
-            lease.home_kernel_id,
-            RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: lease.home_session_id,
-                home_agent_id: lease.home_agent_id,
-                provider_run_id: provider_run_id.to_string(),
-                provider_run,
-                prompts,
-                output_chunks,
-                notices,
-                completions,
-            },
-        )))
+        Ok(deliveries
+            .into_iter()
+            .next()
+            .or(event)
+            .map(|event| (lease.home_kernel_id, event)))
     }
 
     fn settle_quiet_leased_prompt_if_needed(
@@ -969,9 +1045,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 },
             )?;
             let _ = self.recover_idle_leased_prompt_queue(&leased_agent.id)?;
-            if let Some(event) =
-                self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
-            {
+            if let Some(event) = self.drain_retained_leased_runtime_projection(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                false,
+            )? {
                 events.push(event);
             }
         }
@@ -1024,10 +1103,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<RemoteRuntimeProjectionOutcome, DaemonError> {
+        let outcome = self.apply_remote_runtime_projection(authority, event)?;
+        if outcome.accepted && !outcome.replayed {
+            if let Some(ack) = outcome.acknowledgement.as_ref() {
+                self.app
+                    .operational_history_store()
+                    .record_leased_projection_delivery_receipt(
+                        &ack.receipt_key,
+                        ack.delivery.sequence,
+                    )?;
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn apply_remote_runtime_projection(
+        &mut self,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
+        event: crate::transport::relay_peer::RelayPeerEvent,
+    ) -> Result<RemoteRuntimeProjectionOutcome, DaemonError> {
         let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
             home_session_id,
             home_agent_id,
             provider_run_id,
+            delivery,
             provider_run,
             prompts,
             output_chunks,
@@ -1051,14 +1150,52 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .peer
                 .authorize_worker(&remote.worker_kernel_id)
                 .is_err()
-            || authority
-                .expected_binding
-                .as_ref()
-                .is_some_and(|expected| expected != remote)
             || provider_run
                 .as_ref()
                 .is_some_and(|run| run.id() != provider_run_id)
         {
+            return Ok(outcome);
+        }
+        if let Some(delivery) = delivery {
+            if delivery.execution_lease_id != remote.execution_lease_id
+                || delivery.leased_agent_id != remote.leased_agent_id
+                || delivery.sequence == 0
+            {
+                return Ok(outcome);
+            }
+            let receipt_key = delivery::receipt_key(
+                session_id,
+                agent_id,
+                &remote.worker_kernel_id,
+                provider_run_id,
+                &delivery,
+            );
+            let applied = self
+                .app
+                .operational_history_store()
+                .leased_projection_delivery_sequence(&receipt_key)?;
+            if delivery.sequence > applied.saturating_add(1) {
+                return Ok(outcome);
+            }
+            outcome.acknowledgement = Some(RemoteProjectionAcknowledgement {
+                binding: remote.clone(),
+                provider_run_id: provider_run_id.into(),
+                delivery: delivery.clone(),
+                receipt_key,
+            });
+            if delivery.sequence <= applied {
+                // Duplicate push/poll/lost-ACK replies still receive an ACK after
+                // settlement cleared the active prompt/run. They never reapply.
+                outcome.accepted = true;
+                outcome.replayed = true;
+                return Ok(outcome);
+            }
+        } else if !cfg!(test) {
+            // Peer protocol139 requires receipted projection delivery. Historical
+            // unreceipted source fixtures are not accepted on the real wire.
+            return Ok(outcome);
+        }
+        if authority.expected_binding.as_ref().is_some_and(|expected| expected != remote) {
             return Ok(outcome);
         }
         if let Some(expected) = authority.expected_prompt_id.as_deref() {
@@ -3316,6 +3453,7 @@ mod explicit_completion_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: leased_agent.backing_session_id.to_string(),
                     home_agent_id: leased_agent.backing_agent_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
@@ -3387,6 +3525,7 @@ mod explicit_completion_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: leased_agent.backing_session_id.to_string(),
                     home_agent_id: leased_agent.backing_agent_id.to_string(),
                     provider_run_id: provider_run_id.to_string(),
@@ -3536,6 +3675,7 @@ mod mp11_projection_admission_tests {
                         "worker-kernel-1",
                     ),
                     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        delivery: None,
                         home_session_id: session.id().into(),
                         home_agent_id: agent.id().into(),
                         provider_run_id: "run".into(),
@@ -3621,6 +3761,7 @@ mod mp11_projection_admission_tests {
                 .project_remote_runtime_projection(
                     authority,
                     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        delivery: None,
                         home_session_id: session_id.to_string(),
                         home_agent_id: agent.id().to_string(),
                         provider_run_id: "run".to_string(),
@@ -3672,6 +3813,7 @@ mod mp11_projection_admission_tests {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: session.id().to_string(),
                     home_agent_id: agent.id().to_string(),
                     provider_run_id: "foreign-run".to_string(),

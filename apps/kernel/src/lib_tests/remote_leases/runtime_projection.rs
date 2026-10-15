@@ -112,6 +112,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: stale_run.id().to_string(),
@@ -200,6 +201,7 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: run.id().to_string(),
@@ -304,6 +306,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "worker-run-1".to_string(),
@@ -426,6 +429,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),
@@ -577,6 +581,7 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-exited".to_string(),
@@ -658,6 +663,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),
@@ -692,6 +698,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),
@@ -750,6 +757,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),
@@ -783,6 +791,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),
@@ -816,6 +825,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().to_string(),
                 home_agent_id: agent.id().to_string(),
                 provider_run_id: "remote:worker:provider-run-1".to_string(),

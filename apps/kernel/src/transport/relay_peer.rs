@@ -799,6 +799,11 @@ pub enum RelayPeerRequest {
         #[serde(default)]
         pump_output: bool,
     },
+    AcknowledgeLeasedRuntimeProjection {
+        leased_agent_id: String,
+        provider_run_id: String,
+        delivery: RelayProjectionDelivery,
+    },
     CompleteLeasedPrompt {
         leased_agent_id: String,
     },
@@ -1013,7 +1018,9 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
-    NativeProviderTransport { result: crate::local::NativeProviderTransportResult },
+    NativeProviderTransport {
+        result: crate::local::NativeProviderTransportResult,
+    },
     WorkflowNotificationSources {
         protocol_version: u32,
         sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
@@ -1129,6 +1136,9 @@ pub enum RelayPeerResponse {
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<RelayPeerEvent>,
+    },
+    LeasedRuntimeProjectionAcknowledged {
+        accepted: bool,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,
@@ -1292,6 +1302,15 @@ pub struct RelayProjectedPrompt {
     pub text: String,
 }
 
+// MP-08 / MP-10 / MP-11: allocated local531/peer139 projection delivery receipts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayProjectionDelivery {
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+    pub sequence: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerEvent {
@@ -1299,6 +1318,8 @@ pub enum RelayPeerEvent {
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<RelayProjectionDelivery>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_run: Option<crate::provider::RuntimeProviderRun>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2148,26 +2169,26 @@ mod workflow_notification_101_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 118,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 118,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 118,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 118,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 118,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2186,9 +2207,15 @@ mod workflow_notification_101_shapes {
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
         ];
         let wire = serde_json::json!({"requests":requests,"responses":responses});
+        // MP-08 / MP-10 / MP-11: the existing subscription serializes Queue in both directions.
+        assert_eq!(wire["requests"][1]["target_ref"]["delivery_mode"], "queue");
+        assert_eq!(
+            wire["responses"][1]["subscription"]["delivery_mode"],
+            "queue"
+        );
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "d9e19811e96919dc9760c1e0151c755a54c7760bc7e05a398e2db381d1a291a8"
+            "a7b2c24a398d4f4ef580730d53b30f9194796dcb795e61c59ba27fba3fd78d8d"
         );
     }
 }

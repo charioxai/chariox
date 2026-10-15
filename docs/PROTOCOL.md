@@ -268,6 +268,27 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
+MP-07 / MP-08 / MP-10 / MP-11: the same allocated, unmerged local531/peer139
+contract also receipts worker-to-home runtime projections. Every production
+projection carries its exact `execution_lease_id`, `leased_agent_id`, and a
+positive per-binding/run `sequence`. Worker push and home poll read the same
+SQLite delivery head; neither consumes another batch while that head remains.
+Projection payload pages are retained transactionally with the history cursor.
+The encoded JSON page budget is 128 KiB, preserving indivisible producer-bounded
+records. Native prompts precede output; completion follows all queued output
+and incremental history (at most 64 history rows read per production batch).
+
+Home rechecks the authenticated worker, session, lease, leased agent and run,
+applies the next contiguous delivery, and persists its receipt before sending
+`AcknowledgeLeasedRuntimeProjection`. A duplicate delivery re-ACKs the receipt
+without repeating terminal output, prompt transitions or provider-auth observations.
+A missing/late ACK retains the same bytes and sequence for push/poll retry; an ACK
+cannot skip a head or acknowledge another binding. No generic replay is enabled.
+Current local/peer publication pins remain531/139; older peers must upgrade through
+the normal protocol admission. The focused drill drops a real hosted projection
+reply/ACK, then verifies one complete visible answer, one durable turn and a
+successful normal reload at DPR1 and DPR2 before the long-session gate.
+
 MP-08 / MP-10 / MP-11: allocated local protocol 531 and peer protocol 139
 add `NativeProviderTransport` for the official Codex native display upstream.
 The client supplies session, attachment, agent and current projected run, never

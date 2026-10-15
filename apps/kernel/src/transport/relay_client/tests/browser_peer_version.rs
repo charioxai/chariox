@@ -1,6 +1,6 @@
 //! MP-08/MP-10/MP-11: a controlled advertisement over the real encrypted relay.
-//! Both workers use the current kernel dispatcher; v70 changes only the lease
-//! advertisement, avoiding any artifact/upload dispatch to an obsolete worker.
+//! Both workers use the current dispatcher; only the lease advertisement changes.
+//! The preceding peer generation must fail before artifact/upload dispatch.
 use super::support::*;
 use futures_util::FutureExt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -153,7 +153,8 @@ async fn check() {
     };
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
-        for advertised in [100, 101] {
+        let required = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+        for advertised in [required - 1, required] {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
             let config = home_config.clone();
@@ -176,8 +177,8 @@ async fn check() {
                     let binding = agent.remote_execution().unwrap();
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
-                    if advertised == 101 {
-                        assert_eq!(binding.relay_peer_protocol_version, Some(101));
+                    if advertised == required {
+                        assert_eq!(binding.relay_peer_protocol_version, Some(required));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
                 }
@@ -185,15 +186,15 @@ async fn check() {
             })
             .await
             .unwrap();
-            if advertised == 100 {
+            if advertised < required {
                 let error =
-                    result.expect_err("v100 must be rejected before spawn or artifact dispatch");
+                    result.expect_err("the predecessor must be rejected before spawn or artifact dispatch");
                 assert!(
-                    error.to_string().contains("protocol 100"),
+                    error.to_string().contains(&format!("protocol {}", required - 1)),
                     "{error}; request kinds: {:?}",
                     *requests.lock().await
                 );
-                assert!(error.to_string().contains("requires 101"));
+                assert!(error.to_string().contains(&format!("requires {required}")));
                 assert_eq!(
                     *requests.lock().await,
                     ["create_execution_lease", "destroy_execution_lease"]
@@ -201,7 +202,7 @@ async fn check() {
             } else {
                 assert!(
                     result.is_ok(),
-                    "v101 must bind: {}",
+                    "the current peer must bind: {}",
                     result
                         .as_ref()
                         .err()

@@ -722,6 +722,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: session_id.clone(),
                     home_agent_id: agent_id.clone(),
                     provider_run_id: WORKER_RUN_ID.into(),
@@ -1426,6 +1427,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: session_id.clone(),
                     home_agent_id: agent_id.clone(),
                     provider_run_id: WORKER_RUN_ID.to_string(),

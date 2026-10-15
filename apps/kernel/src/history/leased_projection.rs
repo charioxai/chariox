@@ -1,4 +1,5 @@
 //! Worker-local projection bookkeeping. No fields here are part of the relay protocol.
+mod delivery;
 mod tools;
 pub(crate) use tools::{tool_identity, ProjectedToolState};
 
@@ -97,6 +98,8 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
          CREATE INDEX IF NOT EXISTS idx_history_projection_tool_identity ON history_events(session_id, agent_id, provider_run_id, leased_projection_tool_identity, committed_sequence) WHERE kind = 'provider_tool';
          CREATE INDEX IF NOT EXISTS idx_history_projection_stream ON history_events(leased_projection_stream_key);
          CREATE INDEX IF NOT EXISTS idx_history_projection_snapshot ON history_events(leased_projection_snapshot_key);
+         CREATE TABLE IF NOT EXISTS leased_projection_deliveries (projection_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_json TEXT NOT NULL, PRIMARY KEY (projection_id, sequence));
+         CREATE TABLE IF NOT EXISTS leased_projection_delivery_receipts (projection_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_cursors (projection_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_pending_keys (key TEXT PRIMARY KEY, projection_id TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_tools (stream_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, state_json TEXT NOT NULL);
@@ -183,15 +186,38 @@ impl OperationalHistoryStore {
         provider_run_id: &str,
         after: u64,
     ) -> Result<Vec<(u64, HistoryEvent)>, DaemonError> {
+        self.load_leased_projection_history_page(
+            session_id,
+            agent_id,
+            provider_run_id,
+            after,
+            u32::MAX as usize,
+        )
+    }
+
+    pub(crate) fn load_leased_projection_history_page(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, HistoryEvent)>, DaemonError> {
         self.ensure_leased_projection_schema()?;
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
-            .prepare(LEASED_PROJECTION_HISTORY_SQL)
+            .prepare(&format!("{LEASED_PROJECTION_HISTORY_SQL} LIMIT ?5"))
             .map_err(|e| operational_history_error("prepare incremental projection history", e))?;
         let rows = statement
             .query_map(
-                params![session_id, agent_id, provider_run_id, after as i64],
+                params![
+                    session_id,
+                    agent_id,
+                    provider_run_id,
+                    after as i64,
+                    limit as i64
+                ],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|e| operational_history_error("load incremental projection history", e))?;
@@ -235,6 +261,8 @@ impl OperationalHistoryStore {
             .transaction()
             .map_err(|e| operational_history_error("begin projection cleanup", e))?;
         for table in [
+            "leased_projection_deliveries",
+            "leased_projection_delivery_receipts",
             "leased_projection_tools",
             "leased_projection_pending_keys",
             "leased_projection_cursors",
@@ -258,6 +286,25 @@ impl OperationalHistoryStore {
         pending_keys: &[String],
         history_keys: &[ProjectedHistoryKeys],
         tool_states: &[ProjectedToolState],
+    ) -> Result<(), DaemonError> {
+        self.commit_leased_projection_cursor_with_delivery(
+            projection_id,
+            cursor,
+            pending_keys,
+            history_keys,
+            tool_states,
+            &[],
+        )
+    }
+
+    pub(crate) fn commit_leased_projection_cursor_with_delivery(
+        &self,
+        projection_id: &str,
+        cursor: &LeasedProjectionCursor,
+        pending_keys: &[String],
+        history_keys: &[ProjectedHistoryKeys],
+        tool_states: &[ProjectedToolState],
+        deliveries: &[crate::transport::relay_peer::RelayPeerEvent],
     ) -> Result<(), DaemonError> {
         self.ensure_leased_projection_schema()?;
         let json = serde_json::to_string(cursor)
@@ -296,6 +343,7 @@ impl OperationalHistoryStore {
         }
         transaction.execute("INSERT INTO leased_projection_cursors VALUES (?1, ?2) ON CONFLICT(projection_id) DO UPDATE SET cursor_json = excluded.cursor_json", params![projection_id, json])
             .map_err(|e| operational_history_error("save leased projection cursor", e))?;
+        delivery::stage(&transaction, projection_id, deliveries)?;
         transaction
             .commit()
             .map_err(|e| operational_history_error("commit leased projection cursor", e))

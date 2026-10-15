@@ -1,5 +1,31 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-07 / MP-08 / MP-10 / MP-11: leased output delivery ownership (531/139)
+
+The allocated, unmerged531/139 contract extends leased runtime projections with
+an exact lease/leased-agent/run receipt. Worker push, explicit emission and home
+poll all use the retained delivery owner in
+`app/remote_lease/projection/delivery.rs`; the history cursor and delivery pages
+commit together in `history/leased_projection.rs` and its `delivery` module.
+The next batch waits for an acknowledgement. Encoded output is paged and turn
+settlement waits for remaining terminal output and incremental history.
+
+Security-critical admission remains the normal encrypted peer/leased-caller
+path (`transport/relay_client/peer_requests.rs`). Acknowledgements must match the
+current leased agent, execution lease, provider run and delivery head. Home
+receipts recheck the authenticated worker and current remote binding before any
+mutation; duplicate delivery only repeats its acknowledgement. Stale/run/peer
+refusals retain their authority classification. There is no client-selected
+upstream, Cloud runtime authority or generic IPC mutation replay.
+
+Supplementary guards cover lost reply/store reopen, shared delivery retention,
+paging before settlement, duplicate home output and foreign/future receipts;
+protocol snapshot/hash and focused real hosted drill are documented in
+`docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`. These checks do not close behavioural
+MP-08/MP-10 acceptance. Current semantic review of the changed relay-admission
+anchors and exact-head real provider/Web/TUI recovery evidence are required.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

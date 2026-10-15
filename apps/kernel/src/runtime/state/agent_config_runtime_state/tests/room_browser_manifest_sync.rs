@@ -122,6 +122,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         fixture.runtime.project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: fixture.session_id.to_string(),
                 home_agent_id: fixture.agent_id.to_string(),
                 provider_run_id: "provider-run-current".to_string(),
@@ -334,6 +335,7 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
                 .project_relay_remote_runtime_projection(
                     crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
                     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        delivery: None,
                         home_session_id: session_id.to_string(),
                         home_agent_id: agent_id.to_string(),
                         provider_run_id: "provider-run-current".to_string(),
@@ -466,6 +468,7 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: fixture.session_id.to_string(),
                 home_agent_id: fixture.agent_id.to_string(),
                 provider_run_id: "provider-run-current".to_string(),
@@ -719,6 +722,7 @@ async fn project_ordinary_completion(fixture: &RoomManifestFixture, prompt_id: S
         .project_relay_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: fixture.session_id.to_string(),
                 home_agent_id: fixture.agent_id.to_string(),
                 provider_run_id: "provider-run-current".to_string(),

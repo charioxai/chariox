@@ -56,6 +56,7 @@ fn mp08_mp10_native_completion_retains_only_a_running_worker_binding() {
                             "worker-kernel-1",
                         ),
                         RelayPeerEvent::LeasedRuntimeProjection {
+                            delivery: None,
                             home_session_id: session.id().into(),
                             home_agent_id: agent.id().into(),
                             provider_run_id: run_id.into(),
@@ -295,6 +296,7 @@ fn mp11_worker_completion_preserves_unrelated_local_turn_activity() {
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
                 RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: home.id().into(),
                     home_agent_id: home_agent.id().into(),
                     provider_run_id: "run".into(),

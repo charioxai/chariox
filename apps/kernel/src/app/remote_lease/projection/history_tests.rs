@@ -139,7 +139,7 @@ fn leased_projection_compacts_tool_deltas_with_different_transcript_bytes() {
         .unwrap();
 }
 
-fn worker_lease() -> (DaemonApp, LeasedAgent) {
+pub(super) fn worker_lease() -> (DaemonApp, LeasedAgent) {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
@@ -226,4 +226,42 @@ fn leased_projection_separates_json_tool_identities_without_merge_keys() {
     RemoteLeaseRuntime::new(&mut app)
         .destroy_leased_agent(&leased.id)
         .unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: a real lost peer reply must not consume its output.
+#[test]
+fn mp08_projection_lost_reply_replays_output_after_store_reopen() {
+    let (mut app, leased) = worker_lease();
+    let run = super::explicit_completion_tests::provider_run(
+        "run",
+        &leased.backing_session_id,
+        &leased.backing_agent_id,
+        "managed-dev-stub",
+        "managed-dev-stub",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.providers_mut().insert_run_for_test(run);
+    app.terminal_mut().fan_out_output(
+        &leased.backing_session_id,
+        "run",
+        Some(&leased.backing_agent_id),
+        TerminalOutputKind::ProviderOutput,
+        Some("answer".into()),
+        vec![leased.backing_attachment_id.clone()],
+        b"must survive reply loss",
+    );
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap()
+        .unwrap();
+    let path = app.operational_history_store().path().to_path_buf();
+    app.operational_history = crate::history::OperationalHistoryStore::open(path).unwrap();
+    let retry = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(retry).unwrap(),
+        serde_json::to_value(Some(first)).unwrap(),
+        "lost consuming reply discarded the worker output"
+    );
 }

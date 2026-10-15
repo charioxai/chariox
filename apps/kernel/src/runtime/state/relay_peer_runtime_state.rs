@@ -1077,6 +1077,7 @@ impl KernelRuntimeState {
         if !outcome.accepted {
             return Ok(());
         }
+        let acknowledgement = outcome.acknowledgement.clone();
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
@@ -1086,7 +1087,7 @@ impl KernelRuntimeState {
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
-        if let Some((provider, account_profile, state)) = provider_auth_observation {
+        if let Some((provider, account_profile, state)) = provider_auth_observation.filter(|_| !outcome.replayed) {
             self.apply_remote_slice_provider_auth_observation(
                 &agent_id,
                 &provider,
@@ -1094,6 +1095,18 @@ impl KernelRuntimeState {
                 state,
             )?;
         }
+        if let Some(ack) = acknowledgement {
+            if let Err(error) = self.acknowledge_remote_runtime_projection(ack).await {
+                // Application committed. A lost ACK leaves the worker head in
+                // place; the next push or poll re-ACKs without duplicating output.
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "projection acknowledgement unavailable; retained delivery will retry",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id, "error": error.to_string()}),
+                );
+            }
+        }
+
         Ok(())
     }
 

@@ -143,6 +143,7 @@ fn assert_failed_projection(workflow_output: Option<bool>) {
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
             RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().into(),
                 home_agent_id: agent.id().into(),
                 provider_run_id: "run".into(),

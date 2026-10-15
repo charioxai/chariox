@@ -14,6 +14,7 @@ mod mcp_availability;
 mod native_provider;
 mod project_environment;
 mod projection;
+pub(crate) use projection::RemoteProjectionAcknowledgement;
 mod prompt_activation;
 mod prompt_attachments;
 mod prompt_lifecycle;

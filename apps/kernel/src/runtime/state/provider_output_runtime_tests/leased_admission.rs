@@ -331,6 +331,7 @@ async fn leased_admission_commits_before_async_io_and_dispatch_failure_settles_f
         .project_remote_runtime_projection(
             crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                delivery: None,
                 home_session_id: session.id().into(),
                 home_agent_id: agent.id().into(),
                 provider_run_id: run_id,
