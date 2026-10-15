@@ -635,7 +635,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let loader = RuntimeToolSpec { name: LOADER.into(),
-            description: "MD-3: load the user's kernel browser tools. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation.".into(),
+            description: "MD-3: load the user's kernel browser tools. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"lifetime_hours":{"type":"integer","minimum":1,"maximum":24}},"additionalProperties":false}), };
         let Some(agent) = self.kernel_browser_agent(run) else {
             // MP-08/MP-11: an owner-requested turn may acquire access without focus.
@@ -850,7 +850,9 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let host = &self.owned.kernel_browser_host;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        if !host.is_focused(&user, agent.id()) && !host.is_loaded(&user, agent.id()) {
+        let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
+        let already_loaded = host.is_loaded(&user, agent.id());
+        if !host.is_focused(&user, agent.id()) && !already_loaded {
             let prompt = self.owner_requested_prompt(&agent).ok_or_else(|| {
                 host_error(crate::runtime::user_domain_access::NOT_REQUESTED_LOAD.into())
             })?;
@@ -897,10 +899,12 @@ impl KernelRuntimeState {
                     agent.session_id(),
                 )
                 .map_err(host_error)?;
-            return Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
-            });
+            return Ok(self.runtime_catalog_loader_result(
+                &agent,
+                &previous_catalog,
+                already_loaded,
+                serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
+            ));
         }
         if arguments.lifetime_hours.is_some() {
             return Err(host_error(
@@ -911,10 +915,12 @@ impl KernelRuntimeState {
             self.user_domain_agent_authority(run)?;
             host.load(&user, agent.id()).map_err(host_error)?;
         }
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"loaded": BROWSER}),
-        })
+        Ok(self.runtime_catalog_loader_result(
+            &agent,
+            &previous_catalog,
+            already_loaded,
+            serde_json::json!({"loaded": BROWSER}),
+        ))
     }
 }
 

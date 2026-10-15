@@ -110,6 +110,31 @@ impl KernelRuntimeState {
         }
     }
 
+    // MP-08/MP-10/MP-11: loaders share the extension grant's catalog contract.
+    // A cached provider must finish this turn so its kernel-owned continuation
+    // can refresh tools; a missing cached tool is not an owner permission request.
+    pub(super) fn runtime_catalog_loader_result(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        previous: &[(String, String, serde_json::Value)],
+        already_loaded: bool,
+        mut payload: serde_json::Value,
+    ) -> crate::transport::runtime_tools::RuntimeToolResult {
+        self.runtime_catalog_registration_changed(agent, previous);
+        let (effective, restart) = self.runtime_catalog_grant_effect(agent, already_loaded);
+        if restart {
+            self.remember_runtime_catalog_continuation(agent, "runtime tool catalog");
+        }
+        payload["effective"] = effective.into();
+        payload["requires_provider_restart"] = restart.into();
+        payload["note"] = if restart {
+            "Chariox will refresh this provider's tools after this turn and automatically continue the request. End this turn now; do not report a blocker or ask the owner to expose tools for this refresh."
+        } else {
+            "The loaded tools are available in this turn."
+        }.into();
+        crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
+    }
+
     pub(super) fn remember_runtime_catalog_continuation(
         &self,
         agent: &crate::agent::AgentInstance,

@@ -177,3 +177,62 @@ async fn busy_catalog_refresh_retains_typed_reason_and_self_grant_uses_one_conti
     assert!(runtime.owned.pending_provider_reloads.write().is_empty());
     assert!(runtime.owned.provider_store.list_runs().is_empty());
 }
+
+#[tokio::test]
+async fn browser_loader_reports_deferred_tools_and_retains_one_kernel_continuation() {
+    crate::test_support::isolated_env_test!();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new("loader-catalog", "loader-catalog")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex")),
+        )
+        .unwrap();
+    let source = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "loader-owner",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "loader-catalog-request",
+            source.id(),
+            agent.id(),
+            "open my browser",
+            crate::session::PromptStatus::Queued,
+        ),
+        false,
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    for already_loaded in [false, true] {
+        let result = runtime.runtime_catalog_loader_result(
+            &agent,
+            &[],
+            already_loaded,
+            serde_json::json!({"loaded":"chariox.kernel_browser"}),
+        );
+        assert!(result.ok);
+        assert_eq!(result.payload["effective"], "after_provider_reload");
+        assert_eq!(result.payload["requires_provider_restart"], true);
+        assert!(result.payload["note"]
+            .as_str()
+            .unwrap()
+            .contains("End this turn"));
+        let queued = runtime.owned.pending_mcp_continuations.write();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued.get(agent.id()).unwrap().previous_prompt,
+            "open my browser"
+        );
+    }
+    assert!(
+        runtime.owned.provider_store.list_runs().is_empty(),
+        "catalog fixture launches no provider"
+    );
+}
