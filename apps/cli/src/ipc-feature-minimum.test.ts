@@ -223,3 +223,29 @@ test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", 
     capabilities = ["exact_prompt_cancellation_v499"]
   }
 })
+
+// MP-08 / MP-10 / MP-11: remote/Unix clients have no local numeric advertisement.
+test("MP-08 MP-10 App injection uses the attached kernel capability when its version is unknown", async context => {
+  const requests: unknown[] = []
+  let capabilities: string[] = []
+  context.mock.method(KernelClient.prototype, "send", async (request: unknown) => {
+    requests.push(request)
+    if (request && typeof request === "object" && "RelayStatus" in request) return { RelayStatus: { status: { capabilities } } }
+    return { AppAutomation: { automation: { delivery_mode: "inject" } } }
+  })
+  const request = { ConfigureAppAutomation: { installation_id: "app", automation_id: "reminders", delivery_mode: "inject" } }
+  for (const endpoint of ["ws+unix:///lane/kernel.sock", "wss://relay.example.test"]) {
+    const client = new LocalIpcClient(endpoint)
+    context.after(() => client.close())
+    for (const missing of [[], ["exact_prompt_cancellation_v499"]]) {
+      capabilities = missing
+      requests.length = 0
+      await assert.rejects(client.send(request), /kernel support unknown.*App automation injection.*491/)
+      assert.deepEqual(requests, [{ RelayStatus: null }])
+    }
+    capabilities = ["app_automation_injection_v1"]
+    requests.length = 0
+    assert.deepEqual(await client.send(request), { AppAutomation: { automation: { delivery_mode: "inject" } } })
+    assert.deepEqual(requests, [{ RelayStatus: null }, request])
+  }
+})
