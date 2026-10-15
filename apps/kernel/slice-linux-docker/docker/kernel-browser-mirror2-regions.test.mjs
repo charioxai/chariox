@@ -55,6 +55,19 @@ test('MP-08/MP-10/MP-11: clipped live geometry and region input use mirror fence
   await assert.rejects(lease.resolveInput({sequence:5,x:4,y:8,kind:'click',_agent_input:true},'owner'));
   f.setBoxes([{id:'n3',box:[-20,21,100,100]}]); assert.equal(await lease.isCurrent(),false);
 });
+test('MP-08/MP-10/MP-11: private placement is relative to the original opaque element, including frame/viewport clipping', async () => {
+  for (const [box,clip,expected] of [
+    [[-20,20,100,100],undefined,{x:20,y:0}],
+    [[50,60,200,100],[70,80,80,40],{x:20,y:20}],
+    [[10.25,20.75,200,100],undefined,{x:0,y:0}],
+  ]) {
+    const f=fixture(); f.setBoxes([{id:'n3',box,...(clip?{clip}:{})}]);
+    const lease=await f.regions.resolve(f.target,'owner');
+    assert.deepEqual(lease.element_offset,expected);assert(Object.isFrozen(lease.element_offset));
+    await assert.rejects(f.regions.resolve({...f.target,element_offset:expected},'owner'));
+    await lease.close();assert.equal(await lease.isCurrent(),false);
+  }
+});
 test('MP-11: resolver serializes behind the issued packet and rechecks after live measurement', async () => {
   const f=fixture(); let release; f.stream.chain=new Promise(r=>release=r); let done=false;
   const pending=f.regions.resolve(f.target,'owner').then(x=>{done=true;return x}); await new Promise(r=>setImmediate(r)); assert.equal(done,false); release(); await pending;

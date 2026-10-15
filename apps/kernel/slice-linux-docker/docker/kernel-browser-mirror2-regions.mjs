@@ -96,7 +96,10 @@ export class Mirror2Regions {
           return true;
         } catch { await retire();return false; }
       };
-      const lease=Object.freeze({binding_id,...request,tab_id:tab.tab_id,rect:Object.freeze(measured.rect),css_width:1280,css_height:800,
+      const lease=Object.freeze({binding_id,...request,tab_id:tab.tab_id,rect:Object.freeze(measured.rect),
+        // Private placement before the producer's inward codec rounding. The
+        // canonical clip may start inside an offscreen/ancestor-clipped tile.
+        element_offset:Object.freeze({x:measured.rect.x-measured.box[0],y:measured.rect.y-measured.box[1]}),css_width:1280,css_height:800,
         device_scale_factor:scale,source_revision:stream.issued,input_epoch:request.sequence,
         // isAlive is a cheap synchronous fence; isCurrent re-measures live bounds.
         // A native consumer MUST await isCurrent before readback/delivery/input.
