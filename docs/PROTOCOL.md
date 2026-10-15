@@ -1131,8 +1131,11 @@ small replies, binary envelopes and checkpoints. Receipts must match the oldest
 outstanding wire frame, across IDs; a receipt for another stream cannot release
 credit. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
 can progress concurrently (e.g. catalog plus first viewport), with one lane each
-reserved for requests and events. Requests and events retain FIFO within their
-respective lanes; events may pass an unfinished correlated response. Unknown
+reserved for requests and events. Requests and display events retain FIFO within their
+respective lanes. Only events of this socket's acknowledged `kernel_browser_display`
+route may pass an unfinished correlated response; ordinary terminal/peer events
+still wait behind the earlier snapshot. The relay uses its existing route scope
+and sender binding, never decrypted payloads, to choose the scheduling lane. Unknown
 lifecycle envelopes are ordering barriers for requests/events. Correlated replies
 can pass barriers to avoid request/reply deadlock. Chunks rotate fairly among
 active streams, so display events do not wait for an entire snapshot and a

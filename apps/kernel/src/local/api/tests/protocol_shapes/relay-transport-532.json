@@ -25,5 +25,6 @@
     "kind": "transport_ack",
     "transfer_id": 1,
     "offset": 6
-  }
+  },
+  "bypass_scope": "kernel_browser_display"
 }

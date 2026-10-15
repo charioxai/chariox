@@ -14,9 +14,17 @@ enum Lane {
     Event,
     Ordered,
 }
-fn lane(message: &Message) -> Lane {
-    if matches!(message, Message::Binary(_)) {
-        return Lane::Event;
+fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> Lane {
+    if let Message::Binary(bytes) = message {
+        return if crate::binary_event::decode(bytes)
+            .ok()
+            .is_some_and(|(header, _)| {
+                header.kind == "client_event" && display_route(&header.subscription_id)
+            }) {
+            Lane::Event
+        } else {
+            Lane::Ordered
+        };
     }
     let Message::Text(text) = message else {
         return Lane::Ordered;
@@ -30,7 +38,14 @@ fn lane(message: &Message) -> Lane {
         | "client_metadata_response"
         | "daemon_peer_response"
         | "client_connected" => Lane::Reply,
-        "client_event" | "daemon_event" => Lane::Event,
+        "client_event"
+            if value
+                .get("subscription_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(display_route) =>
+        {
+            Lane::Event
+        }
         kind if kind.ends_with("request") => Lane::Request,
         _ => Lane::Ordered,
     }
@@ -151,8 +166,18 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
     }
     Some(message)
 }
-fn eligible(pending: &VecDeque<Message>, index: usize, active: &VecDeque<Transfer>) -> bool {
-    let current = lane(&pending[index]);
+struct Queued {
+    message: Message,
+    lane: Lane,
+}
+impl Queued {
+    fn new(message: Message, display_route: &impl Fn(&str) -> bool) -> Self {
+        let lane = lane(&message, display_route);
+        Self { message, lane }
+    }
+}
+fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer>) -> bool {
+    let current = pending[index].lane;
     if current == Lane::Reply {
         // Reserve lanes for events and requests. This also bounds receiver state.
         return active.iter().filter(|t| t.lane == Lane::Reply).count() < 2;
@@ -168,17 +193,19 @@ fn eligible(pending: &VecDeque<Message>, index: usize, active: &VecDeque<Transfe
         && !pending
             .iter()
             .take(index)
-            .any(|m| matches!(lane(m), Lane::Ordered) || lane(m) == current)
+            .any(|m| matches!(m.lane, Lane::Ordered) || m.lane == current)
 }
-pub(super) async fn run_writer<S>(
+pub(super) async fn run_writer<S, F>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
     binary_events: bool,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
+    display_route: F,
 ) where
     S: Sink<Message> + Unpin,
+    F: Fn(&str) -> bool,
 {
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
@@ -204,7 +231,7 @@ pub(super) async fn run_writer<S>(
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(m),
+                    Some(m) => pending.push_back(Queued::new(m, &display_route)),
                     None => return,
                 },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -214,8 +241,8 @@ pub(super) async fn run_writer<S>(
                 Err(mpsc::error::TryRecvError::Empty) => break,
             }
         }
-        if let Some(index) = pending.iter().position(control) {
-            let message = pending.remove(index).unwrap();
+        if let Some(index) = pending.iter().position(|queued| control(&queued.message)) {
+            let message = pending.remove(index).unwrap().message;
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
                 return;
@@ -223,7 +250,8 @@ pub(super) async fn run_writer<S>(
             continue;
         }
         if !chunks {
-            if let Some(message) = pending.pop_front() {
+            if let Some(queued) = pending.pop_front() {
+                let message = queued.message;
                 if message.len() > CHUNK_BYTES {
                     upgrade(&mut writer).await;
                     return;
@@ -238,15 +266,17 @@ pub(super) async fn run_writer<S>(
             // Start in enqueue order; replies and the event/request lanes can
             // pass blocked transfers but never reorder members of their lane.
             if let Some(index) = (0..pending.len()).find(|&i| {
-                eligible(&pending, i, &active) && pending[i].len() <= MAX_ASSEMBLY_BYTES - reserved
+                eligible(&pending, i, &active)
+                    && pending[i].message.len() <= MAX_ASSEMBLY_BYTES - reserved
             }) {
-                let message = pending.remove(index).unwrap();
+                let queued = pending.remove(index).unwrap();
+                let class = queued.lane;
+                let message = queued.message;
                 if message.len() > MAX_MESSAGE_BYTES {
                     upgrade(&mut writer).await;
                     return;
                 }
                 let id = 0; // Assigned on the first wire write, not queue admission.
-                let class = lane(&message);
                 let (text, binary) = match message {
                     Message::Text(s) => (s.to_string(), None),
                     Message::Binary(_) => (String::new(), Some(message)),
@@ -327,7 +357,7 @@ pub(super) async fn run_writer<S>(
                 if !credit.receipt(id,offset,&mut active){return;}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(m),None=>return},None=>open=false}
+                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route)),None=>return},None=>open=false}
             }
         }
     }
@@ -367,12 +397,12 @@ mod tests {
         let (_ct, cr) = mpsc::channel(8);
         let catalog=serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(3_000_000)}).to_string();
         tx.send(Message::Text(catalog.into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr));
+        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
         let first = client.next().await.unwrap().unwrap();
         let medium=serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(200_000)}).to_string();
         let event = |id, payload| {
             Message::Text(
-                serde_json::json!({"kind":"client_event","event_id":id,"payload":payload})
+                serde_json::json!({"kind":"client_event","subscription_id":"display","event_id":id,"payload":payload})
                     .to_string()
                     .into(),
             )
@@ -496,7 +526,7 @@ mod tests {
             .await
             .unwrap();
         drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr));
+        let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
         let mut total = 0;
         let mut receipts = Vec::new();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -563,13 +593,65 @@ mod tests {
         tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, false, false, ar, cr));
+        let task = tokio::spawn(run_writer(socket, rx, false, false, ar, cr, |_| false));
         assert!(
             matches!(client.next().await.unwrap().unwrap(),Message::Text(t) if t.contains("requires an updated client"))
         );
         assert!(
             matches!(client.next().await.unwrap().unwrap(),Message::Close(Some(c)) if c.reason=="relay bounded transport requires an updated client")
         );
+        task.await.unwrap();
+        let _ = client.close(None).await;
+    }
+    // MP-08/MP-10/MP-11: ordinary session tail cannot precede its initial snapshot.
+    #[tokio::test]
+    async fn mp08_mp10_mp11_terminal_event_stays_behind_initial_snapshot() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(8);
+        let (at, ar) = mpsc::channel(8);
+        let (_ct, cr) = mpsc::channel(8);
+        tx.send(Message::Text(serde_json::json!({"kind":"client_response","request_id":"snapshot","payload":"x".repeat(200000)}).to_string().into())).await.unwrap();
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| false));
+        let mut message = client.next().await.unwrap().unwrap();
+        tx.send(Message::Text(
+            r#"{"kind":"client_event","subscription_id":"terminal","event_id":1,"payload":"tail"}"#
+                .into(),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut snapshot = false;
+        loop {
+            let Message::Text(text) = message else {
+                panic!()
+            };
+            let (complete, ack) = receiver.receive(&text).unwrap();
+            let TransportFrame::TransportAck {
+                transfer_id,
+                offset,
+            } = serde_json::from_str(&ack.unwrap()).unwrap()
+            else {
+                panic!()
+            };
+            at.send((transfer_id, offset)).await.unwrap();
+            if let Some(text) = complete {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["kind"] == "client_event" {
+                    assert!(
+                        snapshot,
+                        "terminal tail cannot overtake its initial snapshot"
+                    );
+                    break;
+                }
+                snapshot = true;
+            }
+            message = tokio::time::timeout(Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
         task.await.unwrap();
         let _ = client.close(None).await;
     }

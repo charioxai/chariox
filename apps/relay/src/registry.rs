@@ -161,6 +161,7 @@ impl<V: Clone> ShardedRouteMap<String, V> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveEventRoute {
+    pub(crate) display: bool,
     pub(crate) daemon_key: DaemonKey,
     pub(crate) client_sender: RelaySender,
 }
@@ -205,6 +206,13 @@ impl RelayRouteIndex {
 
     pub(crate) fn subscription(&self, subscription_id: &str) -> Option<ActiveEventRoute> {
         self.subscriptions.get_str(subscription_id)
+    }
+
+    /// MP-08/MP-10/MP-11: scheduling hint only for this acknowledged route/socket.
+    /// A foreign sender or an ordinary terminal subscription never gains bypass.
+    pub(crate) fn display_for_sender(&self, subscription_id: &str, sender: &RelaySender) -> bool {
+        self.subscription(subscription_id)
+            .is_some_and(|route| route.display && route.client_sender.same_channel(sender))
     }
 
     fn subscription_queue_pressure(&self) -> (usize, usize) {
@@ -342,6 +350,7 @@ pub(crate) struct PendingDaemonPeerRequest {
 pub(crate) enum PendingRequestKind {
     Request,
     Subscribe {
+        display: bool,
         subscription_id: String,
         client_public_key: String,
     },
@@ -867,6 +876,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
+                display: false,
                 daemon_key: daemon_key.clone(),
                 client_sender,
             },
@@ -897,6 +907,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
+                display: false,
                 daemon_key,
                 client_sender: client_sender.clone(),
             },
@@ -980,5 +991,38 @@ mod tests {
             registry.display_tunnel("shared", 1).unwrap().expires_at_ms,
             3000
         );
+    }
+}
+
+#[cfg(test)]
+mod display_scheduling_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_only_own_acknowledged_display_route_can_bypass() {
+        let routes = RelayRouteIndex::default();
+        let (own, _rx) = tokio::sync::mpsc::channel(8);
+        let (foreign, _rx2) = tokio::sync::mpsc::channel(8);
+        assert!(!routes.display_for_sender("display", &own));
+        routes.set_subscription(
+            "display".into(),
+            ActiveEventRoute {
+                display: false,
+                daemon_key: DaemonKey::new("realm", "kernel"),
+                client_sender: own.clone(),
+            },
+        );
+        assert!(!routes.display_for_sender("display", &own));
+        routes.set_subscription(
+            "display".into(),
+            ActiveEventRoute {
+                display: true,
+                daemon_key: DaemonKey::new("realm", "kernel"),
+                client_sender: own.clone(),
+            },
+        );
+        assert!(routes.display_for_sender("display", &own));
+        assert!(!routes.display_for_sender("display", &foreign));
+        routes.remove_subscription("display");
+        assert!(!routes.display_for_sender("display", &own));
     }
 }

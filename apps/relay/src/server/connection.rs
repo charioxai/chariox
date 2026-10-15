@@ -170,6 +170,8 @@ pub(crate) async fn handle_connection(
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(8);
     let (control_tx, control_rx) = mpsc::channel(8);
+    let writer_routes = routes.clone();
+    let writer_sender = outgoing_tx.downgrade();
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
@@ -177,6 +179,11 @@ pub(crate) async fn handle_connection(
         binary_events,
         receipt_rx,
         control_rx,
+        move |subscription_id: &str| {
+            writer_sender
+                .upgrade()
+                .is_some_and(|sender| writer_routes.display_for_sender(subscription_id, &sender))
+        },
     )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
@@ -762,6 +769,7 @@ pub(crate) async fn handle_connection(
                                     if error.is_none() {
                                         match &pending.kind {
                                             PendingRequestKind::Subscribe {
+                                                display,
                                                 subscription_id,
                                                 client_public_key,
                                             } => {
@@ -781,6 +789,7 @@ pub(crate) async fn handle_connection(
                                                         routes.set_subscription(
                                                             subscription_id.clone(),
                                                             ActiveEventRoute {
+                                                                display: *display,
                                                                 daemon_key: pending.daemon_key.clone(),
                                                                 client_sender,
                                                             },

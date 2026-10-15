@@ -519,6 +519,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     routes.set_subscription(
         "active-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender,
         },
@@ -530,6 +531,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
             client_request_id: "client-request-pending".to_string(),
             daemon_key: daemon_key.clone(),
             kind: PendingRequestKind::Subscribe {
+                display: false,
                 subscription_id: "pending-subscription".to_string(),
                 client_public_key: "pending-public-key".to_string(),
             },
@@ -760,6 +762,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "slow-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: sender.clone(),
         },
@@ -767,6 +770,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "other-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: other_sender,
         },
@@ -1470,6 +1474,7 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     routes.set_subscription(
         "sub".into(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon.clone(),
             client_sender: sender,
         },

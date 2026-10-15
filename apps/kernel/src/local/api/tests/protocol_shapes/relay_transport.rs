@@ -14,7 +14,7 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
     let bytes = include_bytes!("relay-transport-532.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "097e3266d8fdfb1e8a0e9f83c62556f4073804b9e8f298b26dcf8839762fbeb7"
+        "dd49c2d3f1da05dceb925d3389022f4a1c52eadd9add9c7b1e2e4044eb099bc2"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -23,6 +23,7 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
     );
     assert_eq!(snapshot["capability"], TRANSPORT_QUERY);
+    assert_eq!(snapshot["bypass_scope"], DISPLAY_EVENT_SCOPE);
     for (name, value) in [
         ("chunk_bytes", CHUNK_BYTES),
         ("window_bytes", WINDOW_BYTES),

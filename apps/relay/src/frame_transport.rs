@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const DISPLAY_EVENT_SCOPE: &str = "kernel_browser_display";
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;
