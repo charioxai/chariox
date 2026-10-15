@@ -980,3 +980,40 @@ test('MP-11: a same-document ID rebase cannot focus a reused unrelated ID on dra
   assert(!(await page.evaluate(()=>window.sent)).some(a=>a.kind==='focus'&&a.node_id==='n4'),'no old pointer-focus ID can be relabelled with the new epoch');
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11 review #1016 P2 / Cloud #368 P2: empty successful pages have no paint to arrive.
+for (const prior of [false,true]) test(`MP-10 completed empty document releases its navigation hold prior=${prior}`, async()=>{
+ const page=await viewer();try{
+  if(prior)await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Previous site'}])));
+  await apply(page,{...snapshot(page2([])),document_id:prior?'empty':'d',sequence:prior?2:1});
+  await page.waitForFunction(()=>window.r.painted,{},{timeout:3000});
+  assert.equal(await page.locator('#c > iframe').count(),1,'a completed blank page must retire the previous site');
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
+  assert.equal(await page.evaluate(()=>getComputedStyle(window.r.frame).visibility),'visible');
+ }finally{await page.close();}
+});
+
+test('MP-11 an empty document timer cannot reveal a retired navigation or preserved failure frame',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Previous site'}])));
+  await apply(page,{...snapshot(page2([])),document_id:'empty',sequence:2});
+  await page.evaluate(()=>window.r.close({preserveFrame:true}));
+  await new Promise(resolve=>setTimeout(resolve,2200));
+  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.locator('#c > iframe').evaluate(f=>f.inert&&f.contentDocument.body.innerText==='Previous site'),true);
+ }finally{await page.close();}
+});
+
+test('MP-10 empty-document hold never releases a head-only continuation',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Previous site'}])));
+  await apply(page,{...snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'}]),document_id:'empty',sequence:2});
+  await new Promise(resolve=>setTimeout(resolve,2200));
+  assert.equal(await page.evaluate(()=>window.r.painted),false,'a missing body is still a continuation');
+  assert.equal(await page.locator('#c > iframe').count(),2);
+  await apply(page,delta(3,[{op:'children',id:'n2',children:['n3','n4'],nodes:[{id:'n4',parent:'n2',kind:'element',tag:'body'}]}],{document_id:'empty'}));
+  await page.waitForFunction(()=>window.r.painted,{},{timeout:3000});
+  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
+ }finally{await page.close();}
+});
