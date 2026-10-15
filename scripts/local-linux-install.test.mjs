@@ -25,6 +25,9 @@ async function script(path, contents) {
   await chmod(path, 0o755)
 }
 
+const DESKTOP = ["Xvfb", "openbox", "bwrap", "dbus-daemon", "setxkbmap"]
+const PACKAGES = "python3-xlib python3-pil xvfb openbox bubblewrap dbus-daemon x11-xkb-utils"
+
 async function harness() {
   const base = await mkdtemp(join(tmpdir(), "chariox-local-install-"))
   const root = join(base, "root")
@@ -45,10 +48,11 @@ async function harness() {
   await script(join(root, "usr/bin/python3"), `#!/bin/sh
 [ "\${HARNESS_NATIVE_PYTHON:-ready}" = ready ] || test -e "$HARNESS_STATE/native-python-ready"
 `)
+  for (const name of DESKTOP) await script(join(root, "usr/bin", name), "#!/bin/sh\n")
   await script(join(root, "usr/bin/apt-get"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/native-apt"
 [ "\${HARNESS_NATIVE_APT_FAIL:-0}" = 0 ] || exit 42
-case "$1" in install) [ "\${HARNESS_NATIVE_STAYS_BROKEN:-0}" = 1 ] || touch "$HARNESS_STATE/native-python-ready" ;; esac
+case "$1" in install) [ "\${HARNESS_NATIVE_STAYS_BROKEN:-0}" = 1 ] || { touch "$HARNESS_STATE/native-python-ready"; for b in ${DESKTOP.join(" ")}; do printf '#!/bin/sh\n' > "$HARNESS_ROOT/usr/bin/$b"; chmod 755 "$HARNESS_ROOT/usr/bin/$b"; done; } ;; esac
 `)
   await script(join(bin, "id"), `#!/bin/sh
 case "$*" in
@@ -126,7 +130,7 @@ z.close()`, archive])
   const browserPin = (sha256 = createHash("sha256").update(archiveBytes).digest("hex")) => writeFile(browserLock, JSON.stringify({ schema: "chariox.kernel-browser-chromium.v1", distribution: "fixture", version: "1.2.3",
     linux64: { url: `file://${archive}`, sha256, size: archiveBytes.length, executable: "chrome-linux64/chrome" } }))
   await browserPin()
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
   const run = (args, extra = {}) => {
     const result = spawnSync("bash", [installer, ...args], { env: { ...env, ...extra }, encoding: "utf8" })
     return { ...result, out: result.stdout + result.stderr }
@@ -497,11 +501,23 @@ test("local Linux Setup installs and verifies missing native keyboard dependenci
     assert.equal(await h.log("native-apt"), "", "dry-run cannot install host packages")
     const result = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
     assert.equal(result.status, 0, result.out)
-    assert.equal(await h.log("native-apt"), "update\ninstall -y --no-install-recommends python3-xlib python3-pil\n")
+    assert.equal(await h.log("native-apt"), `update\ninstall -y --no-install-recommends ${PACKAGES}\n`)
     await h.reset("native-apt")
     const again = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
     assert.equal(again.status, 0, again.out)
     assert.equal(await h.log("native-apt"), "", "already-importable system modules need no package operation")
+  } finally { await rm(h.base, { recursive: true, force: true }) }
+})
+
+// MP-08/MP-10/MP-11: a stock Ubuntu 26.04 host has no openbox; the kernel's owned desktop refused to start.
+test("local Linux Setup installs the owned desktop's missing system executables", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await rm(p(h, "usr/bin/openbox"))
+    const result = h.install(["alice"])
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("native-apt"), `update\ninstall -y --no-install-recommends ${PACKAGES}\n`)
+    assert.equal(existsSync(p(h, "usr/bin/openbox")), true)
   } finally { await rm(h.base, { recursive: true, force: true }) }
 })
 
