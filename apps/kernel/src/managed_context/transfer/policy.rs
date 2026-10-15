@@ -141,10 +141,10 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
         validate_identifier(context_id, "consumed context")?;
     }
     for (context_id, authority) in &state.owner_context_authorities {
-        if !state
+        if state
             .applied_contexts
             .get(context_id)
-            .is_some_and(|target| target.destination.is_some())
+            .is_none_or(|target| target.destination.is_none())
         {
             return Err(transfer_error("orphaned owner context authority"));
         }

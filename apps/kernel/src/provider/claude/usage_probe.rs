@@ -531,7 +531,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[cfg(unix)]
     fn model_probe_initializes_without_sending_a_user_turn() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile_fixture_root();

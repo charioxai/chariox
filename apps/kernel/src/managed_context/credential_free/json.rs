@@ -173,7 +173,7 @@ pub(super) fn validate_tokens(run: &str) -> Result<(), DaemonError> {
         };
         // A truncated, nested or unknown value counts as present.
         let rest = rest.trim_start();
-        if !escaped(k) && !(rest.starts_with('"') && escaped(k + 2)) {
+        if !(escaped(k) || (rest.starts_with('"') && escaped(k + 2))) {
             continue;
         }
         let value = if rest.starts_with('"') {
