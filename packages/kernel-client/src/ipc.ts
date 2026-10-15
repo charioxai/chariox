@@ -59,7 +59,7 @@ import {
   normalizeRelayRequest,
 } from "./relay-transport.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
-import { KernelRequestLifetime, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
+import { KernelRequestLifetime, waitForKernelRequest, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
 
 // Slice start can cold-build the managed Linux image before returning the
@@ -227,6 +227,8 @@ function isHostedPublicationGateway() {
   return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
 }
 
+export type KernelRequestOptions = { readonly signal?: AbortSignal }
+
 type LocalIpcClientOptions = {
   /** State directory of a private local kernel; never used for relay connections. */
   localAuthEnvironment?: NodeJS.ProcessEnv | undefined
@@ -385,18 +387,16 @@ export class LocalIpcClient {
     return this.relayAuthToken != null
   }
 
-  async send<TResponse>(request: unknown): Promise<TResponse> {
+  async send<TResponse>(request: unknown, options: KernelRequestOptions = {}): Promise<TResponse> {
+    options.signal?.throwIfAborted()
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
-      admittedSocket = await this.ensureWebSocket("control")
-      return this.sendWebSocket(query, "control", admittedSocket)
+      const connection = this.ensureWebSocket("control")
+      admittedSocket = options.signal ? await waitForKernelRequest(connection, options.signal) : await connection
+      return this.sendWebSocket(query, "control", admittedSocket, options.signal)
     }, request)
-    if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
-  }
-
-  private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
-    return this.sendWebSocket(request)
+    if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket, options.signal)
+    return this.sendWebSocket<TResponse>(request, "control", undefined, options.signal)
   }
 
   async getManagedTargetResourceTelemetry(options: {
@@ -623,8 +623,8 @@ export class LocalIpcClient {
     this.rejectPending(pendingMessage)
   }
 
-  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
-    const lifetime = this.requestLifetime.capture()
+  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket, signal?: AbortSignal): Promise<TResponse> {
+    const lifetime = signal ? AbortSignal.any([this.requestLifetime.capture(), signal]) : this.requestLifetime.capture()
     const requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
     const retryUntilMs = lane === "control" && !waitsForAuthorization
@@ -637,7 +637,7 @@ export class LocalIpcClient {
       lifetime.throwIfAborted()
       let socket: WebSocket
       try {
-        socket = admittedSocket ?? await this.ensureWebSocket(lane)
+        socket = admittedSocket ?? await waitForKernelRequest(this.ensureWebSocket(lane), lifetime)
         if (admittedSocket && (this.getWebSocket(lane) !== admittedSocket || admittedSocket.readyState !== WebSocket.OPEN)) {
           throw new LocalIpcError("admit kernel control", "Kernel connection changed after capability admission; reconcile before retrying")
         }
@@ -690,7 +690,7 @@ export class LocalIpcClient {
       }
 
       try {
-        return await pending.promise
+        return await waitForKernelRequest(pending.promise, lifetime, pending.reject)
       } catch (error) {
         if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()

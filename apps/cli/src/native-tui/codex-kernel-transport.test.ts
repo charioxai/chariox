@@ -1,9 +1,74 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
 import test from "node:test"
-import WebSocket from "ws"
+import WebSocket, { WebSocketServer } from "ws"
 import { LocalIpcError, type LocalIpcClient } from "../ipc.js"
 import { startCodexKernelTransport } from "./codex-kernel-transport.js"
+
+test("MP-08 / MP-10 / MP-11 silent IPC reply retries the identical native receipt within the recovery budget", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await once(server, "listening")
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const client = new (await import("../ipc.js")).LocalIpcClient(`ws://127.0.0.1:${address.port}`)
+  const attempts: unknown[] = []
+  server.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(String(data))
+    const op = frame.request.NativeProviderTransport.operation
+    if (op.kind === "exchange") {
+      attempts.push(op)
+      if (attempts.length === 1) return // real IPC pending-response timer path
+    }
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { NativeProviderTransport: { result: {
+      connection_id: "owning", sequence: op.sequence ?? 0, closed: op.kind === "close",
+      frames: op.kind === "exchange" ? [JSON.stringify({ id: 1, result: { recovered: true } })] : [],
+    } } }, error: null }))
+  }))
+  const transport = await startCodexKernelTransport({ client, sessionId: "room", attachmentId: "view", agentId: "agent", providerRunId: "run" })
+  const socket = new WebSocket(transport.endpoint)
+  try {
+    const before = Date.now()
+    const reply = once(socket, "message")
+    assert.equal(JSON.parse((await reply)[0].toString()).result.recovered, true)
+    assert.ok(Date.now() - before >= 4_900 && Date.now() - before < 15_000)
+    assert.deepEqual(attempts[1], attempts[0])
+  } finally {
+    socket.terminate()
+    await transport.close()
+    client.destroy()
+    for (const peer of server.clients) peer.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+test("MP-08 / MP-10 / MP-11 closing the native bridge cancels its silent IPC attempt", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await once(server, "listening")
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  const client = new (await import("../ipc.js")).LocalIpcClient(`ws://127.0.0.1:${address.port}`)
+  let written!: () => void
+  const exchangeWritten = new Promise<void>(resolve => { written = resolve })
+  server.on("connection", socket => socket.on("message", data => {
+    const frame = JSON.parse(String(data)); const op = frame.request.NativeProviderTransport.operation
+    if (op.kind === "exchange") { written(); return }
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { NativeProviderTransport: { result: {
+      connection_id: "owning", sequence: 0, frames: [], closed: op.kind === "close",
+    } } }, error: null }))
+  }))
+  const transport = await startCodexKernelTransport({ client, sessionId: "room", attachmentId: "view", agentId: "agent", providerRunId: "run" })
+  const socket = new WebSocket(transport.endpoint)
+  try {
+    await exchangeWritten
+    const before = Date.now()
+    await transport.close()
+    assert.ok(Date.now() - before < 2_500)
+  } finally {
+    socket.terminate(); client.destroy()
+    for (const peer of server.clients) peer.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
 
 test("MP-08 Codex upstream crosses the owning kernel API and closes its exact connection", async () => {
   const seen: Array<Record<string, unknown>> = []

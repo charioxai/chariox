@@ -23,15 +23,16 @@ export async function startCodexKernelTransport(options: {
   providerRunId: string
 }): Promise<{ endpoint: string; close: () => Promise<void> }> {
   let closed = false
+  const shutdown = new AbortController()
   const tasks = new Set<Promise<void>>()
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0, maxPayload: frameBytes })
   await once(server, "listening")
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("Codex kernel bridge did not bind")
-  const sendOnce = async (operation: NativeProviderTransportOperation) => {
+  const sendOnce = async (operation: NativeProviderTransportOperation, signal: AbortSignal) => {
     let response: { NativeProviderTransport?: { result: NativeProviderTransportResult } }
     try {
-      response = await options.client.send(nativeProviderTransportRequest({ ...options, operation }))
+      response = await options.client.send(nativeProviderTransportRequest({ ...options, operation }), { signal })
     } catch (error) {
       traceCodexLifecycle("native_transport_error", {
         method: operation.kind,
@@ -51,17 +52,25 @@ export async function startCodexKernelTransport(options: {
     return result
   }
   const send = async (operation: NativeProviderTransportOperation) => {
-    const deadline = Date.now() + 15_000
+    const deadline = Date.now() + (operation.kind === "close" ? 1_000 : 15_000)
     for (;;) {
-      try { return await sendOnce(operation) }
+      const attempt = new AbortController()
+      const remaining = Math.max(1, deadline - Date.now())
+      const timeout = setTimeout(() => attempt.abort(new LocalIpcError(
+        "native provider transport", "native display response timed out; retry the same receipted operation", "outcome_unknown", true,
+      )), Math.min(5_000, remaining))
+      try {
+        return await sendOnce(operation, operation.kind === "close" ? attempt.signal : AbortSignal.any([attempt.signal, shutdown.signal]))
+      }
       catch (error) {
         // These operations carry worker-owned receipts. Retry this exact
         // operation, including its sequence and input, never a new exchange.
         if (closed || operation.kind === "close" || Date.now() >= deadline
           || !(error instanceof LocalIpcError)
           || !["native_transport_reconnecting", "target_disconnected", "target_not_connected", "connection_closed", "request_timeout", "outcome_unknown", "write_failed"].includes(error.code ?? "")) throw error
-        await sleep(100)
-      }
+        await sleep(Math.min(100, Math.max(0, deadline - Date.now())))
+        if (Date.now() >= deadline) throw error
+      } finally { clearTimeout(timeout) }
     }
   }
   server.on("connection", socket => {
@@ -121,6 +130,7 @@ export async function startCodexKernelTransport(options: {
     endpoint: `ws://127.0.0.1:${address.port}`,
     close: async () => {
       closed = true
+      shutdown.abort(new LocalIpcError("native provider transport", "native display closed", "client_closed", false))
       for (const socket of server.clients) socket.close()
       await Promise.allSettled([...tasks])
       await new Promise<void>(resolve => server.close(() => resolve()))
