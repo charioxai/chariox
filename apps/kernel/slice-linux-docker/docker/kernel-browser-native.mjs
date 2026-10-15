@@ -66,22 +66,26 @@ export class LinuxCapture {
    this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
   }
  }
+ async prepareReadback(){
+  const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
+  // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
+  // Page emulation owns negotiated DPR; keep the crop exact at both scales.
+  // Window bounds are host DIPs: the negotiated raster divided by host scale.
+  await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:geometry.width*this.scale,height:geometry.height*this.scale,hostScale:this.hostScale,
+   measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
+  return {width:geometry.width*this.scale,height:geometry.height*this.scale};
+ }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
-   this.phase='bounds';const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
-   // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
-   // Page emulation owns negotiated DPR; keep the crop exact at both scales.
-   // Window bounds are host DIPs: the negotiated raster divided by host scale.
-   await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:geometry.width*this.scale,height:geometry.height*this.scale,hostScale:this.hostScale,
-    measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
+   this.phase='bounds';const readback=await this.prepareReadback();
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
    this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await this.createRasterPool();
-   startNativeReadback(this,{width:geometry.width*this.scale,height:geometry.height*this.scale});
+   startNativeReadback(this,readback);
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;

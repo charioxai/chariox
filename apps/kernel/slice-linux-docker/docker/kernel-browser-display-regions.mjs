@@ -100,7 +100,7 @@ function inputStream(host,command,scope) {
 export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  if(!await stream.regionCurrent())refuse();
- if(stream.regionTarget.kind==='region')return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
+ if(['region','visible_page'].includes(stream.regionTarget.kind))return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
  // This window epoch is kernel-issued private adapter data, not an extra
  // public DisplayInput field or a client window claim.
@@ -111,6 +111,7 @@ export async function regionInputTarget(host,command,scope,signal) {
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  if(!await stream.regionCurrent())refuse();
+ if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();
   return host.arbiter.input({stream,command,scope,signal});
