@@ -1408,16 +1408,18 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
 async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
     // MP-08: ACK-settlement and receipt-reconciliation resume cancellation for a specific
     // prompt; when its queued successor became active meanwhile, nothing may be cancelled.
-    let mut app = crate::test_support::bootstrap_authenticated_app(
-        crate::config::DaemonConfig::for_tests(),
-    )
-    .expect("home app should bootstrap with an authenticated Codex test profile");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("home app should bootstrap with an authenticated Codex test profile");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
-            crate::session::CreateSessionRequest::new("resume-fence-workspace", "resume-fence-worktree")
-                .with_agent_defaults(
-                    crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
-                ),
+            crate::session::CreateSessionRequest::new(
+                "resume-fence-workspace",
+                "resume-fence-worktree",
+            )
+            .with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+            ),
         )
         .expect("home session should be created");
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -1444,7 +1446,9 @@ async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
             },
         )
         .expect("home agent should bind to the fake worker");
-    let crate::session::PromptSubmissionOutcome::Started { prompt: active_prompt } = app
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: active_prompt,
+    } = app
         .prompt_owner_submit_prepared_prompt(
             session.id(),
             crate::session::PromptQueueItem::new(
