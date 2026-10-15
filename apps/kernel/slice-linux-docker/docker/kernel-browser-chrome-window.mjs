@@ -274,7 +274,10 @@ export class InputArbiter {
       const key = typeof input.key === 'string' ? input.key : '';
       const keysym = /^[\x20-\x7e]$/.test(key) ? key.charCodeAt(0) : keysyms[key];
       if (keysym === undefined) throw new Error('MD-2: unsupported key');
-      return chord(keysym, input.modifiers ?? 0);
+      // MP-08/MP-10/MP-11: an accelerator's key label may be upper-case
+      // without Shift (Caps Lock). Do not let X11 infer an extra modifier.
+      const modifiers = input.modifiers ?? 0;
+      return chord(modifiers & 7 ? lower(keysym) : keysym, modifiers);
     }
     if (input.kind === 'text') {
       if (typeof input.text !== 'string' || input.text.length > 2048 || !/^[\x20-\x7e]*$/.test(input.text)) throw new Error('MD-2: unsupported text');
