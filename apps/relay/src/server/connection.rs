@@ -106,6 +106,7 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
+    crate::socket::configure_relay_stream(&stream)?;
     let mut chunks = false;
     let handshake = accept_hdr_async(
         stream,

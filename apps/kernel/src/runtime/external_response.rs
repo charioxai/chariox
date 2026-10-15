@@ -129,7 +129,7 @@ response_policies! {
         EventConnectionAuthorizationStarted,
         EventConnectionAuthorizationObserved,
         // Environment authorization URLs and reserved export/import/apply
-        // payloads stay with the host terminal; P01 delivers none of them.
+        // payloads stay with the host terminal; P02b delivers none of them.
         EnvironmentProviderAuthorizationLink,
         ProjectEnvironmentExport,
         EnvironmentImportPreview,
@@ -200,6 +200,7 @@ response_policies! {
         ProjectEnvironmentManifest,
         // Value-free Environment aggregates: names, versions and Vault references only.
         ProjectEnvironment,
+        ProjectEnvironmentView,
         ProjectEnvironmentDiff,
         ProjectEnvironmentSaved,
         EnvironmentOperation,

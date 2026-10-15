@@ -14,3 +14,6 @@ pub use auth::{
 };
 pub use config::RelayConfig;
 pub use server::RelayServer;
+
+// MP-08 / MP-10 / MP-11: shared relay WebSocket transport setup.
+pub mod socket;

@@ -100,12 +100,10 @@ impl KernelRuntimeState {
             &request.provider,
             &request.account_profile,
         )?;
-        if !crate::provider::launch_uses_vault_credential(
-            &self.owned.provider_account_profiles,
+        if !crate::provider::provider_account_credential_uses_vault(
             &account_owner_user_id,
             &request.provider,
             &profile.profile_id,
-            request.client_interface,
         )? {
             return Ok(VaultUnlockGuard::not_required());
         }
@@ -1390,5 +1388,151 @@ mod mp11_always_tests {
                 "Always policy reused an existing lease through a command caller"
             );
         }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn mp11_manual_claude_token_verifies_before_authentication_and_replacement() {
+        crate::test_support::isolated_env_test!();
+        let _environment = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "envp03-manual-claude-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                std::env::remove_var("CHARIOX_HOME");
+                std::env::remove_var("CHARIOX_CLAUDE_BIN");
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        std::env::set_var("CHARIOX_HOME", &root);
+        let executable = root.join("claude");
+        std::fs::write(&executable, r##"#!/bin/sh
+if [ "$1" = "-p" ]; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-valid" ]; then
+    printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"CHARIOX_AUTH_OK","usage":{"output_tokens":7},"num_turns":1}'
+  else
+    printf '%s' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"synthetic authentication refusal","usage":{"output_tokens":0},"num_turns":0}'; exit 1
+  fi
+elif [ "$1" = "auth" ]; then
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-valid" ]; then
+    printf '%s' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}'
+  elif [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-wrong-source" ]; then
+    printf '%s' '{"loggedIn":true,"authMethod":"api_key_helper","apiProvider":"firstParty"}'
+  else
+    printf '%s' '{"loggedIn":false}'; exit 1
+  fi
+else
+  printf '%s' '{"loggedIn":false}'
+fi
+"##).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let vault = root.join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "synthetic-passphrase")
+            .unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config_path = root.join("config.toml");
+        config = config.with_session_history_root(root.join("history"));
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        let state = runtime(config).await;
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "synthetic",
+            None,
+            None,
+            &crate::local::LocalDaemonRequest::GetCredentialVaultStatus(
+                crate::local::GetCredentialVaultStatusRequest,
+            ),
+        );
+        let owner = state.provider_account_authority_owner_user_id(
+            &crate::runtime::command::command_caller_user_id(&command),
+        );
+        let registry = state.provider_account_profile_registry();
+        let profile = registry
+            .create_managed(&owner, "claude", "Synthetic")
+            .unwrap();
+        let request = |value: &str, overwrite| crate::local::SetProviderAccountCredentialRequest {
+            session_id: None,
+            agent_id: None,
+            provider: "claude".into(),
+            account_profile: profile.profile_id.clone(),
+            value: value.into(),
+            run: false,
+            overwrite,
+        };
+        let result =
+            crate::runtime::user_config_executor::execute_set_provider_account_credential_request(
+                &state.owned.config_projection,
+                &state,
+                &command,
+                request("synthetic-valid", false),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            crate::local::LocalDaemonResponse::ProviderAccountCredentialStored { .. }
+        ));
+        assert_eq!(
+            registry
+                .get(&owner, "claude", &profile.profile_id)
+                .unwrap()
+                .auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "manual enrollment must verify and authenticate through the official CLI"
+        );
+        let bad =
+            crate::runtime::user_config_executor::execute_set_provider_account_credential_request(
+                &state.owned.config_projection,
+                &state,
+                &command,
+                request("synthetic-invalid", true),
+            )
+            .await;
+        assert!(
+            bad.is_err(),
+            "a provider-reported unauthenticated token must not replace the registered credential"
+        );
+        let wrong_source =
+            crate::runtime::user_config_executor::execute_set_provider_account_credential_request(
+                &state.owned.config_projection,
+                &state,
+                &command,
+                request("synthetic-wrong-source", true),
+            )
+            .await;
+        assert!(
+            wrong_source.is_err(),
+            "another credential source cannot verify the supplied token"
+        );
+        let values = crate::provider::resolve_provider_account_credentials(
+            &state.owned.config_projection.snapshot(),
+            &owner,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        assert!(values.iter().any(
+            |(name, value)| name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV
+                && value == "synthetic-valid"
+        ));
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        drop(state);
     }
 }

@@ -27,8 +27,10 @@ test("MP-08 MP-10 MP-11 forged bounds, overlapping and cross-transfer chunks fai
   receiver.receive(chunk(1,0,17000,secret),() => {})
   for (const value of [chunk(1,0,17000,secret),chunk(2,secret.length,17000,secret),chunk(1,secret.length,18000,secret)]) assert.throws(() => receiver.receive(value,receipt))
 })
-test("MP-08 MP-10 MP-11 transport wire snapshot requires protocol 491", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,491)
+test("MP-08 MP-10 MP-11 transport wire snapshot requires allocated protocol 505", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,505)
   assert.equal(relayTransportUrl("wss://example.test/socket?existing=1"),"wss://example.test/socket?existing=1&chariox_transport=chunks-v1")
   assert.equal(createHash("sha256").update(chunk(1,0,17000,"public")).digest("hex"),"63f2c15eb230dffa4358b314b5c798c07ac7d6c726781fd09314f6e2810b9e05")
+  const snapshot = JSON.stringify({ protocol: LOCAL_DAEMON_PROTOCOL_VERSION, maxMessageBytes: relayMaxMessageBytes, chunk: JSON.parse(chunk(1,0,17000,"public")) })
+  assert.equal(createHash("sha256").update(snapshot).digest("hex"),"d696540a21f08197dfe9483ca50f24ce289c26f15a4e105dee47f7546789d0d5")
 })

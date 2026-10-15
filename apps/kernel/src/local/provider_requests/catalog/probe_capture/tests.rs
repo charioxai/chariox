@@ -116,13 +116,7 @@ mod escaped {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            if let Ok(pid) = std::fs::read_to_string(self.0.join("pid")) {
-                if let Ok(pid) = pid.trim().parse::<i32>() {
-                    unsafe {
-                        libc::kill(-pid, libc::SIGKILL);
-                    }
-                }
-            }
+            // MP-08 / MP-10 / MP-11: capture owns process teardown; fixtures never signal groups.
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
@@ -153,6 +147,9 @@ mod escaped {
     }
 
     fn running(pid: i32) -> bool {
+        if super::super::platform::signal_pid(pid.into()).is_err() {
+            return false;
+        }
         #[cfg(target_os = "linux")]
         {
             std::fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -209,6 +206,9 @@ mod escaped {
             );
             return;
         }
+        // MP-08 / MP-10 / MP-11: initialize the single supervised reaper
+        // before measuring growth across repeated capture timeouts.
+        capture(shell("printf warm"), Duration::from_secs(2)).unwrap();
         let before = std::fs::read_dir("/proc/self/task").unwrap().count();
         for _ in 0..10 {
             let error = capture(shell("sleep 30"), Duration::from_millis(10)).unwrap_err();
@@ -239,4 +239,135 @@ fn windows_captures_both_streams_and_times_out() {
         Err(CaptureError::TimedOut)
     ));
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+// MP-08 / MP-10 / MP-11: owning capture retains redirected descendants as well as pipe writers.
+#[cfg(target_os = "linux")]
+#[test]
+fn review0212_timeout_settles_descendants_with_both_streams_redirected() {
+    let root = crate::test_support::TestWorktree::new("review0212-redirected");
+    let pid_path = root.path().join("child-pid");
+    let script = format!(
+        "sleep 30 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{}'; wait",
+        pid_path.display()
+    );
+    let error = capture(shell(&script), Duration::from_millis(100)).unwrap_err();
+    assert!(matches!(error, CaptureError::TimedOut));
+    let pid = std::fs::read_to_string(&pid_path)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert!(pid > 1);
+    let running_now = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .trim_start()
+                .starts_with('Z')
+        })
+    };
+    for _ in 0..20 {
+        if !running_now() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let running = running_now();
+    if running {
+        // Pin this known fixture child before settling a fail-first leak; never signal a group.
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        assert!(fd >= 0);
+        let pinned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pinned.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            );
+        }
+    }
+    assert!(
+        !running,
+        "redirected owned descendant survived capture timeout"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: synchronized helpers close both capture pipes.
+#[cfg(unix)]
+#[test]
+fn review0821_redirected_descendants_stop_after_success_and_timeout() {
+    for stalled in [false, true] {
+        let root = crate::test_support::TestWorktree::new("review0821-redirected");
+        let mut command = shell(
+            r#"sh -c 'echo $$ > "$1/pid"; sleep .4; echo survived > "$1/survived"' helper "$1" >/dev/null 2>&1 & while [ ! -s "$1/pid" ]; do sleep .005; done; if [ "$2" = stall ]; then wait; else printf ok; fi"#,
+        );
+        command
+            .arg("launcher")
+            .arg(root.path())
+            .arg(if stalled { "stall" } else { "success" });
+        let result = capture(
+            command,
+            if stalled {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(2)
+            },
+        );
+        // The helper is finite even on RED; do not leak test subprocesses.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !root.path().join("survived").exists(),
+            "redirected descendant executed after capture completed (stalled={stalled})"
+        );
+        if stalled {
+            assert!(matches!(result, Err(CaptureError::TimedOut)));
+        } else {
+            assert_eq!(result.unwrap().stdout, b"ok");
+        }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: group membership proves ownership only in a private session.
+#[cfg(unix)]
+#[test]
+fn review0821_probe_group_rejects_unrelated_siblings() {
+    use std::{os::unix::process::CommandExt, process::Stdio};
+    let mut command = shell("sleep 1");
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut probe = super::platform::Process::spawn(&mut command).unwrap();
+    let pid = probe.child_mut().id();
+    assert!(pid > 1 && pid <= i32::MAX as u32);
+    let mut sibling = shell("sleep .1");
+    unsafe {
+        sibling.pre_exec(move || {
+            if libc::setpgid(0, pid as i32) < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let rejected = match sibling.spawn() {
+        Err(error) => error.raw_os_error() == Some(libc::EPERM),
+        Ok(mut child) => {
+            // This fixture is ours; do not let it enter probe cleanup's ownership set.
+            assert!(child.id() > 1);
+            let _ = child.kill();
+            child.wait().unwrap();
+            false
+        }
+    };
+    probe.stop().unwrap();
+    assert!(
+        rejected,
+        "unrelated sibling could join the probe's cleanup group"
+    );
 }

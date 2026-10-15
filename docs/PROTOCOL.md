@@ -3248,6 +3248,62 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
 
+### MP-08 / MP-10 / MP-11: ordered relay receipt credit (local 505, peer 113)
+
+The coordinator-allocated Environment versions 505 / 113 also bind the
+connection-wide receipt scheduling contract. With `chariox_transport=chunks-v1`,
+complete framed envelopes remain sequential. A subsequent envelope may start
+before the preceding envelope's final receipt, provided all outstanding encoded
+chunks together fit the existing 64 KiB window. Only the exact next ordered
+transfer ID and offset release credit; duplicate, mismatched and reordered
+receipts close the connection. Independent small frames retain their separate
+16 KiB credit bound and request FIFO remains enforced. Receipts establish
+transport delivery only, never kernel operation completion or authorization.
+
+Frame syntax, maximum envelope size and the strict single-active-transfer
+receiver are unchanged. Existing chunk receivers remain compatible because a
+new transfer starts only after the preceding envelope is completely sent.
+Clients do not require a higher minimum solely for this scheduling behavior.
+Unframed connections retain their existing behavior.
+
+Focused boundary drill (from the exact checkout, under the builder cargo slot):
+
+```sh
+cargo test -p chariox-relay sequential_responses_do_not_wait_for_the_previous_final_receipt
+cargo test -p chariox-relay server::connection::writer
+cargo test -p chariox-kernel --lib environment_relay_receipt_transport_snapshot_is_versioned
+```
+
+The first drill withholds receipts over a real WebSocket, verifies both complete
+responses arrive within one shared window, reconstructs them through the existing
+strict receiver, and then releases ordered receipts. The writer suite covers
+window saturation, request/event ordering, control delivery and invalid receipts.
+The versioned kernel snapshot pins the allocated versions, frame shapes and
+bounds. These focused checks supplement real hosted Web/TUI Environment drills;
+they do not establish MP-10 acceptance on their own.
+
+### MP-08 / MP-10 / MP-11: Environment compact reads (local 505, peer 113)
+
+`GetProjectEnvironment { projectId }` retains the complete aggregate. Optional
+`view: { knownDigest, proposals }` returns `ProjectEnvironmentView { view }`.
+A summary retains the complete saved specification, current observations and
+operation headers and reports proposal/operation item counts. Proposal bodies
+load only when review begins. `observed_at_ms` supplies a kernel-clock reference for remote-client freshness.
+Unchanged summaries omit `environment`; clients may
+reuse only a matching Project/kernel-bound cached digest. Full operation
+details are loaded explicitly through the ordinary full read.
+
+Proposal-only reads use `proposals: { snapshotDigest, offset, limit }` with
+limit 1–20. Pages target 32 KiB, preserving complete individual requirements,
+provenance and Secret defaults; an individually larger requirement remains
+whole. `next_proposal_offset` is authoritative. The snapshot digest covers
+Project identity, attachments, revision, discovery and observations. A changed
+snapshot rejects the page explicitly. Paging does not change Save's revision,
+content digest or opaque proposal-token fences. Web and local/remote TUI share
+this path; complete mutation replies are retained only in the active editor,
+while cold-open caches retain compact or small snapshots.
+
+MP-08 / MP-10 / MP-11, local protocol 505 / relay peer 113: `GetProviderCatalog.summary_only` optionally returns provider identities, connectivity and their default model metadata without other model bodies. Omission keeps the complete unscoped read. An explicit provider request returns that provider's models and default metadata for the other provider rows. Both projections use the same authorized catalog and profile/execution scope; startup summaries and full model reads share its cache. Clients request full models when selecting/reviewing that provider.
 ### Kernel Cloud ownership, protocol 491 (MP-08 / MP-10 / MP-11)
 
 Ordinary Cloud enrollment is kernel-scoped. `CloudRelayProfile` exposes `kernel_id` and `kernel_enrolled`, and omits credentials and human-session fields. `CloudRelayConnected` exposes status/profile, without the kernel relay token. `ResolveKernelClientConnectionRequest.public_key_thumbprint` binds an owner's exact-target terminal grant to the receiving CLI identity. Remote requests must prove the claimed encrypted sender key. Kernel owner checks apply below every client; shared-session membership does not confer directory or enrollment authority. See [kernel ownership auth](KERNEL_OWNERSHIP_AUTH.md) for persistence, migration and acknowledged unlink semantics. The embedded local response union is fenced by coordinator-allocated relay peer protocol 101.

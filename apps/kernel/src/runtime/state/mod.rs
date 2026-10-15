@@ -87,12 +87,15 @@ mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
+mod project_environment_check;
+mod project_environment_detect;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
 mod project_environment_placement;
 mod project_environment_remote;
 mod project_environment_review;
+mod project_environment_revision;
 mod project_environment_worker_export;
 mod project_environment_workspaces;
 mod project_prompt_promotion;
@@ -1167,3 +1170,6 @@ impl KernelRuntimeState {
         ).await
     }
 }
+
+#[cfg(test)]
+mod project_environment_detect_observation_tests;

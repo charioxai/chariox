@@ -93,11 +93,30 @@ pub(crate) async fn execute_get_provider_auth_status_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        provider_auth_status_response(&registry, &owner_user_id, request)
+    let config = runtime_state.config_snapshot().await;
+    let (result, changed) = tokio::task::spawn_blocking(move || {
+        // MP-08 / MP-10 / MP-11: checked-at timestamps do not change model availability.
+        let catalog_state = || {
+            registry
+                .get(&owner_user_id, &request.provider, &request.account_profile)
+                .ok()
+                .map(|p| (p.auth_state, p.credential_kind, p.services, p.is_default))
+        };
+        let before = catalog_state();
+        let result =
+            provider_auth_status_response(&registry, &owner_user_id, request.clone(), &config);
+        let changed = before != catalog_state();
+        (result, changed)
     })
     .await
-    .map_err(|error| provider_auth_task_error("get provider auth status", error))?
+    .map_err(|error| provider_auth_task_error("get provider auth status", error))?;
+    if changed {
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        runtime_state.record_waiting_room_change();
+    }
+    result
 }
 
 async fn reconcile_running_terminal_provider_auth(
@@ -412,13 +431,15 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
         let profile_id = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
                     &registry,
                     &owner,
                     "codex",
                     &profile_id,
+                    &config,
                 )?;
             refresh_provider_account_family_after_login(
                 &registry,
@@ -427,11 +448,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 &profile_id,
                 refreshed,
                 |candidate_profile_id| {
-                    crate::local::provider_requests::refresh_provider_account_profile_response(
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
                         &registry,
                         &owner,
                         "codex",
                         candidate_profile_id,
+                        &config,
                     )
                 },
             )
@@ -515,10 +537,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let owner = owner_user_id.to_string();
         let provider = record.provider.clone();
         let profile = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
-                    &registry, &owner, &provider, &profile,
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    &registry, &owner, &provider, &profile, &config,
                 )?;
             if record.operation == crate::runtime::state::ProviderAuthProcessOperation::Login
                 && refreshed.auth_state
@@ -531,11 +554,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                     &profile,
                     refreshed,
                     |candidate_profile_id| {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &registry,
                             &owner,
                             &provider,
                             candidate_profile_id,
+                            &config,
                         )
                     },
                 )

@@ -17,7 +17,7 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
-mod probe_capture;
+pub(crate) mod probe_capture;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -233,12 +233,14 @@ pub(crate) fn provider_auth_status_response(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     request: GetProviderAuthStatusRequest,
+    config: &DaemonConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let status = observe_provider_auth_status(
         registry,
         owner_user_id,
         &request.provider,
         &request.account_profile,
+        config,
     )?;
     Ok(LocalDaemonResponse::ProviderAuthStatus { status })
 }
@@ -248,10 +250,71 @@ pub(crate) fn observe_provider_auth_status(
     owner_user_id: &str,
     provider: &str,
     account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    observe_provider_auth_status_until(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        None,
+        config,
+    )
+}
+
+// MP-08 / MP-10 / MP-11: each native probe, including version, consumes one absolute budget.
+pub(crate) fn observe_provider_auth_status_until(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    deadline: Option<std::time::Instant>,
+    config: &DaemonConfig,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     match crate::provider::canonical_provider_family(provider) {
+        Some("codex") if deadline.is_some() => {
+            // Account Check uses the official read-only CLI status seam so
+            // app-server startup/reconnect cannot outlive the Check budget.
+            let executable = crate::provider::resolve_codex_executable()?;
+            let mut command = crate::provider::managed_isolated_utility_command(
+                executable.display().to_string(),
+                vec!["login".into(), "status".into()],
+                environment,
+                None,
+                "codex:auth-status",
+            )?;
+            remove_account_auth_environment(&mut command, "codex");
+            let output = bounded_status_output_until(command, "Codex login status", deadline)?;
+            let text = zeroize::Zeroizing::new(format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+            let auth_state = match output.status.code() {
+                Some(0) if text.contains("Logged in") => "authenticated",
+                Some(1) if text.contains("Not logged in") => "not_logged_in",
+                _ => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "get_provider_auth_status",
+                        message: "Codex login status did not report valid authorization".into(),
+                    })
+                }
+            };
+            let status = ProviderAuthStatus {
+                provider: "codex".into(),
+                account_profile: profile.profile_id.clone(),
+                auth_state: auth_state.into(),
+                identity_summary: profile.identity_summary,
+                plan: profile.plan,
+                login_hint: None,
+                detected_version: command_version_until(&executable, deadline).ok(),
+            };
+            ensure_status_budget(deadline)?;
+            update_profile_auth_observation(registry, owner_user_id, &status)?;
+            Ok(status)
+        }
         Some("codex") => {
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
@@ -264,15 +327,48 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
-                return Ok(kept);
-            }
+            let status = if deadline.is_some() {
+                if crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "get_provider_auth_status",
+                        message:
+                            "Vault-backed Claude authentication requires explicit account refresh"
+                                .into(),
+                    });
+                }
+                let status = claude_auth_status_until(
+                    provider,
+                    &profile.profile_id,
+                    &environment,
+                    deadline,
+                )?;
+                ensure_status_budget(deadline)?;
+                registry.record_claude_native_login(
+                    owner_user_id,
+                    &profile.profile_id,
+                    status.auth_state == "authenticated",
+                )?;
+                status
+            } else {
+                claude_profile_auth_status(
+                    registry,
+                    owner_user_id,
+                    provider,
+                    &profile,
+                    &environment,
+                    config,
+                )?
+            };
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
         Some("opencode") => {
-            let status = opencode_auth_status(&profile.profile_id, &environment)?;
+            let status = opencode_auth_status_until(&profile.profile_id, &environment, deadline)?;
+            ensure_status_budget(deadline)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             registry.update_services(
                 owner_user_id,
@@ -289,11 +385,71 @@ pub(crate) fn observe_provider_auth_status(
     }
 }
 
-pub(crate) fn refresh_provider_account_profile_response(
+/// Automatic refreshes cannot fetch setup-token usage and must not turn an
+/// already enrolled account into Error because an optional probe failed.
+pub(crate) fn refresh_provider_account_profile_with_config(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    if let Some(profile) =
+        saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?
+    {
+        return Ok(profile);
+    }
+    refresh_provider_account_profile_explicitly(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+    )
+}
+
+fn saved_claude_token_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(Some(profile));
+    }
+    Ok(None)
+}
+
+/// MP-08 / MP-11: publication startup observes native auth without an optional
+/// usage probe. Enrolled tokens share the automatic refresh's saved-state gate.
+pub(crate) fn refresh_provider_account_auth_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    if saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?.is_some()
+    {
+        return Ok(());
+    }
+    observe_provider_auth_status(registry, owner_user_id, provider, account_profile, config)
+        .map(|_| ())
+}
+
+pub(crate) fn refresh_provider_account_profile_explicitly(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
@@ -314,15 +470,20 @@ pub(crate) fn refresh_provider_account_profile_response(
             )
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
-                if auth_state_from_status(&kept.auth_state) != profile.auth_state {
-                    update_profile_auth_observation(registry, owner_user_id, &kept)?;
-                    return registry.get(owner_user_id, provider, &profile.profile_id);
-                }
-                return Ok(profile);
-            }
-            let usage = if status.auth_state == "authenticated" {
+            let status = claude_profile_auth_status(
+                registry,
+                owner_user_id,
+                provider,
+                &profile,
+                &environment,
+                config,
+            )?;
+            let usage = if status.auth_state == "authenticated"
+                && !crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )? {
                 let executable = resolve_claude_executable()?;
                 crate::provider::probe_claude_account_usage(
                     &executable,
@@ -365,51 +526,111 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-/// Launches use the profile's Chariox Vault setup token, which was verified
-/// with Claude when it was stored. `claude auth status` cannot see it, and
-/// reading it back needs the vault, so when Claude reports no native login
-/// the observation recorded at storage is kept rather than downgraded.
-fn claude_vault_token_status(
+// MP-08 / MP-11: verify the exact currently selected token on explicit status
+// and refresh requests. Native-login timestamps and handles are not token proof.
+fn claude_profile_auth_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
+    provider: &str,
     profile: &crate::account_profile::ProviderAccountProfile,
-    native: &ProviderAuthStatus,
-) -> Result<Option<ProviderAuthStatus>, DaemonError> {
-    if native.auth_state == "authenticated"
-        || !crate::provider::provider_account_credential_registered(
+    profile_environment: &BTreeMap<String, String>,
+    config: &DaemonConfig,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    if !crate::provider::provider_account_credential_registered(
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )? {
+        let status = claude_auth_status(provider, &profile.profile_id, profile_environment)?;
+        registry.record_claude_native_login(
             owner_user_id,
-            "claude",
             &profile.profile_id,
-        )?
-    {
-        return Ok(None);
+            status.auth_state == "authenticated",
+        )?;
+        return Ok(status);
     }
-    use crate::account_profile::ProviderAccountAuthState;
-    Ok(Some(ProviderAuthStatus {
-        auth_state: match profile.auth_state {
-            ProviderAccountAuthState::Authenticated => "authenticated",
-            ProviderAccountAuthState::Expired => "expired",
-            ProviderAccountAuthState::Error => "error",
-            ProviderAccountAuthState::NotConfigured => "unknown",
-            ProviderAccountAuthState::Unknown => "unknown",
+    // Local availability says nothing about the enrolled token. In particular,
+    // an idle locked Vault must not erase the previous authentication proof.
+    let secrets = crate::provider::resolve_provider_account_credentials(
+        config,
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )?;
+    let executable = resolve_claude_executable()?;
+    let mut environment = profile_environment.clone();
+    for (name, value) in secrets.iter() {
+        environment.insert(name.to_string(), value.to_string());
+    }
+    let checked = crate::provider::verify_claude_setup_token(&executable, &environment);
+    if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        zeroize::Zeroize::zeroize(value);
+    }
+    let verified = match checked {
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
         }
-        .to_string(),
-        identity_summary: profile.identity_summary.clone(),
-        plan: profile.plan.clone(),
-        login_hint: Some(
-            if profile.auth_state == ProviderAccountAuthState::Authenticated {
-                "This account runs agents with its verified Chariox Vault setup token. Choose Log in to authorize a replacement.".to_string()
+        checked => {
+            // Local unavailability on reread still says nothing about the token.
+            let current = crate::provider::resolve_provider_account_credentials(
+                config,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            if current.iter().eq(secrets.iter()) {
+                checked.map_err(|error| error.into_daemon_error())
             } else {
-                "This account has a Chariox Vault setup token. It will be checked automatically when first used. If Claude rejects it, an authorization link will appear.".to_string()
-            },
-        ),
-        ..native.clone()
-    }))
+                // MP-08 / MP-10 / MP-11: the replacement's verified observation
+                // belongs to its enrollment; this older check cannot downgrade it.
+                return Err(DaemonError::LocalTransport {
+                    operation: "verify Claude setup token",
+                    message:
+                        "Claude setup token changed during verification; refresh the account again"
+                            .into(),
+                });
+            }
+        }
+    };
+    if let Err(error) = verified {
+        // Definitive rejection skips another check of the same credential.
+        // Local and transient failures above preserve the saved observation.
+        registry.update_observation(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Expired,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        return Err(error);
+    }
+    Ok(ProviderAuthStatus {
+        provider: provider.to_string(),
+        account_profile: profile.profile_id.clone(),
+        auth_state: "authenticated".into(),
+        identity_summary: None,
+        plan: None,
+        detected_version: claude_version_until(None).ok(),
+        login_hint: None,
+    })
 }
 
-fn claude_auth_status(
+pub(crate) fn claude_auth_status(
     provider: &str,
     account_profile: &str,
     environment: &BTreeMap<String, String>,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    claude_auth_status_until(provider, account_profile, environment, None)
+}
+
+fn claude_auth_status_until(
+    provider: &str,
+    account_profile: &str,
+    environment: &BTreeMap<String, String>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_claude_executable()?;
     let mut command = crate::provider::managed_isolated_utility_command(
@@ -431,7 +652,12 @@ fn claude_auth_status(
     ] {
         command.env_remove(name);
     }
-    let output = bounded_status_output(command, "Claude auth status")?;
+    // Native observations must not inherit an unrelated setup token. Explicit
+    // enrollment passes its token in the selected utility environment.
+    if !environment.contains_key(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        command.env_remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV);
+    }
+    let output = bounded_status_output_until(command, "Claude auth status", deadline)?;
     // The managed launcher can fail before Claude executes. Exit 1 alone
     // therefore does not establish that the user's account is logged out.
     // Never include provider stdout/stderr in the diagnostic: it may contain
@@ -452,11 +678,20 @@ fn claude_auth_status(
         (Some(0), Some(_)) | (Some(1), Some(false)) => {}
         _ => return Err(verification_error()),
     }
+    // MP-08 / MP-10 / MP-11: an explicit supplied token must be the credential
+    // Claude reports using, not an API-key helper from the selected profile.
+    if environment.contains_key(crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+        && logged_in == Some(true)
+        && (value.get("authMethod").and_then(serde_json::Value::as_str) != Some("oauth_token")
+            || value.get("apiProvider").and_then(serde_json::Value::as_str) != Some("firstParty"))
+    {
+        return Err(verification_error());
+    }
     Ok(claude_auth_status_from_value(
         provider,
         account_profile,
         &value,
-        claude_version().ok(),
+        claude_version_until(deadline).ok(),
     ))
 }
 
@@ -465,11 +700,42 @@ fn claude_auth_status(
 /// deadline the owned process and inherited pipe writers are stopped.
 const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
+// MP-08 / MP-10 / MP-11: an optional version probe may consume the remaining
+// Check budget. Do not follow an expired probe with durable profile mutations.
+fn ensure_status_budget(deadline: Option<std::time::Instant>) -> Result<(), DaemonError> {
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: "Provider status operation deadline exceeded; authentication is inconclusive"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 fn bounded_status_output(
     command: Command,
     label: &str,
 ) -> Result<std::process::Output, DaemonError> {
-    bounded_output(command, label, PROVIDER_STATUS_PROBE_TIMEOUT)
+    bounded_status_output_until(command, label, None)
+}
+fn bounded_status_output_until(
+    command: Command,
+    label: &str,
+    deadline: Option<std::time::Instant>,
+) -> Result<std::process::Output, DaemonError> {
+    let timeout = deadline
+        .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+        .unwrap_or(PROVIDER_STATUS_PROBE_TIMEOUT)
+        .min(PROVIDER_STATUS_PROBE_TIMEOUT);
+    if timeout.is_zero() {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: "Provider status operation deadline exceeded; authentication is inconclusive"
+                .into(),
+        });
+    }
+    bounded_output(command, label, timeout)
 }
 
 fn bounded_output(
@@ -497,6 +763,13 @@ fn opencode_auth_status(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
+    opencode_auth_status_until(account_profile, environment, None)
+}
+fn opencode_auth_status_until(
+    account_profile: &str,
+    environment: &BTreeMap<String, String>,
+    deadline: Option<std::time::Instant>,
+) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
@@ -506,7 +779,7 @@ fn opencode_auth_status(
         "opencode:auth-status",
     )?;
     remove_account_auth_environment(&mut command, "opencode");
-    let output = bounded_status_output(command, "OpenCode auth list")?;
+    let output = bounded_status_output_until(command, "OpenCode auth list", deadline)?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -542,7 +815,7 @@ fn opencode_auth_status(
                 "Use Provider Accounts to run `opencode auth login` for this account.".to_string()
             },
         ),
-        detected_version: command_version(&executable).ok(),
+        detected_version: command_version_until(&executable, deadline).ok(),
     })
 }
 
@@ -904,7 +1177,13 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
 }
 
 fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    let output = bounded_status_output(
+    command_version_until(executable, None)
+}
+fn command_version_until(
+    executable: &std::path::Path,
+    deadline: Option<std::time::Instant>,
+) -> Result<String, DaemonError> {
+    let output = bounded_status_output_until(
         crate::provider::managed_isolated_utility_command(
             executable.display().to_string(),
             vec!["--version".to_string()],
@@ -913,6 +1192,7 @@ fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> 
             "provider:version",
         )?,
         "provider version",
+        deadline,
     )?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!text.is_empty())
@@ -940,9 +1220,9 @@ fn find_numeric_field(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
     }
 }
 
-fn claude_version() -> Result<String, DaemonError> {
+fn claude_version_until(deadline: Option<std::time::Instant>) -> Result<String, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = bounded_status_output(
+    let output = bounded_status_output_until(
         crate::provider::managed_isolated_utility_command(
             executable.display().to_string(),
             vec!["--version".to_string()],
@@ -951,6 +1231,7 @@ fn claude_version() -> Result<String, DaemonError> {
             "claude:version",
         )?,
         "Claude version",
+        deadline,
     )?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
@@ -1349,6 +1630,7 @@ mod tests {
             .create_managed("owner-a", "codex", "Work")
             .expect("work profile should be created");
         let request = GetProviderCatalogRequest {
+            summary_only: false,
             provider: Some("codex".to_string()),
             account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
             execution_location: ProviderCatalogExecutionLocation::Slice {
@@ -1444,6 +1726,7 @@ mod tests {
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         );
         let error = result.expect_err("launcher failure must not become a logged-out status");
         let message = error.to_string();
@@ -1470,6 +1753,7 @@ mod tests {
                     provider: "claude-headless".to_string(),
                     account_profile: "default".to_string(),
                 },
+                &DaemonConfig::for_tests(),
             );
             let message = result
                 .expect_err("invalid status must not assert the user's authentication state")
@@ -1492,6 +1776,7 @@ mod tests {
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         )
         .expect("documented logout must remain a valid status");
         let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
@@ -1499,6 +1784,170 @@ mod tests {
         };
         assert_eq!(status.auth_state, "not_logged_in");
         assert!(status.login_hint.is_some());
+    }
+
+    #[test]
+    fn fresh_claude_account_admission_verifies_normal_login_before_status_command() {
+        // MP-08 / MP-10 / MP-11: fresh kernels migrate native logins as Unknown.
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("claude-first-admission");
+        let executable = root.path().join("claude-status");
+        let calls = root.path().join("status-calls");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.289'; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo status >> '{}'
+  printf '%s\n' '{{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}}'
+  exit 0
+fi
+exit 2
+"#,
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        registry
+            .migrate_effective_defaults("local", &root.path().join("home"))
+            .unwrap();
+        assert_eq!(
+            registry
+                .get("local", "claude", "default")
+                .unwrap()
+                .auth_state,
+            crate::account_profile::ProviderAccountAuthState::Unknown
+        );
+        let admitted = registry.require_authenticated(
+            "local",
+            "claude-headless",
+            "default",
+            Some("haiku"),
+            "submit prompt",
+        );
+        let repeat = registry.require_authenticated(
+            "local",
+            "claude-p",
+            "default",
+            Some("haiku"),
+            "submit prompt",
+        );
+        let call_count = fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        assert!(
+            admitted.is_ok(),
+            "first prompt must verify native login: {admitted:?}"
+        );
+        assert!(repeat.is_ok());
+        assert_eq!(
+            call_count, 1,
+            "known account state must avoid repeated auth probes"
+        );
+    }
+
+    #[test]
+    fn fresh_claude_account_admission_keeps_rejected_and_unverifiable_logins_gated() {
+        // MP-08 / MP-10 / MP-11: Unknown never means authenticated by default.
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        use crate::account_profile::ProviderAccountAuthState as Auth;
+        for (initial, status, code, expected, probes) in [
+            (
+                Auth::Unknown,
+                r#"{"loggedIn":false}"#,
+                1,
+                Auth::NotConfigured,
+                1,
+            ),
+            (Auth::Unknown, r#"{"loggedIn":true}"#, 1, Auth::Unknown, 1),
+            (
+                Auth::Unknown,
+                r#"{"error":"private-fixture-marker"}"#,
+                0,
+                Auth::Unknown,
+                1,
+            ),
+            (Auth::Expired, r#"{"loggedIn":true}"#, 0, Auth::Expired, 0),
+            (
+                Auth::NotConfigured,
+                r#"{"loggedIn":true}"#,
+                0,
+                Auth::NotConfigured,
+                0,
+            ),
+            (Auth::Error, r#"{"loggedIn":true}"#, 0, Auth::Error, 0),
+        ] {
+            let root = crate::test_support::TestWorktree::new("claude-rejected-admission");
+            let executable = root.path().join("claude-status");
+            let calls = root.path().join("status-calls");
+            fs::write(
+                &executable,
+                format!(
+                    r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.289'; exit 0; fi
+echo status >> '{}'
+printf '%s\n' '{}'
+exit {}
+"#,
+                    calls.display(),
+                    status,
+                    code
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+            let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+                root.path().join("profiles.json"),
+            )
+            .unwrap();
+            registry
+                .migrate_effective_defaults("local", &root.path().join("home"))
+                .unwrap();
+            if initial != Auth::Unknown {
+                registry
+                    .update_observation(
+                        "local", "claude", "default", initial, None, None, None, None,
+                    )
+                    .unwrap();
+            }
+            let error = registry
+                .require_authenticated(
+                    "local",
+                    "claude-headless",
+                    "default",
+                    Some("haiku"),
+                    "submit prompt",
+                )
+                .unwrap_err();
+            assert!(!error.to_string().contains("private-fixture-marker"));
+            assert_eq!(
+                registry
+                    .get("local", "claude", "default")
+                    .unwrap()
+                    .auth_state,
+                expected
+            );
+            assert_eq!(
+                fs::read_to_string(&calls)
+                    .unwrap_or_default()
+                    .lines()
+                    .count(),
+                probes
+            );
+        }
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
     }
 
     #[test]
@@ -1555,6 +2004,7 @@ exit 2
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         )
         .expect("claude mode auth status should resolve");
 

@@ -25,7 +25,9 @@ pub(super) async fn start(
     command: &KernelCommand,
     request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    if request.provider != "claude" || !request.value.is_empty() {
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
+        || !request.value.is_empty()
+    {
         return Err(login_error(
             "setup-token --run requires Claude and no credential value",
         ));
@@ -266,16 +268,42 @@ pub(super) async fn verify(
     account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), String> {
-    let checked = check(runtime_state, owner_user_id, account_profile, token).await;
-    match checked {
-        Ok(()) => Ok(()),
-        Err(ClaudeCredentialCheckError::Rejected) => Err(
-            "Claude rejected the setup token: it is invalid, expired or revoked. Nothing was stored. Choose Log in in Provider Accounts to open the Claude authorization link.".to_string(),
-        ),
-        Err(ClaudeCredentialCheckError::Inconclusive(reason)) => Err(format!(
-            "Claude could not verify the setup token ({reason}). Nothing was stored. Check the network and the Claude CLI, then try again."
-        )),
-    }
+    verify_account_token(runtime_state, owner_user_id, account_profile, token)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// MP-08 / MP-11: direct import and captured login verify the same profile-scoped
+/// official model turn before storing or observing authentication.
+pub(super) async fn verify_account_token(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), DaemonError> {
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let owner_user_id = owner_user_id.to_string();
+    let account_profile = account_profile.to_string();
+    let token = token.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut environment =
+            registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
+        let executable = crate::provider::resolve_claude_executable()?;
+        environment.insert(
+            crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
+            token.to_string(),
+        );
+        let verified = crate::provider::verify_claude_setup_token(&executable, &environment);
+        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+            zeroize::Zeroize::zeroize(value);
+        }
+        verified.map_err(ClaudeCredentialCheckError::into_daemon_error)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "verify Claude setup token",
+        message: error.to_string(),
+    })?
 }
 
 /// Preserve the official harness verdict so first use distinguishes network

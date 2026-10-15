@@ -795,12 +795,7 @@ async fn run_daemon_relay_connector_inner(
             }),
         );
         let connect_started = Instant::now();
-        match timeout(
-            RELAY_CONNECT_TIMEOUT,
-            connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
-        )
-        .await
-        {
+        match timeout(RELAY_CONNECT_TIMEOUT, connect_relay_socket(&relay_url)).await {
             Err(_) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",

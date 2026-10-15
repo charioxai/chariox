@@ -264,6 +264,40 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
+        // Delete only this Project's numeric immutable archive names.
+        let base = self.path(project);
+        let prefix = format!("{}.revision-", base.file_stem().unwrap().to_string_lossy());
+        for entry in fs::read_dir(&self.root).into_iter().flatten() {
+            let entry =
+                entry.map_err(|_| environment_error("revision archive inventory failed"))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name
+                .strip_prefix(&prefix)
+                .and_then(|suffix| suffix.strip_suffix(".json"))
+                .is_some_and(|number| number.parse::<u64>().is_ok())
+            {
+                fs::remove_file(entry.path())
+                    .map_err(|_| environment_error("revision archive removal failed"))?;
+            }
+        }
+        match fs::remove_file(self.path(project).with_extension("revisions.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(environment_error("remove revision history failed")),
+        }
+        for extension in [
+            "detect.json",
+            "detect-model.json",
+            "checks.json",
+            "checks.wal",
+        ] {
+            match fs::remove_file(self.path(project).with_extension(extension)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(environment_error("remove detection cache failed")),
+            }
+        }
         match fs::remove_file(self.path(project).with_extension("identity.json")) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -309,19 +343,105 @@ impl ProjectEnvironmentStore {
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         self.acquire_lock(project, false, "identity.lock")
     }
+    // MP-08 / MP-10 / MP-11: readers wait only for Check publication,
+    // independently of a Project lock held throughout a provider Detect.
+    pub(super) fn check_journal_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "checks.lock")
+    }
+    /// Saves and mutation snapshots queue behind each other for a bounded time,
+    /// while a longer Detect, export or adjustment holder reports busy.
+    pub(crate) fn lock_briefly(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, "lock")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(ProjectEnvironmentLock { _file: file }),
+                Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
+                    return Err(environment_error("environment refresh lock failed"))
+                }
+                Err(_) if std::time::Instant::now() >= deadline => return Err(environment_error(
+                    "Project environment is busy with Detect, export or adjustment; retry shortly",
+                )),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+    }
+    // MP-08 / MP-10 / MP-11: probe work cannot wait indefinitely behind Detect.
+    pub(super) fn lock_until(
+        &self,
+        project: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.lock_extension_until(project, "lock", deadline)
+    }
+    pub(super) fn lock_extension_until(
+        &self,
+        project: &str,
+        extension: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, extension)?;
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(ProjectEnvironmentLock { _file: file }),
+                Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
+                    return Err(environment_error("environment refresh lock failed"))
+                }
+                Err(_) if std::time::Instant::now() >= deadline => {
+                    return Err(environment_error(
+                        "Check budget exceeded while waiting for Project lock",
+                    ))
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+    }
+    pub(crate) async fn lock_briefly_async(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let (store, project) = (self.clone(), project.to_owned());
+        tokio::task::spawn_blocking(move || store.lock_briefly(&project))
+            .await
+            .map_err(|_| environment_error("environment lock task failed"))?
+    }
     fn acquire_lock(
         &self,
         project: &str,
         nonblocking: bool,
         extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, extension)?;
+        if nonblocking {
+            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
+                environment_error("Project environment already has an active export or adjustment")
+            })?;
+        } else {
+            fs2::FileExt::lock_exclusive(&file)
+                .map_err(|_| environment_error("environment refresh lock failed"))?;
+        }
+        Ok(ProjectEnvironmentLock { _file: file })
+    }
+    fn lock_file(&self, project: &str, extension: &str) -> Result<File, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
-                .map_err(|_| environment_error("secure environment directory failed"))?;
+            // MP-08 / MP-10 / MP-11: reads must not dirty private directory metadata.
+            let permissions = fs::metadata(&self.root)
+                .map_err(|_| environment_error("environment directory unavailable"))?
+                .permissions();
+            if permissions.mode() & 0o7777 != 0o700 {
+                fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+                    .map_err(|_| environment_error("secure environment directory failed"))?;
+            }
         }
         let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
@@ -345,20 +465,39 @@ impl ProjectEnvironmentStore {
                 "environment refresh lock must be a regular file",
             ));
         }
-        if nonblocking {
-            fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
-                environment_error("Project environment already has an active export or adjustment")
-            })?;
-        } else {
-            fs2::FileExt::lock_exclusive(&file)
-                .map_err(|_| environment_error("environment refresh lock failed"))?;
-        }
-        Ok(ProjectEnvironmentLock { _file: file })
+        Ok(file)
     }
 }
 
 #[cfg(test)]
 mod lock_tests {
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_reads_do_not_dirty_an_already_secure_directory() {
+        use std::os::unix::fs::MetadataExt;
+        let root = crate::test_support::TestWorktree::new("envp03-lock-read-metadata");
+        let store = super::ProjectEnvironmentStore::new(root.path());
+        drop(store.identity_lock("project").unwrap());
+        let before = std::fs::metadata(&store.root).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        drop(store.identity_lock("project").unwrap());
+        let after = std::fs::metadata(&store.root).unwrap();
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec()),
+            "a read lock must not rewrite secure directory metadata"
+        );
+        std::fs::set_permissions(
+            &store.root,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        drop(store.identity_lock("project").unwrap());
+        assert_eq!(
+            std::fs::metadata(&store.root).unwrap().mode() & 0o7777,
+            0o700
+        );
+    }
     use super::*;
 
     #[test]

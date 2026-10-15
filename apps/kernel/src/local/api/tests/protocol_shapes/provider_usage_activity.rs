@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn local_daemon_protocol_provider_credential_policy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let response = LocalDaemonResponse::CredentialsListed {
         credentials: vec![crate::config::UserCredentialConfig {
             id: "claude-profile-token".to_string(),
@@ -45,8 +45,9 @@ fn local_daemon_protocol_provider_credential_policy_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_catalog_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let request = LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest {
+        summary_only: false,
         provider: Some("codex".to_string()),
         account_profiles: std::collections::BTreeMap::from([(
             "codex".to_string(),
@@ -75,7 +76,7 @@ fn local_daemon_protocol_provider_catalog_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let requests = vec![
         LocalDaemonRequest::GetProviderLoginStatus(GetProviderLoginStatusRequest {
@@ -146,7 +147,7 @@ fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted
 
 #[test]
 fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let request = LocalDaemonRequest::CreateProviderAccountProfile(
         crate::local::api::CreateProviderAccountProfileRequest {
@@ -287,7 +288,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -367,7 +368,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -1012,7 +1013,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_room_browser_capability_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-browser-capability",
@@ -1037,7 +1038,7 @@ fn local_daemon_protocol_provider_run_room_browser_capability_shape_is_versioned
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -1092,7 +1093,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -1142,7 +1143,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -1214,7 +1215,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let snapshot = [
         crate::provider::ProviderRunTermination::process_exit(17, 1_234),
@@ -1284,7 +1285,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,
@@ -1320,7 +1321,7 @@ fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
 
     let request = LocalDaemonRequest::StartProviderLogin(StartProviderLoginRequest {
         provider: "claude".to_string(),
@@ -1357,5 +1358,25 @@ fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "61fd156d07bde442ccc678f7875dcf24e419fe7208aed934d5d2ecc15a2cf0ce"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: protocol 505 adds opt-in summaries; legacy full reads stay unchanged.
+#[test]
+fn provider_catalog_summary_protocol_505_snapshot() {
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
+        ),
+        "6a9baa1236e9ace9b489e8e70a7e17027b38282ebdfea825cd97fe6f0b6ebeed"
+    );
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
+    let wire = serde_json::json!({"GetProviderCatalog":{"summary_only":true,"execution_location":{"kind":"local"}}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "37ff9bfb1609a9e94a60b90cbb244ab14623f36430450980da1ec7baf47fc685"
     );
 }

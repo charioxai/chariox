@@ -270,3 +270,183 @@ fn envp01_identity_serialization_never_blocks_adjustment_admission() {
     );
     assert_eq!(first.lineage, second.lineage);
 }
+
+// MP-08 / MP-10 / MP-11: REVIEW_954 P2 detached saved Files survive unrelated Preview/Save.
+#[test]
+fn review954_detached_unchanged_files_remain_reviewable() {
+    let root = crate::test_support::TestWorktree::new("review954-detached-files");
+    let mut project = RuntimeProject::new(
+        "files",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Files",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    std::fs::write(root.path().join("public.md"), "public instructions").unwrap();
+    let current = store.snapshot(&project).unwrap();
+    let mut draft = environment_draft(&current);
+    let folder_id = draft.folders[0].folder_id.clone();
+    draft.folders[0].requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"file","title":"Public file","scope":{"kind":"folder","folder_id":folder_id},"origins":[],"spec":{"kind":"files","folder_id":folder_id,"entries":[{"relative_path":"public.md","kind":"file","content_digest":null,"folder_id":folder_id,"user_selected":true,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked","transfer_inclusion":"include","reason":null,"secret_looking":false}]},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
+    draft.project_requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"node","title":"Node","scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":null,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
+    verify_manual_files(&current, &mut draft).unwrap();
+    let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+        project_id: project.id().into(),
+        expected_revision: current.revision,
+        expected_content_digest: current.content_digest.clone(),
+        draft,
+        accepted_proposal_ids: vec![],
+        excluded_proposal_ids: vec![],
+    };
+    store
+        .save_revision_locked(&current, &request, "owner")
+        .unwrap();
+    project.replace_workspace_ids(vec![root.path().join("another").to_string_lossy().into()]);
+    let detached = store.snapshot(&project).unwrap();
+    assert!(detached.folders[0].local_workspace_binding.is_empty());
+    let mut draft = environment_draft(&detached);
+    draft.project_requirements[0].title = "Reviewed Node".into();
+    environment_revision_diff(&detached, &draft).unwrap();
+    verify_manual_files(&detached, &mut draft)
+        .expect("unchanged detached Files need no filesystem reads for Preview");
+    let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+        project_id: project.id().into(),
+        expected_revision: detached.revision,
+        expected_content_digest: detached.content_digest.clone(),
+        draft,
+        accepted_proposal_ids: vec![],
+        excluded_proposal_ids: vec![],
+    };
+    store
+        .save_revision_locked(&detached, &request, "owner")
+        .expect("unrelated Save preserves detached Files");
+    let mut changed = request.draft.clone();
+    if let RequirementSpec::Files { entries, .. } = &mut changed.folders[0].requirements[0].spec {
+        entries[0].relative_path = "new.md".into();
+    }
+    assert!(
+        verify_manual_files(&detached, &mut changed).is_err(),
+        "changed selection still needs a live folder"
+    );
+}
+
+// MP-08 / MP-10: P04 uses the preallocated Check contract without an agent.
+#[test]
+fn envp04_independent_check_is_delivered_for_unsaved_legacy() {
+    let root = crate::test_support::TestWorktree::new("envp04-check-delivery");
+    let project = RuntimeProject::new(
+        "p04",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Check",
+        RuntimeProjectKind::Named,
+    );
+    let env = ProjectEnvironmentStore::new(root.path())
+        .snapshot(&project)
+        .unwrap();
+    assert!(env
+        .delivered_capabilities
+        .enabled_environment_operations
+        .contains(&EnvironmentCapability::Check));
+}
+#[path = "revision_disjoint_platform_tests.rs"]
+mod revision_disjoint_platform;
+#[path = "revision_excluded_files_tests.rs"]
+mod revision_excluded_files;
+#[path = "revision_filename_privacy_tests.rs"]
+mod revision_filename_privacy;
+
+#[path = "revision_platform_compatibility_tests.rs"]
+mod revision_platform_compatibility;
+#[path = "revision_setup_source_privacy_tests.rs"]
+mod revision_setup_source_privacy;
+
+// MP-08 / MP-10 / MP-11: repeat edits cannot exhaust a cumulative snapshot file.
+#[test]
+fn revision_index_keeps_only_current_snapshot_and_preserves_immutable_archives() {
+    let root = crate::test_support::TestWorktree::new("revision-archives");
+    let project = RuntimeProject::new(
+        "archives",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Archives",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    let mut current = store.snapshot(&project).unwrap();
+    let mut first_archive = None;
+    for _ in 0..12 {
+        let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(),
+            expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(),
+            draft: environment_draft(&current),
+            accepted_proposal_ids: vec![],
+            excluded_proposal_ids: vec![],
+        };
+        current = store
+            .save_revision_locked(&current, &request, "owner")
+            .unwrap()
+            .0;
+        let bytes =
+            std::fs::read(store.path(project.id()).with_extension("revision-0.json")).unwrap();
+        if let Some(first) = &first_archive {
+            assert_eq!(&bytes, first);
+        } else {
+            first_archive = Some(bytes);
+        }
+    }
+    let index: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(store.path(project.id()).with_extension("revisions.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["revisions"].as_array().unwrap().len(), 1);
+    assert!(store
+        .path(project.id())
+        .with_extension("revision-0.json")
+        .exists());
+    assert!(store
+        .path(project.id())
+        .with_extension("revision-12.json")
+        .exists());
+    assert_eq!(store.snapshot(&project).unwrap().revision, 12);
+    store.remove(project.id()).unwrap();
+    assert!(!store
+        .path(project.id())
+        .with_extension("revision-0.json")
+        .exists());
+}
+
+// MP-08 / MP-10 / MP-11: a provider Detect holder cannot consume an unbounded Check wait.
+#[test]
+fn check_project_and_identity_locks_share_the_operation_deadline() {
+    let root = crate::test_support::TestWorktree::new("check-lock-budget");
+    let store = ProjectEnvironmentStore::new(root.path());
+    let project = RuntimeProject::new(
+        "locks",
+        "owner",
+        root.path().to_string_lossy(),
+        "Locks",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    for extension in ["lock", "identity.lock"] {
+        let held = if extension == "lock" {
+            store.lock(project.id()).unwrap()
+        } else {
+            store.identity_lock(project.id()).unwrap()
+        };
+        let began = std::time::Instant::now();
+        assert!(store
+            .lock_extension_until(
+                project.id(),
+                extension,
+                began + std::time::Duration::from_millis(25)
+            )
+            .is_err());
+        assert!(began.elapsed() < std::time::Duration::from_millis(250));
+        drop(held);
+        assert!(store
+            .lock_extension_until(project.id(), extension, std::time::Instant::now())
+            .is_ok());
+    }
+}

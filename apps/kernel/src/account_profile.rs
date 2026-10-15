@@ -904,6 +904,9 @@ struct StoredProviderAccountProfile {
     label_source: Option<ProviderAccountLabelSource>,
     #[serde(default)]
     materialized_replica: bool,
+    // Machine-local evidence; token enrollment never sets native-login availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_native_login_available: Option<bool>,
     #[serde(default)]
     pending_native_validation: bool,
     #[serde(default)]
@@ -1141,6 +1144,7 @@ impl ProviderAccountProfileRegistry {
                 locator,
                 label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
                 materialized_replica: false,
+                claude_native_login_available: None,
                 pending_native_validation: false,
                 legacy_unpinned_replica: false,
                 replica_previous_default_profile_id: None,
@@ -1598,6 +1602,31 @@ impl ProviderAccountProfileRegistry {
         Ok(environment)
     }
 
+    // MP-08 / MP-10 / MP-11: private native-auth evidence is independent of Vault enrollment.
+    pub(crate) fn record_claude_native_login(
+        &self,
+        owner: &str,
+        profile_id: &str,
+        available: bool,
+    ) -> Result<(), DaemonError> {
+        let mut document = self.write_document()?;
+        let index = resolved_profile_index(&document, owner, "claude", profile_id)?;
+        document.profiles[index].claude_native_login_available = Some(available);
+        self.persist_locked(&document)
+    }
+
+    pub(crate) fn claude_native_login_available(
+        &self,
+        owner: &str,
+        profile_id: &str,
+    ) -> Result<Option<bool>, DaemonError> {
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner, "claude", profile_id)?;
+        Ok(stored.claude_native_login_available.map(|available| {
+            available && stored.public.auth_state == ProviderAccountAuthState::Authenticated
+        }))
+    }
+
     pub(crate) fn has_portable_claude_credentials(
         &self,
         owner_user_id: &str,
@@ -1663,6 +1692,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             label_source: Some(label_source),
             materialized_replica: false,
+            claude_native_login_available: None,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
@@ -1723,6 +1753,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             label_source: Some(label_source),
             materialized_replica: false,
+            claude_native_login_available: None,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
@@ -1781,6 +1812,7 @@ impl ProviderAccountProfileRegistry {
             locator,
             label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
             materialized_replica: false,
+            claude_native_login_available: None,
             pending_native_validation: false,
             legacy_unpinned_replica: false,
             replica_previous_default_profile_id: None,
@@ -3261,6 +3293,7 @@ impl ProviderAccountProfileRegistry {
                 locator,
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: true,
+                claude_native_login_available: None,
                 pending_native_validation,
                 legacy_unpinned_replica: false,
                 replica_previous_default_profile_id: previous_default_profile_id.clone(),
@@ -3383,6 +3416,7 @@ impl ProviderAccountProfileRegistry {
                 label_source: replaced.label_source,
                 materialized_replica: false,
                 legacy_unpinned_replica: false,
+                claude_native_login_available: None,
                 pending_native_validation: false,
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,

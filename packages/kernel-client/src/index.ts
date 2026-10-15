@@ -90,3 +90,8 @@ export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, 
 export * from "./project-environment-aggregate.js"
 
 export * from "./project-environment-aggregate-requests.js"
+
+export * from "./project-environment-edit.js"
+
+// MP-08 / MP-10 / MP-11: P03 revision review.
+export * from "./project-environment-diff.js"

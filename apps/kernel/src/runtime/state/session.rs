@@ -485,6 +485,21 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.delete_session_with_project_retention(session, false)
+    }
+
+    pub(super) fn delete_session_with_project_retention(
+        &self,
+        session: crate::session::RuntimeSession,
+        retain_project: bool,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Vec<String>,
+            Option<crate::session::RuntimeProject>,
+        ),
+        DaemonError,
+    > {
         let session_id = session.id().to_string();
         self.withdraw_agent_interactions(&session_id, None)?;
         let (ended, terminated_run_ids) =
@@ -497,9 +512,13 @@ impl KernelRuntimeOwnedState {
                 self.end_session(&session_id)?
             };
         self.workflow_cleanup_deleted_session_runtime_artifacts(&ended)?;
-        let (mut deleted, removed_project) = self
-            .session_store
-            .delete_session_with_project_cleanup(ended.id())?;
+        let (mut deleted, removed_project) = if retain_project {
+            self.session_store
+                .delete_session_retaining_project(ended.id())?
+        } else {
+            self.session_store
+                .delete_session_with_project_cleanup(ended.id())?
+        };
         deleted.set_agents(ended.agents().to_vec());
         crate::provider::shutdown_provider_mcp_proxy_session(&session_id);
         crate::logging::info_with_fields(

@@ -14,7 +14,7 @@ pub(super) const OUTPUT_LIMIT: usize = 1024 * 1024;
 const READ_BUDGET: usize = 64 * 1024;
 
 #[derive(Debug)]
-pub(super) enum CaptureError {
+pub(crate) enum CaptureError {
     Io(io::Error),
     TimedOut,
     OutputLimit,
@@ -26,7 +26,7 @@ impl From<io::Error> for CaptureError {
     }
 }
 
-pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
     command
         .stdin(Stdio::null())
@@ -36,30 +36,20 @@ pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     loop {
-        drain(
-            process.child.stdout.as_mut().expect("captured stdout"),
-            &mut stdout,
-            stderr.len(),
-        )?;
-        drain(
-            process.child.stderr.as_mut().expect("captured stderr"),
-            &mut stderr,
-            stdout.len(),
-        )?;
-        if let Some(status) = process.child.try_wait()? {
+        #[cfg(unix)]
+        process.observe_descendants()?;
+        drain(stdout_pipe(&mut process), &mut stdout, stderr.len())?;
+        drain(stderr_pipe(&mut process), &mut stderr, stdout.len())?;
+        #[cfg(unix)]
+        let status = process.try_wait()?;
+        #[cfg(windows)]
+        let status = process.child.try_wait()?;
+        if let Some(status) = status {
             // A successful launcher can leave pipe writers behind. End them
             // before collecting the bytes already buffered in our pipes.
             process.stop()?;
-            while drain(
-                process.child.stdout.as_mut().expect("captured stdout"),
-                &mut stdout,
-                stderr.len(),
-            )? {}
-            while drain(
-                process.child.stderr.as_mut().expect("captured stderr"),
-                &mut stderr,
-                stdout.len(),
-            )? {}
+            while drain(stdout_pipe(&mut process), &mut stdout, stderr.len())? {}
+            while drain(stderr_pipe(&mut process), &mut stderr, stdout.len())? {}
             return Ok(Output {
                 status,
                 stdout,
@@ -74,6 +64,27 @@ pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(5)),
         );
+    }
+}
+
+fn stdout_pipe(process: &mut platform::Process) -> &mut std::process::ChildStdout {
+    #[cfg(unix)]
+    {
+        process.stdout_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stdout.as_mut().expect("captured stdout")
+    }
+}
+fn stderr_pipe(process: &mut platform::Process) -> &mut std::process::ChildStderr {
+    #[cfg(unix)]
+    {
+        process.stderr_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stderr.as_mut().expect("captured stderr")
     }
 }
 

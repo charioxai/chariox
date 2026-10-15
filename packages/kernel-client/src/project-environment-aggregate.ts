@@ -1,7 +1,7 @@
 // MP-08 / MP-10: Shared Web/TUI projection; no client-owned observations.
 import type { ProjectEnvironment, Requirement, RequirementSpec, RequirementOrigin } from "./kernel-types-project-environment-aggregate.js"
 
-export const projectEnvironmentMinimumProtocolVersion = 487
+export const projectEnvironmentMinimumProtocolVersion = 505
 export function getProjectEnvironmentRequest(projectId: string) {
   return { GetProjectEnvironment: { projectId } } as const
 }
@@ -17,7 +17,7 @@ export type EnvironmentViewSection = { readonly id: string; readonly title: stri
 export function environmentOriginLabel(origin: RequirementOrigin): string {
   switch (origin.kind) {
     case "migrated": return `Migrated · ${origin.source}`
-    case "detected": return `${origin.relative_path}${origin.line == null ? "" : `:${origin.line}`}`
+    case "detected": return `${origin.relative_path}${origin.line == null ? "" : `:${origin.line}`} · evidence ${origin.evidence_digest.slice(0, 8)}`
     case "detected_metadata": return `Proposal · ${origin.source}`
     case "user_added": return "Added by you"
   }
@@ -39,15 +39,31 @@ function details(requirement: Requirement): string[] {
   if (requirement.spec.kind === "files") {
     return requirement.spec.entries.map(file => `${file.transfer_inclusion === "exclude" ? "Leave" : "Review"} ${file.relative_path}${file.reason ? ` · ${file.reason}` : ""}`)
   }
+  if (requirement.spec.kind === "software") return [requirement.spec.version_constraint ?? "Version not specified", ...(requirement.spec.detect_only ? ["Detect/Check only"] : [])]
+  if (requirement.spec.kind === "secrets") return ["Secret name only · choose Vault"]
+  if (requirement.spec.kind === "agent_tools") return ["Proposal only · separate admission required"]
+  if (requirement.spec.kind === "setup_checks") return [requirement.spec.source_path ?? "Reviewed source required", "Review only · no execution"]
   return []
+}
+export function environmentDetectionMessages(environment: ProjectEnvironment): string[] {
+  return detectionResults(environment).filter(result => !isDetectionSkip(result)).map(result => result.safe_summary)
+}
+export function environmentDetectionSkips(environment: ProjectEnvironment): string[] {
+  return detectionResults(environment).filter(isDetectionSkip).map(result => result.safe_summary)
+}
+function detectionResults(environment: ProjectEnvironment) {
+  return environment.operations.filter(operation => operation.kind === "detect").flatMap(operation => operation.per_item_results)
+}
+function isDetectionSkip(result: ProjectEnvironment["operations"][number]["per_item_results"][number]): boolean {
+  return result.reason_code === "skip_summary_limit" || !result.requirement_id.startsWith("detect:")
 }
 export function projectEnvironmentSections(environment: ProjectEnvironment): EnvironmentViewSection[] {
   const section = (id: string, title: string, requirements: readonly Requirement[]): EnvironmentViewSection => {
     const groups = Object.entries(labels).flatMap(([kind, label]) => {
       const rows = requirements.filter(r => r.spec.kind === kind).map(r => ({
-        id: r.requirement_id, title: r.title, origins: r.origins.map(environmentOriginLabel), details: details(r),
+        id: r.requirement_id, title: r.title, origins: r.origins.map(environmentOriginLabel), details: [...details(r), ...environmentObservationDetails(environment, r.requirement_id)],
         // P01 has no selected machine and no Check behaviour. Legacy readiness is not an observation.
-        status: "Not checked",
+        status: environmentObservationStatus(environment, r.requirement_id),
       }))
       return rows.length ? [{ kind: label, rows }] : []
     })
@@ -55,13 +71,90 @@ export function projectEnvironmentSections(environment: ProjectEnvironment): Env
   }
   return [section("project", "Project-wide", environment.project_requirements),
     ...environment.folders.map(folder => section(folder.folder_id, folder.label, folder.requirements)),
-    ...(environment.proposals.length ? [section("proposals", "Proposals · review required", environment.proposals.map(p => p.requirement))] : []),
+    ...[...(environment.proposals.some(p => p.requirement.scope.kind === "project") ? [section("proposals", "Proposals · review required", environment.proposals.filter(p => p.requirement.scope.kind === "project").map(p => p.requirement))] : []),
+      ...environment.folders.flatMap(folder => {
+        const requirements = environment.proposals.filter(p => p.requirement.scope.kind === "folder" && p.requirement.scope.folder_id === folder.folder_id).map(p => p.requirement)
+        return requirements.length ? [section(`proposals:${folder.folder_id}`, `${folder.label} · Proposals · review required`, requirements)] : []
+      })],
   ]
 }
 export function projectEnvironmentLines(environment: ProjectEnvironment): string[] {
-  return projectEnvironmentSections(environment).flatMap(section => [section.title,
+  const skips = environmentDetectionSkips(environment)
+  return [...environmentDetectionMessages(environment), ...(skips.length <= 4 ? skips : [`${skips.length} skipped evidence items · complete list below proposals`]), ...projectEnvironmentSections(environment).flatMap(section => [section.title,
     ...(section.groups.length ? section.groups.flatMap(group => [`  ${group.kind}`, ...group.rows.flatMap(row => [
       `    ${row.title} · ${row.status}`, ...row.origins.map(origin => `      ${origin}`), ...row.details.map(detail => `      ${detail}`),
     ])]) : ["  No requirements · Not checked"]),
-  ])
+  ]), ...(skips.length > 4 ? ["Skipped evidence", ...skips] : [])]
 }
+
+// MP-08 / MP-10 / MP-11: disclosure comes from the kernel, never inferred from labels.
+export function environmentFolderModelDisclosure(environment: ProjectEnvironment, folderId: string): "automatic" | "optional" | "unknown" {
+  const operation = environment.operations.filter(operation => operation.kind === "detect").at(-1)
+  const result = operation?.per_item_results.find(result => result.requirement_id === `detect:folder:${folderId}`)
+  return result?.reason_code === "code_manifest" ? "automatic" : result?.reason_code === "no_code_manifest" ? "optional" : "unknown"
+}
+
+export { createEnvironmentViewCache } from "./project-environment-view-cache.js"
+
+// MP-08 / MP-10: only current, kernel-bound observations count as readiness.
+const observationLabels = {ready:"Ready", missing:"Missing", outdated:"Outdated", needs_your_input:"Needs your input", conflict:"Conflict"} as const
+function observation(environment: ProjectEnvironment, id: string) {
+  return (environment.observations ?? []).filter(o => o.requirement_id === id && o.environment_id === environment.lineage.environment_id).at(-1)
+}
+// MP-08 / MP-10: schedule expiry without a probe, repair or network request.
+export function environmentObservationNow(environment:ProjectEnvironment, now=Date.now()):number {
+  const view=environment.read_view
+  if(view && Number.isFinite(view.observed_at_ms) && Number.isFinite(view.received_at_monotonic_ms))
+    return view.observed_at_ms + Math.max(0,performance.now()-view.received_at_monotonic_ms!)
+  return view && Number.isFinite(view.observed_at_ms) && Number.isFinite(view.received_at_ms)
+    ? view.observed_at_ms + Math.max(0,now-view.received_at_ms!) : now
+}
+export function environmentObservationExpiry(environment: ProjectEnvironment, now = Date.now()): number | null {
+  const kernelNow=environmentObservationNow(environment,now)
+  const deadlines = (environment.observations ?? []).filter(o => !o.stale && o.environment_id === environment.lineage.environment_id && o.revision_digest === environment.content_digest && o.checked_at_ms != null && o.checked_at_ms <= kernelNow).map(o => now + o.checked_at_ms! + 5 * 60 * 1000 + 1 - kernelNow).filter(deadline => deadline > now)
+  return deadlines.length ? Math.min(...deadlines) : null
+}
+export function environmentObservationStatus(environment: ProjectEnvironment, id: string): string {
+  const o = observation(environment,id)
+  if (!o || o.checked_at_ms == null) return "Not checked"
+  const now = environmentObservationNow(environment)
+  if (!currentObservation(environment, o, now) || (o.status === "ready" && !currentPrerequisites(environment, id, o.target, now))) return "Last check stale · check again"
+  return observationLabels[o.status]
+}
+
+// MP-08 / MP-10 / MP-11: readiness borrows evidence only from current same-target
+// prerequisites. This is a read projection; it never probes or changes history.
+function currentObservation(environment: ProjectEnvironment, o: ProjectEnvironment["observations"][number], now: number): boolean {
+  return !o.stale && o.environment_id === environment.lineage.environment_id && o.revision_digest === environment.content_digest && o.checked_at_ms != null && o.checked_at_ms <= now && now - o.checked_at_ms <= 5 * 60 * 1000
+}
+function currentPrerequisites(environment: ProjectEnvironment, id: string, target: ProjectEnvironment["observations"][number]["target"], now: number): boolean {
+  const requirements = new Map([...environment.project_requirements, ...environment.folders.flatMap(f => f.requirements)].map(r => [r.requirement_id, r]))
+  const observations = new Map((environment.observations ?? []).filter(o => o.environment_id === environment.lineage.environment_id).map(o => [o.requirement_id, o]))
+  const pending = [{id, leave: false}], active = new Set<string>(), done = new Set<string>()
+  while (pending.length) {
+    const item = pending.pop()!
+    if (item.leave) { active.delete(item.id); done.add(item.id); continue }
+    if (active.has(item.id)) return false
+    if (done.has(item.id)) continue
+    const r = requirements.get(item.id), o = observations.get(item.id)
+    if (!r || !o || o.status !== "ready" || !currentObservation(environment, o, now) || o.target.machine_id !== target.machine_id || o.target.target_instance_generation !== target.target_instance_generation || o.target.slice_ref !== target.slice_ref) return false
+    active.add(item.id)
+    pending.push({id: item.id, leave: true})
+    for (const dependency of [...r.depends_on, ...(r.spec.kind === "services" ? r.spec.depends_on : [])]) pending.push({id: dependency, leave: false})
+  }
+  return true
+}
+
+export function environmentObservationDetails(environment: ProjectEnvironment, id: string): string[] {
+  const o = observation(environment,id)
+  if (!o) return []
+  const f = o.measured_facts
+  return [o.safe_summary, ...(o.checked_at_ms == null ? [] : [`Last checked ${new Date(o.checked_at_ms).toISOString()}`]), `Machine · ${o.target.machine_id} · Generation · ${o.target.target_instance_generation}`,
+    ...(f.version ? [`Observed version · ${f.version}`] : []), ...(f.platform ? [`Platform · ${f.platform.os}/${f.platform.architecture}`] : []),
+    ...(f.cpus == null ? [] : [`CPUs · ${f.cpus}`]), ...(f.memory_bytes == null ? [] : [`RAM · ${f.memory_bytes} bytes`]), ...(f.free_disk_bytes == null ? [] : [`Free disk · ${f.free_disk_bytes} bytes`]), ...(f.gpu ? [`GPU · ${f.gpu}`] : [])]
+}
+export function checkEnvironmentRequest(environment: ProjectEnvironment, target: ProjectEnvironment["observations"][number]["target"], operationId: string) {
+  return {CheckProjectEnvironment:{projectId:environment.local_project_id,operationId,revisionDigest:environment.content_digest,target,selectedItems:[]}} as const
+}
+
+export * from "./project-environment-read-view.js"

@@ -69,6 +69,7 @@ pub(crate) fn test_workspace_root() -> PathBuf {
 
 impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
+        // MP-08 / MP-10 / MP-11: ordinary workspaces must stay outside protected service scratch.
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
         // MP-08 / MP-11: scratch can live in protected service state, while

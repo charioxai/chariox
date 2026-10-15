@@ -14,7 +14,7 @@ test("MP-08 MP-10 protocol 491 atomically admits steering against a home prompt"
 })
 
 test("protocol 392: a critical approval carries the passkey and an optional remember window", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 491)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 505)
   assert.deepEqual(respondToInteractionRequest("s", "i", "deny"), {
     RespondToInteraction: { session_id: "s", interaction_id: "i", choice_id: "deny", custom_reply: null },
   })
