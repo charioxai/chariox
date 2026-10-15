@@ -5,19 +5,30 @@ export function createKernelSecurityRefresh(deps: {
   notify(message: string): void
 }) {
   let epoch = 0
+  let connected = true
+  const refresh = async () => {
+    const requestEpoch = ++epoch
+    deps.notify("Checking Vault and access status…")
+    try {
+      const [vault, access] = await Promise.all([deps.readVault(), deps.readGrants()])
+      if (requestEpoch !== epoch) return
+      if (typeof vault.unlocked !== "boolean" || !Array.isArray(access.grants)) throw new Error("Invalid security status")
+      deps.notify(`Vault ${vault.unlocked ? "unlocked" : "locked"} · ${access.grants.length} active access grant${access.grants.length === 1 ? "" : "s"}`)
+    } catch {
+      if (requestEpoch === epoch) deps.notify("Vault and access status unavailable; reconnect to check")
+    }
+  }
   return {
     invalidate() { epoch++ },
-    async refresh() {
-      const requestEpoch = ++epoch
-      deps.notify("Checking Vault and access status…")
-      try {
-        const [vault, access] = await Promise.all([deps.readVault(), deps.readGrants()])
-        if (requestEpoch !== epoch) return
-        if (typeof vault.unlocked !== "boolean" || !Array.isArray(access.grants)) throw new Error("Invalid security status")
-        deps.notify(`Vault ${vault.unlocked ? "unlocked" : "locked"} · ${access.grants.length} active access grant${access.grants.length === 1 ? "" : "s"}`)
-      } catch {
-        if (requestEpoch === epoch) deps.notify("Vault and access status unavailable; reconnect to check")
+    connectionChanged(next: boolean) {
+      if (connected === next) return
+      connected = next
+      if (next) void refresh()
+      else {
+        epoch++
+        deps.notify("Checking Vault and access status…")
       }
     },
+    refresh,
   }
 }

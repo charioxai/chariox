@@ -87,7 +87,9 @@ export function createCliKernelApprovalComposition(deps: {
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })
   createEffect(() => {
-    if (!deps.kernelConnected()) { popup.invalidateConnectionState(); security.invalidate() }
+    const connected = deps.kernelConnected()
+    security.connectionChanged(connected)
+    if (!connected) popup.invalidateConnectionState()
     deps.themeRevision()
     deps.dimensions()
     controller.sync()

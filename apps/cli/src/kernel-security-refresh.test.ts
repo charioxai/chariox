@@ -20,3 +20,18 @@ test("MP-08/MP-11 security refresh checks Vault and grants and ignores a retired
   assert.equal(notices.at(-1), "Vault locked · 0 active access grants")
   assert.equal(reads, 2)
 })
+
+// MP-08 / MP-11: local clients reconnect through connectivity state as well as relay events.
+test("MP-08/MP-11 a local reconnect immediately checks Vault and grants once", async () => {
+  const notices: string[] = []
+  let reads = 0
+  const security = createKernelSecurityRefresh({readVault: async () => {reads++;return {unlocked: false}},
+    readGrants: async () => ({grants: []}), notify: text => notices.push(text)})
+  security.connectionChanged(false)
+  assert.equal(notices.at(-1), "Checking Vault and access status…")
+  security.connectionChanged(true)
+  security.connectionChanged(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(reads, 1)
+  assert.equal(notices.at(-1), "Vault locked · 0 active access grants")
+})
