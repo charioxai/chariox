@@ -1,3 +1,4 @@
+import {captureVisiblePage} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -819,7 +820,9 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const frame = command._capture_protection===true?await this.screenshot(tab,null,true):await this.displayScreenshot(tab);
+      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor;
+      const crop=hint&&(hint.width!==geometry.width*scale||hint.height!==geometry.height*scale);
+      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

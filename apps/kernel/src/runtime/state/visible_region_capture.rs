@@ -174,7 +174,12 @@ impl KernelRuntimeState {
                 let frame = self
                     .kernel_browser_display_request(
                         command,
-                        super::KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation },
+                        super::KernelBrowserDisplayRequest::CaptureRegion {
+                            tab_id,
+                            generation,
+                            frame_width: request.region.frame_width,
+                            frame_height: request.region.frame_height,
+                        },
                     )
                     .await
                     .map_err(|e| capture_refusal("[capture:kernel-host-capture]", e))?;

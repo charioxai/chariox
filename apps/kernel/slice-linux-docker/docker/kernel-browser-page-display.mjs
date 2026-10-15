@@ -2,6 +2,7 @@
 // pump. No caller geometry, native handles, alternate ledger or input path.
 import {randomUUID} from 'node:crypto';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
@@ -43,4 +44,20 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
  return host.request({...page,observed_by:scope},{signal,inputGuard:async()=>{
   assertNotCancelled(signal);if(!await stream.regionCurrent())refuse();
  }});
+}
+
+// MP-08/MP-11: the private frame-size hint may select an existing kernel crop;
+// it never grants a caller rectangle, a different observer or a stale document.
+export async function captureVisiblePage(host,tab,frame,scope){
+ const stream=[...host.displays.values()].find(s=>s.regionTarget?.kind==='visible_page'&&s.observed_by===scope&&
+  s.tab_id===tab.tab_id&&s.generation===host.generation&&s.regionLease.document_id===tab.document_id&&
+  s.css_width*s.device_scale_factor===frame?.width&&s.css_height*s.device_scale_factor===frame?.height);
+ const policy=host.protection;
+ const alive=()=>host.protection===policy&&!policy.unknown&&stream&&!stream.suspended&&host.displays.get(stream.subscription_id)===stream&&
+  stream.regionLease.isAlive()&&stream.regionSource.valid()&&stream.regionWindow.isCurrent();
+ const current=async()=>alive()&&await stream.regionCurrent()&&alive();
+ if(!await current())refuse();
+ const shot=await host.displayScreenshot(tab,{x:0,y:0,width:stream.css_width,height:stream.css_height,scale:1},false);
+ if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
+ return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }

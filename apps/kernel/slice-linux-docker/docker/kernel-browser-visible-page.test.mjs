@@ -64,3 +64,25 @@ test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source,
  assert.equal(r.width,1264);assert.equal(r.height,712);assert.equal(r.window_region.left,0);assert.equal(r.window_region.top,87);
  for(const viewport of [{clientWidth:0,clientHeight:800,zoom:1,scale:1},{clientWidth:1280,clientHeight:800,zoom:2,scale:1},{clientWidth:1280,clientHeight:800,zoom:1,scale:2}])assert.throws(()=>visiblePageGeometry(binding(),viewport));
 });
+
+
+test('MP-08/MP-10/MP-11 visible-page screenshot requires a live same-observer crop and keeps protection metadata',async()=>{
+ const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ let live=true,policy={unknown:false},captured=0,change=false;
+ const tab={tab_id:'t',document_id:'d'},stream={subscription_id:'crop',regionTarget:{kind:'visible_page'},observed_by:'terminal:a',tab_id:'t',generation:1,
+  regionLease:{document_id:'d',isAlive:()=>live},regionSource:{valid:()=>live},regionWindow:{isCurrent:()=>live},regionCurrent:async()=>live,
+  css_width:1264,css_height:712,device_scale_factor:1};
+ const host={generation:1,protection:policy,displays:new Map([['crop',stream]]),displayScreenshot:async(t,clip)=>{
+  captured++;assert.equal(t,tab);assert.deepEqual(clip,{x:0,y:0,width:1264,height:712,scale:1});
+  if(change)host.protection={unknown:false};return {width:1264,height:712,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};
+ }};
+ const frame={width:1264,height:712};
+ assert.equal((await captureVisiblePage(host,tab,frame,'terminal:a')).protected_regions.length,1);assert.equal(captured,1);
+ for(const args of [[frame,'terminal:b'],[{width:1264,height:800},'terminal:a']]){
+  await assert.rejects(captureVisiblePage(host,tab,...args));assert.equal(captured,1);
+ }
+ live=false;await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,1);
+ live=true;change=true;await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
+ host.protection=policy;change=false;stream.regionCurrent=async()=>{host.displays.clear();return true;};
+ await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
+});
