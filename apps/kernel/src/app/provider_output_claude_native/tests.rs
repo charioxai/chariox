@@ -3325,3 +3325,113 @@ fn native_claude_usage_uses_bound_account_authority_without_aliasing_collaborato
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn answered_hook_permission_releases_steering_without_pty_input() {
+    // MP-08 / MP-10 / MP-11: the provider consumes hook decisions as JSON,
+    // so the ordinary PTY reply path never clears this permission marker.
+    for allowed in [true, false] {
+        let worktree = crate::test_support::TestWorktree::new("claude-hook-resolution");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "hook-resolution",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let context = worktree.path().join("hidden-context.txt");
+        let events = worktree.path().join("events.jsonl");
+        fs::write(&context, "").unwrap();
+        fs::write(&events, "").unwrap();
+        let context = context.display().to_string();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-headless",
+            "default",
+            "claude-haiku-5-5",
+        )
+        .with_agent_id(agent.id())
+        .with_permission_level(crate::provider::AgentPermissionLevel::Required);
+        // No PTY exists: consuming a hook decision must not send approval keys.
+        let mut run = RuntimeProviderRun::new(
+            "hook-resolution-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "hook-resolution".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::from([
+                    ("CHARIOX_CLAUDE_NATIVE_CONTEXT".into(), context.clone()),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().into()))
+            .unwrap();
+        let prompt = match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                attachment.id(),
+                agent.id(),
+                "public research",
+                vec![],
+            )
+            .unwrap()
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            other => panic!("unexpected prompt: {other:?}"),
+        };
+        let bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge> = if allowed {
+            std::sync::Arc::new(RecordingPermissionBridge::default())
+        } else {
+            std::sync::Arc::new(RefusedPermissionBridge)
+        };
+        ProviderOutputClaudeNativeBridge::new(&mut app).resolve_permission_event(
+            session.id(), run.id(), agent.id(), &context, &run, Some(bridge),
+            &serde_json::json!({
+                "hook_event_name":"PreToolUse", "hook_context_request_id":"decision-1",
+                "native_prompt_id":prompt.id(), "tool_name":"Bash", "tool_input":{"command":"echo public research"},
+            }),
+        ).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let response = worktree.path().join("permission-responses/decision-1.json");
+        let mailbox = worktree.path().join("permission-inputs");
+        loop {
+            let ready = fs::read_dir(&mailbox).is_ok_and(|mut entries| entries.next().is_some());
+            if response.exists() && ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "an answered hook must release its exact native permission wait"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let answer: Value = serde_json::from_str(&fs::read_to_string(response).unwrap()).unwrap();
+        assert_eq!(answer["behavior"], if allowed { "allow" } else { "deny" });
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+        assert_eq!(
+            claude_native_marker(&context).as_deref(),
+            Some(format!("permission-resolved:{}", prompt.id()).as_str())
+        );
+    }
+}

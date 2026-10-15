@@ -323,8 +323,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             None
         };
         for input in take_claude_permission_inputs(context_file) {
-            self.app
-                .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
+            if !input.is_empty() {
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
+            }
             if resolving_permission {
                 write_claude_native_marker(
                     context_file,
@@ -1137,7 +1139,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         write_claude_hook_permission_tombstone(context_file, event);
         clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
-            interaction_id,
+            interaction_id.clone(),
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
@@ -1175,8 +1177,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
-        std::thread::spawn(
-            move || match bridge.request_blocking(&session_id, interaction) {
+        std::thread::spawn(move || {
+            let responded = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution) => {
                     let allowed = resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once");
@@ -1191,7 +1193,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         } else {
                             "Denied through Chariox."
                         },
-                    );
+                    )
                 }
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -1208,10 +1210,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         &request_id,
                         false,
                         "Chariox permission bridge failed.",
-                    );
+                    )
                 }
-            },
-        );
+            };
+            if responded {
+                // MP-08 / MP-10 / MP-11: hook replies travel as JSON, not
+                // keystrokes. The existing exact-interaction mailbox lets the
+                // normal bridge release this wait without clearing a newer
+                // permission or sending approval keys into the composer.
+                write_claude_permission_input(&context_file, &interaction_id, &[]);
+            }
+        });
         Ok(())
     }
 

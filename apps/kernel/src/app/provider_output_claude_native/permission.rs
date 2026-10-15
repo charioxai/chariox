@@ -357,7 +357,7 @@ pub(super) fn write_claude_permission_response(
     request_id: &str,
     allowed: bool,
     reason: &str,
-) {
+) -> bool {
     write_claude_permission_payload(
         context_file,
         request_id,
@@ -365,7 +365,7 @@ pub(super) fn write_claude_permission_response(
             "behavior": if allowed { "allow" } else { "deny" },
             "message": reason,
         }),
-    );
+    )
 }
 
 /// No decision: the waiting hook returns at once without one, and Claude asks
@@ -374,16 +374,16 @@ pub(super) fn write_claude_permission_passthrough(context_file: &str, request_id
     write_claude_permission_payload(context_file, request_id, serde_json::json!({}));
 }
 
-fn write_claude_permission_payload(context_file: &str, request_id: &str, payload: Value) {
+fn write_claude_permission_payload(context_file: &str, request_id: &str, payload: Value) -> bool {
     if request_id.trim().is_empty() {
-        return;
+        return false;
     }
     let Some(root) = std::path::Path::new(context_file).parent() else {
-        return;
+        return false;
     };
     let dir = root.join("permission-responses");
-    let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
+    fs::create_dir_all(&dir).is_ok()
+        && fs::write(dir.join(format!("{request_id}.json")), payload.to_string()).is_ok()
 }
 
 pub(super) fn write_claude_permission_input(
@@ -750,6 +750,50 @@ pub(super) fn redact_native_hidden_instructions(prompt: &str) -> String {
 #[cfg(test)]
 mod approval_lifetime_tests {
     use super::*;
+    #[test]
+    fn hook_resolution_receipt_cannot_release_a_newer_permission() {
+        let worktree = crate::test_support::TestWorktree::new("hook-resolution-mailbox");
+        let context = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        write_claude_native_marker(&context, "permission:decision-B");
+        write_claude_permission_input(&context, "decision-A", &[]);
+        assert!(take_claude_permission_inputs(&context).is_empty());
+        assert_eq!(
+            claude_native_marker(&context).as_deref(),
+            Some("permission:decision-B")
+        );
+        write_claude_permission_input(&context, "decision-B", &[]);
+        assert_eq!(
+            take_claude_permission_inputs(&context),
+            vec![Vec::<u8>::new()]
+        );
+    }
+
+    #[test]
+    fn hook_response_reports_a_failed_write_before_releasing_the_wait() {
+        let worktree = crate::test_support::TestWorktree::new("hook-response-write-failure");
+        let context = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        fs::write(
+            worktree.path().join("permission-responses"),
+            "not a directory",
+        )
+        .unwrap();
+        assert!(!write_claude_permission_response(
+            &context,
+            "decision-A",
+            true,
+            "Approved"
+        ));
+        assert!(take_claude_permission_inputs(&context).is_empty());
+    }
+
     #[test]
     fn approval_lifetime_rendered_mailbox_drops_replies_for_previous_decision() {
         let worktree = crate::test_support::TestWorktree::new("approval-mailbox");
