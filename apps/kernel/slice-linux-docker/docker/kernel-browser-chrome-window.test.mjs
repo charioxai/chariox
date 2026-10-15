@@ -18,6 +18,22 @@ function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, wind
   ];
   return { host, windows: new ChromeWindows(host, { inventory }), display };
 }
+// Union seam (2026-10-15): on the shared owned desktop Chromium's window fills the 1280x800 screen at
+// scale 1 and the page is clipped below the band, so "window − pinned page" gave no band at all.
+test("MP-08/MP-10/MP-11 the band binds on the shared owned desktop where the window fills the screen", async t => {
+  const window = { id: 0x400013, x: 0, y: 0, width: 1280, height: 800, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+  const { host, windows } = fake({ rows: [window], bounds: { left: 0, top: 0, width: 1280, height: 800, windowState: "normal" } });
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  let started = false;
+  try { await real.start(); started = true; } catch {}
+  if (!started) return t.skip("no Xvfb");
+  try {
+    Object.assign(host.chromium, { display: real, scale: 1 });
+    const bound = await windows.resolve();
+    assert.equal(bound.tabbed.content_top, 86, "Chrome's 87 DIP band, even device rows");
+    assert.deepEqual(windows.band().rect, { left: 0, top: 0, width: 1280, height: 86 });
+  } finally { await real.close(); }
+});
 test("MP-11 resolution with an owned display: band, auxiliary, generations and retirement", async t => {
   const { host, windows } = fake();
   const real = new OwnedDisplay((await import("node:os")).tmpdir());
