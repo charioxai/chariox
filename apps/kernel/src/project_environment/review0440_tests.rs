@@ -298,3 +298,31 @@ fn review0940_installed_packages_named_like_desktop_apps_use_package_inventory()
         assert_eq!(observation.measured_facts.version.as_deref(), Some("1.2.3"));
     }
 }
+
+// MP-08 / MP-10: real NFS outage exposed metadata before capacity dispatch.
+#[test]
+fn review0940_cpu_only_machine_needs_skip_workspace_preflight() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let mut r = requirement("cpu");
+    r.spec = RequirementSpec::MachineNeeds {
+        platforms: vec![],
+        minimum_cpus: Some(1),
+        minimum_memory_bytes: None,
+        minimum_free_disk_bytes: None,
+        gpu: None,
+    };
+    let (observations, workers, elapsed) = run_expect(
+        vec![r],
+        "CHARIOX_WORKSPACE_CHECK_STALL_MARKER",
+        Duration::from_millis(700),
+        false,
+    );
+    assert!(elapsed < Duration::from_secs(4));
+    assert_eq!(observations[0].status, EnvironmentObservationStatus::Ready);
+    assert_eq!(observations[0].measured_facts.free_disk_bytes, None);
+    assert_eq!(
+        workers, 0,
+        "host-only facts must not inspect a mounted workspace"
+    );
+}
