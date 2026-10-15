@@ -22,7 +22,7 @@ async fn existing_claude_token_is_verified_before_storage_and_admission() {
         format!(
             r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo '2.1.292'; exit 0; fi
-[ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ] || exit 2
+[ "$1" = "-p" ] || exit 2
 [ "$CLAUDE_CODE_OAUTH_TOKEN" = "synthetic-token" ] || exit 3
 echo probe >> '{}'
 cat '{}'
@@ -63,7 +63,7 @@ cat '{}'
         run: false,
         overwrite: true,
     };
-    std::fs::write(&status, r#"{"loggedIn":true,"authMethod":"oauth_token"}"#).unwrap();
+    std::fs::write(&status, r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"CHARIOX_AUTH_OK","usage":{"output_tokens":7}}"#).unwrap();
     let response = execute_set_provider_account_credential_request(
         &projection,
         &state,
@@ -100,7 +100,7 @@ cat '{}'
     // Failed replacement must preserve the verified old credential and state.
     std::fs::write(
         &status,
-        r#"{"loggedIn":false,"error":"synthetic-private-error"}"#,
+        r#"{"type":"result","is_error":true,"api_error_status":401,"error":"synthetic-private-error"}"#,
     )
     .unwrap();
     let rejected = execute_set_provider_account_credential_request(
