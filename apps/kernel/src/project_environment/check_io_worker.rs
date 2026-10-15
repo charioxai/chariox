@@ -11,6 +11,7 @@ const METADATA_LIMIT: u64 = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) enum Request {
+    WorkspaceInspection(crate::runtime::workspace_inspection::Inspection),
     SetupRead {
         root: PathBuf,
         relative: String,
@@ -59,6 +60,7 @@ pub(super) enum Request {
 }
 #[derive(Serialize, Deserialize)]
 pub(super) enum Response {
+    WorkspaceInspection(Result<crate::runtime::workspace_inspection::Metadata, ()>),
     #[serde(skip)]
     PublicRead(zeroize::Zeroizing<String>),
     SetupSource,
@@ -178,7 +180,7 @@ pub(super) fn run_at_root(
     command.current_dir("/").env_clear();
     if matches!(
         &input,
-        Request::Software { .. } | Request::ManualFiles { .. }
+        Request::Software { .. } | Request::ManualFiles { .. } | Request::WorkspaceInspection(_)
     ) {
         for key in [
             "PATH",
@@ -230,6 +232,7 @@ pub(super) fn run_at_root(
         "CHARIOX_MANUAL_ROOT_STALL_MARKER",
         "CHARIOX_SETUP_PUBLIC_STALL_MARKER",
         "CHARIOX_SETUP_SOURCE_STALL_MARKER",
+        "CHARIOX_WORKSPACE_METADATA_STALL_MARKER",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -270,6 +273,9 @@ pub fn run_files_measurement_worker(
     }
     let deadline = Instant::now() + budget;
     let response = match read_metadata::<Request>(request)? {
+        Request::WorkspaceInspection(inspection) => Response::WorkspaceInspection(
+            crate::runtime::workspace_inspection::measure(inspection).map_err(|_| ()),
+        ),
         Request::SetupRead { root, relative } => {
             return super::setup_inputs::write_public_file(&root, &relative)
         }

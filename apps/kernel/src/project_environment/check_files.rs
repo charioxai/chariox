@@ -7,6 +7,23 @@ use std::{
     time::Instant,
 };
 
+// MP-08 / MP-10 / MP-11: reuse owned, nondumpable metadata I/O for background views.
+pub(crate) fn inspect_workspace_metadata(
+    root: &std::path::Path,
+    inspection: crate::runtime::workspace_inspection::Inspection,
+    deadline: std::time::Instant,
+) -> Result<crate::runtime::workspace_inspection::Metadata, crate::error::DaemonError> {
+    match run_at_root(
+        root,
+        Request::WorkspaceInspection(inspection),
+        deadline,
+        || false,
+    ) {
+        Ok(Response::WorkspaceInspection(Ok(metadata))) => Ok(metadata),
+        _ => Err(crate::runtime::workspace_inspection::unavailable()),
+    }
+}
+
 pub(super) fn machine(
     config: &crate::config::DaemonConfig,
     root: Option<&Path>,

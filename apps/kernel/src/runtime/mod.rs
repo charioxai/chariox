@@ -155,6 +155,7 @@ pub(crate) mod workspace_git_changes;
 pub(crate) mod workspace_git_common;
 pub(crate) mod workspace_git_overview;
 pub mod workspace_identity_monitor;
+pub(crate) mod workspace_inspection;
 pub(crate) mod workspace_repo_files;
 pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;

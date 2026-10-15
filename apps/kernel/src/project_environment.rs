@@ -62,6 +62,7 @@ pub(crate) use apply_bindings::*;
 pub(crate) use apply_plan::*;
 pub(crate) use apply_store::*;
 pub(crate) use check::*;
+pub(crate) use check_files::inspect_workspace_metadata;
 #[doc(hidden)]
 pub use check_io_worker::run_files_measurement_worker;
 pub(crate) use check_selection::*;
