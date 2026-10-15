@@ -17,6 +17,7 @@ mod bounded_dns;
 pub(crate) use bounded_dns::resolve_bounded_host;
 mod catalog;
 pub(crate) use catalog::probe_capture::capture as capture_inventory_probe;
+pub(crate) use catalog::probe_capture::capture_cancellable as capture_inventory_probe_cancellable;
 mod remote_machines;
 
 use blocking::block_on_relay_query;

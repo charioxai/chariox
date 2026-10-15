@@ -1,43 +1,32 @@
 //! MP-08 / MP-10 / MP-11: scoped Apply delegates to the existing manifest and launch resolver.
 use super::*;
-use crate::{config::DaemonConfig, error::DaemonError};
-use std::collections::BTreeMap;
+#[cfg(test)]
+use crate::config::DaemonConfig;
+use crate::error::DaemonError;
 
+#[cfg(test)]
 pub(crate) fn apply_scoped_binding(
     store: &ProjectEnvironmentStore,
     config: &DaemonConfig,
     env: &ProjectEnvironment,
     r: &Requirement,
 ) -> Result<(), DaemonError> {
-    let (name, locator, classification) = match &r.spec {
-        RequirementSpec::Variables { name, locator } => (
-            name,
-            locator.clone(),
-            ProjectEnvironmentClassification::NonSecret,
-        ),
-        RequirementSpec::Secrets {
-            name,
-            vault: Some(v),
-        } => (
-            name,
-            ProjectEnvironmentLocator::Vault {
-                service: v.service.clone(),
-                key: v.key.clone(),
-            },
-            ProjectEnvironmentClassification::Secret,
-        ),
-        _ => {
-            return Err(environment_error(
-                "Scoped binding requires an authorized locator",
-            ))
-        }
-    };
-    if project_environment_protected_name(name)
-        || (classification == ProjectEnvironmentClassification::NonSecret
-            && project_environment_public_source_protected(&locator))
-    {
-        return Err(environment_error("Protected launch binding"));
-    }
+    let prepared = prepare_scoped_binding(
+        config,
+        env,
+        r,
+        std::time::Instant::now() + std::time::Duration::from_secs(60),
+        || false,
+    )?;
+    publish_scoped_binding(store, env, r, prepared)
+}
+pub(crate) fn publish_scoped_binding(
+    store: &ProjectEnvironmentStore,
+    env: &ProjectEnvironment,
+    r: &Requirement,
+    prepared: PreparedScopedBinding,
+) -> Result<(), DaemonError> {
+    let entries = prepared.into_entries(env, r)?;
     let evidence = ProjectEnvironmentEvidence::default();
     let mut stored =
         store
@@ -60,34 +49,9 @@ pub(crate) fn apply_scoped_binding(
                 reviewed_manifest: None,
                 last_review: None,
             });
-    let folders: Vec<_> = env
-        .folders
-        .iter()
-        .filter(|f| {
-            r.scope == RequirementScope::Project
-                || r.scope
-                    == (RequirementScope::Folder {
-                        folder_id: f.folder_id.clone(),
-                    })
-        })
-        .collect();
-    if folders.is_empty() || folders.iter().any(|f| f.local_workspace_binding.is_empty()) {
-        return Err(environment_error("Apply folder is unavailable"));
-    }
     reconcile_owned_bindings(&mut stored, env, &[r.scope.clone()]);
-    // Resolve each selected folder independently. Project-wide declarations do
-    // not borrow the first folder's value or leak a sibling Vault binding.
-    for folder in folders {
-        let entry = ProjectEnvironmentEntry {
-            name: name.clone(),
-            workspace_id: folder.local_workspace_binding.clone(),
-            kind: ProjectEnvironmentEntryKind::Variable,
-            classification,
-            excluded: false,
-            uses: vec![],
-            locator: locator.clone(),
-            status: ProjectEnvironmentEntryStatus::Found,
-        };
+    // Publish only independently validated folder entries; values remain with the resolver.
+    for entry in entries {
         let owned = stored.manifest.entries.iter().any(|e| {
             e.workspace_id == entry.workspace_id
                 && e.name == entry.name
@@ -102,42 +66,6 @@ pub(crate) fn apply_scoped_binding(
         }) {
             return Err(environment_error(
                 "Existing scoped launch binding conflicts",
-            ));
-        }
-        let single = ProjectEnvironmentManifest {
-            entries: vec![entry.clone()],
-            ..stored.manifest.clone()
-        };
-        let root = std::path::PathBuf::from(&entry.workspace_id);
-        let inherited = match &locator {
-            ProjectEnvironmentLocator::WorkspaceEnvironment { name } => std::env::var(name)
-                .ok()
-                .map(|v| BTreeMap::from([(name.clone(), zeroize::Zeroizing::new(v))]))
-                .unwrap_or_default(),
-            _ => BTreeMap::new(),
-        };
-        let vault = crate::secret::project_environment_vault(config)?;
-        let resolved = resolve_project_environment(
-            &single,
-            &BTreeMap::from([(entry.workspace_id.clone(), root)]),
-            &BTreeMap::from([(entry.workspace_id.clone(), inherited)]),
-            vault.as_ref(),
-        )?;
-        if !resolved
-            .values
-            .contains_key(&(entry.workspace_id.clone(), name.clone()))
-        {
-            return Err(environment_error("Scoped binding is unavailable"));
-        }
-        // MP-11: close the Check/resolution race without projecting a value hash.
-        if classification == ProjectEnvironmentClassification::NonSecret
-            && resolved
-                .values
-                .values()
-                .any(|value| super::detect_index::credential_content(value))
-        {
-            return Err(environment_error(
-                "Scoped public input requires Vault classification",
             ));
         }
         // Never acquire ownership of an unrelated legacy binding just because
@@ -230,8 +158,24 @@ fn binding_owned_by(
 
 // MP-08 / MP-10 / MP-11: availability observations cannot change ownership.
 // Every other field still fences independent selection, scope and locator edits.
-fn same_binding_authority(entry: &ProjectEnvironmentEntry, owned: &ProjectEnvironmentEntry) -> bool {
+fn same_binding_authority(
+    entry: &ProjectEnvironmentEntry,
+    owned: &ProjectEnvironmentEntry,
+) -> bool {
     let mut observed = entry.clone();
     observed.status = owned.status;
     observed == *owned
+}
+
+// MP-08 / MP-10: supplementary publication-only mounted-I/O gate.
+#[cfg(test)]
+pub(crate) fn publication_probe_test_gate() {
+    if let Some(marker) = std::env::var_os("CHARIOX_APPLY_BINDING_STALL_MARKER") {
+        let marker = std::path::PathBuf::from(marker);
+        std::fs::write(&marker, std::process::id().to_string()).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !marker.with_extension("release").exists() && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }
