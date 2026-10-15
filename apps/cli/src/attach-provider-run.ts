@@ -10,7 +10,7 @@ import type {
 import { LocalIpcError } from "./ipc.js"
 
 type RuntimeAgent = RuntimeSession["agents"][number]
-type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent" | "credential_vault_locked"
+type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent" | "credential_vault_locked" | "pending_interaction"
 
 export type AttachProviderRunSettlement =
   | {
@@ -100,6 +100,14 @@ export async function settleAttachProviderRun(
         recoveredRemotePlacement: false,
       }
     case "launch_provider_run": {
+      // MP-08 / MP-10: another client may already own the launch awaiting this
+      // interaction. Attach and project it without starting a competing run.
+      if (session.active_interactions?.some(interaction => interaction.agent_id === decision.targetAgentId)) {
+        return {
+          action: "skipped", session, providerRun: null, launch: decision.launch,
+          reason: "pending_interaction", targetAgent: decision.targetAgent, recoveredRemotePlacement: false,
+        }
+      }
       if (deps.deferLaunch) {
         let pending = true
         let launch: Promise<AttachProviderRunSettlement> | undefined
