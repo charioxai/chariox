@@ -144,8 +144,8 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-07/MP-10: released F/G/Apps predecessors, main 472/487/490/491 and the current union; unreleased379..409 remain refused.
-  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, runtimeProtocol]
+  // MP-07/MP-10: released F/G/Apps predecessors, main 472/487/490/491/520 and the current union; unreleased379..409 remain refused.
+  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 520, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -1274,6 +1274,29 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
     await put(rejected.receiptPath, `${JSON.stringify({ ...receipt, ...change })}\n`, 0o640)
     assert.equal(rejected.run().status, 1, label)
   }
+})
+
+// MP-07/MP-10/MP-11: use the shipped policy verbatim so normalization cannot
+// hide stale release metadata. This fixture does not prove live state migration.
+test("MP-07/MP-10/MP-11 signed main 520 to runtime 527 upgrade and rollback use the shipped policy", async (context) => {
+  const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
+  const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
+  const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
+  const harness = await makeHarness(context, {
+    currentProtocol: 520,
+    targetProtocol: runtimeProtocol,
+    targetTransitionPolicy: repositoryPolicy,
+  })
+  const upgraded = harness.run()
+  assert.equal(upgraded.status, 0, upgraded.stderr)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`)
+  const rolledBack = harness.run({}, [
+    harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey,
+  ])
+  assert.equal(rolledBack.status, 0, rolledBack.stderr)
+  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`)
 })
 
 // This signed installer fixture is not proof of real-binary state migration.
