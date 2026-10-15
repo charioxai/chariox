@@ -1,5 +1,6 @@
 import type {
   BootstrapDeferredState,
+  RuntimeProviderRun,
   SessionHistoryCursorState,
   TranscriptEntry,
 } from "./cli-types.js"
@@ -13,6 +14,9 @@ export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
+  focusedAgentId?: () => string | null
+  setProviderRun?: (run: RuntimeProviderRun) => void
+  providerLaunchFailed?: (message: string) => void
   currentTranscriptEntryCount: () => number
   entryCounter: () => number
   setProviderCatalog: (catalog: ProviderCatalog) => void
@@ -108,6 +112,23 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {
       warn("failed to hydrate attached history after bootstrap", error)
     })
+
+    const launch = deferred.providerLaunch
+    if (launch && deps.currentAttachmentSessionId() === launch.sessionId) {
+      void launch.start().then(({ providerRun }) => {
+        if (deps.currentAttachmentSessionId() !== launch.sessionId) return
+        if (providerRun && (!deps.focusedAgentId || !providerRun.agent_instance_id
+          || providerRun.agent_instance_id === deps.focusedAgentId())) {
+          deps.setProviderRun?.(providerRun)
+        }
+        deps.updateSessionChrome()
+      }).catch(error => {
+        warn("provider launch after terminal mount failed", error)
+        if (deps.currentAttachmentSessionId() === launch.sessionId) {
+          deps.providerLaunchFailed?.(deps.formatError(error))
+        }
+      })
+    }
   }
 
   return {
