@@ -14,7 +14,7 @@ public enum SkillScope: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
         case "chariox": self = .chariox
-        case "project": self = .project(ProjectPayload(from: decoder))
+        case "project": self = .project(try ProjectPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -109,8 +109,8 @@ public enum SkillSelection: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .source) {
-        case "chariox": self = .chariox(CharioxPayload(from: decoder))
-        case "native": self = .native(NativePayload(from: decoder))
+        case "chariox": self = .chariox(try CharioxPayload(from: decoder))
+        case "native": self = .native(try NativePayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .source, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -183,9 +183,9 @@ public enum SkillDelivery: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
         case "chariox": self = .chariox
-        case "provided_by": self = .providedBy(ProvidedByPayload(from: decoder))
-        case "conflict": self = .conflict(ConflictPayload(from: decoder))
-        case "unverified": self = .unverified(UnverifiedPayload(from: decoder))
+        case "provided_by": self = .providedBy(try ProvidedByPayload(from: decoder))
+        case "conflict": self = .conflict(try ConflictPayload(from: decoder))
+        case "unverified": self = .unverified(try UnverifiedPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -255,10 +255,10 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
-        case "folder": self = .folder(FolderPayload(from: decoder))
-        case "content": self = .content(ContentPayload(from: decoder))
-        case "url": self = .url(UrlPayload(from: decoder))
-        case "native": self = .native(NativePayload(from: decoder))
+        case "folder": self = .folder(try FolderPayload(from: decoder))
+        case "content": self = .content(try ContentPayload(from: decoder))
+        case "url": self = .url(try UrlPayload(from: decoder))
+        case "native": self = .native(try NativePayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -296,8 +296,8 @@ public enum SkillCollisionAction: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .action) {
         case "reject": self = .reject
-        case "rename": self = .rename(RenamePayload(from: decoder))
-        case "replace": self = .replace(ReplacePayload(from: decoder))
+        case "rename": self = .rename(try RenamePayload(from: decoder))
+        case "replace": self = .replace(try ReplacePayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -379,17 +379,17 @@ public enum SkillCatalogAction: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .action) {
-        case "install": self = .install(InstallPayload(from: decoder))
-        case "update": self = .update(UpdatePayload(from: decoder))
-        case "remove": self = .remove(RemovePayload(from: decoder))
-        case "set_state": self = .setState(SetStatePayload(from: decoder))
-        case "create_package": self = .createPackage(CreatePackagePayload(from: decoder))
-        case "set_package_source": self = .setPackageSource(SetPackageSourcePayload(from: decoder))
-        case "rename_package": self = .renamePackage(RenamePackagePayload(from: decoder))
-        case "regroup": self = .regroup(RegroupPayload(from: decoder))
-        case "remove_package": self = .removePackage(RemovePackagePayload(from: decoder))
-        case "set_package_state": self = .setPackageState(SetPackageStatePayload(from: decoder))
-        case "move": self = .move(MovePayload(from: decoder))
+        case "install": self = .install(try InstallPayload(from: decoder))
+        case "update": self = .update(try UpdatePayload(from: decoder))
+        case "remove": self = .remove(try RemovePayload(from: decoder))
+        case "set_state": self = .setState(try SetStatePayload(from: decoder))
+        case "create_package": self = .createPackage(try CreatePackagePayload(from: decoder))
+        case "set_package_source": self = .setPackageSource(try SetPackageSourcePayload(from: decoder))
+        case "rename_package": self = .renamePackage(try RenamePackagePayload(from: decoder))
+        case "regroup": self = .regroup(try RegroupPayload(from: decoder))
+        case "remove_package": self = .removePackage(try RemovePackagePayload(from: decoder))
+        case "set_package_state": self = .setPackageState(try SetPackageStatePayload(from: decoder))
+        case "move": self = .move(try MovePayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -514,16 +514,16 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .action) {
-        case "catalog": self = .catalog(CatalogPayload(from: decoder))
-        case "get": self = .get(GetPayload(from: decoder))
-        case "native_inventory": self = .nativeInventory(NativeInventoryPayload(from: decoder))
-        case "native_details": self = .nativeDetails(NativeDetailsPayload(from: decoder))
-        case "loads": self = .loads(LoadsPayload(from: decoder))
-        case "mutate": self = .mutate(MutatePayload(from: decoder))
-        case "preview": self = .preview(PreviewPayload(from: decoder))
-        case "list": self = .list(ListPayload(from: decoder))
-        case "load": self = .load(LoadPayload(from: decoder))
-        case "submit": self = .submit(SubmitPayload(from: decoder))
+        case "catalog": self = .catalog(try CatalogPayload(from: decoder))
+        case "get": self = .get(try GetPayload(from: decoder))
+        case "native_inventory": self = .nativeInventory(try NativeInventoryPayload(from: decoder))
+        case "native_details": self = .nativeDetails(try NativeDetailsPayload(from: decoder))
+        case "loads": self = .loads(try LoadsPayload(from: decoder))
+        case "mutate": self = .mutate(try MutatePayload(from: decoder))
+        case "preview": self = .preview(try PreviewPayload(from: decoder))
+        case "list": self = .list(try ListPayload(from: decoder))
+        case "load": self = .load(try LoadPayload(from: decoder))
+        case "submit": self = .submit(try SubmitPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -626,16 +626,16 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
-        case "catalog": self = .catalog(CatalogPayload(from: decoder))
-        case "detail": self = .detail(DetailPayload(from: decoder))
-        case "native_inventory": self = .nativeInventory(NativeInventoryPayload(from: decoder))
-        case "native_details": self = .nativeDetails(NativeDetailsPayload(from: decoder))
-        case "loads": self = .loads(LoadsPayload(from: decoder))
-        case "preview": self = .preview(PreviewPayload(from: decoder))
-        case "published": self = .published(PublishedPayload(from: decoder))
-        case "page": self = .page(PagePayload(from: decoder))
-        case "loaded": self = .loaded(LoadedPayload(from: decoder))
-        case "submitted": self = .submitted(SubmittedPayload(from: decoder))
+        case "catalog": self = .catalog(try CatalogPayload(from: decoder))
+        case "detail": self = .detail(try DetailPayload(from: decoder))
+        case "native_inventory": self = .nativeInventory(try NativeInventoryPayload(from: decoder))
+        case "native_details": self = .nativeDetails(try NativeDetailsPayload(from: decoder))
+        case "loads": self = .loads(try LoadsPayload(from: decoder))
+        case "preview": self = .preview(try PreviewPayload(from: decoder))
+        case "published": self = .published(try PublishedPayload(from: decoder))
+        case "page": self = .page(try PagePayload(from: decoder))
+        case "loaded": self = .loaded(try LoadedPayload(from: decoder))
+        case "submitted": self = .submitted(try SubmittedPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -692,8 +692,8 @@ public enum SkillCatalogEvent: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
         switch try container.decode(String.self, forKey: .kind) {
-        case "changed": self = .changed(ChangedPayload(from: decoder))
-        case "loaded": self = .loaded(LoadedPayload(from: decoder))
+        case "changed": self = .changed(try ChangedPayload(from: decoder))
+        case "loaded": self = .loaded(try LoadedPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
