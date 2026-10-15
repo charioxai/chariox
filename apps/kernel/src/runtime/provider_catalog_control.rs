@@ -299,29 +299,21 @@ mod tests {
             root.join("profiles.json"),
         )
         .unwrap();
-        let first = registry
-            .create_managed("owner-a", "claude", "First")
-            .unwrap();
-        let second = registry
-            .create_managed("owner-b", "claude", "Second")
-            .unwrap();
         let mut slow_config = crate::config::DaemonConfig::for_tests();
         slow_config.provider_catalog_read_delay_ms = 1_000;
         let slow_config = DaemonConfigProjectionStore::new(slow_config);
         let fast_config =
             DaemonConfigProjectionStore::new(crate::config::DaemonConfig::for_tests());
         let projection = ProviderCatalogProjectionStore::default();
-        let request = |profile| crate::local::GetProviderCatalogRequest {
-            provider: Some("claude".into()),
-            account_profiles: BTreeMap::from([("claude".into(), profile)]),
-            ..Default::default()
-        };
+        // No linked profiles: exercise the offline catalog, without starting a
+        // native model probe whose startup time is unrelated to lock independence.
+        let request = crate::local::GetProviderCatalogRequest::default();
         let slow = execute_get_provider_catalog_request(
             &projection,
             &slow_config,
             &registry,
             "owner-a",
-            request(first.profile_id),
+            request.clone(),
         );
         tokio::pin!(slow);
         tokio::select! {
@@ -337,7 +329,7 @@ mod tests {
                     &fast_config,
                     &registry,
                     "owner-b",
-                    request(second.profile_id)
+                    request
                 )
             ),
             slow,
