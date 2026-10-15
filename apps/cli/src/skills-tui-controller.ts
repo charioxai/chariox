@@ -1,12 +1,13 @@
 // MP-08 / MP-10 / MP-11: local and remote TUI share the home Skills v2 authority.
 import { SkillsClient, skillGroups, providerLabel, type SkillsContext } from "@chariox/kernel-client/skills-client";
-import type { SkillCatalogAction, SkillCatalogMutation, SkillInstallSource, SkillScope, SkillState } from "@chariox/kernel-client/kernel-types-skills-v2";
+import type { SkillCatalogAction, SkillCatalogMutation, SkillInstallSource, SkillReviewReceipt, SkillScope, SkillState } from "@chariox/kernel-client/kernel-types-skills-v2";
 export class SkillsTuiController {
     readonly client: SkillsClient;
     private scope: "chariox" | "project" = "chariox";
     private review: {
         key: string;
         mutation: SkillCatalogMutation;
+        receipt: SkillReviewReceipt;
     } | null = null;
     constructor(private readonly deps: {
         context(): SkillsContext;
@@ -22,7 +23,7 @@ export class SkillsTuiController {
                 this.review = null;
                 throw new Error("No current Skills review. Repeat the action for this kernel and Project.");
             }
-            await this.client.publish(this.review.mutation);
+            await this.client.publish(this.review.mutation, this.review.receipt);
             this.review = null;
             await this.refresh();
             this.deps.notice("Skills published. Applicable agents see this revision next turn.");
@@ -68,6 +69,15 @@ export class SkillsTuiController {
             this.deps.notice(`${result.skill.skill.name}\n${result.skill.skill.digest}\n${result.skill.skill.files.map(f => `${f.path} · ${f.bytes} bytes · ${f.executable ? "Executable" : "File"} · ${f.sha256}`).join("\n")}\n${result.skill.skill.compatibility_notes.join("\n")}\n${result.body}`);
             return;
         }
+        if (command === "show-from") {
+            const entry = this.nativeEntry(rest[0]);
+            const result = await this.client.nativeDetails(context.agentId!, entry.selection);
+            if (context.key !== this.deps.context().key)
+                throw new Error("Focused provider changed. Refresh /skills from and select again.");
+            const d = result.details;
+            this.deps.notice(`${d.entry.selection.name} · From ${providerLabel(this.deps.provider())} · read-only\n${d.declared_version ?? "No declared version"} · ${d.entry.digest ?? "Digest unverified"}\n${d.provenance.locator ?? "Source unavailable"} · ${d.provenance.source_machine ?? "Unknown machine"} · ${d.provenance.provider_version ?? "Unknown provider version"}\n${d.entry.complete_manifest ? "Complete file manifest" : "File manifest incomplete"}\n${d.files.map(f => `${f.path} · ${f.bytes} bytes · ${f.executable ? "Executable" : "File"} · ${f.sha256}`).join("\n")}\n${d.compatibility_notes.join("\n")}\n${d.unavailable_reason ?? ""}\n${d.body ?? "Body unavailable; no source copied or imported."}`);
+            return;
+        }
         const scope: SkillScope = this.scope === "project" ? { kind: "project", project_id: context.projectId ?? "" } : { kind: "chariox" };
         if (scope.kind === "project" && !scope.project_id)
             throw new Error("Choose a Project first");
@@ -80,9 +90,7 @@ export class SkillsTuiController {
             actions = [{ action: "install", source, collision, package_id: null }];
         }
         else if (command === "import") {
-            const entry = this.client.catalog?.native.find(n => n.selection.source === "native" && n.selection.provider === this.deps.provider() && (n.selection.entry_id === rest[0] || n.selection.name === rest[0]));
-            if (!context.agentId || !entry)
-                throw new Error("Focus an agent and choose an entry from /skills from");
+            const entry = this.nativeEntry(rest[0]);
             actions = [{ action: "install", source: { kind: "native", selection: entry.selection }, collision: { action: "reject" }, package_id: null }];
         }
         else if (command === "state") {
@@ -116,13 +124,13 @@ export class SkillsTuiController {
                 throw new Error("Package has no members to update");
         }
         else
-            throw new Error("/skills [chariox|project|from|environment|show <name>|install folder|url|content <source> [rename <name>|replace <id>]|import <entry>|state <name> auto|manual|off|reset|update <name> [folder|url <source>]|remove <name>|create-package <name>|move-to-package <skill> <package>|ungroup <skill>|package-state <package> auto|manual|off|reset|update-package <package>|remove-package <package>|ungroup-package <package>|confirm|cancel]");
+            throw new Error("/skills [chariox|project|from|show-from <entry>|environment|show <name>|install folder|url|content <source> [rename <name>|replace <id>]|import <entry>|state <name> auto|manual|off|reset|update <name> [folder|url <source>]|remove <name>|create-package <name>|move-to-package <skill> <package>|ungroup <skill>|package-state <package> auto|manual|off|reset|update-package <package>|remove-package <package>|ungroup-package <package>|confirm|cancel]");
         const mutation = { scope, expected_revision: this.client.catalog!.revision, actions };
         const preview = await this.client.preview(mutation);
         if (context.key !== this.deps.context().key)
             throw new Error("Skills target changed. Repeat the action.");
-        this.review = { key: context.key, mutation };
-        this.deps.notice(`Review Skills revision ${mutation.expected_revision}\n${actions.map(a => a.action).join("\n")}\nAffected: ${preview.affected.map(s => s.name).join(", ") || "new records"}\n/skills confirm — publish this batch after kernel authorization\n/skills cancel — discard`);
+        this.review = { key: context.key, mutation, receipt: preview.review_receipt };
+        this.deps.notice(`Review Skills revision ${mutation.expected_revision}\n${actions.map(a => a.action).join("\n")}\nAffected: ${preview.affected.map(s => s.name).join(", ") || "new records"}\nReviewed sources:\n${preview.review_receipt.sources.map(s => `${s.skill_id} · ${s.digest} · ${s.source_revision ?? "Content snapshot"}`).join("\n")}\nReview expires ${new Date(preview.review_receipt.expires_at_ms).toISOString()}\n/skills confirm — publish this batch after kernel authorization\n/skills cancel — discard`);
     }
     private async refresh() { await this.client.refresh(this.deps.context()); }
     private list() {
@@ -139,7 +147,13 @@ export class SkillsTuiController {
     private native() { if (!this.deps.context().agentId) {
         this.deps.notice("Choose an agent to see skills From its provider. Chariox skills remain available.");
         return;
-    } this.deps.notice(`From ${providerLabel(this.deps.provider())} · read-only\n${this.client.catalog?.native.filter(n => n.selection.source === "native" && n.selection.provider === this.deps.provider()).map(n => `${n.selection.name} · ${n.exposure} · ${n.digest ?? "Unverified digest"}\n${n.description}\n/skills import ${n.selection.source === "native" ? n.selection.entry_id : ""}`).join("\n") || "No provider skills"}`); }
+    } this.deps.notice(`From ${providerLabel(this.deps.provider())} · read-only\n${this.client.catalog?.native.filter(n => n.selection.source === "native" && n.selection.provider === this.deps.provider()).map(n => `${n.selection.name} · ${n.exposure} · ${n.digest ?? "Unverified digest"}\n${n.description}\n/skills show-from ${n.selection.source === "native" ? n.selection.entry_id : ""}\n/skills import ${n.selection.source === "native" ? n.selection.entry_id : ""}`).join("\n") || "No provider skills"}`); }
+    private nativeEntry(name?: string) {
+        const entry = this.client.catalog?.native.find(n => n.selection.source === "native" && n.selection.provider === this.deps.provider() && (n.selection.entry_id === name || n.selection.name === name));
+        if (!this.deps.context().agentId || !entry)
+            throw new Error("Focus an agent and choose an entry from /skills from");
+        return entry;
+    }
     private dependencies() { this.deps.notice(`Chariox dependencies · Project overrides\n${this.client.catalog?.skills.filter(p => p.skill.scope.kind === "chariox").map(p => `${p.skill.name} · ${p.effective_state} · ${p.project_override ?? "Inherited"} · ${p.skill.digest}`).join("\n")}`); }
     private find(name?: string) { const skill = this.client.catalog?.skills.find(p => p.skill.id === name || p.skill.name === name); if (!skill)
         throw new Error("Skill unavailable. Refresh /skills and choose its name or ID."); return skill; }

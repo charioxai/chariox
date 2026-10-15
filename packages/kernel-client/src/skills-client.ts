@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: presentation and typed client state; kernel owns resolution.
-import type { NativeSkillEntry, SkillCatalogMutation, SkillLoadRecord, SkillPackageRecord, SkillProjection, SkillSelection, SkillsV2Request, SkillsV2Response } from "./kernel-types-skills-v2.js";
+import type { NativeSkillEntry, SkillCatalogMutation, SkillLoadRecord, SkillPackageRecord, SkillProjection, SkillReviewReceipt, SkillSelection, SkillsV2Request, SkillsV2Response } from "./kernel-types-skills-v2.js";
 export type SkillCatalogView = Extract<SkillsV2Response, {
     kind: "catalog";
 }>;
@@ -178,11 +178,30 @@ export class SkillsClient {
             throw new Error("Skills preview revision changed. Refresh and repeat the action.");
         if (result.collisions.length)
             throw new Error(`${result.collisions.join("; ")}. Rename or explicitly replace the installed skill.`);
+        this.requireReview(result.review_receipt);
         return result;
     }
-    async publish(mutation: SkillCatalogMutation): Promise<void> {
-        const result = await this.request({ action: "mutate", mutation });
+    async publish(mutation: SkillCatalogMutation, receipt: SkillReviewReceipt): Promise<void> {
+        this.requireReview(receipt);
+        const result = await this.request({ action: "mutate", mutation, review_receipt_id: receipt.id });
         if (result.kind !== "published")
             throw new Error("Kernel did not publish the skills mutation");
+    }
+    private requireReview(receipt: SkillReviewReceipt | undefined): void {
+        if (!receipt?.id?.trim() || !receipt.mutation_sha256?.trim() || !Number.isFinite(receipt.expires_at_ms) || receipt.expires_at_ms <= Date.now())
+            throw new Error("Review the changes again: the home review receipt is missing or expired.");
+    }
+    async nativeDetails(agentId: string, selection: SkillSelection) {
+        if (!agentId || selection.source !== "native")
+            throw new Error("Choose a skill From the focused provider.");
+        const result = await this.request({ action: "native_details", agent_id: agentId, selection });
+        if (result.kind !== "native_details")
+            throw new Error("Provider skill details unavailable");
+        const actual = result.details.entry.selection;
+        if (actual.source !== "native" || actual.entry_id !== selection.entry_id || actual.provider !== selection.provider
+            || actual.account_profile !== selection.account_profile || actual.execution_id !== selection.execution_id
+            || actual.inventory_revision !== selection.inventory_revision || actual.name !== selection.name)
+            throw new Error("Provider skill source changed. Refresh and choose its entry again.");
+        return result;
     }
 }
