@@ -339,7 +339,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
 
     /// Closes the writer's descriptor so the next append reopens the path.
     #[cfg(test)]
-    async fn close_persistent_file_for_tests(&self) {
+    pub(crate) async fn close_persistent_file_for_tests(&self) {
         let persistence = self
             .persistence
             .as_ref()
