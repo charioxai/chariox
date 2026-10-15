@@ -1119,6 +1119,7 @@ fn write_compacted_side_file(
     let source = io::BufReader::new(fs::File::open(path)?.take(prefix_bytes));
     let mut side = io::BufWriter::new(fs::File::create(side_path)?);
     let mut unsynced_bytes = 0;
+    let mut writeback_offset = 0;
     for line in source.split(b'\n') {
         let line = line?;
         if serde_json::from_slice::<RecordId>(&line)
@@ -1132,7 +1133,8 @@ fn write_compacted_side_file(
         // the appends and durable commits that share this disk behind it.
         if unsynced_bytes >= COMPACTION_WRITEBACK_BYTES {
             side.flush()?;
-            side.get_ref().sync_data()?;
+            write_back_compaction_range(side.get_ref(), writeback_offset, unsynced_bytes)?;
+            writeback_offset += unsynced_bytes as u64;
             unsynced_bytes = 0;
         }
     }
@@ -1143,6 +1145,43 @@ fn write_compacted_side_file(
         reserve_event_file_space(&side, limit);
     }
     side.sync_data()
+}
+
+/// Drain each data burst without committing a filesystem journal transaction
+/// for every burst. The completed side file is still synced before the swap.
+fn write_back_compaction_range(file: &fs::File, offset: u64, bytes: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let offset = i64::try_from(offset).map_err(io::Error::other)?;
+        let bytes = i64::try_from(bytes).map_err(io::Error::other)?;
+        // SAFETY: the descriptor is live and the range was just written. This
+        // waits for page writeback; the caller still syncs the completed side file.
+        let result = unsafe {
+            libc::sync_file_range(
+                file.as_raw_fd(),
+                offset,
+                bytes,
+                libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                    | libc::SYNC_FILE_RANGE_WRITE
+                    | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EINVAL)
+        ) {
+            return Err(error);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (offset, bytes);
+    // Preserve the existing bounded, durable path on other filesystems/platforms.
+    file.sync_data()
 }
 
 /// Reserve extents on startup or a background thread. KEEP_SIZE preserves JSONL

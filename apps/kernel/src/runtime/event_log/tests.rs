@@ -1009,3 +1009,37 @@ fn byte_retention_keeps_the_newest_global_ids_across_many_streams() {
     assert_eq!(retained, (4_501..=12_000).collect::<Vec<_>>());
     assert_eq!(super::retained_events_jsonl_bytes(&streams), 7_500);
 }
+
+#[test]
+fn compaction_finishes_all_data_bursts_before_handoff() {
+    use std::io::Write;
+    let root = scratch_root("compaction-data-bursts");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let mut kept = std::collections::HashSet::new();
+    let mut expected = Vec::new();
+    for id in 1..=1024 {
+        let event = LoggedEvent {
+            event_id: id,
+            stream_id: format!("stream-{}", id % 16),
+            stream_seq: id,
+            recorded_at_ms: 1,
+            event: format!("{id}:{}", "x".repeat(1024)),
+        };
+        let payload = super::logged_event_jsonl_payload(&event).unwrap();
+        file.write_all(&payload).unwrap();
+        if id % 3 != 0 {
+            kept.insert(id);
+            expected.extend_from_slice(&payload);
+        }
+    }
+    file.sync_all().unwrap();
+    let bytes = file.metadata().unwrap().len();
+    assert!(expected.len() > 8 * super::COMPACTION_WRITEBACK_BYTES);
+    super::write_compacted_side_file(&path, &side, bytes, &kept, None).unwrap();
+    assert_eq!(std::fs::read(&side).unwrap(), expected);
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
+}
