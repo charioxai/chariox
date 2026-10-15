@@ -96,3 +96,5 @@ mod agent_lifecycle;
 mod owner_handoff;
 mod room_workflows;
 mod screenshot;
+
+mod relay_transport;

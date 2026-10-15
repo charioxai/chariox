@@ -519,6 +519,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     routes.set_subscription(
         "active-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender,
         },
@@ -530,6 +531,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
             client_request_id: "client-request-pending".to_string(),
             daemon_key: daemon_key.clone(),
             kind: PendingRequestKind::Subscribe {
+                display: false,
                 subscription_id: "pending-subscription".to_string(),
                 client_public_key: "pending-public-key".to_string(),
             },
@@ -760,6 +762,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "slow-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: sender.clone(),
         },
@@ -767,6 +770,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "other-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: other_sender,
         },
@@ -1437,7 +1441,7 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
         .unwrap();
     });
     let (mut client, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
             .await
             .unwrap();
     let mut registration = daemon_registration("silent-peer");
@@ -1470,6 +1474,7 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     routes.set_subscription(
         "sub".into(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon.clone(),
             client_sender: sender,
         },
@@ -1512,4 +1517,33 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
             .await
             .is_err()
     );
+}
+
+// MP-08 / MP-10 / MP-11: a v1 receiver must never see multiplexed v2 frames.
+#[tokio::test]
+async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let captured = registry.clone();
+    let task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            captured,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    let error =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(error,tokio_tungstenite::tungstenite::Error::Http(response) if response.status()==426)
+    );
+    assert!(task.await.unwrap().is_err());
+    assert!(registry.read().await.peers.is_empty());
 }

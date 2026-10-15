@@ -29,7 +29,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
  if(tab.tab_id!==command.tab_id)refuse();
- let lease,args,offset={x:0,y:0},overlayTab=null;
+ let lease,args,placement,offset={x:0,y:0},overlayTab=null;
  const windows=host.chromeWindows?.current();
  const window=windows?.tabbed;
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent())refuse();
@@ -41,17 +41,27 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    if(lease.tab_id!==tab.tab_id||lease.document_id!==tab.document_id||!await lease.isCurrent())refuse();
    const scale=lease.device_scale_factor,r=lease.rect;
    if(scale!==window.scale)refuse();
+   const page=window.page_rect;
+   if(!page||typeof window.isPageCurrent!=='function'||!await window.isPageCurrent())refuse();
    // A hidden mirror can retain its document/geometry while another Tab paints
    // in this SAME X window. Only the browser owner's native active-tab observer
    // can admit that readback; focus-emulated visibility is not authority.
    if(typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(tab,window))refuse();
    // Stay INSIDE the canonical clip; the codec's even dimensions never expose
    // adjacent pixels. Keep the offset for the existing mirror input resolver.
-   const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.floor((r.x+r.width)*scale)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*scale)-top)/2);
+   const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.min(page.width,Math.floor((r.x+r.width)*scale))-left)/2),height=2*Math.floor((Math.min(page.height,Math.floor((r.y+r.height)*scale))-top)/2);
+   if(width<2||height<2)refuse();
    offset={x:left/scale-r.x,y:top/scale-r.y};
+   const element=lease.element_offset;
+   if(!element||![element.x,element.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
+   // The mirror clip origin is relative to the opaque element. Capture rounds
+   // inward again; paint uses both offsets, input uses only this last rounding.
+   placement=Object.freeze({x:element.x+offset.x,y:element.y+offset.y});
+   if(![placement.x,placement.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
-    rect:{left,top:window.content_top+top,width,height},contentHeight:window.bounds.height-window.content_top,
-    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
+    rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
+    attestationState:lease.attestationState,
+    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();
@@ -83,16 +93,17 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   // No scrim behind the "dialog" (a darker theme dimmed the toolbar): the kernel learns the toolbar again.
   try{await source.start();}catch(error){if(overlayTab&&error?.scrim!==undefined)host.chromeWindows.relearnToolbar?.();throw error;}
   assertNotCancelled(signal);
-  if(host.protection!==policy||!await lease.isCurrent()||!window.isCurrent())refuse();
+  if(host.protection!==policy||!await lease.isCurrent()||!window.isCurrent()||args.validateCurrent&&!await args.validateCurrent())refuse();
   const result={source_kind:'region',binding_id:lease.binding_id,document_id:lease.document_id,sequence:lease.sequence,
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
-   device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height};
+   device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height,
+   ...(placement?{region_offset:placement}:{})};
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    // Crops use whole-video dependencies; an eight-row encoder cannot divide
    // every valid even crop (including a two-device-pixel opaque tile).
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},
    {timing:host.timing,encoder:new PortableEncoder()});
-  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,
+  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,regionPlacement:placement,
    regionCurrent:args.validateCurrent??lease.isCurrent});
   const close=stream.close.bind(stream);let closing,offRetire;
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();

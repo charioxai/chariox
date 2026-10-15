@@ -4,19 +4,19 @@
 import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
 import {startNativeReadback} from './kernel-browser-native-readback.mjs';
-import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
+import {attestNativeRegion,regionProtection} from './kernel-browser-region-attestation.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {checkedInventory} from './kernel-browser-native-windows.mjs';
 
-export function windowRegionGeometry(surface,window,rect,contentHeight,scale,inWindow=false){
+export function windowRegionGeometry(surface,window,rect,contentHeight,scale,contentRect,inWindow=false){
  const {width,height}=rect,top=rect.top,left=rect.left;
  if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
  const auxiliary=surface==='browser_auxiliary';
  // Browser-owned dropdowns have no page boundary. The owner binds their
  // exact X window; only its whole inward-even raster may reach the pump.
- // Chrome UI drawn inside the tabbed window (the omnibox dropdown) is the
- // owner's kernel-resolved rect of that window, entirely below the band.
+ // Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's
+ // page overlay) is the owner's kernel-resolved rect of that window, entirely below the band.
  if(auxiliary&&inWindow){
   if(window.id===undefined||contentHeight===undefined||top<window.height-contentHeight)throw Error('MP-11: invalid native auxiliary region');
  }else if(auxiliary){
@@ -31,11 +31,21 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale,inW
    width<2||width>2560||height<2||height>1600||width%2||height%2||
    contentHeight<2||contentHeight>window.height||left<0||top<0||
    left>window.width-width||top>window.height-height)throw Error('MP-11: invalid native window region');
- const contentTop=window.height-contentHeight;
+ let contentTop=window.height-contentHeight,contentLeft=0;
+ if(surface==='page'){
+  if(!contentRect||![contentRect.left,contentRect.top,contentRect.width,contentRect.height].every(Number.isSafeInteger)||
+   contentRect.left<0||contentRect.top<0||contentRect.width<2||contentRect.height!==contentHeight||
+   contentRect.left+contentRect.width>window.width||contentRect.top+contentRect.height>window.height)
+   throw Error('MP-11: native page origin unavailable');
+  contentTop=contentRect.top;contentLeft=contentRect.left;
+  if(left<contentLeft||left+width>contentLeft+contentRect.width||top+height>contentTop+contentRect.height)
+   throw Error('MP-11: native region crosses page boundary');
+ }
  if(!auxiliary&&(surface==='browser_chrome'?top+height>contentTop:top<contentTop))
   throw Error('MP-11: native region crosses surface boundary');
  return Object.freeze({width,height,contentHeight,css_width:width/scale,css_height:height/scale,
-  pageLeft:left,pageTop:top-contentTop,contentTop,
+  pageLeft:left-contentLeft,pageTop:top-contentTop,contentTop,
+  ...(contentRect?{contentRect:Object.freeze({...contentRect})}:{}),
   window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
 // MP-08/MP-11 (coordinator 12:22Z): under a browser-modal Chrome dialog the page area shows the page
@@ -70,15 +80,16 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,pageOverlay,pageDocument,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
-  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
-  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,inWindow===true);
-  // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
+  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
+  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect,inWindow===true);
+  // A browser-modal dialog's page overlay: the page area of the tabbed window (its page document fences it).
   this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;
   if(this.pageOverlay&&typeof pageDocument!=='string')throw Error('MP-11: invalid native page overlay');
-  if(this.pageOverlay&&(this.region.pageLeft!==0||this.region.pageTop!==0||this.region.width!==window.width-window.width%2||contentHeight-rect.height>1))throw Error('MP-11: invalid native page overlay');
+  if(this.pageOverlay&&(this.region.pageTop!==0||contentHeight-rect.height>1))throw Error('MP-11: invalid native page overlay');
+  // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
   this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
@@ -96,14 +107,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
    const region=this.region;
-   if(this.surface==='page'||this.pageOverlay){
-    this.regions=new NativeRegionProtection(this.connection,this.sessionId,
-     {policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
-    const measure=this.regions.measure.bind(this.regions);
-    // An overlay's page sits at the attested offset inside it (Chrome's window frame).
-    this.pageOffset={dx:0,dy:0};
-    this.regions.measure=async()=> (await measure()).map(([x,y,w,h])=>
-     [x-region.pageLeft+this.pageOffset.dx,y-region.pageTop+this.pageOffset.dy,w,h]);
+   if(this.surface==='page'){
+    this.regions=regionProtection(this,region.pageLeft,region.pageTop);
+    await attestNativeRegion(this);
+   }else if(this.pageOverlay){
+    this.regions=regionProtection(this,0,0);
    }else{
     // Chrome UI is proved disjoint from page pixels: the band boundary or
     // a whole separate auxiliary window selected by the browser owner.
@@ -120,37 +128,30 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.surface==='page'||this.pageOverlay){
-    const shot=await this.screenshot();
-    const clip={x:region.pageLeft/this.scale,y:region.pageTop/this.scale,
-     width:region.css_width,height:region.css_height};
-    // The overlay's reference is the page's own viewport (its frame offset is found by the attestation).
-    const page=this.pageOverlay?decodePng(shot.data_base64,this.scale):null;
-    const reference=page?(page.height>region.height?decodePng(cropProtectedPng(shot.data_base64,{x:0,y:0,width:page.width/this.scale,height:region.css_height},this.scale).data_base64,this.scale):page)
-     :decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
-    const raw=this.latest?.raw;
-    if(!raw||!this.pageOverlay&&(raw.width!==reference.width||raw.height!==reference.height))throw Error('MP-11: native region attestation geometry');
-    const fullBand=statusBand({width:region.window_region.width,height:region.contentHeight},this.hostScale);
-    const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
-    const masked=attestationMask(masks,reference.width,reference.height);
-    if(masked&&masked.reduce((n,v)=>n+v,0)>reference.width*reference.height*.9)throw Error('MP-11: native region attestation masked');
-    // The scrim fades in: a refused frame is retried on a later readback (counts only are recorded).
-    if(this.pageOverlay)for(let attempt=0;;attempt++){
-     try{const {scrim,inliers,dx,dy}=overlayAttestation(reference,this.latest?.raw??raw,masked,this.scale);
-      this.pageOffset={dx,dy};await this.regions.refresh(); // the page's Vault masks at the attested offset
-      this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${dx},${dy} ${attempt}`,performance.timeOrigin+performance.now());break;}
-     catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${error.dx},${error.dy} ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
-      if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}
-    }
-    else{const pixels=raw.pixels;
-    for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
-     (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))
-      throw Error('MP-11: native region attestation mismatch');}
-    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.pageOverlay?this.pageDocument:this.tab.document_id);
-   }
+   if(this.pageOverlay)await this.attestOverlay();
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){if(this.pageOverlay)this.timing(`native_overlay_refused ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,80)}`,performance.timeOrigin+performance.now());await this.close();throw error;}
+ }
+ // The dialog's page overlay: Chrome's active Tab behind the scrim, at the offset the attestation finds;
+ // the page's Vault masks are re-measured there before any frame leaves.
+ async attestOverlay(){
+  const region=this.region,shot=await this.screenshot(),page=decodePng(shot.data_base64,this.scale);
+  const reference=page.height>region.height?decodePng(cropProtectedPng(shot.data_base64,{x:0,y:0,width:page.width/this.scale,height:region.css_height},this.scale).data_base64,this.scale):page;
+  // The overlay raster is the native page area: its pixels are page coordinates (up to the attested offset).
+  const masks=[...(shot[displayMaskRegions]??[]),statusBand({width:region.width,height:region.height},this.hostScale)];
+  const masked=attestationMask(masks,reference.width,reference.height);
+  if(masked&&masked.reduce((n,v)=>n+v,0)>reference.width*reference.height*.9)throw Error('MP-11: native region attestation masked');
+  // The scrim fades in: a refused frame is retried on a later readback (counts only are recorded).
+  for(let attempt=0;;attempt++){
+   const raw=this.latest?.raw;
+   try{const {scrim,inliers,dx,dy}=overlayAttestation(reference,raw,masked,this.scale);
+    this.regions=regionProtection(this,-dx,-dy);await this.regions.refresh();
+    this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${dx},${dy} ${attempt}`,performance.timeOrigin+performance.now());break;}
+   catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${error.dx},${error.dy} ${reference.width}x${reference.height} ${raw?.width}x${raw?.height}`,performance.timeOrigin+performance.now());
+    if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}
+  }
+  await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.pageDocument);
  }
  point(x,y){return Number.isInteger(x)&&Number.isInteger(y)&&x>=0&&y>=0&&
   x<this.region.css_width&&y<this.region.css_height;}

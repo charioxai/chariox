@@ -7,7 +7,7 @@ test('MP-08/MP-10 page and native Chrome crops share native pixels at both densi
   const window={width:1280*scale,height:888*scale},content=800*scale;
   const chrome=windowRegionGeometry('browser_chrome',window,{left:0,top:0,width:1280*scale,height:88*scale},content,scale);
   assert.equal(chrome.css_width,1280);assert.equal(chrome.css_height,88);
-  const page=windowRegionGeometry('page',window,{left:20*scale,top:108*scale,width:320*scale,height:240*scale},content,scale);
+  const page=windowRegionGeometry('page',window,{left:20*scale,top:108*scale,width:320*scale,height:240*scale},content,scale,{left:0,top:88*scale,width:1280*scale,height:content});
   assert.equal(page.pageLeft,20*scale);assert.equal(page.pageTop,20*scale);
   assert.equal(page.css_width,320);assert.equal(page.css_height,240);
   assert.deepEqual(projectRegionMasks([{x:22*scale,y:23*scale,width:10*scale,height:4*scale}],page.pageLeft,page.pageTop),
@@ -18,12 +18,12 @@ test('MP-11 crops cannot spill across Chrome/page or name a malformed raster',()
  const window={width:1280,height:888},rect={left:0,top:0,width:1280,height:88};
  for(const bad of [{...rect,height:90},{...rect,left:-1},{...rect,width:1282},{...rect,height:87}])
   assert.throws(()=>windowRegionGeometry('browser_chrome',window,bad,800,1),/region/);
- assert.throws(()=>windowRegionGeometry('page',window,rect,800,1),/boundary/);
+ assert.throws(()=>windowRegionGeometry('page',window,rect,800,1,{left:0,top:88,width:1280,height:800}),/boundary/);
  assert.throws(()=>windowRegionGeometry('root',window,rect,800,1),/region/);
  assert.throws(()=>windowRegionGeometry('browser_chrome',{...window,height:Infinity},rect,800,1),/region/);
 });
 test('MP-11 region coordinates and Chrome chords require a current kernel lease',()=>{
- const config={surface:'browser_chrome',window:{width:1280,height:888},rect:{left:0,top:0,width:1280,height:88},contentHeight:800,scale:1,
+ const config={surface:'browser_chrome',window:{width:1280,height:888},rect:{left:0,top:0,width:1280,height:88},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
   isCurrent:()=>false,policy:{},allowed:()=>true};
  assert.throws(()=>new NativeWindowRegionCapture({...config,isCurrent:null}),/lease/);
  const source=new NativeWindowRegionCapture(config);
@@ -39,7 +39,7 @@ test('MP-11 only a kernel-resolved exact X window may disambiguate owned equal-s
 });
 test('MP-11 async mirror geometry retirement precedes raster publication',async()=>{
  let checks=0,releases=0,encoded=0;
- const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,scale:1,
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
   isCurrent:()=>true,validateCurrent:async()=>{checks++;return false;},policy:{},allowed:()=>true});
  source.valid=()=>!source.closed;source.attested=true;
  source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
@@ -74,10 +74,25 @@ test('MP-11 auxiliary regions require an exact window and cannot crop arbitrary 
   [window,rect,200],
  ])assert.throws(()=>windowRegionGeometry('browser_auxiliary',w,r,content,1),/region|window/);
 });
+
+// MP-08/MP-10/MP-11: native coordinates include GTK insets; CDP and masks do not.
+test('MP-08/MP-10/MP-11 page crop subtracts the authoritative native origin without rounding it',()=>{
+ const page={left:4,top:87,width:1272,height:709};
+ const g=windowRegionGeometry('page',{id:42,width:1280,height:800},{left:14,top:107,width:100,height:50},709,1,page);
+ assert.equal(g.pageLeft,10);assert.equal(g.pageTop,20);assert.equal(g.contentTop,87);
+ assert.deepEqual(g.window_region,{id:42,width:1280,height:800,left:14,top:107});
+});
+test('MP-11 page crop refuses absent or out-of-page native origin',()=>{
+ const w={id:42,width:1280,height:800},r={left:4,top:87,width:100,height:50};
+ assert.throws(()=>windowRegionGeometry('page',w,r,709,1),/origin|boundary/);
+ for(const page of [{left:NaN,top:87,width:1272,height:709},{left:4,top:87,width:1280,height:709},{left:4,top:87,width:1272,height:710}])
+  assert.throws(()=>windowRegionGeometry('page',w,r,709,1,page),/origin|boundary/);
+});
+
 // Protocol 530: the band reads its window inventory from its own worker; the worker's bound owner PID
 // is the only owner (the worker refuses any other field).
 test('MP-08/MP-11 a band asks its own worker for the window inventory, nothing else does',async()=>{
- const requests=[];const row={id:42,x:0,y:0,width:2560,height:1774,visible:true,focused:true,override_redirect:false,transient_for:0};
+ const requests=[];const row={id:42,x:0,y:0,width:2560,height:1774,visible:true,focused:true,override_redirect:false,transient_for:0,frame_insets:[0,0,0,0]};
  const source=Object.assign(Object.create(NativeWindowRegionCapture.prototype),{surface:'browser_chrome',valid:()=>true,
   nativeWorker:{request:async(op,values)=>(requests.push([op,values]),{windows:[row]})}});
  assert.deepEqual(await source.windows(),[row]);assert.deepEqual(requests,[['windows',{}]]);
@@ -88,13 +103,13 @@ test('MP-08/MP-11 a band asks its own worker for the window inventory, nothing e
 // Coordinator 12:22Z ask 1: the omnibox dropdown drawn inside the tabbed window streams as a kernel rect of it, below the band only.
 test('MP-11 an in-window popup is a rect of the tabbed window below the band',()=>{
  const window={id:42,width:2560,height:1774},content=1600;
- const g=windowRegionGeometry('browser_auxiliary',window,{left:238,top:174,width:2156,height:176},content,2,true);
+ const g=windowRegionGeometry('browser_auxiliary',window,{left:238,top:174,width:2156,height:176},content,2,undefined,true);
  assert.deepEqual(g.window_region,{width:2560,height:1774,left:238,top:174,id:42});
  for(const [r,c] of [[{left:238,top:172,width:2156,height:176},content],[{left:238,top:174,width:2156,height:176},undefined],[{left:500,top:174,width:2156,height:176},content]])
-  assert.throws(()=>windowRegionGeometry('browser_auxiliary',window,r,c,2,true),/region|window|boundary/);
- assert.throws(()=>windowRegionGeometry('browser_auxiliary',{width:2560,height:1774},{left:238,top:174,width:2156,height:176},content,2,true),/region/);
+  assert.throws(()=>windowRegionGeometry('browser_auxiliary',window,r,c,2,undefined,true),/region|window|boundary/);
+ assert.throws(()=>windowRegionGeometry('browser_auxiliary',{width:2560,height:1774},{left:238,top:174,width:2156,height:176},content,2,undefined,true),/region/);
  // DPR 1: Chrome's band is 87 rows (odd); the page overlay starts there, the even band crop at 86.
- const page=windowRegionGeometry('browser_auxiliary',{id:42,width:1280,height:800},{left:0,top:87,width:1280,height:712},713,1,true);
+ const page=windowRegionGeometry('browser_auxiliary',{id:42,width:1280,height:800},{left:0,top:87,width:1280,height:712},713,1,undefined,true);
  assert.equal(page.pageTop,0);assert.equal(page.css_height,712);
 });
 

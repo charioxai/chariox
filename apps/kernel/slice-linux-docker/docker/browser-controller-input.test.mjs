@@ -94,3 +94,42 @@ test('MP-08/MP-10: a display hold acquired while visible still keeps a later hid
   finally{await release()}
   assert.equal(emulated,false);assert.equal(capture.displayLeases.size,0);assert(!calls.includes('Page.bringToFront'));
 });
+
+// MP-11: physical focus sampling neither overlaps input nor releases a live display.
+test('MP-11 physical focus sampling restores emulation after a refusal and orders later input',async()=>{
+ const capture=new BrowserInputCapture();let emulated=false,finish,entered;
+ const gate=new Promise(r=>finish=r),started=new Promise(r=>entered=r),calls=[];
+ const connection={send:async(method,p)=>{if(method==='Emulation.setFocusEmulationEnabled')emulated=p.enabled;return{result:{value:true}}}};
+ const release=await capture.hold(connection,'s');
+ const read=capture.physicalFocus(connection,'s',async()=>{assert.equal(emulated,false);calls.push('read');entered();await gate;throw Error('refused')});
+ await started;
+ const input=capture.run(connection,'s',async()=>{assert.equal(emulated,true);calls.push('input')});
+ await new Promise(r=>setImmediate(r));assert.deepEqual(calls,['read']);finish();
+ await assert.rejects(read,/refused/);await input;await release();
+ assert.deepEqual(calls,['read','input']);assert.equal(emulated,false);assert.equal(capture.displayLeases.size,0);
+});
+test('MP-11 a display closing during physical focus sampling stays closed',async()=>{
+ const capture=new BrowserInputCapture();let emulated=false,finish,entered;
+ const gate=new Promise(r=>finish=r),started=new Promise(r=>entered=r);
+ const connection={send:async(method,p)=>{if(method==='Emulation.setFocusEmulationEnabled')emulated=p.enabled;return{result:{value:true}}}};
+ const release=await capture.hold(connection,'s');
+ const read=capture.physicalFocus(connection,'s',async()=>{entered();await gate;return false});await started;
+ const close=release();finish();assert.equal(await read,false);await close;
+ assert.equal(emulated,false);assert.equal(capture.visibilityBySession.size,0);
+});
+
+// MP-08/MP-10/MP-11: omnibox typing must not synthesize a page focus event
+// after each character; observations also preserve that physical UI focus.
+test('MP-11 native Chrome focus stays physical across typing and screenshots until page input',async()=>{
+ const capture=new BrowserInputCapture(),changes=[];let emulated=false;
+ const connection={send:async(method,p)=>{if(method==='Emulation.setFocusEmulationEnabled'){emulated=p.enabled;changes.push(p.enabled)}return{result:{value:true}}}};
+ const release=await capture.hold(connection,'s');
+ try{
+  for(let i=0;i<5;i++){assert.equal(await capture.physicalFocus(connection,'s',async()=>false),false);assert.equal(emulated,false,'the page stays blurred while Chrome owns the keys')}
+  await capture.run(connection,'s',async()=>assert.equal(emulated,false),{resumeFocus:false});
+  assert.deepEqual(changes,[true,false],'observation and typing do not flap page focus');
+  await capture.run(connection,'s',async()=>assert.equal(emulated,true,'page input resumes the renderer lease'));
+  assert.deepEqual(changes,[true,false,true]);
+ }finally{await release()}
+ assert.equal(emulated,false);assert.equal(capture.visibilityBySession.size,0);
+});

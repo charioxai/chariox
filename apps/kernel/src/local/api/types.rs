@@ -321,6 +321,8 @@ pub use workspace::*;
 /// the display integration train (519 region clients precede this final step).
 /// MP-08/MP-10/MP-11: allocated 528 adds the Browser state's `chrome_window` (the
 /// native band's window epoch and active Tab) and `browser_lockdown` fields.
+/// MP-08/MP-10/MP-11: allocated 529 adds page display region_offset placement.
 /// Allocated 530 adds band middle/right click and drag (`KernelBrowserInput`), the
 /// `browser_auxiliary` display target and the state's `chrome_window.auxiliary`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 530;
+/// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 532;

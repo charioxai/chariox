@@ -75,8 +75,16 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-windows.mjs"),
     ),
     (
+        "kernel-browser-media-layers.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-media-layers.mjs"),
+    ),
+    (
         "kernel-browser-window-region.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-region.mjs"),
+    ),
+    (
+        "kernel-browser-region-attestation.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-region-attestation.mjs"),
     ),
     (
         "kernel-browser-display-regions.mjs",
@@ -317,6 +325,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-chrome-window.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-chrome-window.mjs"),
+    ),
+    (
+        "kernel-browser-page-geometry.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-page-geometry.mjs"),
     ),
     (
         "kernel-browser-policy.mjs",
