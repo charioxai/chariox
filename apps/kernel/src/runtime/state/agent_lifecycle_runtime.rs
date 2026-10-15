@@ -188,6 +188,7 @@ impl KernelRuntimeOwnedState {
                         prompt: prompt.id().into(),
                         run: run.into(),
                         next_prompt: next_prompt.clone(),
+                        now: crate::session::unix_epoch_ms(),
                     },
                 )? {
                     if task.state == ExecutionState::Working

@@ -9,6 +9,7 @@ fn prepare(room: &str, agent: &str, prompt: &str, run: &str) -> Operation {
         prompt: prompt.into(),
         run: run.into(),
         next_prompt: format!("task-catalog:{prompt}"),
+        now: 2,
     }
 }
 
@@ -149,4 +150,29 @@ fn catalog_continuation_retired_during_reload_cannot_create_a_fresh_task() {
             .len(),
         1
     );
+}
+
+#[test]
+fn catalog_handoff_has_a_bounded_fresh_executor_window_after_long_work() {
+    let f = Fixture::new();
+    f.begin("p");
+    let now = DELIVERY_TIMEOUT_MS + 10;
+    f.apply(Operation::PrepareCatalogContinuation {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        next_prompt: "task-catalog:p".into(),
+        now,
+    });
+    let task = f.task();
+    assert!(!lacks_live_executor(&task, now + 1, false, false));
+    assert!(lacks_live_executor(
+        &task,
+        now + DELIVERY_TIMEOUT_MS,
+        false,
+        false
+    ));
+    assert_eq!(task.progress_sequence, 0);
+    assert_eq!(task.no_progress_wakes, 0);
 }

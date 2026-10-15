@@ -23,7 +23,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             prompt,
             run,
             next_prompt,
-        } => super::continuations::prepare_catalog(tx, room, agent, prompt, run, next_prompt),
+            now,
+        } => super::continuations::prepare_catalog(tx, room, agent, prompt, run, next_prompt, now),
         Operation::EnableCompletionCheck { task } => super::completion::admit(tx, task),
         Operation::AdoptGoal {
             owner,

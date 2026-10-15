@@ -152,6 +152,7 @@ pub(crate) enum Operation {
         prompt: String,
         run: String,
         next_prompt: String,
+        now: u64,
     },
     EnableCompletionCheck {
         task: String,

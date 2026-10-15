@@ -8,6 +8,7 @@ pub(super) fn prepare_catalog(
     prompt: String,
     run: String,
     next_prompt: String,
+    now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut task = for_turn(tx, &room, &agent, &prompt)?
         .ok_or_else(|| error("catalog continuation has no admitted source turn"))?;
@@ -30,6 +31,9 @@ pub(super) fn prepare_catalog(
             evaluation.prompt_id = next_prompt.clone();
         }
     }
+    // This newly committed dispatch has its own bounded executor admission
+    // window. It spends neither completion checks nor no-progress wake budget.
+    task.last_progress_at_ms = task.last_progress_at_ms.max(now);
     task.pending_prompt_id = Some(next_prompt);
     task.revision += 1;
     save(tx, &task)?;
