@@ -11,12 +11,20 @@ const METADATA_LIMIT: u64 = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum Request {
+    Machine {
+        root: Option<PathBuf>,
+    },
     Files {
         current: ProjectEnvironment,
         draft: EnvironmentRevisionDraft,
     },
     Workspace {
         folders: Vec<(String, PathBuf)>,
+    },
+    #[cfg(test)]
+    PublicationBinding {
+        root: Option<PathBuf>,
+        locator: ProjectEnvironmentLocator,
     },
     Binding {
         root: Option<PathBuf>,
@@ -29,6 +37,7 @@ enum Request {
 }
 #[derive(Serialize, Deserialize)]
 enum Response {
+    Machine(EnvironmentMeasuredFacts),
     Files(EnvironmentRevisionDraft),
     Workspace(super::check_workspace::WorkspacePreflight),
     Binding(super::check_binding::PublicBinding),
@@ -80,6 +89,23 @@ fn read_metadata<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Daemo
         return Err(environment_error("Files Check metadata exceeds bounds"));
     }
     serde_json::from_slice(&bytes).map_err(|_| environment_error("Files Check metadata invalid"))
+}
+
+pub(super) fn machine(
+    config: &crate::config::DaemonConfig,
+    root: Option<&Path>,
+    deadline: Instant,
+) -> Result<EnvironmentMeasuredFacts, DaemonError> {
+    match run(
+        config,
+        Request::Machine {
+            root: root.map(Path::to_path_buf),
+        },
+        deadline,
+    )? {
+        Response::Machine(facts) => Ok(facts),
+        _ => Err(environment_error("Machine Check worker result invalid")),
+    }
 }
 
 pub(super) fn measure(
@@ -170,10 +196,40 @@ pub(super) fn npm(
     }
 }
 
+pub(super) fn publication_binding(
+    config: &crate::config::DaemonConfig,
+    root: &Path,
+    locator: &ProjectEnvironmentLocator,
+    deadline: Instant,
+    cancelled: impl FnMut() -> bool,
+) -> Result<super::check_binding::PublicBinding, DaemonError> {
+    #[cfg(test)]
+    let input = Request::PublicationBinding {
+        root: Some(root.to_path_buf()),
+        locator: locator.clone(),
+    };
+    #[cfg(not(test))]
+    let input = Request::Binding {
+        root: Some(root.to_path_buf()),
+        locator: locator.clone(),
+    };
+    match run_with_cancel(config, input, deadline, cancelled)? {
+        Response::Binding(facts) => Ok(facts),
+        _ => Err(environment_error("Binding reader result invalid")),
+    }
+}
 fn run(
     config: &crate::config::DaemonConfig,
     input: Request,
     deadline: Instant,
+) -> Result<Response, DaemonError> {
+    run_with_cancel(config, input, deadline, || false)
+}
+fn run_with_cancel(
+    config: &crate::config::DaemonConfig,
+    input: Request,
+    deadline: Instant,
+    cancelled: impl FnMut() -> bool,
 ) -> Result<Response, DaemonError> {
     let root = config.private_runtime_state_root();
     std::fs::create_dir_all(&root)
@@ -237,14 +293,23 @@ fn run(
     #[cfg(test)]
     for key in [
         "CHARIOX_WORKSPACE_CHECK_COUNT",
+        "CHARIOX_MACHINE_CAPACITY_STALL_MARKER",
         "CHARIOX_TYPED_CHECK_STALL_MARKER",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
     }
-    let output = crate::local::provider_requests::capture_inventory_probe(command, left)
-        .map_err(|_| environment_error("Files Check worker did not settle within its budget"))?;
+    #[cfg(test)]
+    if matches!(&input, Request::PublicationBinding { .. }) {
+        if let Some(marker) = std::env::var_os("CHARIOX_APPLY_BINDING_STALL_MARKER") {
+            command.env("CHARIOX_APPLY_BINDING_STALL_MARKER", marker);
+        }
+    }
+    let output = crate::local::provider_requests::capture_inventory_probe_cancellable(
+        command, left, cancelled,
+    )
+    .map_err(|_| environment_error("Files Check worker did not settle within its budget"))?;
     if !output.status.success() {
         return Err(environment_error("Files Check measurement unavailable"));
     }
@@ -265,12 +330,20 @@ pub fn run_files_measurement_worker(
     }
     let deadline = Instant::now() + budget;
     let response = match read_metadata::<Request>(request)? {
+        Request::Machine { root } => {
+            Response::Machine(super::check_inventory::machine(root.as_deref()))
+        }
         Request::Files { current, mut draft } => {
             super::manual_files::verify_check_files(&current, &mut draft, deadline)?;
             Response::Files(draft)
         }
         Request::Workspace { folders } => {
             Response::Workspace(super::check_workspace::inspect(&folders))
+        }
+        #[cfg(test)]
+        Request::PublicationBinding { root, locator } => {
+            super::apply_bindings::publication_probe_test_gate();
+            Response::Binding(super::check_binding::inspect(root.as_deref(), &locator))
         }
         Request::Binding { root, locator } => {
             Response::Binding(super::check_binding::inspect(root.as_deref(), &locator))

@@ -146,6 +146,7 @@ fn run_apply(
             .per_item_opt_ins
             .iter()
             .any(|i| i.requirement_id == id && i.decision == EnvironmentOptInDecision::Accepted);
+        let mut binding_to_apply = false;
         let mut setup_to_run = false;
         let mut capability_to_apply = false;
         if !deps_ready {
@@ -164,9 +165,7 @@ fn run_apply(
                     // this binding is safe; values are always re-resolved by launch.
                     a.active_requirement = Some(id.clone());
                     store.save_applies(project.id(), &journal)?;
-                    if apply_scoped_binding(store, &ctx.config, env, r).is_err() {
-                        result = apply_item_result(r, EnvironmentObservationStatus::NeedsYourInput, "binding_conflict", "Scoped binding is unavailable or conflicts with existing state; review it");
-                    }
+                    binding_to_apply = true;
                 }
                 RequirementSpec::SetupChecks {
                     commands, probes, ..
@@ -268,6 +267,61 @@ fn run_apply(
             }
         }
         drop(lock);
+        if binding_to_apply {
+            let budget = std::time::Duration::from_secs(60);
+            #[cfg(test)]
+            let budget = std::env::var("CHARIOX_APPLY_BINDING_BUDGET_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0 && *v <= 60000)
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(budget);
+            let mut next_poll = std::time::Instant::now();
+            let mut stopped = false;
+            let prepared = prepare_scoped_binding(
+                &ctx.config,
+                env,
+                r,
+                std::time::Instant::now() + budget,
+                || {
+                    if std::time::Instant::now() >= next_poll {
+                        next_poll =
+                            std::time::Instant::now() + std::time::Duration::from_millis(25);
+                        stopped = cancelled(store, op)
+                            || state.authorize_current_external_command().is_err();
+                    }
+                    stopped
+                },
+            );
+            let lock = store.lock(project.id())?;
+            validate_project(state, project, &ctx.owner, env, store)?;
+            if current_check_target(&state.owned.config_projection.snapshot()) != op.target {
+                return Err(environment_error(
+                    "Apply target changed before binding publication",
+                ));
+            }
+            let mut journal = store.load_applies(project.id())?;
+            let attempt = current_attempt(&mut journal, op).ok_or_else(|| {
+                environment_error("Apply attempt changed before binding publication")
+            })?;
+            if !apply_active(&attempt.operation)
+                || attempt.active_requirement.as_deref() != Some(id.as_str())
+            {
+                return Err(environment_error("Apply binding intent changed"));
+            }
+            if attempt.operation.cancellation.is_some() {
+                attempt.active_requirement = None;
+                store.save_applies(project.id(), &journal)?;
+                drop(lock);
+                break;
+            }
+            if prepared
+                .and_then(|proof| publish_scoped_binding(store, env, r, proof))
+                .is_err()
+            {
+                result=apply_item_result(r,EnvironmentObservationStatus::NeedsYourInput,"binding_conflict","Scoped binding is unavailable, unproven or conflicts with existing state; review it");
+            }
+        }
         if capability_to_apply
             && tokio::runtime::Handle::current()
                 .block_on(

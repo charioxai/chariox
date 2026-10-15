@@ -4,6 +4,7 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod apply_binding_read;
 mod apply_bindings;
 mod apply_plan;
 mod apply_store;
@@ -54,6 +55,7 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub(crate) use apply_binding_read::{prepare_scoped_binding, PreparedScopedBinding};
 pub(crate) use apply_bindings::*;
 pub(crate) use apply_plan::*;
 pub(crate) use apply_store::*;
