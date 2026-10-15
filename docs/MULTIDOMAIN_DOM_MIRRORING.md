@@ -332,6 +332,60 @@ public push events were added; the reserved439/83 pair is not consumed.
 
 ## MP-11 protection boundaries
 
+MP-08/MP-10/MP-11, coordinator decision 2026-10-15: native region attestation
+proves window/Tab/document identity and the authoritative page origin, not the
+decoded media pixels. Native compositing and CDP can rasterize video differently.
+Only live video, canvas (including WebGL), object and embed boxes reported by
+the kernel's isolated DOM observer are excluded from the pixel comparison.
+Their geometry and issued node identity are checked before and after capture;
+the viewer cannot supply exclusions. Every non-media, unprotected pixel must
+match exactly, with no tolerance or media padding. These exclusions never mask
+the displayed media or change Vault protection.
+
+When a region has fewer than 10% (and at least 64) usable identity pixels, an
+unadvertised readback attests surrounding visible page pixels at the same
+native origin, using the same owned PID/XID and current lease. It closes before
+the region is advertised. A full-bleed page without enough surrounding anchors
+refuses. Wrong windows/Tabs, stale documents or generations, shifted origins,
+non-media pixel changes and unreported media still refuse. Admission, delivery
+and input retain the native-window, active-Tab, geometry and protection fences.
+
+MP-11 attestation review amendment (2026-10-15 09:41): a DOM tag alone
+never supplies an exclusion. The kernel resolves that exact node in its isolated
+world and requires its backend node in the same CDP session's current content
+layer tree, with the document loader unchanged before and after the read. OOPIF
+media needs that child's own observer/session; an unattached frame remains in
+the exact comparison. Missing or oversized layer evidence supplies no exclusion.
+Static layer evidence waits for the observed document's own animation-frame
+commit, with a bounded timeout. It does not take a screenshot that could resize
+the native surface merely to request layer metadata.
+
+Exclusions are clipped to the attested visible page, never native Chrome, and
+cover at most 75% of that page. Each box needs an exact three-device-pixel ring
+on its visible surrounding page edges; another exclusion or a protection mask
+cannot cover the ring. Full-bleed or insufficient proof still refuses. Existing
+kernel protection wins: its regions mask both comparison rasters before compare,
+and any overlap between a media exclusion and a protected region refuses.
+Proof-pixel counts exclude all masks. This preserves the owner's existing
+Vault-fill/password-dot policy rather than introducing generic page masks.
+The private immutable attestation receipt and `native_region_attestation`
+diagnostic contain area/count fields only (excluded/page/proof/protected/ring
+pixels and media box count), never pixels, content, identifiers or secret values.
+
+MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
+to keep its renderer awake. Native Chrome text admission must not confuse that
+logical state with the page physically owning the keys. After a kernel-observed
+toolbar click or Ctrl+L, the shared input owner orders a short physical focus
+read with emulation suspended. When Chrome physically owns the keys, the page
+stays physically blurred across later characters and screenshots; repeatedly
+restoring logical focus would synthesize page focus/repaint events while the
+person types in the omnibox. Ordinary page input resumes the retained renderer
+lease on the same ordered owner. A refused/failed focus read restores its prior
+state, and closing the display still releases the lease. Same-page
+input cannot overlap that read; a closing lease stays closed. The isolated
+world's real focus and sensitive-target checks still refuse typing into a
+protected field or foreign frame. No native-key path may skip those checks.
+
 Page scripts, event attributes, origin addresses, navigation/form destinations,
 active markup, custom CSS properties and executable/network CSS are absent from
 the wire. Computed style is the CSS representation; source stylesheets never run

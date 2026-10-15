@@ -413,8 +413,10 @@ export function installMirror2(sanitizeMirrorCss) {
         if (item.value) out.push(item.value);
         // Keep ordinary small pages atomic. The backstop also catches a huge
         // open shadow tree absent from the document's native element count.
-        if (budget.nodes >= 20000) progressive = true;
-        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= (progressive ? 128 * 1024 : 4 * 1024 * 1024)) break;
+        // A medium page can have few elements and megabytes of text/attributes.
+        // It needs the same continuation bound as a large element tree.
+        if (budget.nodes >= 20000 || budget.bytes - bytes >= 128 * 1024) progressive = true;
+        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= 128 * 1024) break;
       }
       return out;
     };
@@ -689,13 +691,17 @@ export function installMirror2(sanitizeMirrorCss) {
         clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
       }
       if(!(clip[2]>0&&clip[3]>0))throw new Error('mirror2 region offscreen');
-      const out={id,box:bounds,clip,distorted:distorted(node)};
+      const out={id,box:bounds,clip,distorted:distorted(node),media:node.namespaceURI===HTML&&['video','canvas','object','embed'].includes(node.localName)};
       if(foreign.has(id)){
         const style=getComputedStyle(node),left=node.clientLeft+(parseFloat(style.paddingLeft)||0),top=node.clientTop+(parseFloat(style.paddingTop)||0);
         const width=node.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0),height=node.clientHeight-(parseFloat(style.paddingTop)||0)-(parseFloat(style.paddingBottom)||0);
         out.contentBox=[bounds[0]+left,bounds[1]+top,width,height];
       }
       return out;
+    };
+    const mediaNode = id => {
+      const node=live(id);
+      return kindOf.get(id)==='tile'&&node.namespaceURI===HTML&&['video','canvas','object','embed'].includes(node.localName)?node:null;
     };
     const regionBoxes = () => {
       const out=[];
@@ -991,6 +997,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || records.length > 0 || overflow });
   }
 }

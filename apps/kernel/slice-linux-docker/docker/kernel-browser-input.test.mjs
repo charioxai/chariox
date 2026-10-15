@@ -55,7 +55,7 @@ test("MP-08: retained wheel and focused clicks proceed",async()=>{
   await inputHostTab(browser,tab,{kind:'click',x:1,y:2});
   assert.deepEqual(sent.filter(call=>call.method.startsWith('Input.')).map(call=>call.params.type),['mouseWheel','mousePressed','mouseReleased']);
 });
-test("MP-08/MP-11: focused paired Tab still checks revocation on release",async()=>{
+test("MP-08/MP-11: focused paired Tab releases before reporting revocation",async()=>{
   const {browser,sent}=fixture(false);
   const cancellation=new AbortController();
   const {connection}=await browser.resolvePageTarget();
@@ -66,7 +66,7 @@ test("MP-08/MP-11: focused paired Tab still checks revocation on release",async(
     return result;
   };
   await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'Tab'},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
-  assert.equal(sent.filter(call=>call.method==='Input.dispatchKeyEvent').length,1);
+  assert.equal(sent.filter(call=>call.method==='Input.dispatchKeyEvent').length,2);
 });
 
 // MP-11: the public Rust key is an arbitrary string; the advertised MCP enum is not authority.
@@ -210,9 +210,9 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
   const refused=await run({sensitive:true});
   assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');
   assert.match(String(refused.result),/sensitive/);
-  assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:2,cdp:2},'unfocused page (browser UI focus) stays on CDP');
-  assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:2,cdp:2},'non-ASCII text stays on CDP');
-  assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:2,cdp:2},'MP-11: refused native key falls back to CDP');
+  assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:1,cdp:2},'unfocused page (browser UI focus) stays on CDP');
+  assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:1,cdp:2},'non-ASCII text stays on CDP');
+  assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:2},'MP-11: refused native key falls back to CDP');
 });
 test("MP-08/MP-10: CDP pointer input follows the emulated view scale (DPR1 page on a scale-2 host)",async()=>{
   // Hosted mirror h3: a DPR1 page on a scale-2 window is emulated at view
@@ -331,4 +331,25 @@ test('MP-08/MP-11 mirrored undo/redo chords keep the mirror\'s observed-frame ad
     await pending;
     assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.code,x.params.modifiers]),[['keyDown','KeyZ',modifiers],['keyUp','KeyZ',modifiers]]);
   }
+});
+
+for(const fault of ['navigation','cancel','press-error'])test(`MP-08/MP-10/MP-11 a key pairs its release after ${fault}`,async()=>{
+ const {browser,sent}=fixture(false);const {connection}=await browser.resolvePageTarget();const original=connection.send;
+ const cancellation=new AbortController();let navigated=false,releaseSettled=false;
+ connection.send=async(method,params)=>{
+  if(method==='Page.getFrameTree'&&navigated)return {frameTree:{frame:{id:'f',loaderId:'next'}}};
+  const result=await original(method,params);
+  if(method==='Input.dispatchKeyEvent'){
+   if(params.type==='keyDown'){
+    navigated=fault==='navigation';if(fault==='cancel')cancellation.abort();
+    if(fault==='press-error')throw Error('key press reply failed');
+   }else{await new Promise(resolve=>setImmediate(resolve));releaseSettled=true;}
+  }return result;
+ };
+ const task=inputHostTab(browser,tab,{kind:'key',key:'Enter'},{signal:cancellation.signal});
+ if(fault==='cancel')await assert.rejects(task,{code:'browser_action_cancelled'});
+ else if(fault==='press-error')await assert.rejects(task,/key press reply failed/);
+ else await task;
+ assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>x.params.type),['keyDown','keyUp']);
+ assert(releaseSettled,'release must settle before another actor acquires input');
 });

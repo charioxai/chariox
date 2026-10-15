@@ -2,6 +2,7 @@
 // Public subscribe/input wiring belongs to 519. No client crop or OS handle.
 import { randomUUID } from 'node:crypto';
 import { assertNotCancelled } from './browser-controller-actions.mjs';
+import {mediaLayerEvidence} from './kernel-browser-media-layers.mjs';
 
 const refuse = reason => { const error = new Error(`MP-11: ${reason}`); error.mirrorReason = reason; throw error; };
 const fields = new Set(['mirror_subscription_id', 'generation', 'document_id', 'sequence', 'region_id']);
@@ -91,16 +92,32 @@ export class Mirror2Regions {
       const validate=async()=>{
         if(!alive()){await retire();return false;}
         try {
-          const now=await this.measure(stream,tab,request,scope,signal);
+          const now=await this.measure(stream,tab,request,scope);
           if(!alive() || !same(now,measured)){await retire();return false;}
           return true;
         } catch { await retire();return false; }
       };
-      const lease=Object.freeze({binding_id,...request,tab_id:tab.tab_id,rect:Object.freeze(measured.rect),css_width:1280,css_height:800,
+      const lease=Object.freeze({binding_id,...request,tab_id:tab.tab_id,rect:Object.freeze(measured.rect),
+        // Private placement before the producer's inward codec rounding. The
+        // canonical clip may start inside an offscreen/ancestor-clipped tile.
+        element_offset:Object.freeze({x:measured.rect.x-measured.box[0],y:measured.rect.y-measured.box[1]}),css_width:1280,css_height:800,
         device_scale_factor:scale,source_revision:stream.issued,input_epoch:request.sequence,
         // isAlive is a cheap synchronous fence; isCurrent re-measures live bounds.
         // A native consumer MUST await isCurrent before readback/delivery/input.
         isAlive:alive,isCurrent:()=>this.locked(stream,validate),close:retire,
+        // Private attestation evidence from our isolated observer, never from
+        // the subscribe request or the viewer's tile/mask coordinates.
+        attestationState:()=>this.locked(stream,async()=>{
+          if(!await validate())refuse('region_retired');
+          const boxes=await this.mirror.regionBoxes(stream,tab),media=[];
+          const evidence=await mediaLayerEvidence(this.mirror,stream,boxes);
+          for(const b of evidence){
+            const checked=this.check({...request,sequence:stream.issued,region_id:b.id},scope,stream);
+            media.push({...b,identities:checked.identities});
+          }
+          if(!alive())refuse('region_retired');
+          return {generation:request.generation,document_id:request.document_id,sequence:request.sequence,media};
+        }),
         attachDisplay:current=>{
           if(display || !alive() || current.observed_by !== scope || current.tab_id !== tab.tab_id || typeof current.subscription_id !== 'string') refuse('region_display');
           display=current; this.host.displays.set(current.subscription_id,current);

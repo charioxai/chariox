@@ -4002,6 +4002,45 @@ the second case. Clients feature-detect both fields, so no client floor moves.
 compares its real state keys to the fixture). The focused drill is the native
 band section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
 
+
+## MP-08 / MP-10 / MP-11 page display placement (529 / peer 137)
+
+Allocated local529/peer137 extends a page `display_subscribe` result for
+`target.kind:"region"` with `region_offset:{x,y}`. Both values are finite,
+nonnegative CSS pixels relative to the original opaque element's border box.
+The kernel computes this from the private mirror lease's `element_offset`
+(viewport and ancestor-frame clipping) plus the producer's inward rounding:
+`x = element_offset.x + ceil(rect.x * scale) / scale - rect.x`, with the
+corresponding formula for `y`. Existing `css_width`, `css_height` and
+`device_scale_factor` describe the inward-rounded encoded crop. Placement may
+be fractional; a client must not round it or reuse PNG tile offsets, which
+have a different origin. No request accepts client-selected crop geometry.
+
+The page consumer uses this placement for paint and subtracts it before
+sending region-local input through the existing binding. The producer adds
+only its inward-rounding offset when translating that input into the private
+lease's canonical clip. Clipping must not be added twice. Missing, nonfinite,
+negative or out-of-element placement refuses video and preserves the existing
+still. Geometry, identity, protection and current-window fences remain kernel
+owned. Stream resumption retains the same admitted placement.
+
+The native producer derives the visible page rectangle from the owned window's
+validated GTK frame insets and the browser-owned active Tab dimensions, independently
+of page emulation. Its exact native page origin can have odd device-pixel coordinates;
+only the disjoint Chrome band rounds inward to even codec rows. Native page readback
+adds that origin, while protected CDP reference crops and mirror input remain page
+relative. The native origin is not added to element-relative `region_offset`.
+Missing or changed native page geometry refuses or retires the page stream; crops
+remain inside the visible native page. Exact pixel attestation remains required.
+
+Only page opaque-region video requires529. Native Chrome band clients retain
+519; whole-page video and mirror clients retain their existing floors. The
+historical519 snapshot is unchanged. `browser-display-placement-529.json`,
+its Rust hash/round-trip test and `scripts/browser-display-placement-529.test.mjs`
+pin the additive response and allocated pair. The focused real-path drill is
+the page-placement section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+The contract snapshot alone does not establish producer emission or acceptance.
+
 ## MP-08 / MP-10 / MP-11 Browser chrome gestures and popups (530 / peer 138)
 
 Allocated local530/peer138 lets the band behave like Chromium's own strip.

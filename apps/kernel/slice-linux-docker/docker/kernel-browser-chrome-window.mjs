@@ -2,7 +2,7 @@
 // Chromium's own windows. A viewer never names a window, rect, PID or role; the
 // kernel resolves them from CDP window bounds and the owned display's numeric
 // inventory, and every consumer re-checks isCurrent() before readback or input.
-import {chromeBandHeight} from './kernel-browser-geometry.mjs';
+import {nativePageRect} from './kernel-browser-page-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
@@ -40,7 +40,8 @@ export class ChromeWindows {
     const live = () => host.generation === browserGeneration && ownsDisplay(display) && (chromium.browserPid ?? chromium.child?.pid) === pid;
     if (!live() || !Number.isSafeInteger(pid) || pid <= 1) throw new UserDomainRefusal('stale_reference');
     const connection = host.browser.connection;
-    const page = [...host.tabs.values()][0];
+    const viewport = await host.tabGroups?.viewport();
+    const page = [...host.tabs.values()].find(tab => tab.target_id === viewport?.target_id);
     if (!page) { this.retire('last_tab_closed'); throw new UserDomainRefusal('stale_reference'); }
     const {bounds} = await connection.send('Browser.getWindowForTarget', {targetId: page.target_id});
     // Fullscreen/maximized windows hide or resize the band; only the launch geometry binds.
@@ -52,19 +53,31 @@ export class ChromeWindows {
     // Exactly one match or no binding: never the "closest" window.
     if (tabbed.length !== 1 || !live()) throw new UserDomainRefusal('stale_reference');
     const row = tabbed[0];
-    // The band is Chrome's own UI at the top of the real window (even device rows for 4:2:0
-    // crops). On the shared owned desktop the window fills the screen and the page is clipped
-    // below it; an infobar only shrinks the page, so the band never includes page pixels.
-    const contentTop = Math.floor(chromeBandHeight * scale / 2) * 2;
+    const measure = async () => {
+      const next = await host.tabGroups?.viewport();
+      if (!next || ![...host.tabs.values()].some(tab => tab.target_id === next.target_id)) throw new UserDomainRefusal('stale_reference');
+      return nativePageRect(row, next, scale);
+    };
+    const pageRect = nativePageRect(row, viewport, scale);
+    // The page origin remains exact, including odd rows and GTK side insets.
+    // Only the disjoint Chrome video band rounds down to even codec rows.
+    const contentTop = Math.floor(pageRect.top / 2) * 2;
     if (!(contentTop > 0 && contentTop < row.height)) throw new UserDomainRefusal('stale_reference');
     const previous = this.bound?.tabbed;
-    const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration;
+    const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration && JSON.stringify(previous.page_rect) === JSON.stringify(pageRect);
     if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
     const windowGeneration = this.windowGeneration;
     const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    const isPageCurrent = async () => {
+      if (!isCurrent()) return false;
+      try { if (JSON.stringify(await measure()) === JSON.stringify(pageRect)) return isCurrent(); } catch {}
+      if (isCurrent()) this.retire('page_geometry_changed');
+      return false;
+    };
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
-      content_top: role === 'tabbed' ? contentTop : null, scale, pid, isCurrent});
+      content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
+      scale, pid, isCurrent, isPageCurrent});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -203,7 +216,8 @@ export class InputArbiter {
       await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       return {connection, sessionId, tab};
     };
-    // Isolated world: the page cannot redefine what it reports; focus emulation does not change it.
+    // Isolated world: the page cannot redefine what it reports. The shared
+    // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
       const {connection, sessionId, tab} = await current();
       const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
@@ -213,6 +227,7 @@ export class InputArbiter {
       // Only the person's own native actions say where the keys are: focus emulation (on while a
       // mirror is attached) makes document.hasFocus() true whatever has the native focus (culinux 12:10Z).
       if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) return;
+
       const {result} = await evaluate(sensitiveFocusExpression(false));
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };

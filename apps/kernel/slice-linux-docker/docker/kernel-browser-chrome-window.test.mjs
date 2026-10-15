@@ -4,18 +4,18 @@ import assert from "node:assert/strict";
 import { ChromeWindows, InputArbiter, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
 import { OwnedDisplay } from "./kernel-browser-owned-display.mjs";
 
-function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" } } = {}) {
+function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" }, viewport } = {}) {
   const display = new OwnedDisplay("/unused");
   // ownsDisplay needs a live owned child; the fixture marks one without spawning.
   const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }], ["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]),
     chromium: { display, child: { pid: 4242, exitCode: null }, scale: 2 },
     browser: { connection: { send: async (method) => method === "Browser.getWindowForTarget" ? { windowId: 1, bounds } : {} } },
-    tabGroups: { active: async () => "tb" } };
-  const inventory = async () => rows ?? [
+    tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) } };
+  const inventory = async () => (rows ?? [
     { id: 0x400001, x: 0, y: 0, width: 128, height: 128, visible: true, focused: false, override_redirect: false, transient_for: 0 },
     { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 },
     { id: 0x600050, x: 200, y: 160, width: 1600, height: 401, visible: true, focused: false, override_redirect: true, transient_for: 0 },
-  ];
+  ]).map(r=>({...r,frame_insets:r.frame_insets??[0,0,0,0]}));
   return { host, windows: new ChromeWindows(host, { inventory }), display };
 }
 // Union seam (2026-10-15): on the shared owned desktop Chromium's window fills the 1280x800 screen at
@@ -98,7 +98,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
     : method === "Runtime.evaluate" ? (evaluated.push(params), { result: { value: focus } }) : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {});
   const calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async (x, y) => (calls.push(["click", x, y]), true), wheel: async (...a) => (calls.push(["wheel", ...a]), true), chord: async (k, m) => (calls.push(["chord", k, m]), true) };
@@ -145,6 +145,16 @@ test("MP-08 browser chords and refused chords", () => {
   for (const [k, m] of [[0x61, 0], [0x6c, 2], [0x63, 2], [0x76, 2]]) assert(!refusedChord(k, m), `${k}/${m}`);
 });
 
+test('MP-08/MP-10/MP-11 page origin uses native Tab dimensions and GTK insets; band keeps even rows',async()=>{
+ const rows=[{id:42,x:0,y:0,width:1280,height:800,visible:true,focused:true,override_redirect:false,transient_for:0,frame_insets:[4,4,0,4]}];
+ const {host,windows}=fake({rows,bounds:{left:0,top:0,width:1280,height:800,windowState:'normal'},viewport:{width:1272,height:709}});
+ const display=new OwnedDisplay(process.env.TMPDIR??'/tmp');await display.start();
+ try{Object.assign(host.chromium,{display,scale:1});const b=(await windows.resolve()).tabbed;
+ assert.deepEqual(b.page_rect,{left:4,top:87,width:1272,height:709});assert.equal(b.content_top,86);assert.equal(await b.isPageCurrent(),true);
+ host.tabGroups.viewport=async target_id=>({target_id:target_id??'tb',width:1272,height:700});assert.equal(await b.isPageCurrent(),false);assert.equal(b.isCurrent(),false);
+ }finally{await display.close()}
+});
+
 // MP-11 (review #1016 P2): Chromium keeps the page's (sensitive) activeElement while its own omnibox
 // owns the keys. After the person puts focus in Chrome's UI, typing and Enter reach the omnibox; once
 // the page has focus again (or nothing says Chrome's UI has it), the page's text-target fence applies.
@@ -153,7 +163,7 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
     : method === "Runtime.evaluate" ? { result: { value: true } } : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {}), calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (calls.push("click"), true), chord: async k => (calls.push(k), true) };
   const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
@@ -174,6 +184,29 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
 });
 
+// MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
+// A native omnibox check must observe physical focus, not that logical wake-up.
+test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
+ const {BrowserInputCapture}=await import('./browser-controller-input.mjs');
+ const capture=new BrowserInputCapture();let pageFocus=true,emulated=false;
+ const connection={send:async(method,p)=>{
+  if(method==='Page.getFrameTree')return{frameTree:{frame:{id:'f',loaderId:'doc'}}};
+  if(method==='Emulation.setFocusEmulationEnabled'){emulated=p.enabled;return{}};
+  return{result:{value:p.expression==='document.hasFocus()'?pageFocus||emulated:true}};
+ }};
+ const tab={tab_id:'tab',target_id:'target',document_id:'doc'};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=> 'target'},browser:{inputCapture:capture,resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async()=>{pageFocus=false;return true}};
+ const send=input=>arbiter.input({stream:{regionSource:source},command:{tab_id:'tab',document_id:'doc',generation:3,input}});
+ const release=await capture.hold(connection,'s');
+ try{
+  await send({kind:'key',key:'l',modifiers:2});assert.equal(emulated,true);
+  assert.deepEqual(await send({kind:'text',text:'wiki'}),{dispatched:true});
+  assert.equal(emulated,false,'native Chrome keeps the page blurred until page input');
+  pageFocus=true;await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'},'real sensitive page focus still refuses');
+ }finally{await release()}
+});
+
 // Protocol 530 (BROWSER-UX-14): the band behaves like Chromium's own strip: middle-click closes a Tab,
 // right-click opens Chrome's context menu, a drag inside the strip reorders Tabs. Popup windows (menus,
 // the omnibox dropdown, extension popups) take clicks, wheel and keys; only the band takes buttons/drags.
@@ -181,7 +214,7 @@ test("MP-08/MP-11 band middle/right click and strip drag; popups take primary in
   const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
     : method === "Runtime.evaluate" ? { result: { value: false } } : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {}), calls = [];
   const source = surface => ({ surface, isCurrent: () => true, click: async (...a) => (calls.push([surface, "click", ...a]), true),
     drag: async (...a) => (calls.push([surface, "drag", ...a]), true), wheel: async (...a) => (calls.push([surface, "wheel", ...a]), true), chord: async (...a) => (calls.push([surface, "chord", ...a]), true) });

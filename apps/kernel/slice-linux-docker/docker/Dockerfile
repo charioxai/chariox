@@ -342,6 +342,7 @@ CMD ["sleep", "infinity"]
 # MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-chrome-window.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-page-geometry.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-contention.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs \
@@ -390,6 +391,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-window-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-media-layers.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-attestation.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-desktop-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-desktop-source.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-display-resumption.mjs \

@@ -9,10 +9,18 @@ function fixture() {
     async removeDisplay(id) { this.removed.push(id); this.displays.delete(id); } };
   const stream = { id: 'mirror', scope: 'owner', tab_id: 'tab', wire: 2, document_id: 'doc', issued: 6, resetAt: 3, policy: host.protection, chain: Promise.resolve(), frames: new Map(), frameSlots: new Map(),
     introduced: new Map([['n1', 3], ['n2', 3], ['n3', 3]]), identity: new Map(), world: { ref: 'observer', connection: { isOpen: () => true }, frame: { loaderId: 'doc' } } };
+  stream.world.sessionId='s';stream.world.contextId=77;stream.world.frame.id='frame';
+  let layerListener;
+  Object.assign(stream.world.connection,{subscribe(fn){layerListener=fn;return()=>{layerListener=null}},async send(method,params){
+    if(method==='LayerTree.enable')layerListener?.({sessionId:'s',method:'LayerTree.layerTreeDidChange',params:{layers:[{backendNodeId:42,drawsContent:true,width:200,height:100}]}});
+    if(method==='Runtime.evaluate')return{result:params.awaitPromise?{value:true}:{objectId:'media'}};
+    if(method==='DOM.describeNode')return{node:{nodeType:1,nodeName:'CANVAS',backendNodeId:42}};
+    return{};
+  }});
   host.browser = { connection: stream.world.connection };
   const service = { host, streams: new Map([['mirror', stream]]), require(id, scope, generation) { if (id !== 'mirror' || scope !== stream.scope || generation !== host.generation || !this.streams.has(id)) throw Error('foreign'); return stream; } };
   let boxes = [{ id: 'n3', box: [10, 20, 200, 100] }];
-  const mirror = { host, service, hurry() {}, async regionBoxes() { return boxes; }, async resolveInput(s, t, input) { return { input }; } };
+  const mirror = { host, service, frames:{loaderId:async()=>tab.document_id}, hurry() {}, async regionBoxes() { return boxes; }, async resolveInput(s, t, input) { return { input }; } };
   const regions = new Mirror2Regions(mirror);
   regions.record(stream, { reset: true, nodes: [{id:'n1', parent:null, kind:'document'}, {id:'n2', parent:'n1', kind:'element'}, {id:'n3', parent:'n2', kind:'tile'}] });
   const target = {mirror_subscription_id:'mirror', generation:7, document_id:'doc', sequence:5, region_id:'n3'};
@@ -55,6 +63,19 @@ test('MP-08/MP-10/MP-11: clipped live geometry and region input use mirror fence
   await assert.rejects(lease.resolveInput({sequence:5,x:4,y:8,kind:'click',_agent_input:true},'owner'));
   f.setBoxes([{id:'n3',box:[-20,21,100,100]}]); assert.equal(await lease.isCurrent(),false);
 });
+test('MP-08/MP-10/MP-11: private placement is relative to the original opaque element, including frame/viewport clipping', async () => {
+  for (const [box,clip,expected] of [
+    [[-20,20,100,100],undefined,{x:20,y:0}],
+    [[50,60,200,100],[70,80,80,40],{x:20,y:20}],
+    [[10.25,20.75,200,100],undefined,{x:0,y:0}],
+  ]) {
+    const f=fixture(); f.setBoxes([{id:'n3',box,...(clip?{clip}:{})}]);
+    const lease=await f.regions.resolve(f.target,'owner');
+    assert.deepEqual(lease.element_offset,expected);assert(Object.isFrozen(lease.element_offset));
+    await assert.rejects(f.regions.resolve({...f.target,element_offset:expected},'owner'));
+    await lease.close();assert.equal(await lease.isCurrent(),false);
+  }
+});
 test('MP-11: resolver serializes behind the issued packet and rechecks after live measurement', async () => {
   const f=fixture(); let release; f.stream.chain=new Promise(r=>release=r); let done=false;
   const pending=f.regions.resolve(f.target,'owner').then(x=>{done=true;return x}); await new Promise(r=>setImmediate(r)); assert.equal(done,false); release(); await pending;
@@ -66,4 +87,30 @@ test('MP-11: a children delta retains issued opaque siblings and removes departe
   assert.equal((await f.regions.resolve(f.target,'owner')).region_id,'n3');
   f.regions.record(f.stream,{ops:[{op:'children',id:'n1',children:[],nodes:[]}]});
   await assert.rejects(f.regions.resolve(f.target,'owner'));
+});
+
+test('MP-11: only current kernel-reported media gets a comparison exclusion',async()=>{
+ const f=fixture(),lease=await f.regions.resolve(f.target,'owner');
+ assert.deepEqual((await lease.attestationState()).media,[]);
+ f.boxes[0].media=true;
+ assert.deepEqual((await lease.attestationState()).media.map(({id,box})=>({id,box})),[{id:'n3',box:[10,20,200,100]}]);
+ await assert.rejects(f.regions.resolve({...f.target,media:[f.boxes[0]]},'owner'));
+ f.boxes.push({id:'n4',box:[0,0,10,10],media:true});
+ await assert.rejects(lease.attestationState(),/region_target/,'unissued media cannot supply an exclusion');
+});
+test('MP-11: stale documents and wrong target identities refuse attestation evidence',async()=>{
+ for(const mutate of [f=>f.tab.document_id='next',f=>f.host.tabs.set('tab',{...f.tab,target_id:'other'}),f=>f.stream.identity.set('n3',6)]){
+  const f=fixture(),lease=await f.regions.resolve(f.target,'owner');f.boxes[0].media=true;mutate(f);
+  await assert.rejects(lease.attestationState(),/retired/);
+ }
+});
+test('MP-08/MP-10/MP-11 completed subscribe cancellation does not poison the owned region lease',async()=>{
+ const f=fixture(),request=new AbortController();f.boxes[0].media=true;
+ const cancelled=new AbortController();cancelled.abort();
+ await assert.rejects(f.regions.resolve(f.target,'owner',{signal:cancelled.signal}));
+ const lease=await f.regions.resolve(f.target,'owner',{signal:request.signal});
+ request.abort(); // RPC lifetime ended; the display has its own close/expiry.
+ assert.equal(await lease.isCurrent(),true);
+ assert.equal((await lease.attestationState()).media.length,1);
+ await lease.close();assert.equal(await lease.isCurrent(),false);
 });

@@ -21,8 +21,8 @@ export class CapturePresentationFence {
 export function fenceScreenshotPresentation(connection) {
   const send = connection.send.bind(connection), fence = new CapturePresentationFence();
   connection.presentationFence = fence;
-  connection.send = (method, params, sessionId) => method !== 'Page.captureScreenshot' ? send(method, params, sessionId) :
-    fence.run(() => send(method, params, sessionId), async () => {
+  connection.send = (method, params, sessionId, options) => method !== 'Page.captureScreenshot' ? send(method, params, sessionId, options) :
+    fence.run(() => send(method, params, sessionId, options), async () => {
       const { frameTree } = await send('Page.getFrameTree', {}, sessionId);
       const { executionContextId } = await send('Page.createIsolatedWorld', {
         frameId: frameTree.frame.id, worldName: 'chariox-capture-presentation',

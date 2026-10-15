@@ -2,14 +2,12 @@
 // A consumer supplies an admitted kernel lease and kernel-resolved window
 // geometry. This is not a client API for naming windows, PIDs or policies.
 import {setTimeout as delay} from 'node:timers/promises';
-import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
+import {LinuxCapture} from './kernel-browser-native.mjs';
 import {startNativeReadback} from './kernel-browser-native-readback.mjs';
-import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
-import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {attestNativeRegion,regionProtection} from './kernel-browser-region-attestation.mjs';
 import {checkedInventory} from './kernel-browser-native-windows.mjs';
 
-export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
+export function windowRegionGeometry(surface,window,rect,contentHeight,scale,contentRect){
  const {width,height}=rect,top=rect.top,left=rect.left;
  if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
  const auxiliary=surface==='browser_auxiliary';
@@ -27,11 +25,21 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
    width<2||width>2560||height<2||height>1600||width%2||height%2||
    contentHeight<2||contentHeight>window.height||left<0||top<0||
    left>window.width-width||top>window.height-height)throw Error('MP-11: invalid native window region');
- const contentTop=window.height-contentHeight;
+ let contentTop=window.height-contentHeight,contentLeft=0;
+ if(surface==='page'){
+  if(!contentRect||![contentRect.left,contentRect.top,contentRect.width,contentRect.height].every(Number.isSafeInteger)||
+   contentRect.left<0||contentRect.top<0||contentRect.width<2||contentRect.height!==contentHeight||
+   contentRect.left+contentRect.width>window.width||contentRect.top+contentRect.height>window.height)
+   throw Error('MP-11: native page origin unavailable');
+  contentTop=contentRect.top;contentLeft=contentRect.left;
+  if(left<contentLeft||left+width>contentLeft+contentRect.width||top+height>contentTop+contentRect.height)
+   throw Error('MP-11: native region crosses page boundary');
+ }
  if(!auxiliary&&(surface==='browser_chrome'?top+height>contentTop:top<contentTop))
   throw Error('MP-11: native region crosses surface boundary');
  return Object.freeze({width,height,contentHeight,css_width:width/scale,css_height:height/scale,
-  pageLeft:left,pageTop:top-contentTop,contentTop,
+  pageLeft:left-contentLeft,pageTop:top-contentTop,contentTop,
+  ...(contentRect?{contentRect:Object.freeze({...contentRect})}:{}),
   window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
 export function projectRegionMasks(regions,left,top){
@@ -39,11 +47,11 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
-  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
-  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale);
+  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
+  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect);
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  onCdp(message){
@@ -58,11 +66,8 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   try{
    const region=this.region;
    if(this.surface==='page'){
-    this.regions=new NativeRegionProtection(this.connection,this.sessionId,
-     {policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
-    const measure=this.regions.measure.bind(this.regions);
-    this.regions.measure=async()=> (await measure()).map(([x,y,w,h])=>
-     [x-region.pageLeft,y-region.pageTop,w,h]);
+    this.regions=regionProtection(this,region.pageLeft,region.pageTop);
+    await attestNativeRegion(this);
    }else{
     // Chrome UI is proved disjoint from page pixels: the band boundary or
     // a whole separate auxiliary window selected by the browser owner.
@@ -78,23 +83,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
    if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.surface==='page'){
-    const shot=await this.screenshot();
-    const clip={x:region.pageLeft/this.scale,y:region.pageTop/this.scale,
-     width:region.css_width,height:region.css_height};
-    const reference=decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
-    const raw=this.latest?.raw;
-    if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native region attestation geometry');
-    const fullBand=statusBand({width:region.window_region.width,height:region.contentHeight},this.hostScale);
-    const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
-    const masked=attestationMask(masks,raw.width,raw.height);
-    if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');
-    const pixels=raw.pixels;
-    for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
-     (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))
-      throw Error('MP-11: native region attestation mismatch');
-    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
-   }
+
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){await this.close();throw error;}

@@ -34,6 +34,13 @@ const fold = async (id, tries = 100) => {
 chrome.tabs.onCreated.addListener(tab => fold(tab.id).catch(() => {}));
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
 globalThis.charioxTabs = {
+  async viewport(target) {
+    if (target === undefined) target = await this.active();
+    const id = (await targetTabs()).get(target);
+    if (id === undefined) return null;
+    const tab = await chrome.tabs.get(id);
+    return {target_id: target, width: tab.width, height: tab.height};
+  },
   async active() {
     const [normal] = await chrome.windows.getAll({ windowTypes: ["normal"] });
     if (!normal) return null;
@@ -108,6 +115,8 @@ export class ChromeTabGroups {
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
   active() { return this.evaluate("charioxTabs.active()"); }
+  /** Native Tab area in host pixels/DIPs; page emulation cannot supply it. */
+  viewport(target) { return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`); }
   /** groups: [{target_ids, label}] — one native group per agent label. */
   async sync(groups) {
     const spec = groups.map(({ target_ids, label }) => ({ target_ids: [...target_ids].sort(), title: label, color: colorOf(label) }))
