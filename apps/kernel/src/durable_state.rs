@@ -51,6 +51,7 @@ pub(crate) mod apps;
 mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
+pub(crate) mod skill_reset;
 pub(crate) mod room_environment;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
