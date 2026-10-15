@@ -1101,42 +1101,57 @@ OpenCode current runtime note:
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 
-### MP-08 / MP-10 / MP-11: bounded relay transport (local 490, peer 100)
+### MP-08 / MP-10 / MP-11: bounded multiplexed relay transport (local 532, peer 140)
 
-Updated browser, TUI, kernel and temporary peer/metadata sockets opt in with
-`chariox_transport=chunks-v1` on the relay URL. This is socket-local framing
-around the existing opaque relay envelope; it grants no runtime or relay
-admission authority and does not change encryption or request correlation.
-Direct local kernel sockets retain their existing transport.
+Browser, TUI, kernel and temporary peer/metadata relay sockets negotiate
+`chariox_transport=chunks-v2`. This socket-local framing wraps the existing
+opaque encrypted envelopes. It grants no admission authority, changes no
+request correlation, and does not apply to direct local kernel sockets.
 
-Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
-frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
-totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
-most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written. The
-receiver immediately returns `transport_ack` with the same transfer ID and the
-exclusive byte offset received, then dispatches only the completely reassembled
-original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
-and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
-cross-transfer receipts, overlap, unknown chunk fields, and nested transport
-frames terminate the connection without retaining payloads in errors.
+Every egress text envelope, including the connection acknowledgment, uses JSON
+`transport_chunk` frames with `transfer_id`, `offset`, `total_bytes` and `payload`.
+Offsets/totals count UTF-8 bytes of the original envelope. Each serialized frame
+is at most 16 KiB. The receiver immediately sends `transport_ack` with that ID
+and the exclusive offset received; only a complete original envelope reaches
+application dispatch. Small binary encrypted events remain binary, followed by
+a zero-total/zero-offset/empty-payload chunk checkpoint with its own increasing
+ID. Its receipt accounts for both the preceding binary envelope and checkpoint.
+Larger binary events use the existing encrypted JSON envelope and bounded
+chunks; the ciphertext is never decrypted or inspected by the relay.
 
-Ping/Pong have a separate bounded writer control queue. Small correlation-addressed
-requests/responses and admission acknowledgments may interleave with bulk
-responses/events; requests retain their order relative to earlier bulk requests.
-Subscription events retain their original order. Close takes precedence over
-unfinished data. Receipts are ordinary inbound transport progress for the
-existing heartbeat check. The 30-second heartbeat interval, 15-second Pong
-deadline, token expiry and revocation enforcement remain unchanged; a silent
-peer cannot keep a transfer alive.
+A socket admits at most four active transfers and 128 MiB of aggregate declared
+assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
+bytes. IDs increase in first-wire-write order, not completion order; an earlier
+active stream may finish after a later one. Unknown/reused IDs, changed totals,
+overlapping offsets, unknown fields, nested transport frames and invalid
+checkpoints close the connection without including payloads in errors.
 
-An older relay ignores the opt-in and uses its existing envelopes. Updated
-receivers accept those envelopes, but the bounded-drain guarantee requires the
-updated relay. An unopted receiver on the updated relay still accepts small
-traffic; a large envelope closes explicitly with an updated-client requirement
-rather than sending chunk frames that receiver cannot decode. All deployed
-relay consumers must therefore be upgraded for large-envelope traffic. The
-local 490 and peer 100 snapshots bind this framing change; existing API-specific
-minimums remain applicable because no new daemon operation is introduced.
+All data shares one 64 KiB unacknowledged wire window, including frame metadata,
+small replies, binary envelopes and checkpoints. Receipts must match the oldest
+outstanding wire frame, across IDs; a receipt for another stream cannot release
+credit. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
+can progress concurrently (e.g. catalog plus first viewport), with one lane each
+reserved for requests and events. Requests and events retain FIFO within their
+respective lanes; events may pass an unfinished correlated response. Unknown
+lifecycle envelopes are ordering barriers for requests/events. Correlated replies
+can pass barriers to avoid request/reply deadlock. Chunks rotate fairly among
+active streams, so display events do not wait for an entire snapshot and a
+continuous event stream does not starve the snapshot.
+
+Ping/Pong and Close retain the separate bounded control queue. Close takes
+precedence over unfinished data. Transport receipts do not acknowledge kernel
+operations. Heartbeat, token expiry, revocation, routing scopes and encrypted
+payload admission remain unchanged.
+
+The updated relay rejects an explicit older/unknown `chariox_transport` capability
+with HTTP 426 before switching protocols. Unopted legacy sockets can receive
+small envelopes; a large envelope closes with an actionable updated-client
+reason. An older relay can ignore the new opt-in; updated receivers still accept
+its ordinary envelopes, but multiplex/window guarantees require the updated
+relay. Kernel API-specific client minimums remain unchanged because this changes
+relay framing rather than daemon operations. The 532/140 transport snapshot
+binds capability, wire fields, checkpoints and limits; generated protocol pins
+must match the runtime constants.
 
 ## 4.1.1 Unified Node-Transport Direction
 

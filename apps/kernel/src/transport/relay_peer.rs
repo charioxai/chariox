@@ -118,7 +118,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 136 carries the local 528 Browser state fields.
 /// MP-08/MP-10/MP-11: allocated 137 carries local529 page display placement.
 /// Allocated 138 carries the local 530 band gestures and auxiliary popups.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 138;
+/// MP-08/MP-10/MP-11: allocated 140 negotiates chunks-v2 multiplexed transport.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 140;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

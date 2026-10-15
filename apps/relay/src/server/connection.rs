@@ -118,6 +118,20 @@ pub(crate) async fn handle_connection(
                     .split('&')
                     .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
             });
+            // MP-08/MP-10/MP-11: never send multiplexed chunks to a v1 receiver.
+            if request.uri().query().is_some_and(|query| {
+                query.split('&').any(|part| {
+                    part.starts_with("chariox_transport=")
+                        && part != crate::frame_transport::TRANSPORT_QUERY
+                })
+            }) {
+                return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(426)
+                    .body(Some(
+                        "relay requires chunks-v2 (protocol 532 / peer 140)".into(),
+                    ))
+                    .unwrap());
+            }
             let protocol_offered = request
                 .headers()
                 .get("sec-websocket-protocol")

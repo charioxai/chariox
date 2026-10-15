@@ -384,10 +384,13 @@ fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
 // `chrome_window.auxiliary` list. The host's state keys are pinned to this fixture.
 #[test]
 fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 530);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        138
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let bytes = include_bytes!("browser-chrome-ui-530.json");
     assert_eq!(
