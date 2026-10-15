@@ -191,7 +191,11 @@ impl KernelRuntimeState {
         let Ok(chain) = process::ancestry(peer) else {
             return false;
         };
-        let state = self.owned.kernel_access.lock().expect("access state poisoned");
+        let state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
         chain.iter().any(|ancestor| state.ended.contains(ancestor))
     }
 
@@ -335,12 +339,18 @@ impl KernelRuntimeState {
             remaining,
         );
         let interaction = RuntimeInteraction::for_kernel_operation(
-            format!("{}-{action}", grant.grant_id), format!("access-{action}:{}", grant.grant_id),
-            title, message,
-            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
-                RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
-            .with_timeout_sec(timeout_sec)
-            .with_requester(requester);
+            format!("{}-{action}", grant.grant_id),
+            format!("access-{action}:{}", grant.grant_id),
+            title,
+            message,
+            vec![
+                RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                    .requiring_passkey(),
+            ],
+        )
+        .with_timeout_sec(timeout_sec)
+        .with_requester(requester);
         let rx = self
             .create_kernel_operation_interaction(
                 crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,

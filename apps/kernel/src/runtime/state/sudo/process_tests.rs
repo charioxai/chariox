@@ -444,15 +444,15 @@ done
     std::fs::write(scratch_root.join("probe"), "probe").unwrap();
     let denied: serde_json::Value =
         serde_json::from_str(&file(&scratch_root.join("result")).await).unwrap();
-    assert_eq!(denied["error"]["code"], "kernel_access_not_covered", "{denied}");
+    assert_eq!(
+        denied["error"]["code"], "kernel_access_not_covered",
+        "{denied}"
+    );
     if cli.is_some() {
         let status = file(&scratch_root.join("cli-status")).await;
         let output = file(&scratch_root.join("cli-output")).await;
         assert_ne!(status.trim(), "0", "{output}");
-        assert!(
-            output.contains("This process has no access"),
-            "{output}"
-        );
+        assert!(output.contains("This process has no access"), "{output}");
         println!("chariox-shell after yield: {}", output.trim());
     }
     println!("live shell CLI: test passkey admitted; setsid root={}; ListSessions accepted; same command after yield refused", root(&f).pid);

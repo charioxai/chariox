@@ -813,7 +813,10 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
         serde_json::json!({"ResolveKernelClientConnection":{"kernel_ref":"remote"}}),
     ] {
         let refused = holder.request(request);
-        assert_eq!(refused["error"]["code"], "kernel_access_human_only", "{refused}");
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_human_only",
+            "{refused}"
+        );
         assert_eq!(
             refused["error"]["message"],
             crate::runtime::kernel_access::Refusal::HumanOnly.message()
@@ -948,7 +951,8 @@ async fn kernel_access_grants_expire_revoke_on_pid_reuse_and_real_rotation() {
             // The approved holder itself returns: its access ended; it is not a stranger.
             holder.command("reconnect");
             assert_eq!(holder.result()["reconnected"], true);
-            let ended = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+            let ended =
+                holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
             assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
             assert_eq!(
                 ended["error"]["message"],

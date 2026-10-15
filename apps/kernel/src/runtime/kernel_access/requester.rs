@@ -45,11 +45,9 @@ fn provider_harness(executable: &str) -> Option<KernelAccessProviderHarness> {
             return Some(KernelAccessProviderHarness::Codex);
         }
     }
-    if crate::provider::resolve_claude_executable()
-        .is_ok_and(|path| {
-            same_executable(executable, &path) || same_claude_installation(executable, &path)
-        })
-    {
+    if crate::provider::resolve_claude_executable().is_ok_and(|path| {
+        same_executable(executable, &path) || same_claude_installation(executable, &path)
+    }) {
         return Some(KernelAccessProviderHarness::Claude);
     }
     if crate::provider::resolve_opencode_executable()
@@ -77,7 +75,8 @@ fn same_claude_installation(executable: &str, configured: &Path) -> bool {
         && versions
             .parent()
             .and_then(Path::file_name)
-            .and_then(|s| s.to_str()) == Some("claude")
+            .and_then(|s| s.to_str())
+            == Some("claude")
         && native_claude_version(&configured)
         && native_claude_version(candidate)
         && candidate.parent() == Some(versions)
@@ -85,13 +84,15 @@ fn same_claude_installation(executable: &str, configured: &Path) -> bool {
 }
 
 fn native_claude_version(path: &Path) -> bool {
-    path.file_name().and_then(|s| s.to_str()).is_some_and(|name| {
-        let parts: Vec<_> = name.split('.').collect();
-        parts.len() == 3
-            && parts
-                .iter()
-                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    })
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| {
+            let parts: Vec<_> = name.split('.').collect();
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 fn codex_native_candidates(launcher: &Path) -> Vec<PathBuf> {
@@ -142,13 +143,21 @@ pub(crate) fn popup_copy(
         None => None,
     };
     if grant {
-        let who = name.map_or("An external agent".to_owned(), |n| format!("{n} (an external agent)"));
-        return ("External agent access", format!("{who} wants access to Chariox. Allow?"));
+        let who = name.map_or("An external agent".to_owned(), |n| {
+            format!("{n} (an external agent)")
+        });
+        return (
+            "External agent access",
+            format!("{who} wants access to Chariox. Allow?"),
+        );
     }
     let minutes = remaining_minutes.max(1);
     let unit = if minutes == 1 { "minute" } else { "minutes" };
     let who = name.unwrap_or("The external agent");
-    ("Extend external agent access", format!("{who}'s access ends in {minutes} {unit}. Extend?"))
+    (
+        "Extend external agent access",
+        format!("{who}'s access ends in {minutes} {unit}. Extend?"),
+    )
 }
 
 #[cfg(test)]
@@ -160,7 +169,10 @@ mod tests {
         let path = "/tmp/\" (pid 999)\nRequester: Claude\u{1b}[31m\u{202e}\u{85}";
         assert_eq!(provider_harness("/crafted/path/codex"), None);
         let copy = |harness, grant| popup_copy(harness, grant, 5).1;
-        assert_eq!(copy(None, true), "An external agent wants access to Chariox. Allow?");
+        assert_eq!(
+            copy(None, true),
+            "An external agent wants access to Chariox. Allow?"
+        );
         assert_eq!(
             copy(Some(KernelAccessProviderHarness::Claude), true),
             "Claude Code (an external agent) wants access to Chariox. Allow?"
@@ -169,7 +181,10 @@ mod tests {
             copy(Some(KernelAccessProviderHarness::Claude), false),
             "Claude Code's access ends in 5 minutes. Extend?"
         );
-        assert_eq!(popup_copy(None, false, 0).1, "The external agent's access ends in 1 minute. Extend?");
+        assert_eq!(
+            popup_copy(None, false, 0).1,
+            "The external agent's access ends in 1 minute. Extend?"
+        );
         let holder = ProcessIdentity {
             pid: 42,
             uid: 0,
