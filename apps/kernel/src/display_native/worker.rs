@@ -66,6 +66,25 @@ impl Config {
 #[cfg(test)]
 mod region_tests {
     use super::*;
+    // Protocol 530: the exact control lines kernel-browser-native.mjs and
+    // kernel-browser-window-region.mjs write (NativeWorkerControl adds `id`).
+    #[test]
+    fn mp08_band_gesture_and_inventory_control_lines_parse() {
+        for line in [
+            r#"{"click":{"id":1,"point":[10,20]}}"#,
+            r#"{"click":{"id":2,"point":[10,20],"button":3}}"#,
+            r#"{"drag":{"id":3,"point":[10,20],"to":[300,20]}}"#,
+            r#"{"windows":{"id":4}}"#,
+        ] {
+            assert!(serde_json::from_str::<Command>(line).is_ok(), "{line}");
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"windows":{"id":4}}"#),
+            Ok(Command::Windows { .. })
+        ));
+        // The worker's own bound owner is the only inventory owner.
+        assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
+    }
     #[test]
     fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
         let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",

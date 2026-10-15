@@ -74,3 +74,13 @@ test('MP-11 auxiliary regions require an exact window and cannot crop arbitrary 
   [window,rect,200],
  ])assert.throws(()=>windowRegionGeometry('browser_auxiliary',w,r,content,1),/region|window/);
 });
+// Protocol 530: the band reads its window inventory from its own worker; the worker's bound owner PID
+// is the only owner (the worker refuses any other field).
+test('MP-08/MP-11 a band asks its own worker for the window inventory, nothing else does',async()=>{
+ const requests=[];const row={id:42,x:0,y:0,width:2560,height:1774,visible:true,focused:true,override_redirect:false,transient_for:0};
+ const source=Object.assign(Object.create(NativeWindowRegionCapture.prototype),{surface:'browser_chrome',valid:()=>true,
+  nativeWorker:{request:async(op,values)=>(requests.push([op,values]),{windows:[row]})}});
+ assert.deepEqual(await source.windows(),[row]);assert.deepEqual(requests,[['windows',{}]]);
+ source.surface='browser_auxiliary';await assert.rejects(source.windows(),/inventory lease/);
+ source.surface='browser_chrome';source.nativeWorker.request=async()=>({windows:[{...row,pid:1}]});await assert.rejects(source.windows(),/inventory binding/);
+});

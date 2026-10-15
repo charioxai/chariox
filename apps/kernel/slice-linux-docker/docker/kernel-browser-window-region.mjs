@@ -108,7 +108,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  // Protocol 530: the band's worker reads the owned display's window inventory (no extra process).
  async windows(){
   if(this.surface!=='browser_chrome'||!this.nativeWorker||!this.valid())throw Error('MP-11: native window inventory lease');
-  const reply=await this.nativeWorker.request('windows',{pid:this.pid});
+  const reply=await this.nativeWorker.request('windows',{}); // the worker's own bound owner PID
   if(!this.valid()||!Array.isArray(reply?.windows))throw Error('MP-11: native window inventory lease');
   return checkedInventory(reply.windows);
  }
