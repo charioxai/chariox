@@ -98,7 +98,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
     : method === "Runtime.evaluate" ? (evaluated.push(params), { result: { value: focus } }) : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {});
   const calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async (x, y) => (calls.push(["click", x, y]), true), wheel: async (...a) => (calls.push(["wheel", ...a]), true), chord: async (k, m) => (calls.push(["chord", k, m]), true) };
@@ -163,7 +163,7 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
     : method === "Runtime.evaluate" ? { result: { value: params.expression === "document.hasFocus()" ? pageFocus : true } } : {} };
   const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
-    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {}), calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { pageFocus = false; calls.push("click"); return true; }, chord: async k => (calls.push(k), true) };
   const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
@@ -181,4 +181,27 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "the page took focus back");
   await send({ kind: "click", x: 300, y: 20 }); // a Tab in the strip: the page keeps its focus
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
+});
+
+// MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
+// A native omnibox check must observe physical focus, not that logical wake-up.
+test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
+ const {BrowserInputCapture}=await import('./browser-controller-input.mjs');
+ const capture=new BrowserInputCapture();let pageFocus=true,emulated=false;
+ const connection={send:async(method,p)=>{
+  if(method==='Page.getFrameTree')return{frameTree:{frame:{id:'f',loaderId:'doc'}}};
+  if(method==='Emulation.setFocusEmulationEnabled'){emulated=p.enabled;return{}};
+  return{result:{value:p.expression==='document.hasFocus()'?pageFocus||emulated:true}};
+ }};
+ const tab={tab_id:'tab',target_id:'target',document_id:'doc'};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=> 'target'},browser:{inputCapture:capture,resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async()=>{pageFocus=false;return true}};
+ const send=input=>arbiter.input({stream:{regionSource:source},command:{tab_id:'tab',document_id:'doc',generation:3,input}});
+ const release=await capture.hold(connection,'s');
+ try{
+  await send({kind:'key',key:'l',modifiers:2});assert.equal(emulated,true);
+  assert.deepEqual(await send({kind:'text',text:'wiki'}),{dispatched:true});
+  assert.equal(emulated,true,'the mirror keeps its wake-up lease');
+  pageFocus=true;await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'},'real sensitive page focus still refuses');
+ }finally{await release()}
 });

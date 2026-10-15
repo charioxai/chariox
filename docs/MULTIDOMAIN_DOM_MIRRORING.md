@@ -350,6 +350,15 @@ refuses. Wrong windows/Tabs, stale documents or generations, shifted origins,
 non-media pixel changes and unreported media still refuse. Admission, delivery
 and input retain the native-window, active-Tab, geometry and protection fences.
 
+MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
+to keep its renderer awake. Native Chrome text admission must not confuse that
+logical state with the page physically owning the keys. After a kernel-observed
+toolbar click or Ctrl+L, the shared input owner orders a short physical focus
+read with emulation suspended, then restores the live display lease. Same-page
+input cannot overlap that read; a closing lease stays closed. The isolated
+world's real focus and sensitive-target checks still refuse typing into a
+protected field or foreign frame. No native-key path may skip those checks.
+
 Page scripts, event attributes, origin addresses, navigation/form destinations,
 active markup, custom CSS properties and executable/network CSS are absent from
 the wire. Computed style is the CSS representation; source stylesheets never run

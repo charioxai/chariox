@@ -2,7 +2,38 @@
 // Chromium produces visual state. A target-local capture keeps that renderer
 // active for physical input without Page.bringToFront or OS-window activation.
 export class BrowserInputCapture {
-  constructor() { this.visibilityBySession = new Map(); this.displayLeases = new Map(); }
+  constructor() { this.visibilityBySession = new Map(); this.displayLeases = new Map(); this.operations = new Map(); }
+
+  ordered(sessionId, operation) {
+    const run=(this.operations.get(sessionId)??Promise.resolve()).then(operation);
+    const tail=run.catch(()=>{}).finally(()=>{if(this.operations.get(sessionId)===tail)this.operations.delete(sessionId)});
+    this.operations.set(sessionId,tail);return run;
+  }
+
+  // MP-08/MP-10/MP-11: a display's logical wake-up makes document.hasFocus()
+  // true even while Chrome's omnibox owns the keys. Observe the real focus
+  // with emulation suspended, excluding same-session input and lease close.
+  physicalFocus(connection,sessionId,read) {
+    return this.ordered(sessionId,async()=>{
+      let lease;
+      for(;;){
+        lease=this.displayLeases.get(sessionId);if(!lease)break;
+        if(lease.closing){await lease.closed;continue}
+        await lease.ready;if(lease.closing)continue;
+        lease.active++;break;
+      }
+      const emulated=this.visibilityBySession.has(sessionId);
+      try {
+        if(emulated)await connection.send('Emulation.setFocusEmulationEnabled',{enabled:false},sessionId);
+        return await read();
+      } finally {
+        try {
+          if(emulated&&lease&&!lease.closing&&this.displayLeases.get(sessionId)===lease)
+            await connection.send('Emulation.setFocusEmulationEnabled',{enabled:true},sessionId);
+        } finally {if(lease&&!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
+      }
+    });
+  }
 
   async visibility(connection, sessionId) {
     if (this.visibilityBySession.has(sessionId)) return this.visibilityBySession.get(sessionId).visible;
@@ -35,12 +66,13 @@ export class BrowserInputCapture {
     lease.refs++;await lease.ready;let released=false;
     return async()=>{if(released)return;released=true;if(--lease.refs)return;lease.closing=true;lease.release();await lease.closed};
   }
-  async run(connection,sessionId,operation){
+  run(connection,sessionId,operation){return this.ordered(sessionId,()=>this.runHeld(connection,sessionId,operation))}
+  async runHeld(connection,sessionId,operation){
     const lease=this.displayLeases.get(sessionId);
     if(!lease)return this.runTransient(connection,sessionId,operation);
-    if(lease.closing){await lease.closed;return this.run(connection,sessionId,operation)}
+    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation)}
     await lease.ready;
-    if(lease.closing){await lease.closed;return this.run(connection,sessionId,operation)}
+    if(lease.closing){await lease.closed;return this.runHeld(connection,sessionId,operation)}
     lease.active++;
     try{return await operation()}
     finally{if(!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
