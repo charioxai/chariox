@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11 (§2b): native Chrome window binding and input arbiter.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ChromeWindows, InputArbiter, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
+import { ChromeWindows, InputArbiter, OMNIBOX_LIST_HEIGHT, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
 import { OwnedDisplay } from "./kernel-browser-owned-display.mjs";
 
 function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" }, viewport } = {}) {
@@ -315,19 +315,19 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     const region = windows.auxiliaryRegion(windows.auxiliary(popup.auxiliary_id));
     assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
     assert.deepEqual(region.pageRect, windows.current().tabbed.page_rect, "over the page: its masks use the page origin");
-    assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
+    // r11: the list's stream opens at the list's full height (Chrome 155: at most 8 rows of 40 DIP), so a
+    // growing list never replaces it; each new stream left the person without a list for 0.4-1.3 s while typing.
+    assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 2 * OMNIBOX_LIST_HEIGHT });
     assert.equal(region.masks, undefined, "around its rounded corners are page pixels under the active Tab's masks");
-    const binding = windows.auxiliary(popup.auxiliary_id);
+    const grown = windows.auxiliary(popup.auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
-    assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
+    assert.equal(grown.isCurrent(), true, "more suggestions: the same popup");
     assert.equal(windows.auxiliaryState()[0].height, 128);
-    // r10: Chrome resizes the list on almost every key; while it stays open its popup only grows (one stream that paints).
-    const grown = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.equal(grown.isCurrent(), true, "a shorter list keeps the same popup");
-    // r10final 1920x1080@2: the viewer shows only the live list; its stream keeps the grown size (no page copy below it).
+    // r10final 1920x1080@2: the viewer shows only the live list; its stream keeps its size (no page copy below it).
     assert.equal(windows.auxiliaryState()[0].height, 88, "the live list's height");
-    assert.equal(windows.auxiliaryRegion(grown).rect.height, 256, "the stream keeps its size");
+    assert.equal(windows.auxiliaryRegion(grown).rect.height, 2 * OMNIBOX_LIST_HEIGHT, "the stream keeps its size");
     windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
     const source = { isCurrent: grown.isCurrent, region: { window_region: windows.auxiliaryRegion(grown).rect } };
     assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 80 }), true, "on the live list");
@@ -457,6 +457,10 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     assert.equal(windows.inWindowOver(video), true, "the list covers the video's top rows");
     assert.equal(windows.inWindowOver({ ...video, top: 360 }), false, "below the list");
     assert.equal(windows.inWindowOver({ ...video, left: 2400 }), false, "beside it");
+    // r11: the list's stream is taller than a shorter list; the page below the LIVE list keeps streaming.
+    windows.omnibox = ["visible", 103, 25, 1078, 50, 1110, 138]; windows.refreshAuxiliary([tabbed]); // list y 174..270
+    assert.equal(windows.inWindowOver({ ...video, top: 290 }), false, "below a shorter list, inside its stream");
+    assert.equal(windows.inWindowOver({ ...video, top: 250 }), true);
     windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.equal(windows.inWindowOver(video), false, "closed");
     // r10 union2: Chrome paints the list before the 150 ms poll sees it; a readback checks it live.
