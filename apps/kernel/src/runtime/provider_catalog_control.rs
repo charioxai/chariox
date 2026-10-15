@@ -78,7 +78,7 @@ pub(crate) async fn execute_get_provider_catalog_request(
         return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
     }
 
-    let _load_guard = provider_catalog_projection.lock_load().await;
+    let _load_guard = provider_catalog_projection.lock_load(&cache_key).await;
     // Another caller may have filled this scope while we waited.
     if let Some(catalog) =
         provider_catalog_projection.get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
@@ -120,16 +120,16 @@ fn refresh_provider_catalog_in_background(
     request: crate::local::GetProviderCatalogRequest,
     cache_key: String,
 ) {
-    let Some(generation) = provider_catalog_projection.begin_refresh() else {
+    let Some(generation) = provider_catalog_projection.begin_refresh(&cache_key) else {
         return;
     };
     tokio::spawn(async move {
-        let _load_guard = provider_catalog_projection.lock_load().await;
+        let _load_guard = provider_catalog_projection.lock_load(&cache_key).await;
         if provider_catalog_projection
             .get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
             .is_some()
         {
-            provider_catalog_projection.finish_refresh();
+            provider_catalog_projection.finish_refresh(&cache_key);
             return;
         }
         let load_started = Instant::now();
@@ -174,7 +174,7 @@ fn refresh_provider_catalog_in_background(
                 }),
             ),
         }
-        provider_catalog_projection.finish_refresh();
+        provider_catalog_projection.finish_refresh(&cache_key);
     });
 }
 
@@ -191,7 +191,7 @@ pub(crate) async fn provider_catalog_json_value(
     if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
         return serde_json::to_value(catalog).ok();
     }
-    let _load_guard = provider_catalog_projection.lock_load().await;
+    let _load_guard = provider_catalog_projection.lock_load("").await;
     if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
         return serde_json::to_value(catalog).ok();
     }
@@ -284,6 +284,70 @@ mod tests {
             loads, 1,
             "six clients must not launch six native catalog loads"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08 / MP-10 / MP-11: a delayed native-source scope cannot hold another account's static catalog.
+    #[tokio::test]
+    async fn amfix_r19_catalog_unrelated_owner_progresses_during_slow_load() {
+        crate::test_support::isolated_env_test!();
+        let root = std::env::temp_dir().join(format!(
+            "amfix-catalog-independent-{}",
+            rand::random::<u64>()
+        ));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let first = registry
+            .create_managed("owner-a", "claude", "First")
+            .unwrap();
+        let second = registry
+            .create_managed("owner-b", "claude", "Second")
+            .unwrap();
+        let mut slow_config = crate::config::DaemonConfig::for_tests();
+        slow_config.provider_catalog_read_delay_ms = 1_000;
+        let slow_config = DaemonConfigProjectionStore::new(slow_config);
+        let fast_config =
+            DaemonConfigProjectionStore::new(crate::config::DaemonConfig::for_tests());
+        let projection = ProviderCatalogProjectionStore::default();
+        let request = |profile| crate::local::GetProviderCatalogRequest {
+            provider: Some("claude".into()),
+            account_profiles: BTreeMap::from([("claude".into(), profile)]),
+            ..Default::default()
+        };
+        let slow = execute_get_provider_catalog_request(
+            &projection,
+            &slow_config,
+            &registry,
+            "owner-a",
+            request(first.profile_id),
+        );
+        tokio::pin!(slow);
+        tokio::select! {
+            biased;
+            result = &mut slow => panic!("slow load must remain pending: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(30)) => {},
+        }
+        let (other, first) = tokio::join!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                execute_get_provider_catalog_request(
+                    &projection,
+                    &fast_config,
+                    &registry,
+                    "owner-b",
+                    request(second.profile_id)
+                )
+            ),
+            slow,
+        );
+        assert!(first.is_ok(), "{first:?}");
+        assert!(
+            other.is_ok(),
+            "an unrelated cold Claude catalog waited for another owner's slow native load"
+        );
+        assert!(other.unwrap().is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 

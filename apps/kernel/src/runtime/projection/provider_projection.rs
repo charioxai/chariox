@@ -460,9 +460,9 @@ fn filter_provider_processes(
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
-    load_lock: Arc<tokio::sync::Mutex<()>>,
+    load_locks: Arc<StdMutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
-    refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    refresh_in_progress: Arc<StdMutex<BTreeSet<String>>>,
     generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -473,9 +473,23 @@ struct CachedProviderCatalogProjection {
 }
 
 impl ProviderCatalogProjectionStore {
-    // Native catalog initialization is expensive; cold clients must not flood it.
-    pub(crate) async fn lock_load(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.load_lock.lock().await
+    // Coalesce one scope without making an unrelated account wait for its native server.
+    pub(crate) async fn lock_load(&self, cache_key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .load_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(cache_key).and_then(std::sync::Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(cache_key.into(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
     }
 
     pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
@@ -529,15 +543,11 @@ impl ProviderCatalogProjectionStore {
             .map(|cached| cached.catalog.clone())
     }
 
-    pub(crate) fn begin_refresh(&self) -> Option<u64> {
+    pub(crate) fn begin_refresh(&self, cache_key: &str) -> Option<u64> {
         self.refresh_in_progress
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(cache_key.into())
             .then(|| self.generation.load(std::sync::atomic::Ordering::Acquire))
     }
 
@@ -567,9 +577,11 @@ impl ProviderCatalogProjectionStore {
         true
     }
 
-    pub(crate) fn finish_refresh(&self) {
+    pub(crate) fn finish_refresh(&self, cache_key: &str) {
         self.refresh_in_progress
-            .store(false, std::sync::atomic::Ordering::Release);
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(cache_key);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -643,15 +655,26 @@ mod provider_catalog_projection_tests {
         let store = ProviderCatalogProjectionStore::default();
         store.update(catalog("codex"));
         let generation = store
-            .begin_refresh()
+            .begin_refresh("")
             .expect("first refresh should acquire the gate");
 
         store.invalidate();
 
         assert!(!store.update_scoped_if_generation("", catalog("opencode"), generation));
         assert!(store.cached().is_none());
-        store.finish_refresh();
-        assert!(store.begin_refresh().is_some());
+        store.finish_refresh("");
+        assert!(store.begin_refresh("").is_some());
+    }
+
+    #[test]
+    fn catalog_refreshes_coalesce_only_their_own_scope() {
+        let store = ProviderCatalogProjectionStore::default();
+        assert!(store.begin_refresh("owner-a:opencode").is_some());
+        assert!(store.begin_refresh("owner-a:opencode").is_none());
+        assert!(store.begin_refresh("owner-b:claude").is_some());
+        store.finish_refresh("owner-a:opencode");
+        assert!(store.begin_refresh("owner-b:claude").is_none());
+        assert!(store.begin_refresh("owner-a:opencode").is_some());
     }
 
     #[test]
