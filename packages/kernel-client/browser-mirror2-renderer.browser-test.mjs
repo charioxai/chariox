@@ -781,3 +781,20 @@ test('MP-08/MP-10/MP-11 promoted frame child keeps its index after frame retirem
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: selection capture must follow all written mirror input replies.
+test('MP-10: Notes waits for mirror selection input receipts',async()=>{
+ const page=await viewer();
+ try{
+  await page.evaluate(async()=>{
+   window.r.close();window.sent=[];
+   window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async action=>{window.sent.push(action);await new Promise(resolve=>{window.releaseInput=resolve})});await window.r.ready();
+  });
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The full released selection'}])));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,12)});
+  await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));
+  await page.evaluate(()=>{window.idle=false;window.idlePromise=window.r.settleInput().then(()=>{window.idle=true})});
+  await frames();assert.equal(await page.evaluate(()=>window.idle),false);
+  await page.evaluate(async()=>{window.releaseInput();await window.idlePromise});assert.equal(await page.evaluate(()=>window.idle),true);
+ }finally{await page.close()}
+});

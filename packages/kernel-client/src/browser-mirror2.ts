@@ -141,6 +141,12 @@ export class BrowserMirror2Renderer {
       }
     } finally { this.sending = false; this.settleFocus() }
   }
+  // MP-08/MP-10/MP-11: Notes captures the kernel's range after every released
+  // selection input has replied, including work still waiting in the write queue.
+  async settleInput(): Promise<void> {
+    while (this.pendingInputs && !this.disposed) await Promise.all([...this.inputReplies])
+    if (this.disposed) throw Error('MP-08: mirror closed')
+  }
   private settleFocus(): void {
     if (this.pendingInputs || this.disposed) return
     const withheld = this.focusWithheld; this.focusWithheld = undefined
@@ -728,7 +734,7 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
@@ -843,6 +849,11 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)
   return {
     renderer,
+    async settleInput() {
+      if(closed)throw Error('MP-08: mirror closed')
+      await renderer.settleInput?.()
+      if(closed)throw Error('MP-08: mirror closed')
+    },
     async close(options?:{preserveFrame?:boolean}) { clearTimeout(firstWait); if (!closed) { closed = true; inflater?.close() } renderer.close(options); await closeRemote() },
     takeover: () => request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation }),
     release: () => request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation }),
