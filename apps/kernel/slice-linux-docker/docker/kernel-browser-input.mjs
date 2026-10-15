@@ -81,7 +81,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     let mirrorGuard;
-    const sendInput = async (method, params) => {
+    const admitInput = async (method, params) => {
       await check();
       if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && (params.text || (params.modifiers & 7)))) {
         await checkTextTarget();
@@ -92,6 +92,9 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       }
       // MP-11: live mirror focus is the final fence, after every text preflight.
       await mirrorGuard?.();
+    };
+    const sendInput = async (method, params) => {
+      await admitInput(method, params);
       const endDispatch = onDispatch?.();
       try {
         const result = await connection.send(method, params, sessionId);
@@ -147,10 +150,22 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           await check(); await mirrorGuard?.();
           if (focused === true && nativeKey(keysym, Boolean(modifiers & 8))) { onDispatch?.(); return; }
         }
-        await sendInput("Input.dispatchKeyEvent", { type: "keyDown", ...key,
-          ...(!chord && (["Enter", "Space"].includes(input.key) || printable) ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) });
-        // MP-08: paired releases keep document and live cancellation checks.
-        await sendInput("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+        const down = { type: "keyDown", ...key,
+          ...(!chord && (["Enter", "Space"].includes(input.key) || printable) ? { text: printable ? input.key : input.key === "Enter" ? "\r" : " ", unmodifiedText: printable ? input.key : input.key === "Enter" ? "\r" : " " } : {}) };
+        await admitInput("Input.dispatchKeyEvent", down);
+        // MP-08/MP-10/MP-11: Enter may navigate before its acknowledgement.
+        // Admit the press once, then order its non-text release on the same
+        // session before waiting, just as for a mouse click. Cancellation or
+        // navigation cannot strand the key or replay the press.
+        const endDispatch = onDispatch?.();
+        try {
+          const press = connection.send("Input.dispatchKeyEvent", down, sessionId);
+          const release = connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, sessionId);
+          const replies = await Promise.allSettled([press, release]);
+          const failed = replies.find(reply => reply.status === "rejected");
+          if (failed) throw failed.reason;
+          assertNotCancelled(signal);
+        } finally { endDispatch?.(); }
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
         // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.
