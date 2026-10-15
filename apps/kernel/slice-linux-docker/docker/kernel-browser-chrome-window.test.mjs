@@ -460,5 +460,9 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     assert.equal(windows.inWindowOver({ ...video, left: 2400 }), false, "beside it");
     windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.equal(windows.inWindowOver(video), false, "closed");
+    // r10 union2: Chrome paints the list before the 150 ms poll sees it; a readback checks it live.
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    assert.equal(windows.inWindowOver(video), false, "the poll has not seen it");
+    assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
   } finally { await real.close(); }
 });
