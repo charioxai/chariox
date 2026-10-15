@@ -346,3 +346,24 @@ test("MP-08/MP-11 a scrim over the band's toolbar row offers the page area as on
     assert.deepEqual(windows.auxiliaryState(), [], "the darker toolbar is the new clear colour");
   } finally { await real.close(); }
 });
+
+// Review #1016 @4e2aaff3d P2: a password field (or iframe) keeps the page's activeElement; the person opens
+// the Tab's context menu in the band. While Chrome's menu owns the keys, ArrowDown/Enter/Escape on it must
+// reach it; keys for the page (band text with no Chrome UI focus) keep the sensitive-field fence.
+test("MP-11 keys on an admitted native popup reach Chrome's UI whatever the page remembers", async () => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: true } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const arbiter = new InputArbiter(host, {}), keys = [];
+  let open = true;
+  const band = { surface: "browser_chrome", isCurrent: () => true, click: async () => true, chord: async k => (keys.push(["band", k]), true) };
+  const menu = { surface: "browser_auxiliary", isCurrent: () => open, click: async () => true, chord: async k => (keys.push(["menu", k]), true) };
+  const send = (source, input) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
+  await send(band, { kind: "click", x: 300, y: 20, button: "right" }); // the Tab's context menu
+  for (const key of ["ArrowDown", "Enter", "Escape"]) assert.deepEqual(await send(menu, { kind: "key", key }), { dispatched: true }, key);
+  await assert.rejects(send(band, { kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "band text still fenced");
+  open = false;
+  await assert.rejects(send(menu, { kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" }, "a closed menu takes nothing");
+  assert.deepEqual(keys.map(k => k[0]), ["menu", "menu", "menu"]);
+});

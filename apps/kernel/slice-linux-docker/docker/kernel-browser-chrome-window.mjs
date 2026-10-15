@@ -334,10 +334,13 @@ export class InputArbiter {
     };
     // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
     const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
+    const popup = source?.surface === 'browser_auxiliary';
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
       let tab;
-      if (bandChord(keysym, modifiers)) tab = await switching(); else await textTarget();
+      // Review #1016 P2: an admitted native popup (menu, dropdown, dialog) owns the keys while it is
+      // current (rechecked here): Chrome's UI, not the page's remembered field.
+      if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
