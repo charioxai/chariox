@@ -29,7 +29,10 @@ export async function enrollDormantHistory(run,count=65){
     const before=variant(await client.send({RelayStatus:null}),'RelayStatus').status;
     const login=variant(await client.send({StartCloudRelayLogin:{api_url:origin,client_id:'ctx13-'+name,client_alias:'Context history '+n,machine_id:before.machine_id,machine_alias:'ctx13-dormant-'+n}}),'CloudRelayLoginStarted').login;
     if(new URL(login.verification_url).origin!==origin)throw Error('History approval origin mismatch');
-    await page.goto(login.verification_url);const approve=page.getByRole('button',{name:/approve|allow|connect/i});if(await approve.count()===1)await approve.click();
+    await page.goto(login.verification_url);const approve=page.getByRole('button',{name:/approve|allow|connect/i});
+    // The normal device page can redirect as its approval settles. Only that
+    // browser lifecycle race is retried; product polling still proves approval.
+    for(let attempt=0;attempt<8;attempt++){try{if(await approve.count()===1)await approve.click();break;}catch(error){if(!/Execution context was destroyed|Cannot find context/.test(String(error))||attempt===7)throw error;await sleep(100);}}
     let approved=false;
     for(let attempt=0;attempt<24;attempt++){await sleep(Math.max(5000,(login.interval_seconds??5)*1000));const p=variant(await client.send({PollCloudRelayLogin:{api_url:origin,device_code:login.device_code}}),'CloudRelayLoginPolled').result;if(p.status==='approved'){approved=true;break;}if(p.status==='denied')throw Error('History product enrollment denied');}
     if(!approved)throw Error('History approval deadline');
