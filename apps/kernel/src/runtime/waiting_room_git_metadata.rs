@@ -28,6 +28,7 @@ struct Entry {
 struct Cache {
     entries: Mutex<HashMap<Query, Entry>>,
     revision: AtomicU64,
+    changed: tokio::sync::Notify,
 }
 static CACHE: OnceLock<Arc<Cache>> = OnceLock::new();
 const TTL: Duration = Duration::from_secs(30);
@@ -78,14 +79,20 @@ impl Cache {
         let Some(entry) = entries.get_mut(&query) else {
             return;
         };
+        let mut changed = false;
         if let Some(value) = fresh {
             if entry.value.as_ref() != Some(&value) {
                 self.revision.fetch_add(1, Ordering::Release);
+                changed = true;
             }
             entry.value = Some(value);
         }
         entry.expires = Instant::now() + TTL;
         entry.refreshing = false;
+        drop(entries);
+        if changed {
+            self.changed.notify_waiters();
+        }
     }
     fn get(self: &Arc<Self>, query: Query) -> Option<Value> {
         let (previous, refresh) = self.begin(&query);
@@ -150,6 +157,20 @@ fn refresh_query(query: Query) -> Option<Value> {
 pub(crate) fn revision() -> u64 {
     cache().refresh_expired();
     cache().revision.load(Ordering::Acquire)
+}
+// MP-08 / MP-10: inventory streams share the same metadata completion clock
+// as snapshot readers. Register before checking to avoid a lost completion.
+pub(crate) async fn wait_for_change_after(revision: u64) {
+    let cache = cache();
+    loop {
+        let changed = cache.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if cache.revision.load(Ordering::Acquire) != revision {
+            return;
+        }
+        changed.await;
+    }
 }
 pub(crate) fn prime_launch_target() {
     if let Ok(cwd) = std::env::current_dir() {

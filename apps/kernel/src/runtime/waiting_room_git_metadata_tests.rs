@@ -232,3 +232,59 @@ fn review2018_cached_snapshots_retry_initial_timeouts_and_capacity_skips() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+// MP-08 / MP-10: a metadata-only completion must wake idle/resumed streams,
+// without manufacturing a session mutation, and cannot lose an early wakeup.
+#[tokio::test(flavor = "current_thread")]
+async fn review2018_metadata_completion_wakes_inventory_without_session_mutation() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("review2018-inventory-wake");
+    std::env::set_var("CHARIOX_HOME", root.path());
+    let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::new(tokio::sync::Mutex::new(app)),
+        1,
+    );
+    let runtime = router.runtime_state();
+    let sessions = runtime.session_projection_change_sequence();
+    let query = Query::Workspace(root.path().to_string_lossy().into_owned());
+    assert!(cache().begin(&query).1);
+    let before = runtime.waiting_room_change_sequence();
+    let wait = runtime.wait_for_waiting_room_change_after(before);
+    tokio::pin!(wait);
+    tokio::select! {
+        _ = &mut wait => panic!("inventory woke before any projection change"),
+        _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+    }
+    cache().finish(
+        query.clone(),
+        Some(Value::Label(Some("charioxai/chariox".into()))),
+    );
+    assert_ne!(
+        runtime.waiting_room_change_sequence(),
+        before,
+        "metadata completion must change the shared inventory clock"
+    );
+    tokio::time::timeout(Duration::from_secs(1), &mut wait)
+        .await
+        .expect("metadata completion wakes an already waiting stream");
+    assert_eq!(runtime.session_projection_change_sequence(), sessions);
+    let before = runtime.waiting_room_change_sequence();
+    cache()
+        .entries
+        .lock()
+        .unwrap()
+        .get_mut(&query)
+        .unwrap()
+        .expires = Instant::now();
+    assert!(cache().begin(&query).1);
+    cache().finish(query, Some(Value::Label(Some("charioxai/renamed".into()))));
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        runtime.wait_for_waiting_room_change_after(before),
+    )
+    .await
+    .expect("a completion before registration cannot be lost");
+    assert_eq!(runtime.session_projection_change_sequence(), sessions);
+}
