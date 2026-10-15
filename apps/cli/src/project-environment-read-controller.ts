@@ -66,7 +66,7 @@ export function createProjectEnvironmentReadController(deps: {
   let checkingGeneration: number | null = null
   let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const apply = createEnvironmentApplyController({ send: deps.send, current: () => current, snapshot: snapshot => { cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render() }, render: () => { if(open && current){ lines=viewLines(current); deps.render() } } })
-  const displayLines = () => lines.flatMap(line => wrapLine(line, deps.textWidth?.() ?? Infinity))
+  const displayLines = () => (current ? lines : ["An Environment lists what this project needs on this machine.", ...lines]).flatMap(line => wrapLine(line, deps.textWidth?.() ?? Infinity))
   const controller = {
     isOpen: () => open,
     visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),

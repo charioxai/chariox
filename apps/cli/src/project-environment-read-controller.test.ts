@@ -10,7 +10,7 @@ test("ENV P01 standalone TUI request and protocol gate", async () => {
   await controller.open("project")
   assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project", view:{knownDigest:null,proposals:null} } }])
   assert.equal(controller.isOpen(), true)
-  assert.deepEqual(controller.visibleLines(), ["Environment unavailable. Check the kernel connection and refresh.", "r · Refresh"])
+  assert.deepEqual(controller.visibleLines(), ["An Environment lists what this project needs on this machine.", "Environment unavailable. Check the kernel connection and refresh.", "r · Refresh"])
   assert.throws(() => requireKernelFeatureProtocol(requests[0], 504), /505/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 505))
   controller.handleKey({ name: "escape" })
@@ -275,6 +275,7 @@ test("standalone TUI confirms absence then explicitly sets up and opens the retu
  const environment:any={schema_version:1,local_project_id:"kernel-project",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"d",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
  const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);const r=request as any;if(r.ResolveProject)return{ProjectResolved:{project:r.ResolveProject.create_if_missing?{id:"kernel-project",name:"Source",workspace_id:"/source"}:null}};return{ProjectEnvironment:{environment}}},render(){},pageSize:()=>100,kernelKey:()=>"kernel"})
  await controller.open(null,"/source")
+ assert(controller.visibleLines().includes("An Environment lists what this project needs on this machine."), "empty Set up keeps its explanation")
  assert(controller.visibleLines().includes("s · Set up Environment for this folder"))
  await controller.setup()
  assert(controller.visibleLines().includes("Project-wide"))
