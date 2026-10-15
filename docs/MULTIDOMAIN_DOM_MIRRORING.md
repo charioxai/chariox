@@ -226,8 +226,18 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   document's first snapshot waits for its first contentful paint (or `load`),
   at most 2.5 s, so viewers keep showing the previous page instead of a white,
   half-parsed one, also when the same credit resets the stream (a resynchronizing
-  viewer). A new subscription is not held. The viewer keeps its attachment
-  across documents.
+  viewer). The viewer keeps its subscription across documents. A bounded prefix
+  may still contain only head nodes after the source has painted (large inline
+  stylesheets, including GitHub login). The renderer prepares that document in
+  a second script-free iframe and retires the prior frame only after continued
+  visible content is available. A fresh attachment keeps its labelled loading
+  state until then. Preparation work is bounded and stops after the first paint.
+  MP-11: the held frame is inert; event forwarding also checks that the event's
+  document belongs to the current painted iframe, because native keyboard focus
+  can remain in an inert iframe. Same-document protection resets apply at once;
+  they never retain the old field. Capture geometry is unavailable during a
+  pending document replacement. Repeated navigation retains at most one prior
+  frame and one replacement; failure and disposal retire the unused frame.
 - **No tree hash.** Correctness comes from sequenced deltas, base checks,
   resnapshot on a gap and independent client validation.
 - **Observer bounds.** Instances are least recently used first, at most 16 per
