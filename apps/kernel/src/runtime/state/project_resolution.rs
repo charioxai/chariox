@@ -126,6 +126,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn review0034_alias_and_trailing_slash_share_project_in_both_creation_orders() {
+        crate::test_support::isolated_env_test!();
         for standalone_first in [false, true] {
             for symlink in [false, true] {
                 let root = crate::test_support::TestWorktree::new("project-alias");
