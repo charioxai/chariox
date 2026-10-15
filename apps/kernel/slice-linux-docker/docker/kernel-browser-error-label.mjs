@@ -68,6 +68,7 @@ const fixedReasons=new Map([
  ['MP-11: stale mirror input epoch','input_epoch_stale'],
  ['MP-11: stale mirror protection policy or admitted input','input_policy_stale'],
  ['MP-11: unavailable native text focus','input_focus_unavailable'],
+ ["MP-11: extensions are the person's own; an agent cannot open the Web Store or chrome://extensions or act on them",'extension_management_not_granted'],
 ]);
 for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReasons.set(`MP-08: owned desktop prerequisite unavailable (${name})`,'desktop_prerequisite_'+name.toLowerCase().replaceAll('-','_')+'_unavailable');
 export function hostErrorLabel(error) {

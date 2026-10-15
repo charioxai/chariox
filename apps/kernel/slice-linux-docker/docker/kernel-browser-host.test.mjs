@@ -1411,6 +1411,22 @@ test('MP-11 an existing-Tab switch retires the previous Tab\'s whole-page native
   assert.deepEqual(events, ['retired']);
 }));
 
+// MP-11 (Miguel 2026-10-15): the person manages extensions as in any Chrome; an agent cannot open the
+// Web Store or chrome://extensions, nor act on such a Tab (installs come later through /sudo).
+test('MP-11 agents cannot reach extension management; the person can', () => using(async ({ host }) => {
+  const refused = { message: /extension_management_not_granted/ };
+  for (const flags of [{ _agent_input: true }, { focused_agent: 'agent-a' }]) {
+    await assert.rejects(host.handle({ id: 1, method: 'host.browser', params: { op: 'open', url: 'https://chromewebstore.google.com/detail/x/abc', ...flags } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+    await assert.rejects(host.handle({ id: 2, method: 'host.browser', params: { op: 'open', url: 'chrome://extensions/', ...flags } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+  }
+  const mine = await host.request({ op: 'open', url: 'https://example.com/' });
+  const agent = { _agent_input: true };
+  await assert.rejects(host.handle({ id: 3, method: 'host.browser', params: { op: 'navigate', tab_id: mine.tab_id, generation: mine.generation, url: 'chromewebstore.google.com', ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused);
+  await host.request({ op: 'navigate', tab_id: mine.tab_id, generation: mine.generation, url: 'https://chromewebstore.google.com/' });
+  const tab = host.tabs.get(mine.tab_id);
+  await assert.rejects(host.handle({ id: 4, method: 'host.browser', params: { op: 'input', tab_id: mine.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'click', x: 10, y: 10 }, ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused, 'an agent cannot click Add to Chrome');
+}));
+
 // MP-08/MP-10/MP-11 (protocol 528/136): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
 test('MP-08 public Browser state keys match the protocol 528 fixture', () => using(async ({ host }) => {
