@@ -171,11 +171,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(deletions, 0);
-        assert!(
-            crate::project_environment::ProjectEnvironmentStore::new(&config.private_runtime_state_root())
-                .snapshot(&project)
-                .is_ok()
-        );
+        assert!(crate::project_environment::ProjectEnvironmentStore::new(
+            &config.private_runtime_state_root()
+        )
+        .snapshot(&project)
+        .is_ok());
     }
     // MP-08 / MP-10 / MP-11: both entry paths reuse a non-Git folder through aliases.
     #[cfg(unix)]
