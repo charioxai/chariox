@@ -323,3 +323,45 @@ test("MP-08/MP-11 notice names the request and verified requester", async () => 
     assert.doesNotMatch(h.captureCharFrame(), /42|\/opt\/claude/)
   } finally { h.renderer.destroy() }
 })
+
+test("MP-08/MP-11 both pending notice and popup show the live request countdown", async () => {
+  const h = await createTestRenderer({width: 110, height: 30, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({...view, remainingMs: 192_000}, {width: 110, height: 30})
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /3:12 left/)
+    surface.render({...view, open: false, remainingMs: 192_000}, {width: 110, height: 30})
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /3:12 left/)
+  } finally {h.renderer.destroy()}
+})
+
+test("MP-08/MP-11 a countdown tick preserves the request scroll surface", async () => {
+  const {ScrollBoxRenderable} = await import("@opentui/core")
+  const h = await createTestRenderer({width: 90, height: 30, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  const findBody = (node: BoxRenderable): InstanceType<typeof ScrollBoxRenderable> | undefined => {
+    if (node instanceof ScrollBoxRenderable) return node
+    for (const child of node.getChildren()) if (child instanceof BoxRenderable) {
+      const found = findBody(child)
+      if (found) return found
+    }
+  }
+  try {
+    surface.render({...view, remainingMs: 192_000}, {width: 90, height: 30})
+    await h.renderOnce()
+    const body = findBody(box)
+    assert.ok(body)
+    surface.render({...view, remainingMs: 191_000}, {width: 90, height: 30})
+    await h.renderOnce()
+    assert.equal(findBody(box), body)
+    assert.match(h.captureCharFrame(), /3:11 left/)
+  } finally {h.renderer.destroy()}
+})

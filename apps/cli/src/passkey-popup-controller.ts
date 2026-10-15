@@ -1,5 +1,6 @@
 import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
 import type { InteractionPasskeyProof } from "./ipc-requests.js"
+import { approvalExpiredMessage, type KernelClock } from "./kernel-clock.js"
 
 /** Optional remember window after a verified passkey: off, 5 or 15 minutes. */
 export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
@@ -56,6 +57,7 @@ export type PasskeyPopupView = {
   pending: boolean
   connected: boolean
   error: string | null
+  remainingMs?: number | null
 }
 
 const isText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
@@ -97,6 +99,7 @@ export function createPasskeyPopupController(deps: {
   scroll(direction: -1 | 1): void
   respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof): Promise<unknown>
   notify(message: string): void
+  serverClock?: KernelClock
 }) {
   let prompts: PasskeyPrompt[] = []
   let index = 0
@@ -110,6 +113,9 @@ export function createPasskeyPopupController(deps: {
   let rememberedUntil = 0
   let connectionEpoch = 0
   let pending: object | null = null
+  let pendingKey: string | null = null
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
+  let clockRead = false
   let error: string | null = null
   let disposed = false
   let claimedInputTurn = false
@@ -123,6 +129,7 @@ export function createPasskeyPopupController(deps: {
     open, count: prompts.length, index, prompt: current(),
     passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current()?.kind !== "critical_approval" && current()?.lifetime_minutes ? { accessLifetimeMinutes: accessLifetime ?? current()?.lifetime_minutes ?? null } : {}) },
     pending: pending !== null, connected: deps.connected(), error,
+    remainingMs: current() && deps.serverClock?.now() != null ? Math.max(0, current()!.expires_at_ms - deps.serverClock.now()!) : null,
   })
   const render = () => { if (!disposed) deps.onView(view()) }
   const clearEntry = () => { value = ""; remember = 0; accessLifetime = null; error = null }
@@ -156,10 +163,40 @@ export function createPasskeyPopupController(deps: {
     reselect(shown)
     syncOpen()
   }
+  const refreshExpiry = () => {
+    if (expiryTimer) clearTimeout(expiryTimer)
+    expiryTimer = null
+    if (disposed || !prompts.length || !deps.serverClock) return
+    const now = deps.serverClock.now()
+    if (now === null && !clockRead) {
+      clockRead = true
+      void deps.serverClock.synchronize().catch(() => {}).finally(() => {
+        clockRead = false
+        if (!disposed && deps.serverClock?.now() != null) { refreshExpiry(); render() }
+      })
+    }
+    const shown = current()
+    const expired = prompts.filter(prompt => now !== null && prompt.expires_at_ms <= now && promptKey(prompt) !== pendingKey)
+    for (const prompt of expired) {
+      answered.add(promptKey(prompt))
+      deps.notify(approvalExpiredMessage(prompt.kind))
+    }
+    if (expired.length) {
+      const keys = new Set(expired.map(promptKey))
+      prompts = prompts.filter(prompt => !keys.has(promptKey(prompt)))
+      reselect(shown)
+      syncOpen()
+    }
+    if (prompts.length) {
+      const delay = Math.min(1_000, ...prompts.map(prompt => now !== null && prompt.expires_at_ms > now ? prompt.expires_at_ms - now + 1 : 1_000))
+      expiryTimer = setTimeout(() => { refreshExpiry(); render() }, delay)
+    }
+  }
   const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
     const epoch = connectionEpoch
     const token = {}
     pending = token
+    pendingKey = promptKey(prompt)
     error = null
     render()
     try {
@@ -180,7 +217,8 @@ export function createPasskeyPopupController(deps: {
         }
       }
     } finally {
-      if (pending === token) pending = null
+      if (pending === token) { pending = null; pendingKey = null }
+      refreshExpiry()
       render()
     }
   }
@@ -205,7 +243,7 @@ export function createPasskeyPopupController(deps: {
     await send(prompt, prompt.refuse_choice_id)
   }
   const cycleRemember = () => {
-    if (!open) return
+    if (!open || pending) return
     const prompt = current()
     if (prompt && prompt.kind !== "critical_approval") {
       const max = prompt.max_lifetime_minutes
@@ -230,6 +268,9 @@ export function createPasskeyPopupController(deps: {
       connectionEpoch++
       rememberedUntil = 0
       pending = null
+      pendingKey = null
+      deps.serverClock?.invalidate()
+      clockRead = false
       if (!options.preservePrompts) {
         prompts = []
         answered.clear()
@@ -237,6 +278,7 @@ export function createPasskeyPopupController(deps: {
       hidden = true
       clearEntry()
       syncOpen()
+      refreshExpiry()
       render()
     },
     isOpen: () => open,
@@ -244,12 +286,15 @@ export function createPasskeyPopupController(deps: {
     /** The kernel's current set, from `passkey_prompts_changed`. A prompt
      * that arrives shows an indicator; F8 or a click explicitly opens it. */
     apply(next: PasskeyPrompt[]) {
+      // Inspect the old set before a timeout-removal feed drops it.
+      refreshExpiry()
       const shown = current()
       const listed = new Set(next.map(promptKey))
       for (const key of answered) if (!listed.has(key)) answered.delete(key)
       prompts = next.filter((prompt) => !answered.has(promptKey(prompt)))
       reselect(shown)
       syncOpen()
+      refreshExpiry()
       render()
     },
     /** Shows the popup on this prompt; false when this terminal has none. */
@@ -341,6 +386,8 @@ export function createPasskeyPopupController(deps: {
     },
     dispose() {
       disposed = true
+      if (expiryTimer) clearTimeout(expiryTimer)
+      deps.serverClock?.invalidate()
       clearEntry()
       if (open) { open = false; deps.onClose() }
     },

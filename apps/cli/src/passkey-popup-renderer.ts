@@ -2,6 +2,7 @@ import {
   BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, type CliRenderer,
 } from "@opentui/core"
 import type { PasskeyPopupView } from "./passkey-popup-controller.js"
+import { approvalCountdown } from "./kernel-clock.js"
 import { theme } from "./theme.js"
 
 /** The hot-keys popup's width. */
@@ -37,6 +38,8 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   let box: BoxRenderable | undefined
   let banner: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
+  let countdownText: TextRenderable | undefined
+  let noticeText: TextRenderable | undefined
   let lastFrame = ""
   const text = (content: string, options: { accent?: boolean; muted?: boolean; bold?: boolean } = {}) =>
     new TextRenderable(renderer, {
@@ -58,10 +61,20 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
     scroll(direction: -1 | 1) { body?.scrollBy(direction * 4) },
     render(view: PasskeyPopupView, dimensions: { width: number; height: number }) {
       if (!box) return
-      const frame = JSON.stringify([view, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
-      if (lastFrame === frame) return
+      const countdown = approvalCountdown(view.remainingMs)
+      const notice = view.prompt ? `Chariox · ${passkeyNoticeLabel(view.prompt)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8 · ${countdown}` : ""
+      const frame = JSON.stringify([{...view, remainingMs: undefined}, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
+      if (lastFrame === frame) {
+        // Clock ticks update text in place, preserving scroll and input focus.
+        if (countdownText) countdownText.content = countdown
+        if (noticeText) noticeText.content = notice
+        box.requestRender()
+        return
+      }
       lastFrame = frame
       body = undefined
+      countdownText = undefined
+      noticeText = undefined
       for (const child of [...box.getChildren()]) {
         box.remove(String(child.id))
         child.destroyRecursively()
@@ -75,7 +88,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         banner.backgroundColor = theme.backgroundElement
         banner.paddingLeft = 1
         banner.paddingRight = 1
-        if (view.count) banner.add(text(`Chariox · ${passkeyNoticeLabel(view.prompt!)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8`, { bold: true }))
+        if (view.count) { noticeText = text(notice, {bold: true}); banner.add(noticeText) }
         banner.onMouseUp = (event) => {
           event.stopPropagation()
           if (event.button === MouseButton.LEFT) actions.show()
@@ -95,7 +108,8 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
           position: "absolute", right: 0, top: 1, height: 1,
           backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
         })
-        indicator.add(text(`Chariox · ${passkeyNoticeLabel(view.prompt!)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8`, { accent: true }))
+        noticeText = text(notice, {accent: true})
+        indicator.add(noticeText)
         indicator.onMouseUp = (event) => {
           event.stopPropagation()
           if (event.button === MouseButton.LEFT) actions.show()
@@ -130,7 +144,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(header)
       const prompt = view.prompt
       // The request scrolls when the terminal is too short for all of it.
-      const fixedRows = 14 + (view.error ? 2 : 0)
+      const fixedRows = 15 + (view.error ? 2 : 0)
       const access = prompt.kind === "access_grant" || prompt.kind === "access_extension"
       const kernelAccess = access && prompt.session_id === "kernel-access"
       const showKind = !access || view.count > 1
@@ -144,6 +158,8 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       panel.add(body)
+      countdownText = text(countdown, {muted: true})
+      section(countdownText)
       const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
       if (!kernelAccess) section(text(`Session: ${session} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.

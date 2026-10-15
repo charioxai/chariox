@@ -12,6 +12,7 @@ import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
 import { getCredentialVaultStatus } from "./config-api.js"
 import { listKernelAccessGrants } from "./kernel-api.js"
 import { createKernelSecurityRefresh } from "./kernel-security-refresh.js"
+import { createKernelClock, kernelTimeFromHealth } from "./kernel-clock.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
  * on top of it, the passkey popup (protocol 403), which shows the owner's
@@ -57,6 +58,7 @@ export function createCliKernelApprovalComposition(deps: {
     cycleRemember: () => popup.cycleRemember(),
   })
   const popup = createPasskeyPopupController({
+    serverClock: createKernelClock(async () => kernelTimeFromHealth(await deps.client.send({GetDaemonHealth: null}))),
     connected: deps.kernelConnected,
     onView: (view) => popupSurface.render(view, deps.dimensions()),
     onOpen: opened,

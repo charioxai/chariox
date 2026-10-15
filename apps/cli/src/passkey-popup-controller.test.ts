@@ -21,7 +21,7 @@ const type = (h: ReturnType<typeof harness>, text: string) => {
   for (const sequence of Array.from(text)) h.popup.handleKey(key(sequence === " " ? "space" : sequence, { sequence }))
 }
 
-function harness() {
+function harness(serverClock?: import("./kernel-clock.js").KernelClock) {
   let connected = true
   let resolve!: () => void
   let reject!: (error: Error) => void
@@ -30,6 +30,7 @@ function harness() {
   const focus: string[] = []
   const popup = createPasskeyPopupController({
     connected: () => connected, onView() {},
+    ...(serverClock ? {serverClock} : {}),
     onOpen: () => focus.push("open"), onClose: () => focus.push("close"), scroll() {},
     respond: (prompt, choiceId, proof) => {
       requests.push(proof ? [prompt.interaction_id, choiceId, proof] : [prompt.interaction_id, choiceId])
@@ -338,4 +339,20 @@ test("MP-08/MP-11 resume invalidates presence without dropping an already fresh 
   h.popup.invalidateConnectionState({preservePrompts: true})
   assert.equal(h.popup.view().count, 1)
   assert.equal(h.popup.view().prompt?.interaction_id, "fresh")
+})
+
+
+test("MP-08/MP-11 kernel countdown expires once and reports the unanswered extension", () => {
+  let now = 1_000
+  const h = harness({now: () => now, synchronize: async () => {}, invalidate() {}})
+  try {
+    h.popup.apply([{...prompt("timed"), kind: "access_extension", expires_at_ms: 4_000}])
+    assert.equal(h.popup.view().remainingMs, 3_000)
+    now = 4_001
+    h.popup.apply([])
+    assert.equal(h.popup.view().count, 0)
+    assert.deepEqual(h.notices, ["Extension request expired — access ended"])
+    h.popup.apply([])
+    assert.equal(h.notices.length, 1)
+  } finally {h.popup.dispose()}
 })
