@@ -585,7 +585,10 @@ Those lifecycle semantics belong to PR2.
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **513** and relay peer protocol **121**. It combines the agent-model
+protocol **537** and relay peer protocol **145** (coordinator allocation
+2026-10-15). It combines main 520/128 direct browser/terminal carriers and
+owner-managed machine/context admission with the agent-model 513/121 union:
+it retains the agent-model
 493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
 relay response framing and socket-local receipts; and the native display,
 App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
@@ -593,7 +596,7 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 121 or newer. 513/121 also includes main's
+hosted slice receipts require peer 145 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors depend on
 the contracts they use; this entry allocates no new protocol version.
@@ -611,7 +614,12 @@ Pause and Resume remain denied for everyone; other callers and all controls of
 terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
 the transactional immutable proof. Managed upgrade policy retains 506 as an
-explicit predecessor; the consuming web floor is 513.
+explicit predecessor; the aggregate retains 493, 506, 513 and 520 in both
+upgrade and rollback policy. Goal, window-sudo and agent-tab web controls require
+537 because main 520 alone lacks the agent-model union; unrelated feature floors
+remain at their introduction versions. The version-bound aggregate snapshot
+and encrypted lease-admission drill cover both parent contracts and rejection
+of older worker contracts.
 
 MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
 `chariox.query_recall`, used while room agent tools are off) keep the

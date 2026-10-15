@@ -318,6 +318,10 @@ pub use workspace::*;
 /// loopback `/v1/browser` handshake and short bound-client terminal direct
 /// leases with paired Origin), and owner-managed SSH machine add/remove,
 /// credential-free owner-managed context admission and destination receipts.
+/// Version 537 (relay peer 145) combines main's 520/128 direct-carrier and
+/// owner-managed contracts with agent-model 513/121 task/wake, completion,
+/// leased-watcher, paired-display and historical-workflow contracts
+/// (MP-08/MP-10/MP-11; coordinator allocation 2026-10-15).
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 537;

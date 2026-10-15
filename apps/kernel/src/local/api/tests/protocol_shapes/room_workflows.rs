@@ -113,7 +113,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
     );
 }
 
-// MP-08 / MP-10 / MP-11: bind the historical marker to its reviewed 513/121 snapshot.
+// MP-08 / MP-10 / MP-11: bind the historical marker to the aggregate 537/145 snapshot.
 #[test]
 fn historical_workflow_projection_protocol_snapshot() {
     let expected: serde_json::Value = serde_json::from_str(include_str!(

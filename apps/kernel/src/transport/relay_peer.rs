@@ -115,7 +115,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 128 binds owner-managed destinations in context import arm/receipt
 /// shapes to local protocol 520 (landing 2026-10-14; branch-only 117 was never
 /// released; MP-08/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
+/// Version 145 carries the aggregate local 537 union: main 520/128 plus
+/// agent-model 513/121. Older worker contracts are refused before dispatch
+/// (MP-08/MP-10/MP-11; coordinator allocation 2026-10-15).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 145;
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
@@ -2173,7 +2176,7 @@ mod owner_managed_context_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, crate::test_support::expected_relay_peer_protocol_version());
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
@@ -2392,6 +2395,9 @@ mod mp08_transport_compatibility_tests {
             (Some(94), false),
             (Some(96), false),
             (Some(102), false),
+            (Some(114), false),
+            (Some(121), false),
+            (Some(128), false),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION - 1), false),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION), true),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION + 1), true),

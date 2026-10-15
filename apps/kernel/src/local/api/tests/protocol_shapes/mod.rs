@@ -6,6 +6,7 @@ use crate::local::{
 };
 
 mod agent_workflow;
+mod aggregate_agent_model;
 mod app_events;
 mod app_fetch;
 mod app_install;
