@@ -97,6 +97,9 @@ export const refusedChord = matches([[0xffc9, 0], [key('i'), CTRL | SHIFT], [key
 export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'), CTRL], [0xff09, CTRL], [0xff09, CTRL | SHIFT],
   [key('t'), CTRL | SHIFT], [0xff51, ALT], [0xff53, ALT]]);
 
+// The native tab strip's height in the band (DIP); the toolbar row starts below it.
+const STRIP_HEIGHT = 41;
+
 export class InputArbiter {
   constructor(host, windows) { this.host = host; this.windows = windows; }
   static agent(command) { return command._agent_input === true || command.focused_agent === true; }
@@ -149,7 +152,11 @@ export class InputArbiter {
       const {connection, sessionId, tab} = await current();
       const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
-      const {result} = await connection.send('Runtime.evaluate', {contextId: world.contextId, expression: sensitiveFocusExpression(false), returnByValue: true}, sessionId);
+      const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
+      // Only when the person put focus there for this document and the page reports no focus.
+      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}` && (await evaluate('document.hasFocus()')).result?.value === false) return;
+      const {result} = await evaluate(sensitiveFocusExpression(false));
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
@@ -163,10 +170,18 @@ export class InputArbiter {
     const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
-      if (bandChord(keysym, modifiers)) await switching(); else await textTarget();
+      let tab;
+      if (bandChord(keysym, modifiers)) tab = await switching(); else await textTarget();
+      // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
+      if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
+      else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
       return dispatched(() => source.chord(keysym, modifiers));
     };
-    if (input.kind === 'click') { await switching(); return dispatched(() => source.click(input.x, input.y)); }
+    if (input.kind === 'click') {
+      // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
+      const tab = await switching(); this.chromeFocus = input.y >= STRIP_HEIGHT ? `${tab.tab_id}:${tab.document_id}` : null;
+      return dispatched(() => source.click(input.x, input.y));
+    }
     if (input.kind === 'scroll') {
       const nx = notches(input.delta_x), ny = notches(input.delta_y);
       if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
