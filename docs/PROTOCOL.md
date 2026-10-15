@@ -2924,8 +2924,9 @@ Workflow trigger and deployment direction:
   `critical_approval.passkey` event names it as `connection_class` (null for
   the kernel's own callers). A `RespondToInteraction` `passkey` from a
   `kernel_agent`, `host`, `relay_peer` or `external_agent` connection is
-  refused with `PASSKEY_NOT_ACCEPTED` before verification: it is not audited
-  and does not count toward the owner's limit. Nothing else changes; which
+  refused with `PASSKEY_NOT_ACCEPTED` before verification (an `external_agent`
+  on the Unix socket gets `kernel_access_human_only`, EXT-UX-05): it is not
+  audited and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
 - protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
