@@ -307,8 +307,10 @@ impl SessionService {
             .collect::<BTreeSet<_>>();
         self.projects
             .values()
-            .filter(|project| visible_project_ids.contains(project.id())
-                || (project.is_standalone() && project.owner_user_id() == caller_user_id))
+            .filter(|project| {
+                visible_project_ids.contains(project.id())
+                    || (project.is_standalone() && project.owner_user_id() == caller_user_id)
+            })
             .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
             .cloned()
             .collect()
@@ -325,7 +327,9 @@ impl SessionService {
         let empty_project_ids = self
             .projects
             .values()
-            .filter(|project| !project.is_standalone() && !visible_project_ids.contains(project.id()))
+            .filter(|project| {
+                !project.is_standalone() && !visible_project_ids.contains(project.id())
+            })
             .map(|project| project.id().to_string())
             .collect::<Vec<_>>();
         empty_project_ids

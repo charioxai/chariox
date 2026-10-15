@@ -122,6 +122,61 @@ mod tests {
         assert_eq!(runtime.list_projects("owner", true).await, vec![project]);
         std::fs::remove_dir(&workspace).unwrap();
     }
+    #[tokio::test]
+    async fn review0440_standalone_session_delete_keeps_project_journal_and_environment() {
+        crate::test_support::isolated_env_test!();
+        let workspace = crate::test_support::TestWorktree::new("standalone-delete");
+        let config = crate::DaemonConfig::for_tests();
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let runtime = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        )
+        .runtime_state();
+        let request = crate::local::ResolveProjectRequest {
+            project_id: None,
+            workspace_id: workspace.path().display().to_string(),
+            create_if_missing: true,
+        };
+        let LocalDaemonResponse::ProjectResolved {
+            project: Some(project),
+        } = runtime.resolve_project(request, "owner").unwrap()
+        else {
+            panic!("Project expected")
+        };
+        let LocalDaemonResponse::SessionCreated { session, .. } = runtime
+            .create_session_response(
+                crate::session::CreateSessionRequest::new(
+                    project.workspace_id(),
+                    project.workspace_id(),
+                )
+                .with_owner_user_id("owner"),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Session expected")
+        };
+        runtime.delete_session_id(session.id()).await.unwrap();
+        assert_eq!(
+            runtime.list_projects("owner", true).await,
+            vec![project.clone()]
+        );
+        let connection = rusqlite::Connection::open(config.durable_state_path()).unwrap();
+        let deletions: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM durable_state_events WHERE kind = 'project.deleted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(deletions, 0);
+        assert!(
+            ProjectEnvironmentStore::new(&config.private_runtime_state_root())
+                .snapshot(&project)
+                .is_ok()
+        );
+    }
     // MP-08 / MP-10 / MP-11: both entry paths reuse a non-Git folder through aliases.
     #[cfg(unix)]
     #[tokio::test]

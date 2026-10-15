@@ -136,11 +136,33 @@ async fn envp05a_setup_admission_rechecks_project_owner_and_folder_bindings() {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum SetupScenario { SlowPlan, Retry, LockedSecret, MissingPublic, ChangedPublic, ForeignDependency, PlatformGap, FolderGap, FailedReadiness, ProtectedAlias, RevisionChanged, AuthorityChanged }
+enum SetupScenario {
+    SlowPlan,
+    Retry,
+    LockedSecret,
+    MissingPublic,
+    ChangedPublic,
+    ForeignDependency,
+    PlatformGap,
+    FolderGap,
+    FailedReadiness,
+    ProtectedAlias,
+    RevisionChanged,
+    AuthorityChanged,
+}
 
 #[cfg(target_os = "linux")]
 async fn setup_retry_regression(scenario: SetupScenario) {
-    let locked_secret = !matches!(scenario, SetupScenario::Retry | SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness | SetupScenario::RevisionChanged | SetupScenario::AuthorityChanged | SetupScenario::SlowPlan);
+    let locked_secret = !matches!(
+        scenario,
+        SetupScenario::Retry
+            | SetupScenario::PlatformGap
+            | SetupScenario::FolderGap
+            | SetupScenario::FailedReadiness
+            | SetupScenario::RevisionChanged
+            | SetupScenario::AuthorityChanged
+            | SetupScenario::SlowPlan
+    );
     let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
     let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
 
@@ -157,8 +179,10 @@ async fn setup_retry_regression(scenario: SetupScenario) {
     config.user_config_path = home.join("config.toml");
     config.user_config.state.path = Some(home.join("state/state.db").to_string_lossy().into());
     if locked_secret {
-        config.user_config.credential_vault.backend = crate::config::CredentialVaultBackend::CharioxEncrypted;
-        config.user_config.credential_vault.path = home.join("fixture-vault.json").to_string_lossy().into();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path =
+            home.join("fixture-vault.json").to_string_lossy().into();
     }
     config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config.accept_remote_leases = true;
@@ -229,10 +253,14 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         public.requirement_id = "public".into();
         public.spec = RequirementSpec::Variables {
             name: "PUBLIC_BUILD_INPUT".into(),
-            locator: ProjectEnvironmentLocator::ConfigFile { path: "public-input".into() },
+            locator: ProjectEnvironmentLocator::ConfigFile {
+                path: "public-input".into(),
+            },
         };
         if matches!(scenario, SetupScenario::ForeignDependency) {
-            public.scope = RequirementScope::Folder { folder_id: env.folders[0].folder_id.clone() };
+            public.scope = RequirementScope::Folder {
+                folder_id: env.folders[0].folder_id.clone(),
+            };
         }
         std::fs::write(workspace.join("public-input"), "public build input").unwrap();
         env.project_requirements.push(public.clone());
@@ -243,8 +271,12 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             workspace_id: workspace.to_string_lossy().into(),
             kind: ProjectEnvironmentEntryKind::Variable,
             classification: ProjectEnvironmentClassification::Secret,
-            excluded: false, uses: vec![],
-            locator: ProjectEnvironmentLocator::Vault { service: "fixture-unrelated".into(), key: "private".into() },
+            excluded: false,
+            uses: vec![],
+            locator: ProjectEnvironmentLocator::Vault {
+                service: "fixture-unrelated".into(),
+                key: "private".into(),
+            },
             status: ProjectEnvironmentEntryStatus::Found,
         });
         store.save(&stored).unwrap();
@@ -253,7 +285,9 @@ async fn setup_retry_regression(scenario: SetupScenario) {
     }
     if matches!(scenario, SetupScenario::ForeignDependency) {
         let first_id = env.folders[0].folder_id.clone();
-        requirement.scope = RequirementScope::Folder { folder_id: first_id.clone() };
+        requirement.scope = RequirementScope::Folder {
+            folder_id: first_id.clone(),
+        };
         let mut public = env.project_requirements[1].clone();
         public.scope = requirement.scope.clone();
         env.project_requirements.clear();
@@ -261,78 +295,195 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         crate::project_environment::apply_scoped_binding(&store, &config, &env, &public).unwrap();
         let second_workspace = root.path().join("second-workspace");
         std::fs::create_dir_all(&second_workspace).unwrap();
-        std::fs::write(second_workspace.join("public-input"), "distinct second-folder input").unwrap();
-        state.owned.session_store.restore_projects(vec![project.clone()]);
-        project = state.owned.session_store.update_project_workspaces(
-            project.id(), vec![workspace.to_string_lossy().into(), second_workspace.to_string_lossy().into()], "owner",
-        ).unwrap();
-        let mut second = store.snapshot(&project).unwrap().folders.into_iter()
-            .find(|f| f.local_workspace_binding == second_workspace.to_string_lossy()).unwrap();
+        std::fs::write(
+            second_workspace.join("public-input"),
+            "distinct second-folder input",
+        )
+        .unwrap();
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![project.clone()]);
+        project = state
+            .owned
+            .session_store
+            .update_project_workspaces(
+                project.id(),
+                vec![
+                    workspace.to_string_lossy().into(),
+                    second_workspace.to_string_lossy().into(),
+                ],
+                "owner",
+            )
+            .unwrap();
+        let mut second = store
+            .snapshot(&project)
+            .unwrap()
+            .folders
+            .into_iter()
+            .find(|f| f.local_workspace_binding == second_workspace.to_string_lossy())
+            .unwrap();
         let mut foreign = public.clone();
         foreign.requirement_id = "foreign-public".into();
-        foreign.scope = RequirementScope::Folder { folder_id: second.folder_id.clone() };
+        foreign.scope = RequirementScope::Folder {
+            folder_id: second.folder_id.clone(),
+        };
         second.requirements = vec![foreign.clone()];
         env.folders.push(second);
         crate::project_environment::apply_scoped_binding(&store, &config, &env, &foreign).unwrap();
         requirement.depends_on = vec![foreign.requirement_id.clone()];
         env.folders[0].requirements[0] = requirement.clone();
     }
-    if matches!(scenario, SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness) {
-        state.owned.session_store.restore_projects(vec![project.clone()]);
+    if matches!(
+        scenario,
+        SetupScenario::PlatformGap | SetupScenario::FolderGap | SetupScenario::FailedReadiness
+    ) {
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![project.clone()]);
         if matches!(scenario, SetupScenario::PlatformGap) {
-            requirement.platform_variants = vec![EnvironmentPlatform { os: "macos".into(), architecture: "any".into() }];
+            requirement.platform_variants = vec![EnvironmentPlatform {
+                os: "macos".into(),
+                architecture: "any".into(),
+            }];
         } else if matches!(scenario, SetupScenario::FolderGap) {
-            requirement.scope = RequirementScope::Folder { folder_id: env.folders[0].folder_id.clone() };
+            requirement.scope = RequirementScope::Folder {
+                folder_id: env.folders[0].folder_id.clone(),
+            };
             env.folders[0].requirements = vec![requirement.clone()];
             env.project_requirements.clear();
         }
-        let RequirementSpec::SetupChecks { commands, probes, .. } = &mut requirement.spec else { panic!("Setup fixture") };
+        let RequirementSpec::SetupChecks {
+            commands, probes, ..
+        } = &mut requirement.spec
+        else {
+            panic!("Setup fixture")
+        };
         *commands = vec![command("printf forbidden > platform-command-marker")];
-        *probes = vec![EnvironmentProbe::Tcp { host: "127.0.0.1".into(), port: 9, timeout_ms: 20 }];
+        *probes = vec![EnvironmentProbe::Tcp {
+            host: "127.0.0.1".into(),
+            port: 9,
+            timeout_ms: 20,
+        }];
         if matches!(scenario, SetupScenario::FolderGap) {
             env.folders[0].requirements = vec![requirement.clone()];
         } else {
             env.project_requirements = vec![requirement.clone()];
         }
         let current = store.snapshot(&project).unwrap();
-        let (saved, _) = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
-            project_id: project.id().into(), expected_revision: current.revision,
-            expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env), accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
-        }, "owner").unwrap();
+        let (saved, _) = store
+            .save_revision_locked(
+                &current,
+                &crate::local::SaveProjectEnvironmentRevisionRequest {
+                    project_id: project.id().into(),
+                    expected_revision: current.revision,
+                    expected_content_digest: current.content_digest.clone(),
+                    draft: environment_draft(&env),
+                    accepted_proposal_ids: vec![],
+                    excluded_proposal_ids: vec![],
+                },
+                "owner",
+            )
+            .unwrap();
         if matches!(scenario, SetupScenario::FolderGap) {
             std::fs::remove_dir(&workspace).unwrap();
         }
-        let LocalDaemonResponse::ProjectEnvironmentPlan { plan } = state.plan_project_environment(crate::local::PlanProjectEnvironmentRequest {
-            project_id: project.id().into(), expected_revision: saved.revision, revision_digest: saved.content_digest.clone(), target: current_check_target(&config), selected_items: vec!["setup".into()],
-        }, "owner").await.unwrap() else { panic!("Plan response") };
-        state.apply_project_environment(crate::local::ApplyProjectEnvironmentRequest {
-            project_id: project.id().into(), operation_id: "platform-apply".into(), plan_id: plan.plan_id.clone(),
-            expected_revision: saved.revision, revision_digest: saved.content_digest.clone(), target: plan.target.clone(), selected_items: plan.selected_items.clone(),
-            per_item_opt_ins: plan.required_opt_ins.iter().map(|id| EnvironmentItemOptIn {
-                requirement_id: id.clone(), decision: EnvironmentOptInDecision::Accepted, recorded_at_ms: crate::session::unix_epoch_ms(), user_id: "owner".into(),
-            }).collect(),
-        }, "owner").await.unwrap();
+        let LocalDaemonResponse::ProjectEnvironmentPlan { plan } = state
+            .plan_project_environment(
+                crate::local::PlanProjectEnvironmentRequest {
+                    project_id: project.id().into(),
+                    expected_revision: saved.revision,
+                    revision_digest: saved.content_digest.clone(),
+                    target: current_check_target(&config),
+                    selected_items: vec!["setup".into()],
+                },
+                "owner",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Plan response")
+        };
+        state
+            .apply_project_environment(
+                crate::local::ApplyProjectEnvironmentRequest {
+                    project_id: project.id().into(),
+                    operation_id: "platform-apply".into(),
+                    plan_id: plan.plan_id.clone(),
+                    expected_revision: saved.revision,
+                    revision_digest: saved.content_digest.clone(),
+                    target: plan.target.clone(),
+                    selected_items: plan.selected_items.clone(),
+                    per_item_opt_ins: plan
+                        .required_opt_ins
+                        .iter()
+                        .map(|id| EnvironmentItemOptIn {
+                            requirement_id: id.clone(),
+                            decision: EnvironmentOptInDecision::Accepted,
+                            recorded_at_ms: crate::session::unix_epoch_ms(),
+                            user_id: "owner".into(),
+                        })
+                        .collect(),
+                },
+                "owner",
+            )
+            .await
+            .unwrap();
         let end = Instant::now() + Duration::from_secs(15);
         let attempt = loop {
             let journal = store.load_applies(project.id()).unwrap();
-            if let Some(a) = journal.attempts.first().filter(|a| !apply_active(&a.operation)) { break a.clone(); }
+            if let Some(a) = journal
+                .attempts
+                .first()
+                .filter(|a| !apply_active(&a.operation))
+            {
+                break a.clone();
+            }
             assert!(Instant::now() < end, "Apply runner must settle");
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         if matches!(scenario, SetupScenario::FailedReadiness) {
-            assert!(workspace.join("platform-command-marker").exists(), "an ordinary failed readiness probe permits opted-in repair");
+            assert!(
+                workspace.join("platform-command-marker").exists(),
+                "an ordinary failed readiness probe permits opted-in repair"
+            );
             assert_eq!(attempt.setup_admitted_commands.get("setup"), Some(&1));
-            assert_eq!(attempt.operation.per_item_results[0].reason_code, "setup_unconfirmed", "unchanged failed target facts cannot become Ready");
+            assert_eq!(
+                attempt.operation.per_item_results[0].reason_code, "setup_unconfirmed",
+                "unchanged failed target facts cannot become Ready"
+            );
             return;
         }
-        assert!(!workspace.join("platform-command-marker").exists(), "inapplicable Setup must not run declared commands");
-        assert!(attempt.setup_admitted_commands.get("setup").is_none(), "applicability failure must precede Setup admission");
-        assert_eq!(attempt.operation.per_item_results[0].reason_code, if matches!(scenario, SetupScenario::PlatformGap) { "platform_gap" } else { "folder_unavailable" });
+        assert!(
+            !workspace.join("platform-command-marker").exists(),
+            "inapplicable Setup must not run declared commands"
+        );
+        assert!(
+            attempt.setup_admitted_commands.get("setup").is_none(),
+            "applicability failure must precede Setup admission"
+        );
+        assert_eq!(
+            attempt.operation.per_item_results[0].reason_code,
+            if matches!(scenario, SetupScenario::PlatformGap) {
+                "platform_gap"
+            } else {
+                "folder_unavailable"
+            }
+        );
         return;
     }
-    state.owned.session_store.restore_projects(vec![project.clone()]);
-    if matches!(scenario, SetupScenario::RevisionChanged | SetupScenario::SlowPlan) {
-        let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else { panic!("Setup fixture") };
+    state
+        .owned
+        .session_store
+        .restore_projects(vec![project.clone()]);
+    if matches!(
+        scenario,
+        SetupScenario::RevisionChanged | SetupScenario::SlowPlan
+    ) {
+        let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else {
+            panic!("Setup fixture")
+        };
         *commands = vec![
             command("printf started > command-started; while [ ! -f release-first ]; do sleep .02; done; printf finished > first-finished"),
             command("printf forbidden > second-command-marker"),
@@ -340,45 +491,89 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         env.project_requirements = vec![requirement.clone()];
     }
     let _slow_plan_server = if matches!(scenario, SetupScenario::SlowPlan) {
-        use std::io::{Read,Write};
-        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url=format!("http://{}/",listener.local_addr().unwrap());
-        let mut service=requirement.clone(); service.requirement_id="slow-service".into();
-        service.spec=RequirementSpec::Services {identity:"Slow service".into(),target_binding:None,
-            probe:Some(EnvironmentProbe::Http {url,expected_status:200,timeout_ms:10000}),health_expectation:None,depends_on:vec![]};
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let mut service = requirement.clone();
+        service.requirement_id = "slow-service".into();
+        service.spec = RequirementSpec::Services {
+            identity: "Slow service".into(),
+            target_binding: None,
+            probe: Some(EnvironmentProbe::Http {
+                url,
+                expected_status: 200,
+                timeout_ms: 10000,
+            }),
+            health_expectation: None,
+            depends_on: vec![],
+        };
         env.project_requirements.push(service);
-        let RequirementSpec::SetupChecks {commands,..}=&mut requirement.spec else {panic!("setup expected")};
+        let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else {
+            panic!("setup expected")
+        };
         *commands=vec![command("printf started > command-started; while [ ! -f release-first ]; do sleep .02; done; printf finished > first-finished"),command("printf complete > second-command-marker")];
-        for c in commands {c.timeout_ms=15000;}
-        env.project_requirements[0]=requirement.clone();
+        for c in commands {
+            c.timeout_ms = 15000;
+        }
+        env.project_requirements[0] = requirement.clone();
         Some(std::thread::spawn(move || {
-            let (mut stream,_)=listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let _=stream.read(&mut [0;4096]);
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let _ = stream.read(&mut [0; 4096]);
             std::thread::sleep(Duration::from_secs(4));
-            let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         }))
-    } else {None};
+    } else {
+        None
+    };
     let current = store.snapshot(&project).unwrap();
-    env = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
-        project_id: project.id().into(), expected_revision: current.revision,
-        expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env),
-        accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
-    }, "owner").unwrap().0;
+    env = store
+        .save_revision_locked(
+            &current,
+            &crate::local::SaveProjectEnvironmentRevisionRequest {
+                project_id: project.id().into(),
+                expected_revision: current.revision,
+                expected_content_digest: current.content_digest.clone(),
+                draft: environment_draft(&env),
+                accepted_proposal_ids: vec![],
+                excluded_proposal_ids: vec![],
+            },
+            "owner",
+        )
+        .unwrap()
+        .0;
     // MP-08 / MP-10 / MP-11: simulate a pre-validation stored alias only
     // after valid Save; current Save rejection is covered separately. Keep
     // testing the runner defense before ambient-source reads or commands.
     if matches!(scenario, SetupScenario::ProtectedAlias) {
         std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
-        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment { name: "INHERITED_PASSWORD".into() };
-        let RequirementSpec::Variables { locator: source, .. } = &mut env.project_requirements[1].spec else { panic!("public fixture") };
+        let locator = ProjectEnvironmentLocator::WorkspaceEnvironment {
+            name: "INHERITED_PASSWORD".into(),
+        };
+        let RequirementSpec::Variables {
+            locator: source, ..
+        } = &mut env.project_requirements[1].spec
+        else {
+            panic!("public fixture")
+        };
         *source = locator.clone();
         let mut legacy = store.load(project.id()).unwrap().unwrap();
-        legacy.manifest.entries.iter_mut().find(|e| e.name == "PUBLIC_BUILD_INPUT").unwrap().locator = locator;
+        legacy
+            .manifest
+            .entries
+            .iter_mut()
+            .find(|e| e.name == "PUBLIC_BUILD_INPUT")
+            .unwrap()
+            .locator = locator;
         store.save(&legacy).unwrap();
     }
     requirement = environment_requirements(&env)
-        .find(|r| r.requirement_id == requirement.requirement_id).unwrap().clone();
+        .find(|r| r.requirement_id == requirement.requirement_id)
+        .unwrap()
+        .clone();
     let mut operation = EnvironmentOperation {
         operation_id: "retry-operation".into(),
         attempt: 1,
@@ -424,19 +619,51 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         .unwrap();
     if matches!(scenario, SetupScenario::AuthorityChanged) {
         for changed in [
-            crate::session::RuntimeProject::new(project.id(), "different-owner", workspace.to_string_lossy(), "Changed owner", crate::session::RuntimeProjectKind::Named),
-            crate::session::RuntimeProject::new(project.id(), "owner", root.path().to_string_lossy(), "Changed folder", crate::session::RuntimeProjectKind::Named),
+            crate::session::RuntimeProject::new(
+                project.id(),
+                "different-owner",
+                workspace.to_string_lossy(),
+                "Changed owner",
+                crate::session::RuntimeProjectKind::Named,
+            ),
+            crate::session::RuntimeProject::new(
+                project.id(),
+                "owner",
+                root.path().to_string_lossy(),
+                "Changed folder",
+                crate::session::RuntimeProjectKind::Named,
+            ),
         ] {
             state.owned.session_store.restore_projects(vec![changed]);
-            assert!(record_setup_admission(&state, &config, &env, &requirement, &operation, 1).is_err(), "changed Project authority must reject admission");
-            assert!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.is_empty());
+            assert!(
+                record_setup_admission(&state, &config, &env, &requirement, &operation, 1).is_err(),
+                "changed Project authority must reject admission"
+            );
+            assert!(store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .is_empty());
         }
         return;
     }
-    if matches!(scenario, SetupScenario::RevisionChanged | SetupScenario::SlowPlan) {
-        let run_state = state.clone(); let run_config = config.clone();
-        let run_env = env.clone(); let run_requirement = requirement.clone(); let run_operation = operation.clone();
-        let running = tokio::task::spawn_blocking(move || apply_setup_requirement(&run_state, &run_config, &run_env, &run_requirement, &run_operation, || false));
+    if matches!(
+        scenario,
+        SetupScenario::RevisionChanged | SetupScenario::SlowPlan
+    ) {
+        let run_state = state.clone();
+        let run_config = config.clone();
+        let run_env = env.clone();
+        let run_requirement = requirement.clone();
+        let run_operation = operation.clone();
+        let running = tokio::task::spawn_blocking(move || {
+            apply_setup_requirement(
+                &run_state,
+                &run_config,
+                &run_env,
+                &run_requirement,
+                &run_operation,
+                || false,
+            )
+        });
         let deadline = Instant::now() + Duration::from_secs(15);
         while !workspace.join("command-started").exists() {
             assert!(!running.is_finished(), "first command must actually start");
@@ -444,24 +671,50 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         if matches!(scenario, SetupScenario::SlowPlan) {
-            let LocalDaemonResponse::ProjectEnvironmentPlan { .. } = state.plan_project_environment(crate::local::PlanProjectEnvironmentRequest {
-                project_id:project.id().into(),expected_revision:env.revision,revision_digest:env.content_digest.clone(),
-                target:current_check_target(&config),selected_items:vec!["slow-service".into()],
-            }, "owner").await.unwrap() else {panic!("Plan expected")};
+            let LocalDaemonResponse::ProjectEnvironmentPlan { .. } = state
+                .plan_project_environment(
+                    crate::local::PlanProjectEnvironmentRequest {
+                        project_id: project.id().into(),
+                        expected_revision: env.revision,
+                        revision_digest: env.content_digest.clone(),
+                        target: current_check_target(&config),
+                        selected_items: vec!["slow-service".into()],
+                    },
+                    "owner",
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("Plan expected")
+            };
             std::fs::write(workspace.join("release-first"), "release").unwrap();
-            let result=running.await.unwrap();
-            assert!(result.is_ok(), "unchanged Setup must survive concurrent slow Plan");
+            let result = running.await.unwrap();
+            assert!(
+                result.is_ok(),
+                "unchanged Setup must survive concurrent slow Plan"
+            );
             assert!(workspace.join("first-finished").exists());
             assert!(workspace.join("second-command-marker").exists());
             return;
         }
         let mut draft = environment_draft(&env);
-        draft.project_requirements.retain(|r| r.requirement_id != "setup");
-        state.save_project_environment_revision(crate::local::SaveProjectEnvironmentRevisionRequest {
-            project_id: project.id().into(), expected_revision: env.revision,
-            expected_content_digest: env.content_digest.clone(), draft,
-            accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
-        }, "owner").await.unwrap();
+        draft
+            .project_requirements
+            .retain(|r| r.requirement_id != "setup");
+        state
+            .save_project_environment_revision(
+                crate::local::SaveProjectEnvironmentRevisionRequest {
+                    project_id: project.id().into(),
+                    expected_revision: env.revision,
+                    expected_content_digest: env.content_digest.clone(),
+                    draft,
+                    accepted_proposal_ids: vec![],
+                    excluded_proposal_ids: vec![],
+                },
+                "owner",
+            )
+            .await
+            .unwrap();
         // The live callback must stop command 1 even before the gate is released.
         let stop_deadline = Instant::now() + Duration::from_secs(2);
         while !running.is_finished() && Instant::now() < stop_deadline {
@@ -470,27 +723,62 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         let stopped_before_release = running.is_finished();
         std::fs::write(workspace.join("release-first"), "release").unwrap();
         let result = running.await.unwrap();
-        assert!(!workspace.join("second-command-marker").exists(), "a newer saved revision must fence command 2");
-        assert!(stopped_before_release, "running callback must revoke command 1 when saved authority changes");
+        assert!(
+            !workspace.join("second-command-marker").exists(),
+            "a newer saved revision must fence command 2"
+        );
+        assert!(
+            stopped_before_release,
+            "running callback must revoke command 1 when saved authority changes"
+        );
         assert!(result.is_err());
-        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&1));
-        assert!(record_setup_admission(&state, &config, &env, &requirement, &operation, 2).is_err(), "locked checkpoint must also fence stale revision");
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup"),
+            Some(&1)
+        );
+        assert!(
+            record_setup_admission(&state, &config, &env, &requirement, &operation, 2).is_err(),
+            "locked checkpoint must also fence stale revision"
+        );
         return;
     }
     if matches!(scenario, SetupScenario::ForeignDependency) {
         // B is the selected prerequisite; A has an independently applied equal name.
-        assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());
-        assert!(!workspace.join("successful-count").exists(), "cross-folder prerequisite must not substitute A's unselected value");
-        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        assert!(
+            apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false)
+                .is_err()
+        );
+        assert!(
+            !workspace.join("successful-count").exists(),
+            "cross-folder prerequisite must not substitute A's unselected value"
+        );
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup"),
+            Some(&0)
+        );
         // Explicitly selecting the local prerequisite restores eligible Setup.
         requirement.depends_on = vec!["public".into()];
         env.folders[0].requirements[0] = requirement.clone();
         let current = store.snapshot(&project).unwrap();
-        env = store.save_revision_locked(&current, &crate::local::SaveProjectEnvironmentRevisionRequest {
-            project_id: project.id().into(), expected_revision: current.revision,
-            expected_content_digest: current.content_digest.clone(), draft: environment_draft(&env),
-            accepted_proposal_ids: vec![], excluded_proposal_ids: vec![],
-        }, "owner").unwrap().0;
+        env = store
+            .save_revision_locked(
+                &current,
+                &crate::local::SaveProjectEnvironmentRevisionRequest {
+                    project_id: project.id().into(),
+                    expected_revision: current.revision,
+                    expected_content_digest: current.content_digest.clone(),
+                    draft: environment_draft(&env),
+                    accepted_proposal_ids: vec![],
+                    excluded_proposal_ids: vec![],
+                },
+                "owner",
+            )
+            .unwrap()
+            .0;
         operation.revision_digest = env.content_digest.clone();
         let mut journal = store.load_applies(project.id()).unwrap();
         journal.attempts[0].operation = operation.clone();
@@ -498,9 +786,19 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         store.save_applies(project.id(), &journal).unwrap();
     }
     if matches!(scenario, SetupScenario::ProtectedAlias) {
-        let error = apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).unwrap_err();
-        assert!(!workspace.join("successful-count").exists(), "protected aliases must prevent every command");
-        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        let error =
+            apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false)
+                .unwrap_err();
+        assert!(
+            !workspace.join("successful-count").exists(),
+            "protected aliases must prevent every command"
+        );
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup"),
+            Some(&0)
+        );
         assert!(!error.to_string().contains("synthetic-opaque-input"));
         return;
     }
@@ -508,25 +806,57 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         // Public at Check/Apply time, credential-shaped when Setup resolves it.
         let replacement = format!("sk-{}", "s".repeat(48));
         std::fs::write(workspace.join("public-input"), &replacement).unwrap();
-        let error = apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).unwrap_err();
-        assert!(!workspace.join("successful-count").exists(), "fresh credential content must prevent command admission");
-        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0));
+        let error =
+            apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false)
+                .unwrap_err();
+        assert!(
+            !workspace.join("successful-count").exists(),
+            "fresh credential content must prevent command admission"
+        );
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup"),
+            Some(&0)
+        );
         assert!(!error.to_string().contains(&replacement));
-        assert!(setup_retry_is_settled(&state, &env, &requirement, &operation));
+        assert!(setup_retry_is_settled(
+            &state,
+            &env,
+            &requirement,
+            &operation
+        ));
         std::fs::write(workspace.join("public-input"), "public build input").unwrap();
     }
     if preparation_failure {
         std::fs::remove_file(workspace.join("public-input")).unwrap();
-        assert!(apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err());
+        assert!(
+            apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false)
+                .is_err()
+        );
         assert!(!workspace.join("successful-count").exists());
-        assert_eq!(store.load_applies(project.id()).unwrap().attempts[0].setup_admitted_commands.get("setup"), Some(&0), "preparation failure must durably prove no command was admitted");
-        assert!(setup_retry_is_settled(&state, &env, &requirement, &operation));
+        assert_eq!(
+            store.load_applies(project.id()).unwrap().attempts[0]
+                .setup_admitted_commands
+                .get("setup"),
+            Some(&0),
+            "preparation failure must durably prove no command was admitted"
+        );
+        assert!(setup_retry_is_settled(
+            &state,
+            &env,
+            &requirement,
+            &operation
+        ));
         std::fs::write(workspace.join("public-input"), "public build input").unwrap();
     }
     assert!(
         apply_setup_requirement(&state, &config, &env, &requirement, &operation, || false).is_err()
     );
-    assert!(workspace.join("successful-count").exists(), "public-only Setup must run despite a locked unrelated Secret");
+    assert!(
+        workspace.join("successful-count").exists(),
+        "public-only Setup must run despite a locked unrelated Secret"
+    );
     assert_eq!(
         std::fs::read_to_string(workspace.join("successful-count")).unwrap(),
         "first"

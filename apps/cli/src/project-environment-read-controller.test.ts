@@ -318,3 +318,18 @@ test("wrapped Environment navigation still lands on the Project-wide section", a
   assert.equal(controller.visibleLines()[0], "Project-wide")
   controller.close()
 })
+
+// MP-02 / MP-08 / MP-10 / MP-11: a new opening never inherits the previous target.
+for (const prior of [null, "project"]) test(`review0440 empty Workspace forgets prior Environment ${prior}`, async () => {
+ const calls: unknown[] = []
+ const controller = createProjectEnvironmentReadController({send:async request=>{calls.push(request);return {ProjectResolved:{project:null}}},render(){},pageSize:()=>100})
+ await controller.open(prior, "/a")
+ controller.close()
+ calls.length = 0
+ await controller.open(null)
+ assert(controller.visibleLines().some(line=>line.includes("Choose a folder")))
+ controller.handleKey({name:"r"})
+ await new Promise(resolve=>setTimeout(resolve,0))
+ assert.equal(calls.length,0)
+ controller.close()
+})

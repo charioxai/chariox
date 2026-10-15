@@ -3432,8 +3432,9 @@ survive recovery's cleanup of hidden-session-only Projects. Omission means false
 for existing records. Retry is idempotent for the same caller/workspace. This flag
 does not claim that machine requirements have been installed or validated: the
 normal Environment Get/editor/Check/Plan/Apply contract remains the authority for
-those operations. The result is withheld from external-grant response projection,
-consistent with other Project metadata responses.
+those operations. The result uses the public response projection, consistent with other Project
+metadata responses such as `ProjectsListed` and `ProjectRenamed`; request admission
+still checks the external grant and the caller’s Project/workspace ownership.
 
 Only the new resolution action requires client protocol 524. Older supported
 Environment reads retain their existing minimum. UI selection changes fence

@@ -90,7 +90,10 @@ fn validate_setup_project(
         .reviewed_by
         .as_deref()
         .ok_or_else(|| environment_error("Setup revision is not reviewed"))?;
-    let project = state.owned.session_store.get_project(&env.local_project_id)?;
+    let project = state
+        .owned
+        .session_store
+        .get_project(&env.local_project_id)?;
     crate::runtime::state::project_environment_apply::validate_project(
         state, &project, owner, env, store,
     )

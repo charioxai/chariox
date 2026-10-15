@@ -115,10 +115,22 @@ impl RuntimeProject {
         }
     }
 
+    // MP-02 / MP-08 / MP-10 / MP-11: old path spellings retain Project and
+    // Environment identities after filesystem normalization was introduced.
+    pub(crate) fn workspace_paths_match(a: &str, b: &str) -> bool {
+        a == b
+            || (std::path::Path::new(a).is_absolute()
+                && std::path::Path::new(b).is_absolute()
+                && std::fs::canonicalize(a)
+                    .ok()
+                    .zip(std::fs::canonicalize(b).ok())
+                    .is_some_and(|(a, b)| a == b))
+    }
+
     pub fn contains_workspace(&self, workspace_id: &str) -> bool {
         self.workspace_ids()
             .iter()
-            .any(|candidate| candidate == workspace_id)
+            .any(|candidate| Self::workspace_paths_match(candidate, workspace_id))
     }
 
     pub fn name(&self) -> &str {

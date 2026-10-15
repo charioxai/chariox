@@ -84,20 +84,26 @@ pub fn environment_read_view(
         // count that the shared Web/TUI skip renderer already understands.
         if operation.kind == EnvironmentOperationKind::Detect {
             let results = std::mem::take(&mut operation.per_item_results);
-            let mut notes = results
+            let mut notes: Vec<_> = results
                 .iter()
-                .filter(|r| r.requirement_id.starts_with("detect:"));
-            let mut skips = results
+                .filter(|r| r.requirement_id.starts_with("detect:"))
+                .collect();
+            // Keep the utility outcome even if folder notes fill the whole page.
+            notes.sort_by_key(|r| r.requirement_id != "detect:model");
+            let skips: Vec<_> = results
                 .iter()
-                .filter(|r| !r.requirement_id.starts_with("detect:"));
+                .filter(|r| !r.requirement_id.starts_with("detect:"))
+                .collect();
+            let note_count = notes.len().min(31 - skips.len().min(16));
+            let skip_count = skips.len().min(31 - note_count);
             operation
                 .per_item_results
-                .extend(notes.by_ref().take(15).cloned());
+                .extend(notes[..note_count].iter().map(|r| (*r).clone()));
             operation
                 .per_item_results
-                .extend(skips.by_ref().take(16).cloned());
-            let omitted_notes = notes.count();
-            let omitted_skips = skips.count();
+                .extend(skips[..skip_count].iter().map(|r| (*r).clone()));
+            let omitted_notes = notes.len() - note_count;
+            let omitted_skips = skips.len() - skip_count;
             if omitted_notes + omitted_skips > 0 {
                 operation.per_item_results.push(EnvironmentItemResult {
                     requirement_id: "detect:compact-omissions".into(),
@@ -299,6 +305,54 @@ mod tests {
         assert!(results.iter().any(|r| r.reason_code == "model_not_needed"));
         assert!(results.len() <= 32);
         assert!(results.iter().any(|r| r.reason_code == "skip_summary_limit"
-            && r.safe_summary.contains("24 additional exclusions")));
+            && r.safe_summary.contains("10 additional exclusions")));
+    }
+    // MP-08 / MP-10 / MP-11: unused exclusion slots belong to Detect disclosure.
+    #[test]
+    fn review0440_compact_detect_keeps_model_outcome_with_many_folder_notes() {
+        let mut env = populated();
+        let mut operation:EnvironmentOperation=serde_json::from_value(serde_json::json!({
+            "operation_id":"detect-review","attempt":1,"local_project_id":env.local_project_id,"revision_digest":env.content_digest,
+            "target":{"machine_id":"machine","target_instance_generation":"boot","slice_ref":null},"kind":"detect","phase":"ready",
+            "selected_items":[],"per_item_opt_ins":[],"per_item_results":[],"created_at_ms":1,"updated_at_ms":2,"cancellation":null,"receipts":[],"recovery_state":{"kind":"settled"}
+        })).unwrap();
+        for index in 0..40 {
+            operation.per_item_results.push(EnvironmentItemResult {
+                requirement_id: format!("detect:folder:{index}"),
+                status: EnvironmentObservationStatus::Ready,
+                reason_code: "folder_note".into(),
+                safe_summary: "Folder checked".into(),
+                receipt_ids: vec![],
+            });
+        }
+        operation.per_item_results.push(EnvironmentItemResult {
+            requirement_id: "detect:model".into(),
+            status: EnvironmentObservationStatus::Ready,
+            reason_code: "model_completed".into(),
+            safe_summary: "Utility completed".into(),
+            receipt_ids: vec![],
+        });
+        env.operations = vec![operation];
+        let compact = environment_read_view(
+            env,
+            EnvironmentViewRead {
+                known_digest: None,
+                proposals: None,
+            },
+        )
+        .unwrap();
+        let results = &compact.environment.unwrap().operations[0].per_item_results;
+        assert!(results.len() <= 32);
+        assert!(results.iter().any(|r| r.requirement_id == "detect:model"));
+        assert!(
+            results
+                .iter()
+                .filter(|r| r.reason_code == "folder_note")
+                .count()
+                >= 30
+        );
+        assert!(results
+            .iter()
+            .any(|r| r.reason_code == "skip_summary_limit"));
     }
 }

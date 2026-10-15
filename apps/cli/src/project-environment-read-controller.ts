@@ -70,9 +70,9 @@ export function createProjectEnvironmentReadController(deps: {
   const controller = {
     isOpen: () => open,
     visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),
-    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; deps.render() },
+    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; deps.render() },
     async resolveOpening(projectId: string | null, workspaceId: string | null, create = false): Promise<void> {
-      if (!workspaceId) { open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
+      if (!workspaceId) { generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; refreshing = false; offset = 0; open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
       const g = ++generation, kernel = deps.kernelKey?.()
       requestedProjectId = projectId; requestedWorkspaceId = workspaceId
       open = true; current = null; refreshing = true; resolutionConfirmed = false; offset = 0
@@ -97,7 +97,7 @@ export function createProjectEnvironmentReadController(deps: {
       await controller.resolveOpening(requestedProjectId, requestedWorkspaceId, true)
     },
     async open(projectId: string | null, workspaceId?: string): Promise<void> {
-      const workspace = workspaceId ?? (projectId === requestedProjectId ? requestedWorkspaceId : null)
+      const workspace = workspaceId ?? (projectId !== null && projectId === requestedProjectId ? requestedWorkspaceId : null)
       requestedWorkspaceId = workspace
       if (!projectId) { await controller.resolveOpening(null, workspace); return }
       apply.reset(); resolutionConfirmed = false

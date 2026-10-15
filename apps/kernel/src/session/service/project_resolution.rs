@@ -10,7 +10,7 @@ impl SessionService {
     ) -> RuntimeProject {
         if let Some(project) = self.projects.values().find(|project| {
             project.owner_user_id() == owner
-                && project.workspace_id() == workspace
+                && RuntimeProject::workspace_paths_match(project.workspace_id(), workspace)
                 && project.kind() == RuntimeProjectKind::Default
         }) {
             return project.clone();
@@ -40,7 +40,7 @@ impl SessionService {
         let existing = project_id.and_then(|id| self.projects.get(id)).or_else(|| {
             self.projects.values().find(|project| {
                 project.owner_user_id() == owner
-                    && project.workspace_id() == workspace
+                    && RuntimeProject::workspace_paths_match(project.workspace_id(), workspace)
                     && project.kind() == RuntimeProjectKind::Default
             })
         });
