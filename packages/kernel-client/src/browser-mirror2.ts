@@ -71,7 +71,8 @@ export class BrowserMirror2Renderer {
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
-  private queue: Array<{ action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
+  private resetSerial = 0 // local only: IDs and cached focus never cross a snapshot
+  private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   private inputReplies = new Set<Promise<void>>() // MP-10: at most two written, unacknowledged inputs
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -103,9 +104,9 @@ export class BrowserMirror2Renderer {
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
-    if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; return }
+    if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
-    this.queue.push({ action, epoch }); this.pendingInputs++
+    this.queue.push({ action, epoch, resetSerial: this.resetSerial }); this.pendingInputs++
     void this.pump()
   }
   // Rust bounds UTF-8 bytes; never split a code point across ordered actions.
@@ -135,8 +136,8 @@ export class BrowserMirror2Renderer {
         // protocol516 (v2 requires517). Legacy transports release only on reply.
         const replied:Promise<void> = Promise.resolve().then(() => {
           if (!this.disposed) return this.send(next.action, next.epoch, written)
-        }).then(() => { if (!this.disposed) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
-          .catch(() => { if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
+        }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
+          .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
             this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
@@ -237,6 +238,7 @@ export class BrowserMirror2Renderer {
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
     // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).
     on('click', event => {
+      if (pressed && !pressed.el.isConnected) { event.preventDefault(); pressed = null; dragged = false; this.pointerFocus = null; return }
       const hit = element(event); if (hit && picked(hit.el)) return
       event.preventDefault()
       if (!hit || dragged || selecting(hit.el)) { if (dragged) { const id = this.pointerFocus; this.pointerFocus = null; if (id) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } this.syncRange() } dragged = false; return }
@@ -603,7 +605,7 @@ export class BrowserMirror2Renderer {
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
-      if (packet.reset) { this.reset(packet, scrolls); this.selectionSent = ''; this.selectionHold = null; this.selectionFailure = false }
+      if (packet.reset) { this.resetSerial++; this.reset(packet, scrolls); this.focusSent = null; this.pointerFocus = null; this.focusHold = null; this.focusWithheld = undefined; this.selectionSent = ''; this.selectionHold = null; this.selectionFailure = false }
       for (const op of packet.ops ?? []) this.op(op, scrolls)
       for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }

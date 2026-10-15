@@ -970,3 +970,13 @@ test('MP-11: an old-document selection refusal cannot poison the new document ra
   assert.equal(result,null,'a refused input for d must not mark the current new-document selection refused');
  }finally{await page.close()}
 });
+
+test('MP-11: a same-document ID rebase cannot focus a reused unrelated ID on drag release',async()=>{
+ const page=await viewer();try{
+  const nodes=base=>[{id:`n${base}`,parent:null,kind:'document'},{id:`n${base+1}`,parent:`n${base}`,kind:'element',tag:'html'},{id:`n${base+2}`,parent:`n${base+1}`,kind:'element',tag:'body'},{id:`n${base+3}`,parent:`n${base+2}`,kind:'element',tag:'p',attrs:{tabindex:'0'}},{id:`n${base+4}`,parent:`n${base+3}`,kind:'text',text:'The witness has called'}];
+  await apply(page,snapshot(nodes(1)));await page.evaluate(()=>{const d=window.r.frame.contentDocument,p=d.querySelector('p'),t=p.firstChild;p.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1}));p.focus();d.getSelection().setBaseAndExtent(t,0,t,10)});await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));
+  await apply(page,{...snapshot([...nodes(21),{id:'n4',parent:'n23',kind:'element',tag:'button'}]),sequence:2});
+  await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));await frames();
+  assert(!(await page.evaluate(()=>window.sent)).some(a=>a.kind==='focus'&&a.node_id==='n4'),'no old pointer-focus ID can be relabelled with the new epoch');
+ }finally{await page.close()}
+});
