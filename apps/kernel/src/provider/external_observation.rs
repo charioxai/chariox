@@ -419,7 +419,9 @@ pub(crate) fn claude_native_pasted_prompt_body(text: &str) -> Option<&str> {
     let (id, body) = tag.split_once("\">")?;
     if id.is_empty()
         || id.len() > 64
-        || !id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return None;
     }

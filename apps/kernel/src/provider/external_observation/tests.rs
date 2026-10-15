@@ -456,7 +456,10 @@ fn normalized_observed_prompt_text_matches_complete_native_paste_only() {
         format!("<pasted_content id=\"71b3\"> {prompt} </pasted_content id=\"71b3\">"),
         format!("<pasted_content id=\"71b3\">\r\n{prompt}\r\n</pasted_content id=\"71b3\">"),
     ] {
-        assert_eq!(normalized_observed_prompt_text(&wrapped), normalized_observed_prompt_text(prompt));
+        assert_eq!(
+            normalized_observed_prompt_text(&wrapped),
+            normalized_observed_prompt_text(prompt)
+        );
     }
     for invalid in [
         format!("<pasted_content id=\"71b3\">{prompt}</pasted_content id=\"other\">"),
@@ -465,6 +468,9 @@ fn normalized_observed_prompt_text_matches_complete_native_paste_only() {
         format!("<pasted_content id=\"\">{prompt}</pasted_content id=\"\">"),
         format!("<pasted_content id=\"bad/id\">{prompt}</pasted_content id=\"bad/id\">"),
     ] {
-        assert_ne!(normalized_observed_prompt_text(&invalid), normalized_observed_prompt_text(prompt));
+        assert_ne!(
+            normalized_observed_prompt_text(&invalid),
+            normalized_observed_prompt_text(prompt)
+        );
     }
 }
