@@ -136,8 +136,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  // The dialog's page overlay: Chrome's active Tab behind the scrim, at the offset the attestation finds;
  // the page's Vault masks are re-measured there before any frame leaves.
  async attestOverlay(){
+  // The reference is the page's own viewport cropped to the native page area (the emulated viewport may
+  // be larger than Chrome's view, which shows its top-left part).
   const region=this.region,shot=await this.screenshot(),page=decodePng(shot.data_base64,this.scale);
-  const reference=page.height>region.height?decodePng(cropProtectedPng(shot.data_base64,{x:0,y:0,width:page.width/this.scale,height:region.css_height},this.scale).data_base64,this.scale):page;
+  const width=Math.min(page.width,region.width),height=Math.min(page.height,region.height);
+  const reference=width<page.width||height<page.height?decodePng(cropProtectedPng(shot.data_base64,{x:0,y:0,width:width/this.scale,height:height/this.scale},this.scale).data_base64,this.scale):page;
   // The overlay raster is the native page area: its pixels are page coordinates (up to the attested offset).
   const masks=[...(shot[displayMaskRegions]??[]),statusBand({width:region.width,height:region.height},this.hostScale)];
   const masked=attestationMask(masks,reference.width,reference.height);
