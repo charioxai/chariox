@@ -23,8 +23,9 @@ int XGetWindowProperty(Display *d,Window w,Atom p,long off,long len,Bool del,Ato
     *actual=XA_CARDINAL;*format=32;*count=1;*remaining=0;
     unsigned long *pid=malloc(sizeof(*pid));*pid=42;*data=(unsigned char*)pid;return Success;
 }
-Status XGetGeometry(Display *d,Drawable a,Window *root,int *x,int *y,unsigned *w,unsigned *h,unsigned *border,unsigned *depth){
-    (void)d;(void)a;*root=0;*x=*y=0;*w=1280;*h=800;*border=0;*depth=24;return 1;
+Status XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
+    (void)d;(void)w;memset(attributes,0,sizeof(*attributes));
+    attributes->width=1280;attributes->height=800;attributes->map_state=IsViewable;return 1;
 }
 Bool XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
     (void)d;(void)a;(void)image;(void)x;(void)y;(void)plane;return True;

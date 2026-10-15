@@ -69,8 +69,9 @@ static int frame_insets(Display *d,Window w,unsigned long insets[4]) {
     return valid;
 }
 static int bound_surface(struct Capture *c) {
-    unsigned w,h;unsigned long insets[4];
-    if(!dimensions(c->display,c->window,&w,&h)||w!=(unsigned)c->window_width||h!=(unsigned)c->window_height)return 0;
+    XWindowAttributes attributes;unsigned long insets[4];
+    if(!XGetWindowAttributes(c->display,c->window,&attributes)||attributes.map_state!=IsViewable||
+        attributes.width!=c->window_width||attributes.height!=c->window_height)return 0;
     return c->desktop||(window_pid(c->display,c->window)==c->owner&&frame_insets(c->display,c->window,insets)&&!memcmp(insets,c->insets,sizeof(insets)));
 }
 void cx_capture_close(struct Capture *c) {
@@ -159,6 +160,7 @@ static struct Capture *capture_open(unsigned long owner,Window selected,int widt
         open_refused(search.found?"window_ambiguous":"window_not_found");goto fail;
     }
     c->xoffset=window_height?left:(int)c->insets[0];c->offset=window_height?top:c->window_height-(int)c->insets[3]-height;
+    if(!bound_surface(c)){open_refused("window_retired");goto fail;}
     automatic=automatic||(getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY")&&!strcmp(getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY"),"1"));
     /* MP-08/MP-10: the shared Computer desktop presents the root, so its
      * browser client must remain automatically composited while captured. */
@@ -252,6 +254,7 @@ int cx_capture_damage(struct Capture *c) {
     while (XPending(c->display)) {
         XEvent event; XNextEvent(c->display,&event);
         if(event.type==DestroyNotify&&event.xdestroywindow.window==c->window){c->retired=1;dirty=1;}
+        if(event.type==UnmapNotify&&event.xunmap.window==c->window){c->retired=1;dirty=1;}
         if(event.type==ConfigureNotify&&event.xconfigure.window==c->window){
             if(event.xconfigure.width!=c->window_width||event.xconfigure.height!=c->window_height)c->retired=1;
             dirty=1;

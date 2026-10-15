@@ -67,7 +67,16 @@ int main(void) {
     for(int i=0;i<64*32;i++)assert(pixels[i*4]==0&&pixels[i*4+1]==255&&pixels[i*4+2]==0);
     assert(pointer_target(aux,10,12,&px,&py)==0);assert(px==26&&py==28);
     assert(!cx_capture_open_selected_region(pid+1,popup,65,33,0,0,64,32));
-    XDestroyWindow(d,popup);XSync(d,False);
+    XUnmapWindow(d,popup);XSync(d,False);
+    assert(cx_capture_read(aux,pixels,bounds)==-1);
+    assert(cx_capture_click(aux,10,12)==-1);
+    assert(!cx_capture_open_selected_region(pid,popup,65,33,0,0,64,32));
+    XMapRaised(d,popup);XSync(d,False);
+    assert(cx_capture_read(aux,pixels,bounds)==-1);
+    cx_capture_close(aux);
+    aux=cx_capture_open_selected_region(pid,popup,65,33,0,0,64,32);assert(aux);
+    XSync(aux->display,False);
+    XDestroyWindow(d,popup);XSync(d,False);XSync(aux->display,False);
     assert(cx_capture_damage(aux));
     assert(cx_capture_read(aux,pixels,bounds)==-1);
     assert(cx_capture_click(aux,10,12)==-1);cx_capture_close(aux);
