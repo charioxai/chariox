@@ -16,6 +16,15 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
 const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
 export const POPUP_CORNER = 16;
+/** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
+export function cornerMasks(width, height, r) {
+  const masks = [];
+  for (let row = 0; row < r; row++) {
+    const dy = row + 0.5, w = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
+    if (w > 0) masks.push({x: 0, y: height - r + row, width: w, height: 1}, {x: width - w, y: height - r + row, width: w, height: 1});
+  }
+  return masks;
+}
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
   const [, screenX, screenY, width, height, outerWidth, outerHeight] = state;
@@ -227,10 +236,10 @@ export class ChromeWindows {
     if (binding.in_window) {
       // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
-      const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2, corner = POPUP_CORNER * tabbed.scale;
+      const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2;
       return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
         rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
-        contentHeight: tabbed.bounds.height - tabbed.content_top, masks: [{x: 0, y: height - corner, width: corner, height: corner}, {x: width - corner, y: height - corner, width: corner, height: corner}],
+        contentHeight: tabbed.bounds.height - tabbed.content_top, masks: cornerMasks(width, height, POPUP_CORNER * tabbed.scale),
         isCurrent: binding.isCurrent};
     }
     return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},

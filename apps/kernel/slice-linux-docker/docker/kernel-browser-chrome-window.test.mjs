@@ -276,7 +276,10 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     const region = windows.auxiliaryRegion(windows.auxiliary(popup.auxiliary_id));
     assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
     assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
-    assert.deepEqual(region.masks, [{ x: 0, y: 144, width: 32, height: 32 }, { x: 2124, y: 144, width: 32, height: 32 }], "rounded corners show page pixels");
+    // Only the slivers outside the rounded corners (radius 32 px at scale 2), one rect per row: no black squares.
+    assert.deepEqual(region.masks.slice(0, 2), [{ x: 0, y: 144, width: 1, height: 1 }, { x: 2155, y: 144, width: 1, height: 1 }]);
+    assert.deepEqual(region.masks.slice(-2), [{ x: 0, y: 175, width: 27, height: 1 }, { x: 2129, y: 175, width: 27, height: 1 }]);
+    assert(region.masks.every(m => m.y >= 144 && m.y < 176 && m.width <= 32), "within the corner squares");
     const binding = windows.auxiliary(popup.auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
     assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
