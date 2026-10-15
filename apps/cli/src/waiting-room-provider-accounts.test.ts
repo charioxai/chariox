@@ -249,3 +249,15 @@ test("explicit accounts outside the home inventory defer authentication to the k
   assert.match(selectedProviderAccountStartBlockReason([local], "codex", "local") ?? "", /needs sign-in/)
   assert.match(selectedProviderAccountStartBlockReason([], "codex", "default") ?? "", /needs sign-in/)
 })
+
+// MP-08 / MP-11 OpenCode owns Go → Zen fallback: show exhaustion, never refuse before the harness runs.
+test("exhausted OpenCode service stays visible but does not block the start", () => {
+  const reset = Date.now() + 3_600_000
+  const go = { ...usageMeter("go/monthly", "rolling_limit", "exhausted", reset), service_id: "opencode-go" }
+  const zen = { ...usageMeter("zen/credits", "credit_balance", "exhausted"), service_id: "opencode" }
+  const openCode = accountWithUsage("opencode", [go, zen])
+  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go \(exhausted\).*resets.*UTC/)
+  for (const model of ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4-flash"]) {
+    assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
+  }
+})
