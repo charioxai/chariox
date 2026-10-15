@@ -32,7 +32,11 @@ pub(super) fn check_platform(
                     "Software is unavailable on this platform; GUI programs are Check-only in V1",
                 );
             }
-            if let Some(_name) = super::check_gui_identity::application_name(identity) {
+            if let Some(_name) = install_source
+                .is_none()
+                .then(|| super::check_gui_identity::application_name(identity))
+                .flatten()
+            {
                 #[cfg(target_os = "macos")]
                 {
                     let present = PathBuf::from("/Applications")
@@ -118,9 +122,22 @@ pub(super) fn check_platform(
             minimum_free_disk_bytes,
             gpu,
         } => {
-            *facts = inventory::machine(
-                workspace(env, r).unwrap_or(&ctx.config.private_runtime_state_root()),
-            );
+            // A capacity syscall can block independently of directory preflight.
+            // CPU/memory-only requirements never query the workspace filesystem.
+            let disk_root = minimum_free_disk_bytes.map(|_| {
+                workspace(env, r)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| ctx.config.private_runtime_state_root())
+            });
+            *facts =
+                match super::check_files::machine(&ctx.config, disk_root.as_deref(), deadline) {
+                    Ok(measured) => measured,
+                    Err(_) => return outcome(
+                        NeedsYourInput,
+                        "capacity_unproven",
+                        "Required machine capacity could not be measured within the probe budget",
+                    ),
+                };
             if !platforms.is_empty()
                 && !platforms.iter().any(|p| {
                     facts

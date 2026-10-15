@@ -6,6 +6,14 @@ fn run(
     marker: &str,
     budget: Duration,
 ) -> (Vec<MachineObservation>, usize, Duration) {
+    run_expect(requirements, marker, budget, true)
+}
+fn run_expect(
+    requirements: Vec<Requirement>,
+    marker: &str,
+    budget: Duration,
+    expect_stall: bool,
+) -> (Vec<MachineObservation>, usize, Duration) {
     let (root, store, _) = environment();
     let project = crate::session::RuntimeProject::new(
         "bounded",
@@ -77,8 +85,14 @@ fn run(
     }
     std::env::remove_var("CHARIOX_WORKSPACE_CHECK_COUNT");
     result.unwrap();
-    if !marker.is_empty() && marker != "CHARIOX_WORKSPACE_CHECK_STALL_MARKER" {
+    if expect_stall && !marker.is_empty() && marker != "CHARIOX_WORKSPACE_CHECK_STALL_MARKER" {
         assert!(reached.exists(), "typed content reader reached");
+    }
+    if !expect_stall {
+        assert!(
+            !reached.exists(),
+            "unneeded capacity syscall must be skipped"
+        );
     }
     let checks = store.load_checks(project.id()).unwrap();
     assert_eq!(
@@ -181,4 +195,106 @@ fn review0440_project_bindings_skip_unrelated_workspace_preflight() {
     std::env::remove_var("PUBLIC_SETTING");
     assert_eq!(observed[0].reason_code, "binding_available");
     assert_eq!(workers, 0);
+}
+
+// MP-08 / MP-10: capacity is a distinct mounted-filesystem syscall.
+#[test]
+fn review0940_machine_capacity_stall_settles_and_next_check_is_admitted() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let mut r = requirement("disk");
+    r.spec = RequirementSpec::MachineNeeds {
+        platforms: vec![],
+        minimum_cpus: Some(1),
+        minimum_memory_bytes: None,
+        minimum_free_disk_bytes: Some(1),
+        gpu: None,
+    };
+    let (observations, _, elapsed) = run(
+        vec![r],
+        "CHARIOX_MACHINE_CAPACITY_STALL_MARKER",
+        Duration::from_millis(700),
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "capacity escaped deadline: {elapsed:?}"
+    );
+    assert_ne!(observations[0].status, EnvironmentObservationStatus::Ready);
+    assert_eq!(observations[0].measured_facts.free_disk_bytes, None);
+}
+#[test]
+fn review0940_cpu_only_machine_needs_skip_capacity_io() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let mut r = requirement("cpu");
+    r.spec = RequirementSpec::MachineNeeds {
+        platforms: vec![],
+        minimum_cpus: Some(1),
+        minimum_memory_bytes: None,
+        minimum_free_disk_bytes: None,
+        gpu: None,
+    };
+    let (observations, _, elapsed) = run_expect(
+        vec![r],
+        "CHARIOX_MACHINE_CAPACITY_STALL_MARKER",
+        Duration::from_millis(700),
+        false,
+    );
+    assert!(elapsed < Duration::from_millis(1400));
+    assert_eq!(observations[0].status, EnvironmentObservationStatus::Ready);
+    assert_eq!(observations[0].measured_facts.free_disk_bytes, None);
+}
+#[test]
+fn review0940_installed_packages_named_like_desktop_apps_use_package_inventory() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let (root, store, _) = environment();
+    let project = crate::session::RuntimeProject::new(
+        "packages",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Packages",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let env = store.snapshot(&project).unwrap();
+    let ctx = super::review0034::context(root.path());
+    let target = EnvironmentTargetBinding {
+        machine_id: "machine".into(),
+        target_instance_generation: "boot".into(),
+        slice_ref: None,
+    };
+    for name in ["chatgpt", "notion", "canva"] {
+        let dir = root.path().join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::json!({"name":name,"version":"1.2.3"}).to_string(),
+        )
+        .unwrap();
+        let mut r = requirement(name);
+        r.spec = RequirementSpec::Software {
+            identity: name.into(),
+            version_constraint: Some(">=1 <2".into()),
+            platform: None,
+            install_scope: EnvironmentInstallScope::Project,
+            install_source: Some("npm package".into()),
+            detect_only: true,
+        };
+        let observation = check_requirement(
+            &ctx,
+            &env,
+            &r,
+            &target,
+            "check-package",
+            &mut Default::default(),
+            Instant::now() + Duration::from_secs(3),
+        );
+        assert_eq!(
+            observation.status,
+            EnvironmentObservationStatus::Ready,
+            "{name}: {}",
+            observation.reason_code
+        );
+        assert_eq!(observation.measured_facts.version.as_deref(), Some("1.2.3"));
+    }
 }
