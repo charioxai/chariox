@@ -1,10 +1,25 @@
 // MP-03/MP-07/MP-11: rejected and rolled-back activation preserves legacy access.
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { chmod, chown, readFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { makeHarness, put } from './lib/managed-kernel-upgrade-fixture.mjs'
 
+// MP-03/MP-07: exercise real ownership under the same root contract as the updater.
+if (process.platform === 'linux' && process.getuid() !== 0) {
+  test('MP-03/MP-07 root-owned control fixtures', () => {
+    const result = spawnSync('sudo', ['--', process.execPath, '--test', fileURLToPath(import.meta.url)], {
+      encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+    })
+    process.stdout.write(result.stdout ?? '')
+    assert.equal(result.error, undefined)
+    assert.equal(result.signal, null)
+    assert.equal(result.status, 0, result.stderr)
+  })
+} else {
 const transition = JSON.parse(await readFile(new URL('../apps/kernel/managed-upgrade-protocol-transitions.json', import.meta.url)))
 async function harness(context) {
   const h = await makeHarness(context, { updaterPath: process.env.MP03_UPDATER, path1Release: true, currentProtocol: 370,
@@ -102,3 +117,5 @@ test('MP-03/MP-07 a StateDirectory target keeps service-principal worker access'
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(await h.metadata(), before)
 })
+
+}
