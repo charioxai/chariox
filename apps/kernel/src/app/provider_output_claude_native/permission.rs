@@ -25,6 +25,34 @@ pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let _ = fs::write(marker, value);
 }
 
+pub(super) fn claude_headless_accepted_prompt(context_file: &str) -> Option<String> {
+    fs::read_to_string(
+        std::path::Path::new(context_file).with_file_name("headless-accepted-prompt-id"),
+    )
+    .ok()
+    .filter(|value| !value.is_empty())
+}
+
+pub(super) fn acknowledge_claude_headless_prompt(context_file: &str, prompt_id: &str) {
+    // MP-08 / MP-10 / MP-11: permission and Stop events can replace the
+    // transient marker before dispatch observes the exact provider acceptance.
+    // Retain one prompt identity separately so a retry cannot resend that turn
+    // or mistake the permission wait for an unaccepted prompt.
+    let _ = fs::write(
+        std::path::Path::new(context_file).with_file_name("headless-accepted-prompt-id"),
+        prompt_id,
+    );
+    if !claude_native_marker(context_file)
+        .as_deref()
+        .is_some_and(|marker| {
+            marker.starts_with("permission:")
+                || claude_headless_workspace_trust_interaction_marker(marker)
+        })
+    {
+        write_claude_native_marker(context_file, &format!("accepted:{prompt_id}"));
+    }
+}
+
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
     std::path::Path::new(context_file)
         .parent()

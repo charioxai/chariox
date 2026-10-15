@@ -1298,6 +1298,26 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         "dispatch acknowledgement must not consume later lifecycle events"
     );
 
+    // MP-08 / MP-10 / MP-11: the normal output pump can consume the hook
+    // and publish a permission before the dispatch retry observes acceptance.
+    fs::write(&events_file, "").expect("normal output pump consumed events");
+    write_claude_native_marker(&context_file, "permission:read-instructions");
+    let with_permission = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .expect("accepted dispatch should survive a pending permission");
+    assert_eq!(with_permission, ClaudeNativeDispatchAttempt::Completed);
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some("permission:read-instructions"),
+        "dispatch acceptance must preserve the user's pending permission"
+    );
+    let mut different_dispatch = dispatch.clone();
+    different_dispatch.prompt_id = "different-prompt".to_string();
+    let unrelated = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &different_dispatch)
+        .expect("a different dispatch must still await its own acknowledgement");
+    assert_eq!(unrelated, ClaudeNativeDispatchAttempt::AwaitingInjection);
+
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1513,6 +1533,38 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
     assert!(projected
         .queued_prompts_for_agent(agent.id())
         .is_none_or(|queue| queue.is_empty()));
+
+    // MP-08 / MP-10 / MP-11: hook pickup can follow the permission frame.
+    let next_steer = "leased-steer:steer-2";
+    write_claude_headless_submit_retry(
+        &context_file,
+        next_steer,
+        0,
+        unix_epoch_ms(),
+        "Run the lint checks too.",
+    );
+    write_claude_native_marker(&context_file, "permission:read-instructions");
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "native_prompt_id": active_prompt.id(),
+            "prompt": "Run the lint checks too.",
+        })
+        .to_string(),
+    )
+    .expect("bound hook should be written after permission pickup");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("bound hook should acknowledge without changing the permission");
+    assert_eq!(
+        claude_headless_accepted_prompt(&context_file).as_deref(),
+        Some(next_steer)
+    );
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some("permission:read-instructions")
+    );
 
     app.prompt_owner_cancel_active_prompt_only(session.id(), agent.id())
         .expect("managed prompt should cancel before its late hook acknowledgement");
