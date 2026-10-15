@@ -25,7 +25,7 @@ fn managed_user_isolation_preserves_repository_scoped_skills() {
 
     assert_eq!(project_root, PathBuf::from("/workspace/.chariox/skills"));
     assert_eq!(user_root, isolation_root.join("user").join("skills"));
-    assert_eq!(remote_root, isolation_root.join("remote").join("skills"));
+    assert_eq!(remote_root, isolation_root.join("state/skill-materializations"));
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn packages_and_materializes_complete_skill_directory() {
 }
 
 #[test]
-fn package_skips_symlinks_and_ignored_directories() {
+fn package_rejects_escaping_symlinks_and_skips_ignored_directories() {
     let root = temp_root("package-symlink");
     let skill_dir = root.join("safe");
     fs::create_dir_all(skill_dir.join(".git")).unwrap();
@@ -336,11 +336,12 @@ fn package_skips_symlinks_and_ignored_directories() {
     #[cfg(unix)]
     std::os::unix::fs::symlink("/etc/passwd", skill_dir.join("passwd-link")).unwrap();
 
+    #[cfg(unix)] {
+        assert!(package_skill_directory(&skill_dir).is_err());
+        fs::remove_file(skill_dir.join("passwd-link")).unwrap();
+    }
     let package = package_skill_directory(&skill_dir).unwrap();
-    assert!(package
-        .files
-        .iter()
-        .all(|file| !file.path.starts_with(".git")));
+    assert!(package.files.iter().all(|file| !file.path.starts_with(".git")));
     assert!(package.files.iter().all(|file| file.path != "passwd-link"));
 
     let _ = fs::remove_dir_all(root);

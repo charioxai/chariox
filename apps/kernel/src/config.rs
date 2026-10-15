@@ -22,6 +22,8 @@ mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
 mod slices;
+mod skills;
+pub use skills::{SkillMetadataBudgetPercent, UserSkillsConfig};
 mod socket_path;
 mod storage;
 pub(crate) use socket_path::validate_local_socket_path;
@@ -506,6 +508,8 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub slices: UserSlicesConfig,
     #[serde(default)]
+    pub skills: UserSkillsConfig,
+    #[serde(default)]
     pub ui: UserUiConfig,
     #[serde(default)]
     pub relay: UserRelayConfig,
@@ -528,6 +532,7 @@ impl Default for CharioxUserConfig {
             artifacts: UserArtifactsConfig::default(),
             state: UserStateConfig::default(),
             slices: UserSlicesConfig::default(),
+            skills: UserSkillsConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),

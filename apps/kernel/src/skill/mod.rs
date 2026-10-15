@@ -8,12 +8,22 @@ use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
 pub mod v2;
+pub mod catalog;
+pub mod frontmatter;
+pub mod resolver;
+pub mod selection;
+pub mod storage;
+pub mod service;
+#[cfg(test)]
+mod catalog_tests;
+#[cfg(test)]
+mod package_tests;
 mod package;
 mod provider_import;
 #[cfg(test)]
 mod tests;
 
-use package::package_skill_directory;
+pub(crate) use package::package_skill_directory;
 pub(crate) use package::remote_skill_materialization_base;
 pub use package::{materialize_skill_package, CharioxSkillPackage, CharioxSkillPackageFile};
 pub use provider_import::{
@@ -423,61 +433,13 @@ pub fn parse_skill_metadata(skill_md: &Path) -> Result<CharioxSkillMetadata, Dae
         operation: "skill.read",
         message: format!("failed to read skill `{}`: {error}", skill_md.display()),
     })?;
-    let frontmatter = extract_frontmatter(&body).ok_or_else(|| DaemonError::LocalTransport {
-        operation: "skill.read",
-        message: format!("`{}` must start with YAML frontmatter", skill_md.display()),
-    })?;
-    let values = parse_simple_yaml_map(frontmatter);
-    let fallback_name = skill_md
-        .parent()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("")
-        .to_string();
-    let name = values.get("name").cloned().unwrap_or(fallback_name);
-    validate_registry_name(&name, "skill name")?;
-    let description = values.get("description").cloned().unwrap_or_default();
-    if description.trim().is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "skill.read",
-            message: format!("skill `{name}` must define a non-empty description"),
-        });
-    }
+    let metadata = frontmatter::parse_frontmatter(&body)?;
     Ok(CharioxSkillMetadata {
-        name,
-        description,
-        short_description: values
-            .get("short-description")
-            .or_else(|| values.get("short_description"))
-            .cloned(),
+        name: metadata.name,
+        description: metadata.description,
+        short_description: metadata.short_description,
         path: skill_md.to_path_buf(),
     })
-}
-
-fn extract_frontmatter(body: &str) -> Option<&str> {
-    let rest = body.strip_prefix("---\n")?;
-    let end = rest.find("\n---")?;
-    Some(&rest[..end])
-}
-
-fn parse_simple_yaml_map(frontmatter: &str) -> BTreeMap<String, String> {
-    let mut values = BTreeMap::new();
-    for line in frontmatter.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
-        values.insert(key.trim().to_string(), value);
-    }
-    values
 }
 
 fn immediate_child_dirs(root: &Path) -> Result<Vec<PathBuf>, DaemonError> {

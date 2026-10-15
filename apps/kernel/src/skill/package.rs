@@ -1,30 +1,31 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-
+//! MP-08 / MP-10 / MP-11: bounded immutable instruction payloads, including modes.
+use super::{managed_capability_root, parse_skill_metadata, CharioxSkillMetadata};
+use crate::{error::DaemonError, mcp::validate_registry_name};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::error::DaemonError;
-use crate::mcp::validate_registry_name;
-
-use super::{managed_capability_root, parse_skill_metadata, CharioxSkillMetadata};
+use std::{
+    collections::BTreeSet,
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CharioxSkillPackage {
     pub metadata: CharioxSkillMetadata,
     pub version_hash: String,
     pub files: Vec<CharioxSkillPackageFile>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CharioxSkillPackageFile {
     pub executable: bool,
     pub path: String,
     pub sha256: String,
     pub content_base64: String,
 }
-
 const MAX_SKILL_PACKAGE_FILES: usize = 512;
 const MAX_SKILL_PACKAGE_BYTES: u64 = 10 * 1024 * 1024;
 const SKILL_PACKAGE_IGNORED_DIRS: &[&str] = &[
@@ -39,256 +40,346 @@ const SKILL_PACKAGE_IGNORED_DIRS: &[&str] = &[
     "dist",
     "build",
 ];
+fn failure(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "skill.package",
+        message: message.into(),
+    }
+}
 
 pub fn materialize_skill_package(
     base_dir: &Path,
     package: &CharioxSkillPackage,
 ) -> Result<PathBuf, DaemonError> {
+    materialize_skill_package_for_id(base_dir, &package.metadata.name, package)
+}
+pub(super) fn materialize_skill_package_for_id(
+    base_dir: &Path,
+    id: &str,
+    package: &CharioxSkillPackage,
+) -> Result<PathBuf, DaemonError> {
+    validate_registry_name(id, "skill ID")?;
     validate_registry_name(&package.metadata.name, "skill name")?;
-    let destination = base_dir
-        .join(&package.metadata.name)
-        .join(&package.version_hash);
-    if destination.join("SKILL.md").exists() {
+    let decoded = verify_package(package)?;
+    ensure_directory(base_dir)?;
+    let base = fs::canonicalize(base_dir)
+        .map_err(|_| failure("cannot resolve skill materialization root"))?;
+    let parent = base.join(id);
+    ensure_directory(&parent)?;
+    let destination = parent.join(&package.version_hash);
+    if fs::symlink_metadata(&destination).is_ok() {
+        ensure_directory(&destination)?;
+        if package_skill_directory(&destination)?.version_hash != package.version_hash {
+            return Err(failure(
+                "cached skill package failed complete-content verification",
+            ));
+        }
         return Ok(destination);
     }
-    let temp_destination = base_dir.join(format!(
-        ".{}.{}.tmp",
-        package.metadata.name,
-        std::process::id()
-    ));
-    if temp_destination.exists() {
-        fs::remove_dir_all(&temp_destination).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.materialize",
-            message: format!(
-                "failed to clear stale skill materialization temp dir `{}`: {error}",
-                temp_destination.display()
-            ),
-        })?;
-    }
-    fs::create_dir_all(&temp_destination).map_err(|error| DaemonError::LocalTransport {
-        operation: "skill.materialize",
-        message: format!(
-            "failed to create skill materialization temp dir `{}`: {error}",
-            temp_destination.display()
-        ),
-    })?;
-    for file in &package.files {
-        let relative_path = validate_package_relative_path(&file.path, "skill.materialize")?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.content_base64)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "skill.materialize",
-                message: format!(
-                    "skill package file `{}` has invalid base64 content: {error}",
-                    file.path
-                ),
-            })?;
-        let actual_hash = sha256_hex(&bytes);
-        if actual_hash != file.sha256 {
-            return Err(DaemonError::LocalTransport {
-                operation: "skill.materialize",
-                message: format!(
-                    "skill package file `{}` hash mismatch: expected {}, got {}",
-                    file.path, file.sha256, actual_hash
-                ),
-            });
+    let staging = parent.join(format!(".stage-{:032x}", rand::random::<u128>()));
+    fs::create_dir(&staging).map_err(|_| failure("cannot stage skill materialization"))?;
+    struct OwnedStage(PathBuf);
+    impl Drop for OwnedStage {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
         }
-        let path = temp_destination.join(relative_path);
+    }
+    let _owned = OwnedStage(staging.clone());
+    for (file, bytes) in decoded {
+        let path = staging.join(&file.path);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-                operation: "skill.materialize",
-                message: format!(
-                    "failed to create skill materialization dir `{}`: {error}",
-                    parent.display()
-                ),
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|_| failure("cannot create skill file directory"))?;
         }
-        fs::write(&path, bytes).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.materialize",
-            message: format!("failed to write skill file `{}`: {error}", path.display()),
-        })?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(if file.executable { 0o700 } else { 0o600 })
+                .custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut output = options
+            .open(&path)
+            .map_err(|_| failure("cannot create skill file"))?;
+        output
+            .write_all(&bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|_| failure("cannot persist skill file"))?;
     }
-    let materialized = package_skill_directory(&temp_destination)?;
-    if materialized.version_hash != package.version_hash {
-        return Err(DaemonError::LocalTransport {
-            operation: "skill.materialize",
-            message: format!(
-                "materialized skill package hash mismatch: expected {}, got {}",
-                package.version_hash, materialized.version_hash
-            ),
-        });
+    let materialized = package_skill_directory(&staging)?;
+    if materialized.version_hash != package.version_hash
+        || materialized.metadata.name != package.metadata.name
+    {
+        return Err(failure("materialized skill package identity mismatch"));
     }
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.materialize",
-            message: format!(
-                "failed to create skill materialization parent `{}`: {error}",
-                parent.display()
-            ),
-        })?;
+    sync_directories(&staging)?;
+    match fs::rename(&staging, &destination) {
+        Ok(()) => {}
+        Err(_) if destination.is_dir() => {
+            ensure_directory(&destination)?;
+            if package_skill_directory(&destination)?.version_hash != package.version_hash {
+                return Err(failure(
+                    "concurrent skill materialization failed verification",
+                ));
+            }
+        }
+        Err(_) => return Err(failure("cannot publish skill materialization")),
     }
-    if destination.exists() {
-        fs::remove_dir_all(&temp_destination).ok();
-        return Ok(destination);
-    }
-    fs::rename(&temp_destination, &destination).map_err(|error| DaemonError::LocalTransport {
-        operation: "skill.materialize",
-        message: format!(
-            "failed to publish materialized skill `{}`: {error}",
-            destination.display()
-        ),
-    })?;
+    fs::File::open(&parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| failure("cannot persist skill package publication"))?;
     Ok(destination)
 }
-
-pub(crate) fn remote_skill_materialization_base(workspace: impl AsRef<Path>) -> PathBuf {
-    if let Some(root) = managed_capability_root() {
-        return root.join("remote").join("skills");
+fn ensure_directory(path: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(path).map_err(|_| failure("cannot create skill package directory"))?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| failure("cannot inspect skill directory"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(failure("skill package directory cannot be a symlink"));
     }
-    workspace
-        .as_ref()
-        .join(".chariox")
-        .join("remote")
-        .join("skills")
+    Ok(())
 }
-
-pub(super) fn package_skill_directory(
+fn sync_directories(root: &Path) -> Result<(), DaemonError> {
+    for entry in fs::read_dir(root).map_err(|_| failure("cannot inspect staged skill"))? {
+        let entry = entry.map_err(|_| failure("cannot inspect staged skill"))?;
+        if entry
+            .file_type()
+            .map_err(|_| failure("cannot inspect staged skill"))?
+            .is_dir()
+        {
+            sync_directories(&entry.path())?;
+        }
+    }
+    fs::File::open(root)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| failure("cannot persist skill directory"))
+}
+fn verify_package(
+    package: &CharioxSkillPackage,
+) -> Result<Vec<(&CharioxSkillPackageFile, Vec<u8>)>, DaemonError> {
+    if package.files.is_empty() || package.files.len() > MAX_SKILL_PACKAGE_FILES {
+        return Err(failure("skill package must contain 1 to 512 files"));
+    }
+    if package.version_hash.len() != 64
+        || !package
+            .version_hash
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(failure("invalid skill content digest"));
+    }
+    let mut names = BTreeSet::new();
+    let mut total = 0u64;
+    let mut decoded = Vec::new();
+    for file in &package.files {
+        validate_package_relative_path(&file.path)?;
+        if !names.insert(file.path.to_lowercase()) {
+            return Err(failure("duplicate or case-conflicting skill package path"));
+        }
+        if file.content_base64.len() as u64 > ((MAX_SKILL_PACKAGE_BYTES + 2) / 3) * 4 {
+            return Err(failure("skill package exceeds maximum byte size"));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.content_base64)
+            .map_err(|_| failure("invalid skill package base64"))?;
+        total = total
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| failure("skill package size overflow"))?;
+        if total > MAX_SKILL_PACKAGE_BYTES {
+            return Err(failure("skill package exceeds maximum byte size"));
+        }
+        if sha256_hex(&bytes) != file.sha256 {
+            return Err(failure("skill package file hash mismatch"));
+        }
+        decoded.push((file, bytes));
+    }
+    if !package.files.iter().any(|file| file.path == "SKILL.md") {
+        return Err(failure("skill package requires SKILL.md"));
+    }
+    if package_digest(&package.files) != package.version_hash {
+        return Err(failure("skill package complete-content digest mismatch"));
+    }
+    Ok(decoded)
+}
+fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
+    let mut files: Vec<_> = files.iter().collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hasher = Sha256::new();
+    hasher.update(b"chariox-skill-package-v2\0");
+    for file in files {
+        hasher.update(file.path.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(file.sha256.as_bytes());
+        hasher.update([0, u8::from(file.executable), 0]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+pub(crate) fn remote_skill_materialization_base(_workspace: impl AsRef<Path>) -> PathBuf {
+    if let Some(root) = managed_capability_root() {
+        return root.join("state/skill-materializations");
+    }
+    crate::config::DaemonConfig::default_user_config_path()
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("state/skill-materializations")
+}
+pub(crate) fn package_skill_directory(
     skill_dir: &Path,
 ) -> Result<CharioxSkillPackage, DaemonError> {
     let metadata = parse_skill_metadata(&skill_dir.join("SKILL.md"))?;
     let mut files = Vec::new();
-    let mut total_bytes = 0_u64;
-    collect_skill_package_files(skill_dir, skill_dir, &mut files, &mut total_bytes)?;
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    let mut hasher = Sha256::new();
-    for file in &files {
-        hasher.update(file.path.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(file.sha256.as_bytes());
-        hasher.update(b"\0");
-    }
-    let version_hash = hex_digest(hasher.finalize().as_slice());
-    Ok(CharioxSkillPackage {
+    let mut total = 0;
+    let root = fs::canonicalize(skill_dir).map_err(|_| failure("cannot resolve skill source"))?;
+    collect_files(&root, &root, &mut files, &mut total)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let package = CharioxSkillPackage {
         metadata,
-        version_hash,
+        version_hash: package_digest(&files),
         files,
-    })
+    };
+    verify_package(&package)?;
+    Ok(package)
 }
-
-fn collect_skill_package_files(
+fn collect_files(
     root: &Path,
     dir: &Path,
     files: &mut Vec<CharioxSkillPackageFile>,
-    total_bytes: &mut u64,
+    total: &mut u64,
 ) -> Result<(), DaemonError> {
-    for entry in fs::read_dir(dir).map_err(|error| DaemonError::LocalTransport {
-        operation: "skill.package",
-        message: format!(
-            "failed to read skill directory `{}`: {error}",
-            dir.display()
-        ),
-    })? {
-        let entry = entry.map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.package",
-            message: format!("failed to read skill directory entry: {error}"),
-        })?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
+    for entry in fs::read_dir(dir).map_err(|_| failure("cannot read skill directory"))? {
+        let entry = entry.map_err(|_| failure("cannot inspect skill file"))?;
         let path = entry.path();
         let file_type = entry
             .file_type()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "skill.package",
-                message: format!("failed to inspect skill path `{}`: {error}", path.display()),
-            })?;
+            .map_err(|_| failure("cannot inspect skill file"))?;
         if file_type.is_symlink() {
-            continue;
+            return Err(failure(
+                "skill packages cannot contain symlinks; import regular contained files",
+            ));
         }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| failure("skill file escapes source root"))?
+            .to_str()
+            .ok_or_else(|| failure("skill paths must be UTF-8"))?
+            .to_string();
+        validate_package_relative_path(&relative)?;
         if file_type.is_dir() {
-            if SKILL_PACKAGE_IGNORED_DIRS
+            if !SKILL_PACKAGE_IGNORED_DIRS
                 .iter()
-                .any(|ignored| *ignored == file_name)
+                .any(|ignored| entry.file_name() == *ignored)
             {
-                continue;
+                collect_files(root, &path, files, total)?;
             }
-            collect_skill_package_files(root, &path, files, total_bytes)?;
             continue;
         }
         if !file_type.is_file() {
-            continue;
+            return Err(failure("skill packages require regular files"));
         }
         if files.len() >= MAX_SKILL_PACKAGE_FILES {
-            return Err(DaemonError::LocalTransport {
-                operation: "skill.package",
-                message: format!(
-                    "skill package exceeds maximum file count ({MAX_SKILL_PACKAGE_FILES})"
-                ),
-            });
+            return Err(failure("skill package exceeds maximum file count (512)"));
         }
-        let relative_path =
-            path.strip_prefix(root)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "skill.package",
-                    message: format!(
-                        "skill path `{}` is outside package root `{}`: {error}",
-                        path.display(),
-                        root.display()
-                    ),
-                })?;
-        let relative_path =
-            validate_package_relative_path(&relative_path.to_string_lossy(), "skill.package")?;
-        let bytes = fs::read(&path).map_err(|error| DaemonError::LocalTransport {
-            operation: "skill.package",
-            message: format!("failed to read skill file `{}`: {error}", path.display()),
-        })?;
-        *total_bytes += bytes.len() as u64;
-        if *total_bytes > MAX_SKILL_PACKAGE_BYTES {
-            return Err(DaemonError::LocalTransport {
-                operation: "skill.package",
-                message: format!(
-                    "skill package exceeds maximum byte size ({MAX_SKILL_PACKAGE_BYTES})"
-                ),
-            });
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let input = options
+            .open(&path)
+            .map_err(|_| failure("cannot open regular skill source"))?;
+        let metadata = input
+            .metadata()
+            .map_err(|_| failure("cannot inspect skill source"))?;
+        if !metadata.is_file() || metadata.len() > MAX_SKILL_PACKAGE_BYTES.saturating_sub(*total) {
+            return Err(failure("skill package exceeds maximum byte size (10 MiB)"));
+        }
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        let mut bytes = Vec::new();
+        input
+            .take(MAX_SKILL_PACKAGE_BYTES.saturating_sub(*total) + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| failure("cannot read skill source"))?;
+        *total += bytes.len() as u64;
+        if *total > MAX_SKILL_PACKAGE_BYTES {
+            return Err(failure("skill package exceeds maximum byte size (10 MiB)"));
         }
         files.push(CharioxSkillPackageFile {
-            executable: false,
-            path: relative_path.to_string_lossy().replace('\\', "/"),
+            executable,
+            path: relative,
             sha256: sha256_hex(&bytes),
             content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         });
     }
     Ok(())
 }
-
-fn validate_package_relative_path(
-    path: &str,
-    operation: &'static str,
-) -> Result<PathBuf, DaemonError> {
-    let relative_path = PathBuf::from(path);
-    if relative_path.is_absolute()
-        || relative_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+fn validate_package_relative_path(path: &str) -> Result<(), DaemonError> {
+    use unicode_normalization::UnicodeNormalization;
+    if path.is_empty()
+        || path.len() > 4096
+        || path.contains('\\')
+        || path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        || path.nfc().collect::<String>() != path
     {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message: format!("skill package path `{path}` must be relative and contained"),
-        });
+        return Err(failure(
+            "skill package path must be portable, relative and contained",
+        ));
     }
-    Ok(relative_path)
+    for part in path.split('/') {
+        let stem = part
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.len() > 255
+            || part.ends_with(['.', ' '])
+            || matches!(
+                stem.as_str(),
+                "CON"
+                    | "PRN"
+                    | "AUX"
+                    | "NUL"
+                    | "COM1"
+                    | "COM2"
+                    | "COM3"
+                    | "COM4"
+                    | "COM5"
+                    | "COM6"
+                    | "COM7"
+                    | "COM8"
+                    | "COM9"
+                    | "LPT1"
+                    | "LPT2"
+                    | "LPT3"
+                    | "LPT4"
+                    | "LPT5"
+                    | "LPT6"
+                    | "LPT7"
+                    | "LPT8"
+                    | "LPT9"
+            )
+        {
+            return Err(failure(
+                "skill package path must be portable, relative and contained",
+            ));
+        }
+    }
+    Ok(())
 }
-
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    hex_digest(digest.as_slice())
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
+    format!("{:x}", Sha256::digest(bytes))
 }

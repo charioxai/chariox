@@ -94,3 +94,29 @@ fn skills_v2_unknown_batch_fields_cannot_smuggle_grants() {
         "actions":[{"action":"set_state","skill_id":"s","state":"auto","grant":true}]});
     assert!(serde_json::from_value::<SkillCatalogMutation>(wire).is_err());
 }
+
+#[test]
+fn skills_v2_payload_file_modes_are_explicit_on_the_wire() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
+    let file = crate::skill::CharioxSkillPackageFile {
+        path: "helper.sh".into(),
+        executable: true,
+        sha256: "digest".into(),
+        content_base64: "Ynl0ZXM=".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(file).unwrap(),
+        serde_json::json!({"path":"helper.sh","executable":true,"sha256":"digest","content_base64":"Ynl0ZXM="})
+    );
+}
+
+#[test]
+fn skills_v2_budget_configuration_wire_snapshot() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
+    let config = crate::config::CharioxUserConfig::default();
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["skills"],
+        serde_json::json!({"metadata_budget_percent": 1.0})
+    );
+}

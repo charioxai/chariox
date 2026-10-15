@@ -366,12 +366,12 @@ Remote native TUI composition:
 
 Native TUI MCP and skill placement:
 
-- local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
+- MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants
 - standard home-worker native TUI may expose home-authorized remote extension manifests to the worker. Home-owned active extensions remain grant/revoke authoritative on the home kernel and execute on home through relay peer calls; the worker only advertises the manifest and forwards calls. Each forwarded call carries `invocation_id`, optional `provider_tool_call_id`, `attempt`, and optional `idempotency_key`; home reconstructs the current tool definition before execution and rejects stale or forged worker metadata, including calls from a worker provider run that is not the current remote binding.
 - when an extension is explicitly worker-local, the home kernel may still compute grant-derived remote MCP requirements and pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
-- slice-backed native TUI may synchronize Chariox skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- MP-08 / MP-10 / MP-11: every execution placement, including standard leased/native workers and slices, receives the effective home-selected Auto/Manual Skills v2 packages through `EnsureRemoteSkillPackages`; Off is not newly transferred. Verified revision/digest receipts bind to the current home/session/agent/lease/Project before dispatch. Received packages remain lease-private materializations, never a shadow worker catalog
 - slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Chariox vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
-- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
+- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted MCPs. Provider-native skills remain independent, read-only `From <Provider>` entries; complete-content dedupe and conflict projection follow the home Skills v2 resolver, without modifying native sources
 
 Native TUI permissions:
 

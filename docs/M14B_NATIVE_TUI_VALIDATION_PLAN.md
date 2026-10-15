@@ -226,19 +226,18 @@ MCPs and skills:
 
 - Covered for normal Chariox provider runs by existing local and remote
   MCP/skill drills.
-- Local native TUI provider launch now follows the same agent-scoped grant
-  rendering path as ordinary local provider launch.
-- Standard home-worker native TUI intentionally does not install/copy MCPs or
-  skills across home/worker machines. The worker must already have the matching
-  MCP definitions, commands, environment, provider credentials, and any
-  provider/Chariox skill material required for the run. Home may send
-  grant-derived MCP requirements for fail-fast validation and provider-run
-  rendering, but it must not become a remote package installer in this mode.
-- Home-managed slice native TUI transfers granted Chariox skill packages from
-  home to the child worker before provider execution because the slice is
-  managed by the home kernel. MCP definitions are installed into an isolated
-  managed-slice registry before worker launch and MCP commands/env execute on
-  the worker side.
+- Local native TUI provider launch follows ordinary MCP grant rendering and
+  the shared Skills v2 scope/state/selection resolver.
+- MP-08 / MP-10 / MP-11: standard home-worker and slice native TUI both
+  receive home-selected Skills v2 Auto/Manual packages, state and revision
+  through the authenticated leased package path. Off is not newly transferred;
+  stale/foreign receipts fail before skill use. Source changes take effect on
+  the next turn without restarting providers. Provider-native entries remain
+  read-only, with complete-package dedupe, conflict and source-bound selection.
+- MCP setup is unchanged: standard workers need matching worker-local MCP
+  definitions, commands/environment and provider credentials. Home may send
+  grant-derived requirements for validation/rendering. Home-managed slices keep
+  their isolated MCP setup and execute MCP commands/environment on the worker.
 - Focused unit coverage has landed for native remote provider-run MCP
   propagation. Home-managed slice kernels set `CHARIOX_CAPABILITY_ISOLATION_ROOT`
   so project/user MCP and skill registries are isolated from any `.chariox`
@@ -360,10 +359,10 @@ Provider notes:
      provider run and same-turn skill requests receive hidden Chariox skill
      context through Claude Code hook `additionalContext` rather than visible
      PTY input.
-   - Standard remote home-worker: do not copy/install MCPs or skills as product
-     behavior. The drill preinstalls matching worker MCP definitions as setup,
-     then validates grant-derived worker provider-run rendering.
-   - Home-managed slice: transfer granted Chariox skill packages to the
+   - MP-08 / MP-10 / MP-11: standard remote home-worker transfers Skills v2
+     packages through the home-owned lease path. Preinstall matching worker
+     MCP definitions as setup, then validate unchanged MCP grant rendering.
+   - Home-managed slice: transfer home-selected Skills v2 packages to the
      home-managed child worker before provider execution, validate worker-local
      materialized skill paths in prompt context where provider-supported, and
      validate MCP rendering against MCP definitions installed into the managed
@@ -380,6 +379,12 @@ Legend:
 - `recheck`: previously passed, but must be rerun after the native TUI cleanup
 - `partial`: implemented or manually confirmed, but missing complete automated
   live-drill coverage
+
+MP-08 / MP-10 / MP-11: the retained table below records pre-v2 drill evidence.
+Its skill results do not establish Skills v2 acceptance. Current state/selection,
+package transfer, dedupe and hot-reload dimensions for local, standard leased
+and slice native TUIs are **NOT RUN** until SV-08/SV-10/SV-14 pass on paired
+implementation heads. MCP evidence retains its original source identity.
 
 | Scenario | Provider | Prompt/turns | Permissions | Attachments | MCP/skills |
 | --- | --- | --- | --- | --- | --- |
@@ -434,11 +439,12 @@ Permission drills must validate:
 
 MCP/skill drills must validate:
 
-- pre-granted MCPs and skills are visible to native-TUI provider runs
-- same-turn skill requests work when supported
+- pre-granted MCPs and state-selected Skills v2 instructions reach native-TUI runs
+- Auto discovery, explicit Manual selection, Off denial, exact-content dedupe,
+  different-content conflict, hidden delivery and acknowledged load records work
+  through the same home resolver; see Skills v2 SV-08/SV-10/SV-14
 - standard remote provider execution sees worker-local MCP definitions and
-  preinstalled worker-local skill material without home-to-worker package
-  transfer
+  verified home-selected Skills v2 packages, including new revisions next turn
 - slice provider execution sees worker-local MCP definitions and home-managed,
   hash-verified materialized Chariox skill files
 - provider-native MCP calls execute on the provider execution machine

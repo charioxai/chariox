@@ -41,6 +41,10 @@ impl CharioxUserConfig {
         }
 
         match normalized {
+            "skills.metadata_budget_percent" => {
+                let percent = value.parse::<f64>().map_err(|_| DaemonError::InvalidConfig { field: "skills.metadata_budget_percent", message: "must be a finite percentage greater than 0 and at most 100" })?;
+                self.skills.metadata_budget_percent = super::SkillMetadataBudgetPercent::new(percent)?;
+            }
             "version" => {
                 self.version = value
                     .parse::<u32>()
@@ -495,6 +499,7 @@ impl CharioxUserConfig {
         }
 
         match normalized {
+            "skills.metadata_budget_percent" => self.skills = super::UserSkillsConfig::default(),
             "providers.default" => self.providers.default = None,
             "providers.model" => self.providers.model = None,
             "providers.effort" => self.providers.effort = None,
