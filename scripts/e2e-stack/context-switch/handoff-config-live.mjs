@@ -21,7 +21,12 @@ function check(payload){
  return {handoff,sha256};
 }
 try{
- remote=await shapedRemoteTui(r,{useTui:true});r.profiles.codex='default';
+ if(!process.env.CTXVAL_NATIVE_CODEX_PROFILE)throw Error('The real TUI requires a product-imported account status; supply CTXVAL_NATIVE_CODEX_PROFILE');
+ const imported=await r.client.send({ImportNativeProviderAccountProfile:{provider:'codex'}});
+ r.profiles.codex=imported.ProviderAccountProfile.profile.profile_id;
+ await r.client.send({RefreshProviderAccountProfile:{provider:'codex',account_profile:r.profiles.codex}});
+ await r.record('account-status-prerequisite',{profileId:r.profiles.codex,providerTurns:0,path:'Product import and explicit refresh, for normal TUI admission only'});
+ remote=await shapedRemoteTui(r,{useTui:true});
  await r.launch('codex','gpt-6-luna');
  for(const [key,value]of Object.entries(expected)){
   await r.command('config set history.handoff.'+key+' '+value);
