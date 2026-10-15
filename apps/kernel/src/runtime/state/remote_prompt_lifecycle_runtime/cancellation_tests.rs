@@ -621,7 +621,13 @@ async fn cancel_response_wait_keeps_home_app_lock_available(cancel_parent: Optio
             cancel_runtime.cancel_agent_task_resources(&cancelled).await
         } else {
             cancel_runtime
-                .cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id, None, None)
+                .cancel_remote_agent_prompt_if_remote(
+                    &session_id,
+                    &agent_id,
+                    &attachment_id,
+                    None,
+                    None,
+                )
                 .await
                 .map(|result| {
                     assert!(result.is_some());

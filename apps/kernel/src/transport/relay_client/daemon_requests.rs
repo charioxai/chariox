@@ -309,6 +309,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 Ok(identity) => identity,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(error),
                     }
@@ -360,6 +361,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 Ok(identity) => identity,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(error),
                     }

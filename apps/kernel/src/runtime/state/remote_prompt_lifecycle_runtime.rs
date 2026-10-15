@@ -211,12 +211,16 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let cancellation_intent = self.owned.begin_remote_prompt_cancellation_if_matches(
-                    session_id,
-                    target_agent_id,
-                    &attachment_id,
-                    Some(active_prompt.id()),
-                )?;
+                let Some(cancellation_intent) =
+                    self.owned.begin_remote_prompt_cancellation_if_matches(
+                        session_id,
+                        target_agent_id,
+                        &attachment_id,
+                        Some(active_prompt.id()),
+                    )?
+                else {
+                    return Ok(false);
+                };
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
                         session_id,

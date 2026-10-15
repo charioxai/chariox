@@ -362,8 +362,7 @@ impl KernelRuntimeOwnedState {
                 request,
             )?,
         };
-        crate::provider::launch_uses_vault_credential(
-            &self.provider_account_profiles,
+        crate::provider::provider_account_credential_uses_vault(
             &account_owner_user_id,
             &request.provider,
             &request.account_profile,

@@ -37,21 +37,20 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
-    let claude_environment = registry.resolve_environment(
-        &owner_user_id,
-        "claude",
-        &selected_profiles["claude"].profile_id,
-    )?;
-    let mut catalogs = vec![claude_provider_catalog_with_environment(
-        &claude_environment,
-    )];
+    let selected_profiles = resolve_catalog_profiles(&config, &registry, &owner_user_id, &request)?;
+    let claude_catalog = if let Some(profile) = selected_profiles.get("claude") {
+        let environment =
+            registry.resolve_environment(&profile.owner_user_id, "claude", &profile.profile_id)?;
+        claude_provider_catalog_with_environment(&environment)
+    } else {
+        crate::provider::claude_provider_catalog()
+    };
+    let mut catalogs = vec![claude_catalog];
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
-    let selected_profiles = resolve_catalog_profiles(&config, &registry, &owner_user_id, &request)?;
     if let Some(opencode_profile) = selected_profiles.get("opencode") {
         let opencode_environment = registry.resolve_environment(
             &opencode_profile.owner_user_id,
@@ -1505,7 +1504,7 @@ mod tests {
             provider: Some("opencode".into()),
             ..Default::default()
         };
-        let mut catalogs = vec![claude_provider_catalog()];
+        let mut catalogs = vec![crate::provider::claude_provider_catalog()];
         let mut errors = Vec::new();
         let result = append_catalog_source(
             "opencode",
@@ -1525,7 +1524,7 @@ mod tests {
 
     #[test]
     fn amfix_r18_catalog_unfocused_read_keeps_available_sources() {
-        let mut catalogs = vec![claude_provider_catalog()];
+        let mut catalogs = vec![crate::provider::claude_provider_catalog()];
         let mut errors = Vec::new();
         append_catalog_source(
             "opencode",
@@ -1950,8 +1949,14 @@ mod tests {
             &profile_id
         )
         .unwrap());
-        let status =
-            observe_provider_auth_status(&registry, "local", "claude-p", "default").unwrap();
+        let status = observe_provider_auth_status(
+            &registry,
+            "local",
+            "claude-p",
+            "default",
+            &DaemonConfig::for_tests(),
+        )
+        .unwrap();
         assert_eq!(status.auth_state, "authenticated");
         registry
             .require_authenticated(
@@ -1966,9 +1971,15 @@ mod tests {
             .mark_logged_out("local", "claude", "default")
             .unwrap();
         assert_ne!(
-            observe_provider_auth_status(&registry, "local", "claude-p", "default")
-                .unwrap()
-                .auth_state,
+            observe_provider_auth_status(
+                &registry,
+                "local",
+                "claude-p",
+                "default",
+                &DaemonConfig::for_tests()
+            )
+            .unwrap()
+            .auth_state,
             "authenticated"
         );
         registry
@@ -1993,9 +2004,15 @@ mod tests {
                 .update_observation("local", "claude", "default", state, None, None, None, None)
                 .unwrap();
             assert_ne!(
-                observe_provider_auth_status(&registry, "local", "claude-p", "default")
-                    .unwrap()
-                    .auth_state,
+                observe_provider_auth_status(
+                    &registry,
+                    "local",
+                    "claude-p",
+                    "default",
+                    &DaemonConfig::for_tests()
+                )
+                .unwrap()
+                .auth_state,
                 "authenticated"
             );
         }

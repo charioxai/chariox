@@ -25,7 +25,6 @@ impl KernelRuntimeState {
             answer.custom_reply.as_deref(),
             Some(&turn.owner_user_id),
             true,
-            Some(&turn),
             None,
             false,
             false,

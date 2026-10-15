@@ -173,7 +173,6 @@ pub(super) async fn handle_incoming_envelope(
                     if let Some(subscription_id) =
                         super::browser_display::browser_display_delivery_id(
                             &display_subscriptions,
-                            Some(&local_browser),
                             &display_id,
                             &display_sender,
                         )

@@ -1,6 +1,6 @@
 //! MP-08/MP-11: direct loopback admission over real sockets and real dispatch.
 
-use super::super::daemon_requests::RelayRequestOutcome;
+use super::super::daemon_requests::{handle_daemon_request, RelayRequestOutcome};
 use super::*;
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::local::{ListSessionsRequest, LocalDaemonRequest};
@@ -172,6 +172,7 @@ impl Kernel {
             Some(identity),
             request,
             &self.direct.command_result_cache,
+            &Default::default(),
             Some(&self.direct),
         )
         .await;
@@ -544,6 +545,7 @@ fn mp11_grant_minting_requires_relay_carrier_and_bound_live_identity() {
             Some(browser.identity()),
             request,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             None,
         )
         .await;
@@ -740,6 +742,7 @@ async fn renew(
         Some(identity),
         request,
         &kernel.direct.command_result_cache,
+        &Default::default(),
         if via_relay {
             Some(&kernel.direct)
         } else {
@@ -1191,6 +1194,7 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(browser.identity()),
             encrypted.clone(),
             &kernel.direct.command_result_cache,
+            &Default::default(),
             Some(&kernel.direct),
         );
         let outcome = timeout(Duration::from_secs(2), retry)
@@ -1208,6 +1212,7 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(browser.identity()),
             encrypted,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             Some(&kernel.direct),
         )
         .await;
@@ -1234,6 +1239,7 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(browser.identity()),
             sessions,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             Some(&kernel.direct),
         )
         .await;
@@ -1271,6 +1277,7 @@ async fn terminal_request(
         Some(identity),
         request,
         &kernel.direct.command_result_cache,
+        &Default::default(),
         if via_relay {
             Some(&kernel.direct)
         } else {
