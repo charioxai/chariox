@@ -30,6 +30,9 @@ impl SkillCatalogStorage {
             .map_err(|_| failure("Chariox home must exist before loading skills"))?;
         Ok(Self { home, durable })
     }
+    pub(super) fn journal(&self) -> &DurableKernelStateStore {
+        &self.durable
+    }
     pub fn home(&self) -> &Path {
         &self.home
     }
@@ -178,7 +181,7 @@ impl SkillCatalogStorage {
             .map_err(|_| failure("cannot lock catalog publication"))?;
         Ok(file)
     }
-    fn directory(&self, relative: &Path) -> Result<PathBuf, DaemonError> {
+    pub(super) fn directory(&self, relative: &Path) -> Result<PathBuf, DaemonError> {
         let mut path = self.home.clone();
         for part in relative.components() {
             let std::path::Component::Normal(part) = part else {

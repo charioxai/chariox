@@ -103,12 +103,9 @@ impl SkillCatalogService {
                     .into(),
                     source_machine: None,
                     locator,
-                    source_revision: match source {
-                        SkillInstallSource::Url {
-                            pinned_revision, ..
-                        } => pinned_revision.clone(),
-                        _ => None,
-                    },
+                    // Only a source adapter that actually resolves a repository
+                    // revision may attest one; a caller-supplied label is not proof.
+                    source_revision: None,
                     provider: None,
                     account_profile: None,
                     installed_at_ms: now,
@@ -144,7 +141,7 @@ impl SkillCatalogService {
             let record = planned
                 .record(id)
                 .ok_or_else(|| failure("prepared skill is absent from reviewed batch"))?;
-            let base = self.storage.home().join("skills/packages");
+            let base = self.storage.directory(Path::new("skills/packages"))?;
             // IDs and complete digests own immutable bytes; source names never
             // choose an installation path or a provider account directory.
             super::package::materialize_skill_package_for_id(&base, &record.id, payload)?;
@@ -279,14 +276,28 @@ impl SkillCatalogService {
                 });
                 continue;
             }
-            let root = self.package_root(&row.skill);
-            let body = fs::read_to_string(root.join("SKILL.md")).map_err(|_| {
-                failure("selected skill package is missing; reinstall it before submitting")
-            })?;
+            let root = self.storage.directory(
+                &Path::new("skills/packages")
+                    .join(&row.skill.id)
+                    .join(&row.skill.digest),
+            )?;
             let current = package_skill_directory(&root)?;
             if current.version_hash != row.skill.digest {
                 return Err(failure("selected immutable skill package failed verification; reinstall before submitting"));
             }
+            // Deliver the bytes that were hashed, not a separate pathname read
+            // that could observe another file between verification and delivery.
+            let body_file = current
+                .files
+                .iter()
+                .find(|file| file.path == "SKILL.md")
+                .ok_or_else(|| failure("verified skill has no instruction body"))?;
+            let body = String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&body_file.content_base64)
+                    .map_err(|_| failure("invalid verified skill body"))?,
+            )
+            .map_err(|_| failure("verified skill body must be UTF-8"))?;
             let wrapper = format!(
                 "\nSkill {} ({}) at {}:\n{}\n",
                 row.skill.name,
@@ -331,7 +342,13 @@ impl SkillCatalogService {
                 Some(safe_locator(path)?),
             )),
             SkillInstallSource::Content { skill_md } => self.content_package(skill_md, None),
-            SkillInstallSource::Url { url, .. } => {
+            SkillInstallSource::Url {
+                url,
+                pinned_revision,
+            } => {
+                if pinned_revision.is_some() {
+                    return Err(failure("repository revisions require resolved repository import; a downloaded SKILL.md cannot attest a revision"));
+                }
                 use std::io::Read;
                 let parsed = url::Url::parse(url).map_err(|_| failure("invalid skill URL"))?;
                 if !matches!(parsed.scheme(), "https" | "http") {
@@ -372,12 +389,10 @@ impl SkillCatalogService {
         if body.len() > 512 * 1024 {
             return Err(failure("SKILL.md must be at most 512 KiB"));
         }
-        let staging = self
-            .storage
-            .home()
-            .join("state/skill-staging")
-            .join(format!("stage-{:032x}", rand::random::<u128>()));
-        fs::create_dir_all(&staging).map_err(|_| failure("cannot prepare skill source"))?;
+        let staging = self.storage.directory(
+            &Path::new("state/skill-staging")
+                .join(format!("stage-{:032x}", rand::random::<u128>())),
+        )?;
         let result = (|| {
             crate::config::write_private_file(&staging.join("SKILL.md"), body.as_bytes())
                 .map_err(|_| failure("cannot prepare skill content"))?;

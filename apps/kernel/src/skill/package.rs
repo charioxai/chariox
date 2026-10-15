@@ -1,5 +1,5 @@
 //! MP-08 / MP-10 / MP-11: bounded immutable instruction payloads, including modes.
-use super::{managed_capability_root, parse_skill_metadata, CharioxSkillMetadata};
+use super::{managed_capability_root, CharioxSkillMetadata};
 use crate::{error::DaemonError, mcp::validate_registry_name};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -190,6 +190,9 @@ pub(crate) fn verify_package(
         if total > MAX_SKILL_PACKAGE_BYTES {
             return Err(failure("skill package exceeds maximum byte size"));
         }
+        if crate::extension_package_security::contains_private_key(&bytes) {
+            return Err(failure("skill package contains private key material"));
+        }
         if sha256_hex(&bytes) != file.sha256 {
             return Err(failure("skill package file hash mismatch"));
         }
@@ -228,12 +231,34 @@ pub(crate) fn remote_skill_materialization_base(_workspace: impl AsRef<Path>) ->
 pub(crate) fn package_skill_directory(
     skill_dir: &Path,
 ) -> Result<CharioxSkillPackage, DaemonError> {
-    let metadata = parse_skill_metadata(&skill_dir.join("SKILL.md"))?;
     let mut files = Vec::new();
     let mut total = 0;
     let root = fs::canonicalize(skill_dir).map_err(|_| failure("cannot resolve skill source"))?;
+    let instructions = fs::symlink_metadata(root.join("SKILL.md"))
+        .map_err(|_| failure("skill source requires a regular SKILL.md"))?;
+    if !instructions.is_file() || instructions.file_type().is_symlink() {
+        return Err(failure(
+            "skill source requires a regular, contained SKILL.md",
+        ));
+    }
     collect_files(&root, &root, &mut files, &mut total)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    let body_file = files
+        .iter()
+        .find(|file| file.path == "SKILL.md")
+        .ok_or_else(|| failure("skill package requires SKILL.md"))?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(&body_file.content_base64)
+        .map_err(|_| failure("invalid skill body encoding"))?;
+    let parsed = super::frontmatter::parse_frontmatter(
+        std::str::from_utf8(&body).map_err(|_| failure("SKILL.md must be UTF-8"))?,
+    )?;
+    let metadata = CharioxSkillMetadata {
+        name: parsed.name,
+        description: parsed.description,
+        short_description: parsed.short_description,
+        path: skill_dir.join("SKILL.md"),
+    };
     let package = CharioxSkillPackage {
         metadata,
         version_hash: package_digest(&files),
@@ -250,6 +275,12 @@ fn collect_files(
 ) -> Result<(), DaemonError> {
     for entry in fs::read_dir(dir).map_err(|_| failure("cannot read skill directory"))? {
         let entry = entry.map_err(|_| failure("cannot inspect skill file"))?;
+        if SKILL_PACKAGE_IGNORED_DIRS
+            .iter()
+            .any(|ignored| entry.file_name() == *ignored)
+        {
+            continue;
+        }
         let path = entry.path();
         let file_type = entry
             .file_type()
@@ -267,12 +298,7 @@ fn collect_files(
             .to_string();
         validate_package_relative_path(&relative)?;
         if file_type.is_dir() {
-            if !SKILL_PACKAGE_IGNORED_DIRS
-                .iter()
-                .any(|ignored| entry.file_name() == *ignored)
-            {
-                collect_files(root, &path, files, total)?;
-            }
+            collect_files(root, &path, files, total)?;
             continue;
         }
         if !file_type.is_file() {
@@ -309,6 +335,9 @@ fn collect_files(
             .take(MAX_SKILL_PACKAGE_BYTES.saturating_sub(*total) + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| failure("cannot read skill source"))?;
+        if crate::extension_package_security::contains_private_key(&bytes) {
+            return Err(failure("skill package contains private key material"));
+        }
         *total += bytes.len() as u64;
         if *total > MAX_SKILL_PACKAGE_BYTES {
             return Err(failure("skill package exceeds maximum byte size (10 MiB)"));
@@ -335,6 +364,34 @@ fn validate_package_relative_path(path: &str) -> Result<(), DaemonError> {
         return Err(failure(
             "skill package path must be portable, relative and contained",
         ));
+    }
+    let basename = path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let private_account = path.split('/').any(|part| {
+        matches!(
+            part.to_ascii_lowercase().as_str(),
+            "auth.json" | ".credentials.json" | "credentials.toml" | "oauth-token"
+        )
+    });
+    let adjacent_config = !path.contains('/')
+        && matches!(
+            basename.as_str(),
+            "config.json"
+                | "config.toml"
+                | "settings.json"
+                | "settings.local.json"
+                | "opencode.json"
+                | "opencode.jsonc"
+                | ".mcp.json"
+        );
+    if crate::extension_package_security::sensitive_package_path(path)
+        || private_account
+        || adjacent_config
+    {
+        return Err(failure("skill packages cannot include account, credential or adjacent private configuration files; choose the skill folder and exclude private files"));
     }
     for part in path.split('/') {
         let stem = part

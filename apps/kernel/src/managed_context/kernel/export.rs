@@ -1,3 +1,6 @@
+use crate::extension_package_security::{
+    contains_private_key, sensitive_package_path as sensitive_extension_package_path,
+};
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -1582,39 +1585,8 @@ fn validate_portable_package_paths<'a>(
     Ok(())
 }
 
-fn sensitive_extension_package_path(path: &str) -> bool {
-    path.split('/').any(|component| {
-        let component = component.to_ascii_lowercase();
-        component.starts_with(".env")
-            || matches!(
-                component.as_str(),
-                ".npmrc"
-                    | ".pypirc"
-                    | ".netrc"
-                    | ".git-credentials"
-                    | ".ssh"
-                    | "id_rsa"
-                    | "id_ed25519"
-                    | "credentials.json"
-                    | "credentials.yaml"
-                    | "credentials.yml"
-                    | "secrets.json"
-                    | "secrets.yaml"
-                    | "secrets.yml"
-            )
-            || component.ends_with(".pem")
-            || component.ends_with(".p12")
-            || component.ends_with(".pfx")
-            || component.ends_with(".key")
-    })
-}
-
 pub(super) fn validate_safe_package_file(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
-    if sensitive_extension_package_path(path)
-        || bytes
-            .windows(b"PRIVATE KEY-----".len())
-            .any(|window| window == b"PRIVATE KEY-----")
-    {
+    if sensitive_extension_package_path(path) || contains_private_key(bytes) {
         return Err(kernel_context_error(format!(
             "kernel Extension package file `{path}` may contain credentials"
         )));
