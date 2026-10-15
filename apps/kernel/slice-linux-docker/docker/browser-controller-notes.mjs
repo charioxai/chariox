@@ -14,12 +14,15 @@ const OWNER_PROTECTED_FUNCTION = `function() {
 function installNoteObserver() {
   if (globalThis.__charioxNotes) return true;
   const maxText = 2 * 1024 * 1024;
+  // MP-08/MP-10/MP-11: ordinary ad-heavy pages exceed 64 open roots.
+  // Keep a finite complete search, including late contextual/ambiguous matches.
+  const maxRoots = 256;
   const roots = () => {
     const result=[document.body??document.documentElement];
     for (let i=0;i<result.length;i++) {
       const walker=document.createTreeWalker(result[i],NodeFilter.SHOW_ELEMENT);
       for (let node=walker.nextNode();node;node=walker.nextNode()) if (node.shadowRoot) {
-        if (result.length>=64) throw new Error('MD-N2: shadow root limit reached');
+        if (result.length>=maxRoots) throw new Error('MD-N2: shadow root limit reached');
         result.push(node.shadowRoot);
       }
     }

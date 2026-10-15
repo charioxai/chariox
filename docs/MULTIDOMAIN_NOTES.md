@@ -24,7 +24,10 @@ shadow roots and owned frames. Contextual matches take priority across every
 owned frame and root; exact-only fallback runs only when no contextual match
 exists anywhere. Ambiguous matches do not silently pick one.
 Closed shadow roots and selections spanning separate DOM roots return no
-selection. Quote size, frame/root count and text indexing are bounded. Context truncation
+selection. Root enumeration admits at most 256 roots per owned frame, including the
+document root; exceeding that bound makes observation unavailable rather than
+accepting a partial quote search. Quote size, frame count and text indexing remain
+bounded. Context truncation
 uses Unicode code points so an emoji cannot break the serialized quote. A changed
 or unavailable page retains the original quote, with `missing`, `ambiguous` or
 `unavailable` state. Read refreshes browser anchors. Durable host-tab listing follows stable tab
