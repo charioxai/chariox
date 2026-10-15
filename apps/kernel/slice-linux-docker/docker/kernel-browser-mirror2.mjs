@@ -13,6 +13,7 @@ import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
+import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
@@ -163,8 +164,16 @@ export class Mirror2 {
       world.mirror2Installed = true;
     }
     const out = { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
-    await this.css.watch(out, frameTree.frame.id, stream.id);
+    await this.watchCss(out, frameTree.frame.id, stream.id);
     return out;
+  }
+  async watchCss(world, frameId, streamId) {
+    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000");
+    world.holdInitialPaint = large;
+    const pending = this.css.pending(world.sessionId);
+    const ready = this.css.watch(world, frameId, streamId);
+    if (large || pending) ready.catch(() => { world.cssFailed = true; });
+    else await ready;
   }
   async evaluate(world, expression, awaitPromise = false) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
@@ -187,32 +196,9 @@ export class Mirror2 {
     Object.assign(stream, { wire: 2, issued: 0, resetAt: 0, chain: Promise.resolve(), resources: new Map(), attrSequence: new Map(), tilesAt: 0, tileKeys: '', fallback: null, frames: new Map(), frameSlots: new Map(), frameSlot: 0, movedAt: 0, ownScrolls: new Map() });
     return stream;
   }
-  // Closed shadow roots (owner decision: opaque regions): a trusted DOMSnapshot
-  // pass finds their hosts before the snapshot, only when custom elements exist.
-  async markClosedHosts(world) {
-    if (!await this.evaluate(world, `${world.ref}.customHosts()`)) return 0;
-    const snapshot = await world.connection.send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, world.sessionId);
-    const strings = snapshot.strings ?? [];
-    const documents = snapshot.documents; // Includes same-origin documents serialized by this world.
-    if (!documents?.length) throw new Error('MP-11: closed-root frame snapshot unavailable');
-    let marked = 0;
-    for (const document of documents) {
-      const nodes = document.nodes, types = nodes?.shadowRootType;
-      for (let i = 0; i < (types?.index?.length ?? 0) && marked < 256; i++) {
-        if (strings[types.value[i]] !== 'closed') continue;
-        const host = nodes.parentIndex?.[types.index[i]], backendNodeId = nodes.backendNodeId?.[host];
-        if (!Number.isSafeInteger(backendNodeId)) continue;
-        try {
-          const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-          const result = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.markClosedHost.call(this)}`, returnByValue: true }, world.sessionId);
-          await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
-          if (result.result?.value === true) marked++;
-        } catch {}
-      }
-    }
-    await this.evaluate(world, `${world.ref}.closedChecked()`);
-    return marked;
-  }
+  // Closed shadow roots (owner decision: opaque regions): inspect only hosts
+  // in this chunk before it can be published.
+  async markClosedHosts(world, source) { return discoverClosedHosts(this, world, source); }
   // Registered Vault targets are marked by node identity in the observer's world.
   // Fields the kernel filled from the Vault, by node identity: top-level refs
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
@@ -282,31 +268,37 @@ export class Mirror2 {
     assertNotCancelled(signal);
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
+    if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');
     mark('world');
     const after = command.after_sequence;
     // The viewer's credits name what it applied: resource completion counts only once acknowledged.
     if (after > 0 && after <= stream.issued) stream.acked = Math.max(stream.acked ?? 0, after);
     // Bytes the viewer acknowledged are kept by it for the document's lifetime: the kernel drops its copy.
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.fallback !== null ? 'fallback' : null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
-    if (stream.document_id && stream.document_id !== tab.document_id) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
-    if (reset) { stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0; for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; } }
     let source, fallback = null;
     const read = async () => {
       if (reset) {
+        // A snapshot may reuse local ids. Refuse old inputs/region leases
+        // before touching the observer, including resyncs found during drain.
+        // If cancelled, resetAt > issued forces the next credit to rebuild.
+        stream.resetAt = stream.issued + 1;
+        stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
+        for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         await this.protectTargets(world, tab, policy);
-        await this.markClosedHosts(world);
         const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
         if (snap.resync) return snap;
+        await this.markClosedHosts(world, snap);
         // Sheets this CSSOM cannot read come through CDP.
         const sheetOps = await this.sheetOps(world, snap.sheets);
         // Cross-origin frames: child DOM under the owner, or an opaque region.
@@ -318,8 +310,7 @@ export class Mirror2 {
     };
     const processDelta = async delta => {
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
-      if (delta.closed_candidates) {
-        await this.markClosedHosts(world);
+      if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
         delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
       }
       if (delta.resync) return delta;
@@ -492,6 +483,9 @@ export class Mirror2 {
     }
     return out;
   }
+  async resourceBody(world, url, maxBytes = RESOURCE_BYTES) {
+    return this.host.browser?.responseBodies?.read(world, url, maxBytes) ?? null;
+  }
   async materializeWorld(world, due, slot, budget, stream) {
     // Top-document element images: near the view first; the rest wait.
     let near = null, moving = false, stamp = null;
@@ -520,13 +514,16 @@ export class Mirror2 {
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);
-        // Resources a no-cors cross-origin stylesheet loaded (its imports, images, fonts) are
-        // absent from the page's Resource Timing; the inspector's resource tree lists them.
-        else if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
         else {
-          const frameId = (await frames()).get(entry.url);
-          if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
-          body ??= await this.cached(world, entry.url).catch(() => null);
+          body = await this.resourceBody(world, entry.url);
+          // The response index itself proves this exact frame/document fetched
+          // the URL. A cache miss retains the existing Resource Timing/tree gate.
+          if (!body) {
+            if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
+            const frameId = (await frames()).get(entry.url);
+            if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
+            body ??= await this.cached(world, entry.url).catch(() => null);
+          }
         }
         let mime_type = body && body.length <= RESOURCE_BYTES ? mirrorResourceType(body, entry.kind === 'sprite' ? 'image' : entry.kind) : null;
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
@@ -582,13 +579,24 @@ export class Mirror2 {
   // the same way (depth-first, bounded), each under its conditions and sanitized
   // against its own URL, after the importing sheet's leading layer statements.
   async crossOriginSheet(world, url) {
-    const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
-    const frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
+    let frameOf;
+    const frames = async () => {
+      if (!frameOf) {
+        const { frameTree } = await world.connection.send('Page.getResourceTree', {}, world.sessionId);
+        frameOf = new Map(); const collect = node => { for (const r of node.resources ?? []) frameOf.set(r.url, node.frame.id); for (const child of node.childFrames ?? []) collect(child); }; collect(frameTree);
+      }
+      return frameOf;
+    };
     const sheets = []; let bytes = 0;
     const read = async (href, open, close, depth) => {
-      const frameId = frameOf.get(href); if (!frameId || sheets.length >= 64) return false;
-      const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
-      const text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
+      if (sheets.length >= 64) return false;
+      const body = await this.resourceBody(world, href, 16 * 1024 * 1024);
+      let text = body?.toString('utf8');
+      if (text === undefined) {
+        const frameId = (await frames()).get(href); if (!frameId) return false;
+        const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
+        text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
+      }
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
       const { layers, imports } = cssImports(text);
       // In source order: the sheet's leading layer statements, its imports, then its own rules.

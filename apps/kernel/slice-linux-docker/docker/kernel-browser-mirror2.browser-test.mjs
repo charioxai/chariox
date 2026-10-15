@@ -1208,3 +1208,119 @@ test('MP-11: a child opaque lease clips to the actual cross-origin frame viewpor
     assert.deepEqual(lease.rect,{x:0,y:40,width:100,height:40});
   },{'/child':{type:'text/html',body:'<style>body{margin:0}canvas{display:block;margin-top:40px;width:200px;height:100px}</style><canvas></canvas>'}}
 ));
+
+// MP-08/MP-10/MP-11 M2: a real public spec has >337k elements. This regression
+// is supplementary; the hosted WHATWG drill is the user-facing acceptance.
+test("MP-10 M2: large documents paint a bounded prefix then continue on existing children ops", () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>later text</p>'.repeat(210000) + '</main>', async ({ next, host, evaluate }) => {
+    const first = await next();
+    assert.equal(first.fallback, undefined, 'MP-10 M2: large DOM must remain a DOM mirror');
+    assert(first.nodes.length < 4096, 'MP-10 M2: first packet cannot serialize the entire document');
+    assert([...texts(first).keys()].includes('Viewport first'), 'MP-10 M2: viewport content in the first packet');
+    const stream = [...host.mirror.streams.values()][0];
+    assert(stream, 'MP-10 M2: ordinary mirror subscription');
+    const second = await next();
+    assert.equal(second.reset, undefined);
+    assert(second.ops.some(op => op.op === 'children'), 'MP-10 M2: ordinary children continuation');
+    assert(second.ops.reduce((n, op) => n + (op.nodes?.length ?? 0), 0) < 8192, 'MP-10 M2: bounded continuation');
+    // A different real tab still takes the ordinary path while hydration is pending.
+    const other = await host.request({ op: 'open', url: 'about:blank' });
+    assert(other.tab_id);
+    const otherMirror = await host.request({op:'mirror_subscribe',tab_id:other.tab_id,generation:other.generation,device_scale_factor:1,wire:2});
+    await host.request({op:'mirror_next',subscription_id:otherMirror.subscription_id,generation:other.generation,after_sequence:0,drift_nodes:[],wait_ms:0});
+    const resumed = await next();assert(resumed.ops.reduce((n,op)=>n+(op.nodes?.length??0),0)<8192,'another small document cannot change this viewer continuation budget');
+    assert.equal(await evaluate('document.querySelector("h1").textContent'), 'Viewport first');
+  }));
+
+test('MP-10 M2: a busy first task includes the visible viewport after a detailed header', () => mirrored(
+  '<header>'+'<span>item </span>'.repeat(150)+'</header><p>Visible viewport tail</p><main>'+'<p>Later content</p>'.repeat(10001)+'</main>', async ({next,host,evaluate}) => {
+    assert(await evaluate("document.querySelector('header+p').getBoundingClientRect().bottom < innerHeight"),'the native viewport includes the paragraph');
+    const mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror);let world;
+    mirror.evaluate=async(w,expression,...args)=>{
+      if(expression.endsWith('.snapshot()')){world=w;await original(w,"Object.defineProperty(performance,'now',{configurable:true,value:(()=>{let t=performance.now();return()=>t+=20})()});true");}
+      return original(w,expression,...args);
+    };
+    try{const first=await next();assert(!first.fallback);assert(texts(first).has('Visible viewport tail'),'a detailed header must not leave the visible viewport unfinished');assert(first.nodes.length<4096,'first paint remains bounded');}
+    finally{mirror.evaluate=original;if(world)await original(world,'delete performance.now;true');}
+  }));
+
+test('MP-10 M2: continuations finish the full DOM with bounded ordinary children packets', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
+    const seen=new Set(),add=(rows,parent)=>{let id=0;for(let i=0;i<rows.length;i++){const row=rows[i];id+=row[0];const at=`n${id}`,p=row[1]?rows[i-row[1]]._id:parent;assert(p===null||seen.has(p),'parent precedes the continuation record');assert(!seen.has(at),'a node is introduced once');seen.add(at);row._id=at;}};
+    add(first.nodes,null);let tail=false;
+    for(let n=0;n<200&&!tail;n++){const packet=await next();assert(!packet.reset);assert(!packet.fallback);let count=0;for(const op of packet.ops){if(op.op!=='children')continue;add(op.nodes,op.id);count+=op.nodes.length;tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last paragraph');}assert(count<8192);}
+    assert(tail,'the last paragraph eventually arrives');assert(seen.size>20000,'full document, not just the viewport prefix');
+    const world=host.mirror.streams.get(subscription_id).world;
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
+  }));
+
+test('MP-10/MP-11 M2: mutation during a continuation restarts a bounded current snapshot', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
+    const first=await next();assert(!first.fallback);
+    await evaluate(`document.querySelector('h1').replaceChildren('Changed viewport');true`);
+    const reset=await next();assert.equal(reset.reset,true);assert(!reset.fallback);assert(reset.nodes.length<4096);
+    assert(texts(reset).has('Changed viewport'),'no stale saved subtree crosses the reset');
+  }));
+
+
+test('MP-08/MP-10 M2: native form and text echoes take priority over continuing the document', () => mirrored(
+  '<input id="q"><h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
+    assert(!(await next()).fallback);
+    await evaluate(`const q=document.querySelector('#q');q.value='typed';q.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('h1').firstChild.data='Changed text';true`);
+    const echo=await next();assert(!echo.reset);assert(!echo.fallback);
+    assert(echo.ops.some(op=>op.op==='form'&&op.form.value==='typed'));
+    assert(echo.ops.some(op=>op.op==='text'&&op.text==='Changed text'));
+    assert(!echo.ops.some(op=>op.op==='children'),'an echo never waits behind continuation records');
+    assert((await next()).ops.some(op=>op.op==='children'),'hydration resumes on the next credit');
+  }));
+
+
+test('MP-10/MP-11 M2: a closed host discovered in a partial subtree discards all unpublished light descendants', () => mirrored(
+  '<x-closed>' + '<p>Unpublished light content</p>'.repeat(10001) + '</x-closed><h1>After closed host</h1><script>customElements.define("x-closed",class extends HTMLElement{connectedCallback(){this.attachShadow({mode:"closed"}).innerHTML="<p>Closed pixels</p>"}})</script>', async ({next}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.some(row=>row[2]===5));
+    assert(!JSON.stringify(first.nodes).includes('Unpublished light content'));
+    let after=texts(first).has('After closed host');
+    for(let n=0;n<10&&!after;n++){const packet=await next();assert(!packet.fallback);assert(!packet.reset);assert(!JSON.stringify(packet.ops).includes('Unpublished light content'));after=packet.ops.some(op=>op.op==='children'&&op.nodes.some(row=>row[2]===0&&row[3]==='After closed host'));}
+    assert(after,'continuation skips the now-opaque subtree and reaches its next sibling');
+  }));
+
+test('MP-10 M2: a document that grows after an early small snapshot switches to a bounded prefix', () => mirrored(
+  '<h1>Early paint</h1><main></main>', async ({next,evaluate}) => {
+    assert(!(await next()).fallback);
+    await evaluate(`document.querySelector('main').innerHTML='<p>Growing document</p>'.repeat(10001);true`);
+    const grown=await next();assert(grown.reset);assert(!grown.fallback);assert(grown.nodes.length<4096);
+    assert(texts(grown).has('Early paint'));assert((await next()).ops.some(op=>op.op==='children'));
+  }));
+
+test('MP-10/MP-11 M2: snapshot preparation fences old inputs before replacing the observer tree',()=>mirrored(
+  '<div style="height:3000px">scrollable</div>',async({next,input,host})=>{
+    const first=await next(),mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror);let enter,release;
+    const entered=new Promise(r=>enter=r),gate=new Promise(r=>release=r);let held=true;
+    mirror.evaluate=async(w,expression,...args)=>{if(held&&expression.endsWith('.snapshot()')){held=false;enter();await gate}return original(w,expression,...args)};
+    const reset=next(0,true);
+    try{await entered;await assert.rejects(input(first.sequence,{kind:'scroll_to',node_id:null,x:0,y:10}),/stale mirror input epoch/);}
+    finally{release();await reset;mirror.evaluate=original}
+  }));
+
+test('MP-10/MP-11 M2: a cancelled snapshot stays fenced and the next credit rebuilds its full base',()=>mirrored(
+  '<div style="height:3000px">scrollable</div>',async({next,input,host,subscription_id,generation})=>{
+    const first=await next(),mirror=host.mirror.v2,original=mirror.evaluate.bind(mirror),controller=new AbortController();let enter,release;
+    const entered=new Promise(r=>enter=r),gate=new Promise(r=>release=r);let held=true;
+    mirror.evaluate=async(w,expression,...args)=>{if(held&&expression.endsWith('.snapshot()')){held=false;enter();await gate}return original(w,expression,...args)};
+    const reset=host.request({op:'mirror_next',subscription_id,generation,after_sequence:0,drift_nodes:[],wait_ms:0},{signal:controller.signal});
+    try{await entered;controller.abort();release();await assert.rejects(reset,/cancel/i);mirror.evaluate=original;
+      await assert.rejects(input(first.sequence,{kind:'scroll_to',node_id:null,x:0,y:10}),/stale mirror input epoch/);
+      const recovered=await next();assert.equal(recovered.reset,true,'a private cancelled snapshot never becomes a delta base');assert(!recovered.fallback);
+      await input(recovered.sequence,{kind:'scroll_to',node_id:null,x:0,y:10});
+    }finally{release();await reset.catch(()=>{});mirror.evaluate=original}
+  }));
+
+test('MP-10 M2: repeated full resnapshots of a large document stay mirrored',()=>mirrored(
+  '<h1>Viewport</h1>'+('<section>'+'<p>Content</p>'.repeat(100)+'</section>').repeat(1000)+'<p>Final paragraph</p>',async({next})=>{
+    for(let epoch=0;epoch<6;epoch++){
+      const first=await next(0,true);assert(!first.fallback);let tail=texts(first).has('Final paragraph');
+      for(let n=0;n<2500&&!tail;n++){const packet=await next();assert(!packet.fallback,`full snapshot ${epoch+1} stays DOM mirrored`);tail=packet.ops.some(op=>op.op==='children'&&op.nodes.some(row=>row[2]===0&&row[3]==='Final paragraph'));}
+      assert(tail,`full snapshot ${epoch+1} reaches the document end`);
+    }
+  }));

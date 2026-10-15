@@ -1,3 +1,4 @@
+import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
@@ -130,6 +131,7 @@ export class BrowserCdpClient {
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
+    this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     this.inputCapture = new BrowserInputCapture();
@@ -241,6 +243,7 @@ export class BrowserCdpClient {
     this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
+        this.responseBodies.clear();
         this.cookieWriterFence = null;
         this.cookieWriterFenceInUse = false;
       }
@@ -271,6 +274,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.responseBodies.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     if (connection) {
@@ -391,6 +395,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.responseBodies.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     // A relaunched Chromium numbers its windows from 1 again.
@@ -434,6 +439,7 @@ export class BrowserCdpClient {
     const sessionId = this.sessionsByTarget.get(targetId);
     this.targetsBySession.delete(sessionId);
     this.networkRequestsBySession.delete(sessionId);
+    this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId);
     this.documentIdsByTarget.delete(targetId);
@@ -1150,6 +1156,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
         && typeof message.params?.requestId === "string") {
       const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
@@ -1175,6 +1182,7 @@ export class BrowserCdpClient {
       if (typeof sessionId === "string") {
         this.targetsBySession.delete(sessionId);
         this.networkRequestsBySession.delete(sessionId);
+        this.responseBodies.drop(sessionId);
       }
       if (typeof targetId === "string") {
         this.appliedViewport = null;
@@ -1308,7 +1316,7 @@ export class CdpConnection {
     return !this.closed && this.socket.readyState === 1;
   }
 
-  send(method, params = {}, sessionId) {
+  send(method, params = {}, sessionId, { timeoutMs = this.requestTimeoutMs } = {}) {
     if (!this.isOpen()) {
       return Promise.reject(
         new BrowserControllerError("browser_cdp_disconnected", "browser CDP connection is closed"),
@@ -1325,10 +1333,10 @@ export class CdpConnection {
         reject(
           new BrowserControllerError(
             "browser_cdp_timeout",
-            `browser CDP method ${method} timed out after ${this.requestTimeoutMs}ms`,
+            `browser CDP method ${method} timed out after ${timeoutMs}ms`,
           ),
         );
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {
         this.socket.send(JSON.stringify(payload));

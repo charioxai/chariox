@@ -25,6 +25,47 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   `form`, `scroll`, `size`, `res`, `state` (492). Records travel as compact rows
   `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
   of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+  MP-08/MP-10/MP-11 M2 keeps ordinary small documents atomic. Large documents
+  start with a pre-order prefix; later credits extend it with these same
+  `children` operations. Each continuation visits at most 4096 nodes, targets
+  an 8 ms task after a minimum 256 visits, and stops near 128 KiB of record
+  work. The initial prefix completes its fixed 1024-visit allowance (subject to
+  the byte bound), so a busy first task cannot cut a detailed header before
+  its visible viewport. Document limits remain
+  finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
+  one record is bounded at 1 MiB. Local node ids restart on a full snapshot
+  only after the producer advances its input/region epoch fence. Old scroll
+  suppression and frame slots are retired before rebuilding. Cancellation
+  keeps the fence ahead of the published sequence, forcing the next credit
+  to rebuild a full base. Resource keys retain their document lifetime.
+  A small document has a 20,000-record/4 MiB
+  atomic backstop, including large open shadow trees. Input echoes precede
+  continuation records. A same-document reset preserves an active root wheel
+  target and submits that position through normal input under the newly applied
+  sequence; navigation discards it. Node-targeted gestures are never replayed,
+  and kernel epoch, identity and protection checks are unchanged.
+  A structural mutation or changed protection kind
+  restarts a bounded current prefix instead of resuming a stale traversal.
+  Closed roots are discovered with bounded `DOM.describeNode` batches on
+  serialized host identities, including open roots and same-origin frames;
+  no whole-document `DOMSnapshot` reply precedes first paint. Unpublished
+  hosts become opaque before their packet leaves, with their light descendants
+  removed. Published hosts retain ordinary replacement/identity fences.
+  These are kernel implementation bounds; mirror v2's wire is unchanged.
+  A loading document waits for its first contentful paint before its initial
+  prefix. A document that grows past the small-document limit restarts with
+  bounded hydration. CSS event initialization runs asynchronously for loading
+  or large documents: Chromium's `CSS.enable` waits for resource bodies. Its
+  own 30 s bound leaves ordinary CDP request deadlines unchanged. Stylesheet
+  owners are reconciled when activation completes so edits during startup are
+  retained; attached frames share the same watcher and discovery rules.
+  Completed response metadata is indexed by session, frame, loader and observed
+  URL (at most 4096 pending and completed entries each). CSS and font reads use
+  `Network.getResponseBody` for those exact completed responses before the
+  existing resource-tree/content fallback. This avoids waiting for unrelated
+  resource bodies before painting the viewport, preserves authenticated bytes,
+  and makes no new request or credential copy. Reconnection and detached sessions
+  retire the index; document and protection fences still gate publication.
   Deltas carry only changes: a child list that ends as it was sends nothing, a
   form op travels only when the field's state changed, and a subtree the page
   rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps

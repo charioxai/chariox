@@ -131,6 +131,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-observer.mjs"),
     ),
     (
+        "kernel-browser-mirror2-closed.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs"),
+    ),
+    (
         "kernel-browser-mirror2.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2.mjs"),
     ),
@@ -253,6 +257,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-controller-bar.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-bar.mjs"),
+    ),
+    (
+        "browser-controller-response-bodies.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-response-bodies.mjs"),
     ),
     (
         "browser-controller-cdp.mjs",

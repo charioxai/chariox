@@ -91,7 +91,9 @@ export function installMirror2(sanitizeMirrorCss) {
   }
   function create() {
     const HTML = 'http://www.w3.org/1999/xhtml', SVG = 'http://www.w3.org/2000/svg', MATH = 'http://www.w3.org/1998/Math/MathML';
-    const NODE_BUDGET = 200000, BYTE_BUDGET = 64 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
+    // MP-08/MP-10/MP-11 M2: document bounds are distinct from per-task/packet
+    // bounds. A public spec has >337k elements; no single CDP reply contains it.
+    const NODE_BUDGET = 900000, BYTE_BUDGET = 64 * 1024 * 1024, RESOURCE_BUDGET = 4096, DEPTH = 512;
     const DROP = new Set('script noscript template meta base title param track'.split(' '));
     const OPAQUE = new Set('canvas video audio object embed applet frame frameset portal fencedframe'.split(' '));
     const SVG_TAGS = new Set('svg g path circle ellipse rect line polyline polygon text tspan textPath use defs symbol clipPath mask marker pattern linearGradient radialGradient stop title desc a image switch view filter feBlend feColorMatrix feComponentTransfer feComposite feConvolveMatrix feDiffuseLighting feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile feTurbulence style'.split(' '));
@@ -106,9 +108,10 @@ export function installMirror2(sanitizeMirrorCss) {
     // they are plain text fields (a password field shows dots; its value never leaves) and only while they
     // hold the fill (fills). No page-text, attribute or CSS value scanning.
     let serial = 0, targets = new Set(), records = [], overflow = false, revision = 0;
-    const ids = new WeakMap(), nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
+    let ids = new WeakMap();
+    const nodes = new Map(), kids = new Map(), parentOf = new Map(), kindOf = new Map(), resOf = new Map();
     const styleNodes = new Map(), roots = new Map(), pendingHosts = new Map(), foreign = new Set(), shapes = new Map();
-    const checkedClosed = new WeakMap();
+    const checkedClosed = new WeakMap(), closedTodo = new Set();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
     const fragments = new Map(), fragmentOf = doc => { const hash = doc.location?.hash ?? ''; return hash.length > 1 ? hash.slice(1, 2049) : null; };
@@ -120,12 +123,12 @@ export function installMirror2(sanitizeMirrorCss) {
     // reused within a document, below the frame key slot.
     const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
-    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostCursor = 0, lastClosedCheck = 0, pressedAt = -Infinity;
+    let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostIterator = null, lastClosedCheck = 0, pressedAt = -Infinity;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
     const observer = new MutationObserver(list => { revision++; if (records.length + list.length > 100000) overflow = true; else for (const record of list) records.push(record); wake(); });
-    const idOf = node => { let id = ids.get(node); if (!id) { id = `n${++serial}`; ids.set(node, id); } return id; };
+    const idOf = node => { let id = ids.get(node); if (!id) { if (serial >= 999999) throw new Error('mirror2:node_budget'); id = `n${++serial}`; ids.set(node, id); } return id; };
     const mirrored = node => { const id = ids.get(node); return id && nodes.get(id) === node ? id : null; };
     const resource = (raw, base, kind) => {
       let url; try { url = new URL(raw, base); } catch { return null; }
@@ -180,7 +183,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const timed = new Set();
     const timing = new PerformanceObserver(list => { for (const entry of list.getEntries()) { timed.delete(entry.name); timed.add(entry.name); if (timed.size > 20000) timed.delete(timed.values().next().value); } });
     try { timing.observe({ type: 'resource', buffered: true }); } catch {}
-    const dispose = () => { observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
+    const dispose = () => { continuation?.return(); continuation = null; progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
     const changedForm = control => { dirty.form.add(control); if (control.multiple) for (const option of control.options ?? []) dirty.form.add(option); };
     const watch = (root, rootId) => {
       roots.set(rootId, root);
@@ -208,21 +211,21 @@ export function installMirror2(sanitizeMirrorCss) {
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
-    let budget = { nodes: 0, bytes: 0 };
-    const spend = (bytes) => { budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
+    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false;
+    const spend = (bytes) => { if (bytes > 1024 * 1024) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); foreign.delete(id); opaque.delete(id); fragments.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
     // Each option of a multiple select carries its own selectedness (selectedIndex names only the first).
-    const formNodes = new Map();
-    // The input type / select multiplicity each control was serialized with: only a change re-serializes it.
+    const formNodes = new Map(), imageNodes = new Map();
+    // The control shape recorded for the current serialized node identity.
     const controlShapes = new Map(), controlShape = node => node.localName === 'input' ? node.type : node.localName === 'select' ? node.multiple : undefined;
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
-    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
+    const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [width, height] = layoutSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
@@ -251,7 +254,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
         // Presentation attributes may reference paint servers by fragment only.
         if (/url\s*\(/i.test(value) && !/^\s*url\(\s*["']?#[\w-]+["']?\s*\)\s*$/.test(value)) continue;
-        if (/^\s*javascript:/i.test(value)) continue;
+        if (/javascript:/i.test(value)) continue;
         attrs[name] = value;
       }
       const href = node.getAttribute('href') ?? node.getAttribute('xlink:href');
@@ -335,7 +338,9 @@ export function installMirror2(sanitizeMirrorCss) {
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
     };
     // Pre-order records; a record's children are the following records naming it.
-    const serialize = (node, parent, out, depth = 0) => {
+    const serializeTree = function* (node, parent, depth = 0) {
+      yield null; // even dropped nodes consume a bounded amount of this task
+      if (parent && (!nodes.has(parent) || ['tile', 'mask'].includes(kindOf.get(parent)))) return null;
       const type = node.nodeType;
       if (type !== 1 && type !== 3 && type !== 9 && type !== 11) return null;
       if (depth > DEPTH) return null;
@@ -343,15 +348,16 @@ export function installMirror2(sanitizeMirrorCss) {
       if (type === 3) {
         if (node.parentNode?.localName === 'style') return null;
         record.kind = 'text'; record.text = node.data;
-        spend(32 + (record.text?.length ?? 0)); out.push(record); remember(record, node); return id;
+        spend(32 + (record.text?.length ?? 0)); remember(record, node); yield record; return id;
       }
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
         const sheets = adopted(node); if (sheets.length) record.adopted = sheets;
         if (type === 9 && node !== document) { const fragment = fragmentOf(node); fragments.set(id, fragment); if (fragment) record.fragment = fragment; }
-        spend(32); out.push(record); remember(record, node);
+        spend(32); remember(record, node); yield record;
+        if (nodes.get(id) !== node) return null;
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; serialize(child, id, out, depth + 1); }
+        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; yield* serializeTree(child, id, depth + 1); }
         return id;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
@@ -361,11 +367,11 @@ export function installMirror2(sanitizeMirrorCss) {
       } else if (ns === SVG) { if (!SVG_TAGS.has(tag)) { if (tag !== 'foreignObject') return null; } }
       else if (ns === MATH) { if (!MATH_TAGS.has(tag)) return null; }
       else return null;
-      if (secretElement(node)) { maskRecord(node, record); spend(64); out.push(record); remember(record, node); return id; }
-      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); out.push(record); remember(record, node); return id; }
-      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); out.push(record); remember(record, node); return id; }
-      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); out.push(record); remember(record, node); return id; }
-      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); out.push(record); remember(record, node); return id; }
+      if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); yield record; return id; }
+      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); yield record; return id; }
+      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); yield record; return id; }
+      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); yield record; return id; }
+      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); yield record; return id; }
       if (ns === HTML && !/^[a-z][a-z0-9-]*$/.test(tag)) { record.tag = 'span'; } else record.tag = tag;
       if (ns === SVG) record.ns = 'svg'; else if (ns === MATH) record.ns = 'math';
       record.attrs = attributes(node, base);
@@ -373,10 +379,10 @@ export function installMirror2(sanitizeMirrorCss) {
         let nested = null; try { nested = node.contentDocument; } catch {}
         // Cross-origin: the kernel mirrors it through the frame's own CDP session
         // (or paints it as a protected opaque region when that is unavailable).
-        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); out.push(record); remember(record, node); foreign.add(id); return id; }
+        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
         record.kind = 'frame'; record.tag = 'iframe';
-        spend(64); out.push(record); remember(record, node);
-        serialize(nested, id, out, depth + 1);
+        spend(64); remember(record, node); yield record;
+        yield* serializeTree(nested, id, depth + 1);
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
@@ -385,11 +391,44 @@ export function installMirror2(sanitizeMirrorCss) {
       if (stateful(node)) stateRecord(node, record);
       if (node.scrollLeft || node.scrollTop) record.scroll = [node.scrollLeft, node.scrollTop];
       spend(64 + JSON.stringify(record.attrs).length);
-      out.push(record); remember(record, node);
-      for (const child of node.childNodes) serialize(child, id, out, depth + 1);
-      if (node.shadowRoot) serialize(node.shadowRoot, id, out, depth + 1);
-      else if (tag.includes('-')) pendingHosts.set(id, node);
+      remember(record, node);
+      if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
+      yield record;
+      if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
+      for (const child of node.childNodes) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; yield* serializeTree(child, id, depth + 1); }
+      if (node.shadowRoot) yield* serializeTree(node.shadowRoot, id, depth + 1);
       return id;
+    };
+    const serialize = (node, parent, out, depth = 0) => {
+      for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
+      return mirrored(node) ?? null;
+    };
+    // Continuations run only when a viewer gives a credit, never in a background
+    // loop. Yield to Chrome/other Tabs after 8 ms, 4096 visits or 128 KiB.
+    const chunk = (visits = 4096, minimum = 256) => {
+      const out = [], end = performance.now() + 8, bytes = budget.bytes;
+      for (let i = 0; continuation && i < (progressive ? visits : 40000); i++) {
+        const item = continuation.next();
+        if (item.done) { continuation = null; break; }
+        if (item.value) out.push(item.value);
+        // Keep ordinary small pages atomic. The backstop also catches a huge
+        // open shadow tree absent from the document's native element count.
+        if (budget.nodes >= 20000) progressive = true;
+        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= (progressive ? 128 * 1024 : 4 * 1024 * 1024)) break;
+      }
+      return out;
+    };
+    const continuationOps = records => {
+      const ops = []; let op, fresh;
+      for (const record of records) {
+        if (!op || record.parent !== op.id && !fresh.has(record.parent)) {
+          op = { op: 'children', id: record.parent, children: [], nodes: [] };
+          fresh = new Set(); ops.push(op);
+        }
+        op.nodes.push(record); fresh.add(record.id);
+      }
+      for (const op of ops) op.children = [...kids.get(op.id) ?? []];
+      return ops;
     };
     const rootSignatures = new Map();
     const replaceNode = node => { const id = mirrored(node); if (!id) return; const parent = nodes.get(parentOf.get(id)); forget(id); if (parent) dirty.children.add(parent); };
@@ -417,7 +456,7 @@ export function installMirror2(sanitizeMirrorCss) {
     let reported = '';
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
-      return { scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0 };
+      return { scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -425,11 +464,18 @@ export function installMirror2(sanitizeMirrorCss) {
     const snapshot = () => {
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      for (const id of [...nodes.keys()]) { const node = nodes.get(id); if (node) ids.delete(node); }
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
-      pendingSheets = []; budget = { nodes: 0, bytes: 0 };
+      // The producer fences the old epoch before calling snapshot. Reclaim the
+      // local id range without walking the previous (possibly huge) document.
+      ids = new WeakMap(); serial = 0;
+      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
+      pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      const out = [], root = serialize(document, null, out);
+      continuation?.return(); continuation = serializeTree(document, null);
+      progressive = document.getElementsByTagName('*').length > 10000;
+      // A slow task must not publish only half a detailed viewport header.
+      // The first prefix has a fixed 1024-visit ceiling; later credits yield
+      // by time after 256 visits, with the same byte/document bounds.
+      const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
       return { root, nodes: out, ...take(), ...header() };
     };
@@ -497,7 +543,13 @@ export function installMirror2(sanitizeMirrorCss) {
     const drain = () => {
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
-      budget = { nodes: nodes.size, bytes: 0 };
+      if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
+      // A snapshot spanning tasks must not publish a subtree captured before a
+      // structural mutation under another parent/protection kind. Restart its bounded
+      // prefix; the viewer retains its last good paint until the reset arrives.
+      if (continuation && records.some(record => record.type === 'childList' && record.target.localName !== 'style')) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
+      const urgent = records.length > 0 || Object.values(dirty).some(set => set.size > 0);
+      if (!continuation) budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];
       for (const record of batch) {
         const target = record.target;
@@ -545,6 +597,7 @@ export function installMirror2(sanitizeMirrorCss) {
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
       }
+      if (continuation && (dirty.replace.size || dirty.frames.size || dirty.children.size)) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       for (const node of dirty.replace) replaceNode(node);
       for (const node of dirty.frames) replaceNode(node);
       for (const node of dirty.text) {
@@ -555,7 +608,8 @@ export function installMirror2(sanitizeMirrorCss) {
       // attaching one late (a bounded rotating check, 5000 nodes per 2 s).
       for (const [id, host] of pendingHosts) if (host.shadowRoot) dirty.children.add(host);
       const hostNow = performance.now();
-      if (hostNow - lastHostCheck > 2000 && nodes.size) { lastHostCheck = hostNow; const list = [...nodes.keys()]; hostCursor %= list.length; for (let i = 0; i < Math.min(5000, list.length); i++) { const id = list[(hostCursor + i) % list.length], node = nodes.get(id); if (kindOf.get(id) === 'element' && node.shadowRoot && !mirrored(node.shadowRoot)) dirty.children.add(node); } hostCursor += 5000; }
+      if (hostNow - lastHostCheck > 2000 && nodes.size) { lastHostCheck = hostNow; for (let i = 0; i < Math.min(5000, nodes.size); i++) { hostIterator ??= nodes.keys(); let item = hostIterator.next(); if (item.done) { hostIterator = nodes.keys(); item = hostIterator.next(); } const id = item.value, node = nodes.get(id); if (node && kindOf.get(id) === 'element') { if (node.shadowRoot && !mirrored(node.shadowRoot)) dirty.children.add(node); else if (pendingHosts.has(id) && (checkedClosed.get(node) !== node.matches(':defined') || node.matches(':defined') && hostNow - lastClosedCheck >= 2000)) closedTodo.add(node); } } }
+      if (continuation && dirty.children.size) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       for (const node of dirty.children) {
         if (!node.isConnected) continue;
         const id = mirrored(node);
@@ -567,8 +621,8 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       // Masks and opaque regions (few): their size, and a mask's display, follow layout and style without
       // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
-      for (const [id, node] of nodes) {
-        const kind = kindOf.get(id); if (kind !== 'mask' && kind !== 'tile' || !node.isConnected) continue;
+      for (const id of shapes.keys()) {
+        const node = nodes.get(id), kind = kindOf.get(id); if (!node?.isConnected) continue;
         const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
         if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
         if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
@@ -607,7 +661,8 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: [...pendingHosts.values()].some(host => !host.shadowRoot && !closedHosts.has(host) && (checkedClosed.get(host) !== host.matches(':defined') || host.matches(':defined') && hostNow - lastClosedCheck >= 2000)), pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
+      if (continuation && !urgent && !ops.length) ops.push(...continuationOps(chunk()));
+      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
@@ -811,21 +866,31 @@ export function installMirror2(sanitizeMirrorCss) {
       for (let depth = 0; depth < 128; depth++) { let nested = node?.shadowRoot?.activeElement; try { nested ??= node?.localName === 'iframe' ? node.contentDocument?.activeElement : null; } catch {} if (!nested) break; node = nested; }
       const id = node && mirrored(node); return id && foreign.has(id) ? id : null;
     };
-    const markClosedHost = function () { if (this && this.nodeType === 1 && !closedHosts.has(this)) { closedHosts.add(this); replaceNode(this); } return true; };
-    // Traverse every accessible mirrored tree, including open roots and same-origin frames.
+    // CDP describes only these already serialized hosts. Unpublished records
+    // can become opaque under the same id before their packet leaves the kernel.
+    const markClosedHost = function (fresh = false) {
+      if (!this || this.nodeType !== 1) return true;
+      closedHosts.add(this); closedTodo.delete(this);
+      const id = mirrored(this);
+      if (!fresh || !id) { replaceNode(this); return true; }
+      const removed = [], collect = at => { removed.push(at); for (const child of kids.get(at) ?? []) collect(child); };
+      for (const child of kids.get(id) ?? []) collect(child);
+      for (const child of [...kids.get(id) ?? []]) forget(child);
+      kids.set(id, []); pendingHosts.delete(id); stateNodes.delete(id); sentStates.delete(id);
+      const record = { id, parent: parentOf.get(id), kind: 'element' }; opaqueRecord(this, record, 'closed_shadow');
+      kindOf.set(id, 'tile'); opaque.add(id);
+      return { record, removed };
+    };
     const customCandidates = () => {
-      const trees = [document], hosts = [];
-      for (let i = 0; i < trees.length && i < 2000; i++) for (const node of trees[i].querySelectorAll('*')) {
-        if (node.shadowRoot) trees.push(node.shadowRoot);
-        if (node.localName === 'iframe') { try { if (node.contentDocument) trees.push(node.contentDocument); } catch {} }
-        if (node.localName.includes('-') && !node.shadowRoot && !closedHosts.has(node)) hosts.push(node);
+      const hosts = [];
+      for (const node of closedTodo) {
+        if (!node.isConnected || node.shadowRoot || closedHosts.has(node)) { closedTodo.delete(node); continue; }
+        hosts.push(node); if (hosts.length === 256) break;
       }
       return hosts;
     };
-    const customHosts = () => customCandidates().length;
-    // MP-08/MP-11: a defined rootless host may attach a closed root without any DOM
-    // mutation. Recheck unresolved defined hosts at most once per two seconds.
-    const closedChecked = () => { lastClosedCheck = performance.now(); for (const host of customCandidates()) checkedClosed.set(host, host.matches(':defined')); return true; };
+    const customHosts = () => closedTodo.size;
+    const closedChecked = function () { lastClosedCheck = performance.now(); if (this?.nodeType === 1) { checkedClosed.set(this, this.matches(':defined')); closedTodo.delete(this); } return true; };
     // Trusted-side: resolveNode() hands Vault target nodes to this world, with the fill's value hash and revision.
     const protect = function (hash = null, fillRevision = null) {
       if (!this || this.nodeType !== 1) return true;
@@ -853,7 +918,7 @@ export function installMirror2(sanitizeMirrorCss) {
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -869,7 +934,7 @@ export function installMirror2(sanitizeMirrorCss) {
     // only those bytes, never a URL that a stylesheet merely mentions.
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
     const resourceEntries = () => [...resourceDocuments()].flatMap(doc => { try { return doc.defaultView?.performance.getEntriesByType('resource') ?? []; } catch { return []; } });
-    const resourceImages = () => [...nodes.values()].filter(node => node.localName === 'img');
+    const resourceImages = () => imageNodes.values();
     const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) names.add(img.currentSrc); return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
     // Changes when the page loads something (an image may complete without a new entry).
     const loadedCount = () => { let complete = 0; for (const img of resourceImages()) if (img.complete) complete++; return timed.size + resourceEntries().length + complete; };
@@ -926,6 +991,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || records.length > 0 || overflow });
   }
 }

@@ -138,3 +138,34 @@ for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves auth
    await evaluate(expression);for(let i=0;i<3;i++){const packet=await next();assert(!packet.reset);await apply(packet);await page.waitForTimeout(30);}await agree();
   }
  }));
+
+test('MP-08/MP-10: ordinary typing invokes the native page keyboard contract',()=>roundtrip(
+  '<input id="field"><script>window.keys=[];document.addEventListener("keydown",e=>window.keys.push(e.key))</script>','',async({page,next,apply,evaluate})=>{
+    await apply(await next()); const field=page.frameLocator('iframe[title="Mirrored kernel browser page"]').locator('#field');
+    await field.click(); await page.waitForTimeout(150);await page.keyboard.type('Chariox',{delay:60});
+    for(let i=0;i<30&&await evaluate('document.querySelector("#field").value')!=='Chariox';i++){await apply(await next());await page.waitForTimeout(25);}
+    assert.deepEqual(await evaluate('window.keys'),[...'Chariox'],'ordinary keys must reach native keydown listeners');
+    assert.equal(await evaluate('document.querySelector("#field").value'),'Chariox');
+  }));
+
+// MP-08/MP-10/MP-11 M2: real source + unmodified product renderer consume
+// the ordinary wire incrementally. Anonymous fixture; not live acceptance.
+test('MP-10 M2: the renderer paints the prefix and retains it while ordinary children packets finish the document',()=>roundtrip(
+  '<!doctype html><h1 id="first">Viewport first</h1><main>'+'<p>Middle</p>'.repeat(10001)+'<p id="last">Last paragraph</p></main>','',async({page,next,apply})=>{
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);await apply(first);
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('last')),null);
+    let complete=false;
+    for(let n=0;n<200&&!complete;n++){const packet=await next();assert(!packet.reset);assert(!packet.fallback);await apply(packet);complete=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('last')?.textContent==='Last paragraph');}
+    assert(complete);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.querySelectorAll('p').length),10002);
+    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
+  }));
+
+// MP-08/MP-10/MP-11 M2: WHATWG's explanatory title attributes contain a
+// javascript: literal away from the start; the strict client rejects them.
+test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',()=>roundtrip(
+  '<!doctype html><h1>First viewport</h1><main>'+'<p>Middle</p>'.repeat(10001)+'<dfn id="scheme" title="An example javascript: scheme">javascript: stays visible text</dfn></main>','',async({page,next,apply})=>{
+    await apply(await next());let done=false;
+    for(let n=0;n<200&&!done;n++){await apply(await next());done=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme')?.textContent==='javascript: stays visible text');}
+    assert(done);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme').getAttribute('title')),null);
+  }));

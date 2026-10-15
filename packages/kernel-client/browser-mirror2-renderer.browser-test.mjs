@@ -143,7 +143,7 @@ test('MP-08: review #941-1 a text control\'s own range (select-all, mouse drag) 
       if (id === 'n4') await page.keyboard.type('x'); else await page.keyboard.press('Backspace');
       await frames();
       const [anchor, focus] = direction === 'backward' ? [end, start] : [start, end];
-      assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus }, id === 'n4' ? { kind: 'text', text: 'x' } : { kind: 'key', key: 'Backspace' }], `MP-08: the ${gesture} range of ${id} reaches the kernel first`);
+      assert.deepEqual(await sent(), [{ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus }, id === 'n4' ? { kind: 'key', key: 'x' } : { kind: 'key', key: 'Backspace' }], `MP-08: the ${gesture} range of ${id} reaches the kernel first`);
     }
   } finally { await page.close(); }
 });
@@ -258,7 +258,7 @@ test('MP-08: review #320-1 a drag that selects in a control the kernel has not f
     const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
     assert.deepEqual(await sent(), [{ kind: 'focus', node_id: 'n5' }, { kind: 'selection', anchor_id: 'n5', anchor_offset: start, focus_id: 'n5', focus_offset: end }], 'MP-08: the focus (protocol 492) and the range go when the drag ends');
     await page.keyboard.type('x'); await frames();
-    assert.deepEqual(await sent(), [{ kind: 'text', text: 'x' }], 'MP-08: the edit follows without resending the range');
+    assert.deepEqual(await sent(), [{ kind: 'key', key: 'x' }], 'MP-08: the edit follows without resending the range');
   } finally { await page.close(); }
 });
 
@@ -306,7 +306,7 @@ test('MP-08: protocol 492 a viewer focus change reaches the kernel as `focus`, a
     assert.deepEqual(await sent(), []);
     await drag(); await page.keyboard.type('x'); await frames();
     const second = await sent();
-    assert.deepEqual([second[0], second.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: the text goes where the viewer typed: ${JSON.stringify(second)}`);
+    assert.deepEqual([second[0], second.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'key', key: 'x' }], `MP-08: the text goes where the viewer typed: ${JSON.stringify(second)}`);
   } finally { await page.close(); }
 });
 
@@ -416,7 +416,7 @@ test('MP-08: a kernel packet that still names the old focus while the viewer\'s 
     assert(active, 'MP-08: the viewer keeps its pressed control focused');
     await page.keyboard.type('x'); await frames();
     const actions = await sent();
-    assert.deepEqual([actions[0], actions.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'text', text: 'x' }], `MP-08: focus then text for the pressed control: ${JSON.stringify(actions)}`);
+    assert.deepEqual([actions[0], actions.at(-1)], [{ kind: 'focus', node_id: 'n5' }, { kind: 'key', key: 'x' }], `MP-08: focus then text for the pressed control: ${JSON.stringify(actions)}`);
   } finally { await page.close(); }
 });
 
@@ -629,7 +629,7 @@ test('MP-08: an echo that names a new focus before its click\'s reply arrives fo
     await page.evaluate(() => window.release.shift()()); await frames();
     assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'MP-08: the kernel\'s new focus is taken once the input settles');
     await page.keyboard.type('c'); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.text])), [['text', 'c']], 'MP-08: typing reaches the kernel');
+    assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.key])), [['key', 'c']], 'MP-08: typing reaches the kernel');
   } finally { await page.close(); }
 });
 
@@ -703,3 +703,37 @@ test('MP-10: retiring a mirror preserves inert paint until replacement disposal'
   assert.equal(await page.evaluate(()=>window.r.frame.isConnected),false)
  }finally{await page.close()}
 })
+
+for(const delay of [30,700])test(`MP-08/MP-10/MP-11 M2: a same-document reset preserves a wheel in progress under its new epoch (${delay}ms input)`,async()=>{
+ const page=await viewer();try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body',attrs:{style:'margin:0;height:6000px'}}];
+  await apply(page,snapshot(nodes));await frames();
+  await page.evaluate(()=>{window.epochs=[];window.r.send=async(action,epoch)=>{window.epochs.push({action,epoch});if(!window.released)await new Promise(resolve=>window.releaseInput=resolve)};});
+  await page.mouse.move(900,600);await page.mouse.wheel(0,500);
+  await page.waitForTimeout(delay);
+  await apply(page,{...snapshot(nodes),sequence:2});await frames();
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),500,'a resnapshot must not cancel the remaining wheel intent');
+  await page.evaluate(()=>{window.released=true;window.releaseInput?.()});await frames();
+  const sent=await page.evaluate(()=>window.epochs);
+  assert(sent.some(e=>e.action.kind==='scroll_to'&&e.action.node_id===null&&e.action.y===500&&e.epoch.sequence===2),'only a current-epoch root position reaches the normal input path');
+  await apply(page,{...snapshot(nodes),sequence:3,document_id:'another-document'});await frames();
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),0,'navigation never inherits the previous document wheel');
+  assert(!(await page.evaluate(()=>window.epochs)).some(e=>e.epoch.document_id==='another-document'),'no previous-document gesture is replayed');
+ }finally{await page.evaluate(()=>{window.released=true;window.releaseInput?.()}).catch(()=>{});await page.close()}
+});
+
+test('MP-08/MP-10: delayed mirror layout cannot turn scroll anchoring into user input',async()=>{
+  const page=await viewer();try{
+    await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},
+      {id:'n3',parent:'n2',kind:'element',tag:'body',attrs:{style:'margin:0'}},
+      {id:'n4',parent:'n3',kind:'element',tag:'div',attrs:{style:'height:1000px'}},
+      {id:'n5',parent:'n3',kind:'element',tag:'p',attrs:{style:'height:1000px'}},
+      {id:'n6',parent:'n5',kind:'text',text:'visible anchor'},
+      {id:'n7',parent:'n3',kind:'element',tag:'div',attrs:{style:'height:1000px'}}]));
+    await page.evaluate(()=>window.r.frame.contentWindow.scrollTo(0,1000));await frames();
+    await page.evaluate(()=>window.sent=[]);
+    await apply(page,delta(2,[{op:'attr',id:'n4',name:'style',value:'height:1200px'}]));await frames();
+    assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),1000,'late resources/layout must preserve the viewer scroll');
+    assert.equal((await page.evaluate(()=>window.sent)).filter(a=>a.kind==='scroll_to').length,0,'internal hydration must not send another user scroll');
+  }finally{await page.close()}
+});

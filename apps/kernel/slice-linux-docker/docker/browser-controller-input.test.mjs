@@ -85,3 +85,12 @@ test('MD-DISPLAY hidden display hold retains physical visibility and drains inpu
  assert.equal(capture.visibilityBySession.size,0);assert.equal(capture.displayLeases.size,0);
  assert(!calls.some(x=>x.method==='Page.bringToFront'));
 });
+
+test('MP-08/MP-10: a display hold acquired while visible still keeps a later hidden renderer awake',async()=>{
+  const capture=new BrowserInputCapture(),calls=[];let physicallyVisible=true,emulated=false;
+  const connection={async send(method,params){calls.push(method);if(method==='Emulation.setFocusEmulationEnabled')emulated=params.enabled;return {result:{value:physicallyVisible||emulated}};}};
+  const release=await capture.hold(connection,'display');physicallyVisible=false;
+  try{await capture.run(connection,'display',async()=>assert.equal(emulated,true,'the logical lease cannot bypass a renderer wake-up'));}
+  finally{await release()}
+  assert.equal(emulated,false);assert.equal(capture.displayLeases.size,0);assert(!calls.includes('Page.bringToFront'));
+});
