@@ -765,3 +765,19 @@ for(const shadow of [false,true])test(`MP-08/MP-10/MP-11 promoted known child ke
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: retiring a frame must retain a child adopted into its parent document.
+test('MP-08/MP-10/MP-11 promoted frame child keeps its index after frame retirement',async()=>{
+ const page=await viewer();try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
+   {id:'n4',parent:'n3',kind:'frame',tag:'iframe'},{id:'n7',parent:'n4',kind:'document'},{id:'n8',parent:'n7',kind:'element',tag:'html'},{id:'n9',parent:'n8',kind:'element',tag:'body'},
+   {id:'n5',parent:'n9',kind:'element',tag:'button',attrs:{'aria-label':'promoted frame action'}},{id:'n6',parent:'n5',kind:'text',text:'kept'}];
+  await apply(page,snapshot(nodes));
+  await apply(page,delta(2,[{op:'children',id:'n3',children:['n5'],nodes:[]}]));
+  assert.equal(await page.evaluate(()=>window.r.dom.get('n5')===window.r.frame.contentDocument.querySelector('button')),true,'adopting a frame descendant must not retire its live index with the removed frame');
+  await apply(page,delta(3,[{op:'children',id:'n5',children:['n6','n10'],nodes:[{id:'n10',parent:'n5',kind:'text',text:'live after frame promotion'}]}]));
+  assert(await page.frameLocator('iframe').getByText('live after frame promotion',{exact:false}).isVisible());
+  await page.frameLocator('iframe').getByRole('button',{name:'promoted frame action'}).click();
+  assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
+ }finally{await page.close()}
+});

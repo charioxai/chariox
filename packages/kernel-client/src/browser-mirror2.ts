@@ -639,10 +639,12 @@ export class BrowserMirror2Renderer {
           const child = fresh.get(id) ?? this.dom.get(id); if (child) desired.push(child)
         }
         // A kept descendant may still be inside a wrapper we are about to retire.
-        // Move it first, including from a shadow root, so its index survives.
+        // Move it first, including from a shadow root or frame, so its index survives.
         for (const child of desired) {
           let ancestor: Node | null = child.parentNode
-          while (ancestor && ancestor !== container) ancestor = ancestor.parentNode ?? (ancestor.nodeType === 11 ? (ancestor as ShadowRoot).host ?? null : null)
+          while (ancestor && ancestor !== container) ancestor = ancestor.parentNode
+            ?? (ancestor.nodeType === 11 ? (ancestor as ShadowRoot).host ?? null
+              : ancestor.nodeType === 9 ? (ancestor as Document).defaultView?.frameElement ?? null : null)
           if (ancestor === container && child.parentNode !== container) container.appendChild(child)
           const record = this.records.get(this.ids.get(child) ?? ''); if (record) record.parent = op.id
         }
