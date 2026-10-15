@@ -151,7 +151,7 @@ export class LinuxCapture {
    this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
-  }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
+  }}catch(error){this.timing(`native_publish_failed ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,60)}`,performance.timeOrigin+performance.now());this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
  }
  // MP-08/MP-10: notch wheel input on the owned private X display (native
  // smooth scrolling). CSS coordinates; callers fence document and actor first.

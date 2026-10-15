@@ -75,8 +75,9 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const {connection,sessionId}=await host.browser.resolvePageTarget(pageTab.target_id);
   const scale=window.scale;
   // Browser UI survives page navigation; the frame document is its window epoch.
-  const sourceTab=chromeUi(target)&&!overlayTab?{...tab,document_id:lease.document_id}:pageTab;
-  source=new Capture({...args,display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
+  // A dialog overlay's frames belong to the window epoch too; its page document fences it separately.
+  const sourceTab=chromeUi(target)?{...pageTab,document_id:lease.document_id}:pageTab;
+  source=new Capture({...args,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(pageTab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
   // No scrim behind the "dialog" (a darker theme dimmed the toolbar): the kernel learns the toolbar again.

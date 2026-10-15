@@ -70,17 +70,21 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,pageOverlay,...options}){
+ constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,inWindow,masks,pageOverlay,pageDocument,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,inWindow===true);
   // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
-  this.pageOverlay=inWindow===true&&pageOverlay===true;
+  this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;
+  if(this.pageOverlay&&typeof pageDocument!=='string')throw Error('MP-11: invalid native page overlay');
   if(this.pageOverlay&&(this.region.pageLeft!==0||this.region.pageTop!==0||this.region.width!==window.width-window.width%2||contentHeight-rect.height>1))throw Error('MP-11: invalid native page overlay');
   this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
+ // Diagnostics for the dialog's page overlay (labels and counts only).
+ fence(){if(this.pageOverlay&&!this.closed)this.timing(`native_overlay_fenced ${this.attested?'attested':'starting'}`,performance.timeOrigin+performance.now());super.fence();}
+ subscribe(fn){if(!this.pageOverlay)return super.subscribe(fn);let first=true;return super.subscribe(frame=>{if(first){first=false;this.timing('native_overlay_first_frame',performance.timeOrigin+performance.now());}fn(frame);});}
  onCdp(message){
   if(this.surface==='page'||this.pageOverlay){super.onCdp(message);return;}
   // Chrome belongs to the window lease, not the navigated page. Native
@@ -142,7 +146,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     for(let i=0;i<pixels.length;i+=4)if(!masked?.[i/4]&&
      (reference.pixels[i]!==pixels[i+2]||reference.pixels[i+1]!==pixels[i+1]||reference.pixels[i+2]!==pixels[i]))
       throw Error('MP-11: native region attestation mismatch');}
-    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
+    await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.pageOverlay?this.pageDocument:this.tab.document_id);
    }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;

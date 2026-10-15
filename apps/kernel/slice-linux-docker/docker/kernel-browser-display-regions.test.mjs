@@ -145,3 +145,26 @@ test('MP-11 page regions never take middle/right buttons or drags',async()=>{
  for(const input of [{kind:'click',x:1,y:2,button:'right'},{kind:'click',x:1,y:2,button:'middle'},{kind:'drag',x:1,y:2,to_x:3,to_y:4}])await assert.rejects(regionInput(f.host,{...command,input},'terminal:a'));
  assert.equal(dispatch,0);await [...f.host.displays.values()][0].close();
 });
+
+// Coordinator 12:22Z ask 1 (r8 live drill): a browser-modal dialog's page overlay shows Chrome's ACTIVE Tab.
+// Its frames belong to the window epoch like every Chrome UI stream (the client binds them to it); the
+// active Tab's own document and session fence its page masks and attestation.
+test('MP-08/MP-11 a dialog page overlay binds the active Tab for masks and keeps the window epoch for frames',async()=>{
+ const f=fixture('browser_auxiliary'),active={tab_id:'a',target_id:'target-a',document_id:'doc-a'};
+ const overlay={auxiliary_id:9,role:'auxiliary',xid:42,parent_xid:42,in_window:true,page_overlay:true,bounds:{x:0,y:174,width:2560,height:1600},isCurrent:()=>true};
+ const shots=[];f.host.displayScreenshot=async tab=>{shots.push(tab.tab_id);};
+ const sessions=[];f.host.browser.resolvePageTarget=async target=>(sessions.push(target),{connection:{},sessionId:'s-'+target});
+ Object.assign(f.host.chromeWindows,{auxiliary:()=>overlay,auxiliaryRegion:()=>({surface:'browser_auxiliary',inWindow:true,pageOverlay:true,window:{id:42,width:2560,height:1774},rect:{left:0,top:174,width:2560,height:1600},contentHeight:1600,isCurrent:()=>true})});
+ let front=true;f.host.arbiter={activeTab:async()=>active,isActiveTab:async(tab)=>front&&tab===active};
+ f.command.target.auxiliary_id=9;
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const s=[...f.host.displays.values()][0],o=s.regionSource.options;
+ assert.deepEqual(sessions,['target-a'],'the active Tab\'s page session');assert.equal(o.sessionId,'s-target-a');
+ assert.equal(o.tab.target_id,'target-a');assert.match(o.tab.document_id,/^chrome-window-/,'frames carry the window epoch');assert.equal(r.document_id,o.tab.document_id);
+ assert.equal(o.pageDocument,'doc-a','the page document fences its masks');
+ await o.screenshot();assert.deepEqual(shots,['a']);
+ assert.equal(await o.validateCurrent(),true);front=false;assert.equal(await o.validateCurrent(),false,'another Tab in front: no readback');
+ await s.close();
+ const g=fixture('browser_auxiliary');Object.assign(g.host.chromeWindows,f.host.chromeWindows);g.host.arbiter={activeTab:async()=>null,isActiveTab:async()=>false};g.command.target.auxiliary_id=9;
+ await assert.rejects(subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture}),'no confirmed active Tab: refused');
+});
