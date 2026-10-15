@@ -417,7 +417,7 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
         "MP-11 private result bytes must never be copied into an agent prompt"
     );
     assert!(!context.contains("using only public evidence below"));
-    assert!(context.contains("already available in this same official-provider thread"));
+    assert!(context.contains("exact kernel-private preceding result supplied separately"));
     assert!(context.contains("Privacy withholding alone is never evidence of success"));
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
@@ -579,4 +579,156 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
             "MP-11 private assessment prose must not enter durable/public receipts"
         );
     }
+}
+
+// MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.
+#[tokio::test]
+async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_durable_injection() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "private-work-input".into(),
+            run: Some("run".into()),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::EnableCompletionCheck {
+            task: "private-work-input".into(),
+        })
+        .unwrap();
+    let work = crate::session::PromptQueueItem::new(
+        "private-work-input",
+        "attachment-1",
+        &agent,
+        "Fill the approved control without revealing its value.",
+        crate::session::PromptStatus::Running,
+    );
+    runtime
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &runtime.owned.session_store.get_session(&room).unwrap(),
+            &agent,
+            Some(work.clone()),
+        );
+    let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, work.prompt());
+    request.merge_key = Some("prompt:private-work-input".into());
+    runtime.owned.append_history_entries(&room, vec![request]);
+    runtime
+        .owned
+        .private_work_results
+        .begin_work(&room, &agent, work.id(), "run");
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&room, "PRIVATE_VALUE_CANARY")
+        .unwrap();
+    runtime.owned.fan_out_terminal_outputs(
+        &room,
+        vec![
+            crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                provider_run_id: "run".into(),
+                agent_id: Some(agent.clone()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("final".into()),
+                bytes: b"PRIVATE_WORK_OUTCOME: inserted PRIVATE_VALUE_CANARY; form not submitted"
+                    .to_vec(),
+            },
+        ],
+    );
+    runtime.owned.append_history_entries(
+        &room,
+        vec![SessionHistoryEntry::provider_output(
+            &room,
+            "run",
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            Some("final".into()),
+            "PRIVATE_WORK_OUTCOME: inserted PRIVATE_VALUE_CANARY; form not submitted",
+        )],
+    );
+    let (task, _) = runtime
+        .owned
+        .settle_agent_task(&room, &agent, &work, "run", false)
+        .unwrap()
+        .unwrap();
+    let check = task.pending_prompt_id.clone().unwrap();
+    let public = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !public.contains("PRIVATE_WORK_OUTCOME")
+            && !public.contains("PRIVATE_VALUE_CANARY")
+            && !public.contains("[sensitive Room terminal stream withheld]")
+    );
+    store
+        .agent_lifecycle(Operation::BeginContinuation {
+            task: task.task_id.clone(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: check.clone(),
+            run: Some("run".into()),
+            now,
+        })
+        .unwrap();
+    for (r, a, p, run) in [
+        (room.as_str(), agent.as_str(), check.as_str(), "foreign"),
+        (room.as_str(), agent.as_str(), "wrong-check", "run"),
+    ] {
+        assert!(runtime
+            .owned
+            .take_private_assessment_evidence(r, a, p, run)
+            .is_none());
+    }
+    let evidence = runtime
+        .owned
+        .take_private_assessment_evidence(&room, &agent, &check, "run")
+        .expect("MP-11 exact private work outcome required by neutral utility");
+    assert!(evidence.as_str().contains("PRIVATE_WORK_OUTCOME"));
+    assert!(!evidence.as_str().contains("PRIVATE_VALUE_CANARY"));
+    assert!(runtime
+        .owned
+        .take_private_assessment_evidence(&room, &agent, &check, "run")
+        .is_none());
+    let mut envelope = crate::prompt_assembly::PromptEnvelope::new(
+        &public,
+        "",
+        vec![],
+        crate::prompt_assembly::PromptManifest::current(),
+    );
+    envelope.assessment_only = true;
+    envelope.private_assessment_evidence = Some(evidence);
+    assert!(envelope
+        .private_assessment_prompt()
+        .unwrap()
+        .as_str()
+        .contains("PRIVATE_WORK_OUTCOME"));
+    for value in [
+        serde_json::to_string(&envelope).unwrap(),
+        format!("{envelope:?}"),
+        serde_json::to_string(&runtime.owned.session_store.get_session(&room).unwrap()).unwrap(),
+    ] {
+        assert!(!value.contains("PRIVATE_WORK_OUTCOME") && !value.contains("PRIVATE_VALUE_CANARY"));
+    }
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&room, Some(&agent))
+        .unwrap();
+    assert!(!serde_json::to_string(&history)
+        .unwrap()
+        .contains("PRIVATE_WORK_OUTCOME"));
 }

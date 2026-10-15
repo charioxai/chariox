@@ -4132,8 +4132,11 @@ text chunks remain compatible with peers that do not select that capability.
 No additional resume, input, or relay authority is introduced.
 
 Protected completion checks omit public privacy markers from their evidence.
-A local agent may assess its preceding outcome already held in the same
-official-provider thread; raw private result bytes are never copied into a
-new prompt. Missing native context and protected leased results unavailable
-at home cannot establish success. The existing kernel-private structured
-assessment and public receipt/terminal/history privacy fences still apply.
+The existing neutral, tool-free assessment utility receives a bounded,
+exact-turn kernel-private assistant result only through an ephemeral internal
+envelope field excluded from serialization and Debug output. Known values and
+secret-shaped text are scrubbed before submission. Public prompts, history and
+durable hidden context never receive it. Missing, expired, oversized or unbound
+results fail closed; protected leased results unavailable at home cannot establish
+success. No native-thread/workspace/tool authority is inherited. The kernel-private
+structured response and public receipt/terminal/history privacy fences still apply.

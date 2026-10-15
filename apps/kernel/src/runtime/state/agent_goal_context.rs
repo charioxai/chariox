@@ -82,15 +82,10 @@ impl KernelRuntimeOwnedState {
             )
             .concat();
             let protected = self.room_secret_observations.protects_bytes(&task.room_id);
-            let native_context = protected
-                && check
-                    .work_provider_run_id
-                    .as_deref()
-                    .is_some_and(|run| !run.starts_with("leased:"));
-            let evidence_policy = if native_context {
-                "Assess the ORIGINAL objective once from the preceding outcome already available in this same official-provider thread and the safe task metadata below. The public answer is intentionally withheld; it is not the provider result. Do not recover or copy protected values or private prose into prompts, tools, evidence or replies. Privacy withholding alone is never evidence of success. If that preceding outcome is unavailable in this thread, do not infer it: return blocked with the exact missing context. Unmet objectives and unresolved obligations still forbid achieved."
+            let evidence_policy = if protected {
+                "Assess the ORIGINAL objective once using the safe metadata below and exact kernel-private preceding result supplied separately to this neutral tool-free utility. No prior work-provider thread or workspace context is available here. If that private evidence is absent or incomplete, return blocked with the missing context. Privacy withholding alone is never evidence of success. Never quote protected values or private prose. Protected leased outcomes absent from the home provider context cannot establish success. Unmet objectives and unresolved obligations still forbid achieved."
             } else {
-                "Assess the ORIGINAL objective once using only public evidence below. Protected leased outcomes absent from the home provider context cannot establish success; do not infer them from privacy withholding."
+                "Assess the ORIGINAL objective once using only public evidence below."
             };
             let tail = output
                 .chars()
