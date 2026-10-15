@@ -18,8 +18,10 @@ export function launchEnvironment(environment, uid = process.getuid?.()) {
 // in a private user+mount namespace whose /etc is a read-only overlay of the
 // kernel's policy layer over the real /etc, then map back to the caller's own
 // uid/gid (Chromium refuses root) and keep Chromium's namespace sandbox. Each
-// step execs, so the spawned PID stays the browser's PID.
-const script = 'set -e; launcher=$1; layer=$2; uid=$3; gid=$4; shift 4; /usr/bin/mount -t overlay overlay -o "lowerdir=$layer:/etc" /etc; exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"';
+// step execs, so the spawned PID stays the browser's PID. The kernel's private
+// temporary directory becomes /tmp there: a short singleton socket path that the
+// namespace can open (it cannot open the kernel's /proc/<pid>/fd).
+const script = 'set -e; launcher=$1; layer=$2; temporary=$3; uid=$4; gid=$5; shift 5; /usr/bin/mount -t overlay overlay -o "lowerdir=$layer:/etc" /etc; /usr/bin/mount --bind "$temporary" /tmp; export TMPDIR=/tmp; exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"';
 // Ubuntu >= 23.10 restricts unprivileged user namespaces through AppArmor unless a
 // profile allows them (Chrome's own package installs one for its binary only).
 // install-root.sh installs this root-owned copy of util-linux unshare; its AppArmor
@@ -32,7 +34,7 @@ export function policyNamespaceAvailable(run = spawnSync, launcher = namespaceLa
   const probe = run(launcher, ["--user", "--map-root-user", "--mount", "--", "/bin/true"], { stdio: "ignore", timeout: 5000 });
   return probe.status === 0;
 }
-export function policyLaunch(layer, binary, args, uid = process.getuid(), gid = process.getgid(), launcher = namespaceLauncher()) {
+export function policyLaunch(layer, temporary, binary, args, uid = process.getuid(), gid = process.getgid(), launcher = namespaceLauncher()) {
   if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid < 0) throw new Error("MP-11: invalid browser user");
-  return { command: launcher, args: ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", script, "chariox-browser", launcher, layer, String(uid), String(gid), binary, "--disable-setuid-sandbox", ...args] };
+  return { command: launcher, args: ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", script, "chariox-browser", launcher, layer, temporary, String(uid), String(gid), binary, "--disable-setuid-sandbox", ...args] };
 }

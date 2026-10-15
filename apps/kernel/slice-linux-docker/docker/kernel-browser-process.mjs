@@ -1,4 +1,4 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, chromeBandHeight} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
@@ -41,7 +41,7 @@ export function launchArguments(profile, headless, display = false, nativeAccess
     "--hide-crash-restore-bubble", "--disable-background-networking",
     // MP-08/MP-11: the kernel loads its tab-groups component extension over this pipe.
     "--enable-unsafe-extension-debugging",
-    `--window-size=${geometry.width},${geometry.height+(display?87:0)}`, ...(headless ? ["--headless=new"] : []),
+    `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
       // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.
@@ -120,14 +120,15 @@ export class HostChromium {
       try{environment={...environment,...await this.display.start()};}
       catch(error){await this.display.close();this.display=null;throw error;}
     }
+    const temporary = this.desktop?.runtime ?? this.root;
     if (process.platform === 'linux') {
-      this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
+      this.temporaryDirectory = await open(temporary, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
-    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), binary, args) : { command: binary, args };
+    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
