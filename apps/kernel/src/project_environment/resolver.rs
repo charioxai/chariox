@@ -155,6 +155,12 @@ pub(crate) fn read_environment_file(
     root: &Path,
     relative: &str,
 ) -> Result<Zeroizing<String>, DaemonError> {
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("CHARIOX_TYPED_CHECK_STALL_MARKER") {
+        std::fs::write(marker, std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
     let mut bytes = Zeroizing::new(Vec::new());
     open_workspace_file(root, relative)?
         .take(1024 * 1024 + 1)

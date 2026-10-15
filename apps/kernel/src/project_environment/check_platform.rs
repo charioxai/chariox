@@ -67,13 +67,18 @@ pub(super) fn check_platform(
                     return outcome(Missing,"gui_platform_gap","Desktop program is absent or unsupported on this platform; Check-only in V1");
                 }
             }
-            match inventory::software_version_until(
-                identity,
-                install_source.as_deref(),
-                workspace(env, r),
-                &roots,
-                deadline,
-            ) {
+            let version = if install_source.as_deref() == Some("npm package") {
+                super::check_files::npm(&ctx.config, workspace(env, r), identity, deadline)
+            } else {
+                inventory::software_version_until(
+                    identity,
+                    install_source.as_deref(),
+                    workspace(env, r),
+                    roots,
+                    deadline,
+                )
+            };
+            match version {
                 Ok(Some(v)) => {
                     facts.present = Some(true);
                     facts.version = Some(v.clone());

@@ -7,6 +7,7 @@ mod aggregate_store;
 mod check;
 mod check_admission;
 mod check_assets;
+mod check_binding;
 pub(crate) mod check_executable;
 mod check_files;
 mod check_gui_identity;
@@ -50,6 +51,7 @@ mod transfer;
 pub use aggregate::*;
 pub use aggregate_projection::*;
 pub(crate) use check::*;
+pub(crate) use check_workspace::CheckWorkspace;
 #[doc(hidden)]
 pub use check_files::run_files_measurement_worker;
 pub(crate) use check_start::*;
