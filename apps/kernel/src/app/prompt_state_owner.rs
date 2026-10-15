@@ -341,7 +341,10 @@ impl DaemonApp {
         let provider_run_id = self
             .providers
             .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+            .map(|run| {
+                super::clear_claude_context_delivery_for_settled_prompt(&run, prompt.id());
+                run.id().to_string()
+            });
         let settled_at_ms = crate::session::unix_epoch_ms();
         self.operational_history_store().record_prompt_settlement(
             self.history_archive_enabled(),

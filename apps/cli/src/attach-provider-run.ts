@@ -37,6 +37,7 @@ export type AttachProviderRunSettlement =
   }
 
 type AttachProviderRunDeps = {
+  getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
   launchProviderRun: (
     sessionId: string,
     provider: string,
@@ -76,6 +77,21 @@ export async function settleAttachProviderRun(
         recoveredRemotePlacement: false,
       }
     case "launch_provider_run": {
+      // A bootstrap has no interaction UI yet. Leave eager Claude startup to
+      // the normal kernel prompt path when its Vault is locked, so the TUI can
+      // render the kernel-owned unlock interaction before a launch waits on it.
+      if (["claude", "claude-p", "claude-headless"].includes(decision.launch.provider)
+        && (await deps.getCredentialVaultStatus?.())?.unlocked === false) {
+        return {
+          action: "skipped",
+          session,
+          providerRun: null,
+          launch: decision.launch,
+          reason: "credential_vault_locked",
+          targetAgent: decision.targetAgent,
+          recoveredRemotePlacement: false,
+        }
+      }
       try {
         return {
           action: "launched",

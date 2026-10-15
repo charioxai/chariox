@@ -1010,6 +1010,21 @@ pub enum RelayPeerRequest {
     },
 }
 
+impl RelayPeerRequest {
+    /// Off-lock callers can wait for both bounded native account probes plus
+    /// reply cleanup. App-locked callers retain their configured response bound.
+    pub(crate) fn off_lock_response_timeout(
+        &self,
+        configured: std::time::Duration,
+    ) -> std::time::Duration {
+        if matches!(self, Self::EnsureRemoteProviderAccount { .. }) {
+            configured.max(std::time::Duration::from_secs(150))
+        } else {
+            configured
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
@@ -1962,7 +1977,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 527);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},

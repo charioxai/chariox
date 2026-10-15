@@ -480,6 +480,7 @@ fn test_peer_response_kind(
 mod tests {
     use super::*;
 
+    // MP-08 / MP-10 / MP-11: token renewal must reuse existing heartbeat reauthentication.
     #[test]
     fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
         // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
@@ -583,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_relay_reconnect_is_immediate_without_active_daemon_requests() {
+    fn dynamic_relay_url_change_reconnect_is_immediate_without_active_daemon_requests() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();

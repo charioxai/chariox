@@ -17,7 +17,11 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+#[cfg(test)]
+mod codex_refresh_tests;
+mod opencode_model_cache;
 mod probe_capture;
+pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -317,12 +321,13 @@ pub(crate) fn refresh_provider_account_profile_with_config(
     {
         return Ok(profile);
     }
-    refresh_provider_account_profile_explicitly(
+    refresh_provider_account_profile_observation(
         registry,
         owner_user_id,
         provider,
         account_profile,
         config,
+        false,
     )
 }
 
@@ -369,6 +374,24 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    refresh_provider_account_profile_observation(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+        true,
+    )
+}
+
+fn refresh_provider_account_profile_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+    reload_codex_endpoint: bool,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
@@ -376,6 +399,17 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
         (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
     let (status, usage) = match provider_family {
         Some("codex") => {
+            // The official app-server caches its login at startup. An explicit
+            // account refresh must observe a native login imported since the
+            // catalog last started this profile's utility server.
+            // MP-08 / MP-10 / MP-11: automatic login observations must retain
+            // the native server that owns the pending device challenge.
+            if reload_codex_endpoint {
+                crate::provider::invalidate_codex_account_endpoint(
+                    owner_user_id,
+                    &profile.profile_id,
+                );
+            }
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
@@ -629,10 +663,14 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
+    // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
+    // settles, which can strand its native lock ahead of explicit provisioning.
+    let mut auth_environment = environment.clone();
+    auth_environment.insert("OPENCODE_DISABLE_MODELS_FETCH".into(), "1".into());
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
         vec!["auth".to_string(), "list".to_string()],
-        environment.clone(),
+        auth_environment,
         None,
         "opencode:auth-status",
     )?;

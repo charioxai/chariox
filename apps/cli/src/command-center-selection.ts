@@ -98,6 +98,10 @@ export function nextCommandCenterIndex(
 
 export function shouldBypassCommandCenterSubmitSelection(prompt: string): boolean {
   const command = parseSlashCommand(prompt)
+  if (command?.kind === "agent") {
+    return command.args.length >= 3
+      && ["provider", "account", "model", "variant"].includes(command.args[0] ?? "")
+  }
   if (!command || command.kind !== "session" || command.action === null) {
     return false
   }

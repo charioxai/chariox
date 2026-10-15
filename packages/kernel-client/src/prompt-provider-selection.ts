@@ -79,7 +79,9 @@ export function applyProviderRunProfileToSession(
   providerRun: RuntimeProviderRun | null,
 ): RuntimeSession {
   const agentId = providerRun?.agent_instance_id
-  if (!agentId) {
+  // A cached run is observational state. Only the kernel-selected current run
+  // may refine an agent profile; a replaced or cleared run cannot undo a switch.
+  if (!agentId || providerRun.id !== session.active_provider_run_id) {
     return session
   }
 

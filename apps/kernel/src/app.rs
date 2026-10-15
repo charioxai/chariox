@@ -30,6 +30,9 @@ pub(crate) mod provider_output;
 mod provider_output_claude_native;
 mod provider_output_fanout;
 mod provider_output_prompt_settlement;
+mod provider_output_resume;
+#[cfg(test)]
+pub(crate) use provider_output_resume::persist_resolved_resume_state;
 mod provider_output_trace;
 mod provider_processes;
 mod provider_prompt_launch;
@@ -75,9 +78,13 @@ pub(crate) use prompt_lifecycle::{
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
+pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
-    claude_native_recent_terminal_failure, format_claude_permission_message,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -175,6 +182,7 @@ pub struct DaemonApp {
     agent_runtime_projection: AgentRuntimeProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
+    pending_agent_context_handoffs: crate::runtime::state::PendingAgentContextHandoffStore,
     provider_process_projection: ProviderProcessProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     credential_enrollment_control:
@@ -387,6 +395,7 @@ impl DaemonApp {
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
+            pending_agent_context_handoffs: Default::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
             credential_enrollment_control:
@@ -634,6 +643,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_run_projection_store(&self) -> ProviderRunProjectionStore {
         self.provider_run_projection.clone()
+    }
+
+    pub(crate) fn pending_agent_context_handoff_store(
+        &self,
+    ) -> crate::runtime::state::PendingAgentContextHandoffStore {
+        self.pending_agent_context_handoffs.clone()
     }
 
     pub(crate) fn provider_process_projection_store(&self) -> ProviderProcessProjectionStore {
