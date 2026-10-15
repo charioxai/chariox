@@ -8,6 +8,17 @@ import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirro
 import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
+// MP-08/MP-10/MP-11: these scalar/queue fixtures start with a painted surface;
+// staged-document readiness and event retirement use the real-Chromium suite.
+function paintedRenderer(container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): BrowserMirror2Renderer {
+  const renderer = new BrowserMirror2Renderer(container, send)
+  ;(renderer as unknown as { navigation: { painted: boolean } }).navigation.painted = true
+  const frame = renderer.frame as HTMLIFrameElement & { removeEventListener?: unknown }
+  frame.removeEventListener ??= () => {}
+  return renderer
+}
+
+
 const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirror2Packet => ({ wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence: 1, base_sequence: null, reset: true, root: nodes[0]!.id, nodes, ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1, ...extra })
 const tree = (...rest: Mirror2Record[]): Mirror2Record[] => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, ...rest]
 const element = (tag: string, attrs: Record<string, string> = {}, extra: Partial<Mirror2Record> = {}): Mirror2Record => ({ id: 'n3', parent: 'n2', kind: 'element', tag, attrs, ...extra })
@@ -189,7 +200,7 @@ test('MP-10: protocol 501 a failed credit asks for a resend (it ends the kernel 
 test('MP-10: removing an inline style forgets it, so a later resource cannot restore it', () => {
   const element = () => { const attributes = new Map<string, string>(); return { nodeType: 1, attributes, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name), addEventListener: () => {}, style: {} } }
   const iframe = element(), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { dom: Map<string, unknown>; records: Map<string, Mirror2Record>; styled: Map<string, { keys: string[] }>; op(op: unknown, scrolls: unknown[]): void }
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async () => {}) as unknown as { dom: Map<string, unknown>; records: Map<string, Mirror2Record>; styled: Map<string, { keys: string[] }>; op(op: unknown, scrolls: unknown[]): void }
   const node = element(); renderer.dom.set('n5', node); renderer.records.set('n5', { id: 'n5', parent: 'n2', kind: 'element', tag: 'div' })
   renderer.op({ op: 'attr', id: 'n5', name: 'style', value: 'background:url("mr:r1")' }, [])
   assert.deepEqual(renderer.styled.get('n5#style')?.keys, ['r1'])
@@ -219,7 +230,7 @@ test('MP-08/MP-10: compact deltas inherit binding and header from their base; de
 
 test('MP-10: resource slices reassemble in order; a reset restarts them', () => {
   const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { assemble(r: Record<string, unknown>): Record<string, unknown> | null; slices: Map<string, unknown> }
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async () => {}) as unknown as { assemble(r: Record<string, unknown>): Record<string, unknown> | null; slices: Map<string, unknown> }
   const slice = (offset: number, data: string) => ({ key: 'r1', resource_id: 'a'.repeat(64), mime_type: 'image/png', data_base64: data, offset, total: 12 })
   assert.equal(renderer.assemble(slice(0, 'AAAA')), null)
   assert.equal(renderer.assemble(slice(4, 'BBBB')), null)
@@ -234,9 +245,9 @@ test('MP-10: resource slices reassemble in order; a reset restarts them', () => 
 test('MP-08: Page Up/Page Down scroll the viewer natively (no preventDefault); other navigation keys go to the kernel', async () => {
   const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
   const sent: unknown[] = []
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { bind(doc: unknown): void; documentId: string }
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { bind(doc: unknown): void; documentId: string }
   const handlers = new Map<string, (event: unknown) => void>()
-  renderer.bind({ addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn), getSelection: () => null })
+  renderer.bind({ defaultView: { frameElement: iframe }, addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn), getSelection: () => null })
   renderer.documentId = 'd'
   const press = (key: string, shiftKey = false) => { let prevented = false; handlers.get('keydown')!({ key, shiftKey, ctrlKey: false, metaKey: false, altKey: false, preventDefault: () => { prevented = true } }); return prevented }
   assert.equal(press('PageDown'), false); assert.equal(press('PageUp'), false)
@@ -269,7 +280,7 @@ test('MP-10: review #320-1 a select shows its live selection after its options a
   }
   const doc = { createElement: make, createElementNS: (_: string, tag: string) => make(tag), createTextNode: () => make('#text'), createDocumentFragment: () => make('#fragment') }
   const iframe = make('iframe'), container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as { build(records: Mirror2Record[], doc: unknown, frames: unknown[], scrolls: unknown[]): Map<string, Fake> }
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async () => {}) as unknown as { build(records: Mirror2Record[], doc: unknown, frames: unknown[], scrolls: unknown[]): Map<string, Fake> }
   const form = { value: 'b', checked: false, selected_index: 1, selection_start: null, selection_end: null }
   for (const id of ['n3', 'n13']) {
     const built = renderer.build([{ id, parent: null, kind: 'element', tag: 'select', form }, { id: id + '1', parent: id, kind: 'element', tag: 'option' }, { id: id + '2', parent: id, kind: 'element', tag: 'option' }], doc, [], [])
@@ -292,7 +303,7 @@ test('MP-10: review #941-2 a viewer scroll inside a rendered open shadow root re
   const root = { addEventListener: (type: string, fn: (event: unknown) => void) => listeners.set(type, fn), replaceChildren: () => {} }
   const iframe = { setAttribute: () => {}, addEventListener: () => {}, style: {} }, container = { ownerDocument: { createElement: () => iframe }, append: () => {} }
   const sent: unknown[] = []
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { attachShadow(host: unknown, record: Mirror2Record, fragment: unknown): void; ids: WeakMap<object, string>; documentId: string }
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async action => { sent.push(action) }) as unknown as { attachShadow(host: unknown, record: Mirror2Record, fragment: unknown): void; ids: WeakMap<object, string>; documentId: string }
   renderer.documentId = 'd'
   renderer.attachShadow({ shadowRoot: null, attachShadow: () => root }, { id: 'n7', parent: 'n6', kind: 'shadow' }, { childNodes: [] })
   const scroller = { nodeType: 1, scrollLeft: 0, scrollTop: 300 }; renderer.ids.set(scroller, 'n9')
@@ -332,13 +343,13 @@ function fakeDocument(host: Record<string, unknown> = { getAnimations: () => [],
 
 test('MP-08/MP-10: the shared renderer leaves host animation policy to its client', async () => {
   const host = { getAnimations: () => { throw Error('host animations belong to the client') } }
-  const renderer = new BrowserMirror2Renderer(fakeDocument(host).container as HTMLElement, async () => {})
+  const renderer = paintedRenderer(fakeDocument(host).container as HTMLElement, async () => {})
   await renderer.ready(); renderer.close()
 })
 
 test('MP-08: review #320-1 a focused text control shows the kernel caret/range after focus (snapshot and a newly introduced field)', async () => {
   const { doc, container } = fakeDocument()
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {})
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async () => {})
   await renderer.ready()
   const form = (start: number, end: number) => ({ value: 'abc', checked: false, selected_index: -1, selection_start: start, selection_end: end })
   const nodes: Mirror2Record[] = [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
@@ -353,7 +364,7 @@ test('MP-08: review #320-1 a focused text control shows the kernel caret/range a
 test('MP-10: review #320-2 a removed frame releases its nested records and a retired document its binding', async () => {
   const { doc, container } = fakeDocument()
   type Internals = { ready(): Promise<void>; bind(doc: unknown): void; op(op: unknown, scrolls: unknown[]): void; dom: Map<string, unknown>; records: Map<string, Mirror2Record>; ids: WeakMap<object, string> }
-  const renderer = new BrowserMirror2Renderer(container as unknown as HTMLElement, async () => {}) as unknown as Internals
+  const renderer = paintedRenderer(container as unknown as HTMLElement, async () => {}) as unknown as Internals
   await renderer.ready()
   const make = doc.createElement as (tag: string) => FakeNode
   const nested = fakeDocument().doc, body = make('body'), frame = make('iframe'), html = make('html'), text = make('#text')
@@ -515,7 +526,7 @@ test('a refused input reports its reason without retiring paint or replaying the
 test('mirror input preserves write order with at most two unresolved replies',async()=>{
  const frame={style:{},dataset:{} as Record<string,string>,setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};
  const sent:Array<{action:any;written:(()=>void)|undefined;resolve:()=>void;reject:(e:Error)=>void}>=[];
- const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((action:any,_epoch:any,written?:()=>void)=>new Promise<void>((resolve,reject)=>sent.push({action,written,resolve,reject}))) as any) as any;
+ const renderer=paintedRenderer(container as unknown as HTMLElement,((action:any,_epoch:any,written?:()=>void)=>new Promise<void>((resolve,reject)=>sent.push({action,written,resolve,reject}))) as any) as any;
  renderer.documentId='d';renderer.sequence=1;
  for(const text of ['a','b','c'])renderer.enqueue({kind:'text',text});
  await until(()=>sent.length===1);assert.equal(sent.length,1);assert.equal(typeof sent[0]!.written,'function');
@@ -529,7 +540,7 @@ test('mirror input preserves write order with at most two unresolved replies',as
 // MP-08/MP-10/MP-11: an old transport that lacks write receipts stays serial.
 test('mirror inputs without a write notification wait for replies and stop at disposal',async()=>{
  const frame={style:{},dataset:{},setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};const replies:Array<()=>void>=[],texts:string[]=[];
- const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((a:any)=>new Promise<void>(resolve=>{texts.push(a.text);replies.push(resolve)})) as any) as any;renderer.documentId='d';renderer.sequence=1;
+ const renderer=paintedRenderer(container as unknown as HTMLElement,((a:any)=>new Promise<void>(resolve=>{texts.push(a.text);replies.push(resolve)})) as any) as any;renderer.documentId='d';renderer.sequence=1;
  renderer.enqueue({kind:'text',text:'a'});renderer.enqueue({kind:'text',text:'b'});renderer.enqueue({kind:'text',text:'c'});await until(()=>texts.length===1);await new Promise(r=>setTimeout(r,15));assert.deepEqual(texts,['a']);replies[0]!();await until(()=>texts.length===2);renderer.close();replies[1]!();await until(()=>renderer.pendingInputs===0);assert.deepEqual(texts,['a','b']);assert.equal(renderer.pendingInputs,0);
 })
 
@@ -537,7 +548,7 @@ test('mirror inputs without a write notification wait for replies and stop at di
 test('overlapping input replies do not release another root scroll or hold a new document',async()=>{
  const frame={style:{},dataset:{},setAttribute(){},addEventListener(){},remove(){}},container={ownerDocument:{createElement:()=>frame},append(){}};
  const sent:Array<{written:(()=>void)|undefined;resolve:()=>void}>=[];
- const renderer=new BrowserMirror2Renderer(container as unknown as HTMLElement,((_a:any,_e:any,written?:()=>void)=>new Promise<void>(resolve=>sent.push({written,resolve}))) as any) as any;renderer.documentId='d';renderer.sequence=1;
+ const renderer=paintedRenderer(container as unknown as HTMLElement,((_a:any,_e:any,written?:()=>void)=>new Promise<void>(resolve=>sent.push({written,resolve}))) as any) as any;renderer.documentId='d';renderer.sequence=1;
  renderer.enqueue({kind:'scroll_to',node_id:null,x:0,y:200});await until(()=>sent.length===1);sent[0]!.written!();
  renderer.enqueue({kind:'text',text:'a'});await until(()=>sent.length===2);sent[1]!.written!();sent[1]!.resolve();await until(()=>renderer.pendingInputs===1);
  assert.equal(renderer.rootScrolling(),true,'a text reply cannot release the root scroll');

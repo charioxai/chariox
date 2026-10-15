@@ -3,6 +3,7 @@
 // deltas apply in place. No origin I/O: resources arrive as kernel bytes.
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
+import { Mirror2Navigation } from './browser-mirror2-navigation.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -31,10 +32,11 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 
 export class BrowserMirror2Renderer {
-  readonly frame: HTMLIFrameElement
+  private navigation: Mirror2Navigation
+  get frame(): HTMLIFrameElement { return this.navigation.frame }
+  get painted(): boolean { return this.navigation.painted }
   readonly timings: Array<{ stage: string; duration_ms: number; ended_ms: number }> = []
   private doc: Document | null = null
-  private loaded: Promise<void>
   private disposed = false
   private applying = false
   private dom = new Map<string, Node>()
@@ -74,19 +76,11 @@ export class BrowserMirror2Renderer {
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
-    const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
-    this.frame = owner.createElement('iframe')
-    this.frame.setAttribute('sandbox', 'allow-same-origin') // scripts NEVER enabled
-    this.frame.setAttribute('referrerpolicy', 'no-referrer')
-    this.frame.setAttribute('title', 'Mirrored kernel browser page')
-    this.frame.style.cssText = 'width:1280px;height:800px;border:0;display:block'
-    this.frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirror2SandboxCsp}"></head><body></body></html>`
-    this.loaded = new Promise<void>(resolve => this.frame.addEventListener('load', () => resolve(), { once: true }))
-    container.append(this.frame)
+    this.navigation = new Mirror2Navigation(container)
   }
   async ready(): Promise<void> {
-    await this.loaded
+    await this.navigation.loaded
     if (this.disposed) throw Error('MP-08: mirror closed')
     this.doc = this.frame.contentDocument
     if (!this.doc) throw Error('MP-11: mirror sandbox unavailable')
@@ -95,7 +89,7 @@ export class BrowserMirror2Renderer {
   private timed(stage: string, at: number): void { this.timings.push({ stage, duration_ms: performance.now() - at, ended_ms: performance.timeOrigin + performance.now() }); if (this.timings.length > 2048) this.timings.splice(0, 1024) }
   // ---- input: node-addressed, the kernel re-validates everything live.
   private enqueue(action: Mirror2Input): void {
-    if (this.applying || this.disposed || !this.documentId) return
+    if (this.applying || this.disposed || !this.documentId || !this.navigation.painted) return
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
@@ -190,7 +184,16 @@ export class BrowserMirror2Renderer {
   private bind(doc: Document): void {
     if (this.bound.has(doc)) return
     this.bound.add(doc)
-    const on = (type: string, fn: (event: Event) => void): void => doc.addEventListener(type, fn, { capture: true, passive: false })
+    const on = (type: string, fn: (event: Event) => void): void => doc.addEventListener(type, event => {
+      if (this.disposed || !this.navigation.painted) return
+      // A held/retired iframe can retain native keyboard focus. Its event may
+      // never acquire the new document's epoch, including root key actions.
+      let frame = doc.defaultView?.frameElement
+      for (let depth = 0; frame && depth < 512; depth++) {
+        if (frame === this.frame) { fn(event); return }
+        frame = frame.ownerDocument.defaultView?.frameElement
+      }
+    }, { capture: true, passive: false })
     const target = (event: Event): Element | null => { const node = event.composedPath()[0] as Node; return node?.nodeType === 1 ? node as Element : node?.parentElement ?? null }
     const element = (event: Event): { id: string; el: Element } | null => {
       for (let el = target(event); el; el = el.parentElement ?? ((el.getRootNode() as ShadowRoot).host ?? null)) { const id = this.ids.get(el); if (id && this.records.get(id)?.kind !== 'text') return this.records.get(id)?.kind === 'mask' ? null : { id, el } }
@@ -550,6 +553,17 @@ export class BrowserMirror2Renderer {
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
     if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
+    if (packet.reset && this.documentId && packet.document_id !== this.documentId) {
+      this.wheel.cancel(); this.scrollTargets.clear()
+      if (this.scrollFrame) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = 0 }
+      await this.navigation.prepare()
+      if (this.disposed) throw Error('MP-08: mirror closed during navigation')
+      this.doc = this.frame.contentDocument
+      if (!this.doc) throw Error('MP-11: mirror sandbox unavailable')
+      this.bind(this.doc)
+      this.focusSent = null; this.pointerFocus = null; this.focusHold = null
+      this.selectionDoc = null
+    }
     if (packet.reset) this.slices.clear()
     const complete: Mirror2Resource[] = []
     for (const slice of packet.resources) { const resource = this.assemble(slice); if (resource) { await this.addResource(resource); complete.push(resource) } }
@@ -587,6 +601,7 @@ export class BrowserMirror2Renderer {
         }
         const view = this.frame.contentWindow!, position = rootScroll ?? packet.scroll; view.scrollTo(position[0]!, position[1]!); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
+      this.navigation.present()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
       this.kernelFocus = packet.focused
@@ -705,11 +720,11 @@ export class BrowserMirror2Renderer {
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.queue=[]; this.pendingInputs=0; this.wheel.close()
-    if(options?.preserveFrame) {this.frame.inert=true;this.frame.style.pointerEvents='none';return}
+    if(options?.preserveFrame) {this.navigation.preserve();return}
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frame.remove()
+    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 
@@ -736,7 +751,7 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
