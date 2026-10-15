@@ -16,6 +16,15 @@ function rows(text: string, width: number): number {
   return text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(Array.from(line).length / width)), 0)
 }
 
+function passkeyNoticeLabel(prompt: { readonly kind: string; readonly title: string; readonly requester?: { readonly provider_harness?: string | null } | null }): string {
+  const harness = prompt.requester?.provider_harness
+  const who = harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : harness === "opencode" ? "OpenCode" : "An external agent"
+  if (prompt.kind === "access_grant") return `${who} asks for access`
+  if (prompt.kind === "access_extension") return `${who} asks to extend access`
+  if (prompt.kind === "sudo") return `${who} asks to run one sudo task`
+  return (prompt.title || "Critical approval").replace(/[\x00-\x1f\x7f]/g, " ").slice(0,120)
+}
+
 /** Protocol 403: the passkey popup, shaped like the hot-keys popup: a scrim
  * over the whole terminal and a centered panel. It shows only what the kernel
  * established, and the passkey as dots. Hidden, it leaves an indicator. */
@@ -26,6 +35,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   cycleRemember(): void
 }) {
   let box: BoxRenderable | undefined
+  let banner: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
   let lastFrame = ""
   const text = (content: string, options: { accent?: boolean; muted?: boolean; bold?: boolean } = {}) =>
@@ -44,6 +54,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   }
   return {
     assign(value: BoxRenderable) { box = value; lastFrame = "" },
+    assignBanner(value: BoxRenderable) { banner = value; lastFrame = "" },
     scroll(direction: -1 | 1) { body?.scrollBy(direction * 4) },
     render(view: PasskeyPopupView, dimensions: { width: number; height: number }) {
       if (!box) return
@@ -55,19 +66,36 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         box.remove(String(child.id))
         child.destroyRecursively()
       }
-      box.visible = view.count > 0
+      if (banner) {
+        for (const child of [...banner.getChildren()]) {
+          banner.remove(String(child.id))
+          child.destroyRecursively()
+        }
+        banner.visible = view.count > 0
+        banner.backgroundColor = theme.backgroundElement
+        banner.paddingLeft = 1
+        banner.paddingRight = 1
+        if (view.count) banner.add(text(`Chariox · ${passkeyNoticeLabel(view.prompt!)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8`, { bold: true }))
+        banner.onMouseUp = (event) => {
+          event.stopPropagation()
+          if (event.button === MouseButton.LEFT) actions.show()
+        }
+        banner.requestRender()
+      }
+      box.visible = view.count > 0 && (view.open || !banner)
       if (!view.count || !view.prompt) {
         box.requestRender()
         return
       }
       box.width = dimensions.width
       if (!view.open) {
+        if (banner) { box.requestRender(); return }
         box.height = 2
         const indicator = new BoxRenderable(renderer, {
           position: "absolute", right: 0, top: 1, height: 1,
           backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
         })
-        indicator.add(text(`Chariox · ${view.count} passkey request${view.count === 1 ? "" : "s"} · F8`, { accent: true }))
+        indicator.add(text(`Chariox · ${passkeyNoticeLabel(view.prompt!)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8`, { accent: true }))
         indicator.onMouseUp = (event) => {
           event.stopPropagation()
           if (event.button === MouseButton.LEFT) actions.show()

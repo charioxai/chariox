@@ -52,8 +52,8 @@ test("the passkey popup is shaped like the hot-keys popup and shows only the ker
     surface.render({ ...view, open: false }, { width: 90, height: 30 })
     await harness.renderOnce()
     frame = harness.captureCharFrame()
-    assert.match(frame, /Chariox · 1 passkey request · F8/)
-    assert.doesNotMatch(frame, /Approve App action/)
+    assert.match(frame, /Chariox · Approve App action · F8/)
+    assert.doesNotMatch(frame, /Action: pay|Passkey:|Enter approves/)
     assert.match(frame, /Waiting room · Projects/)
   } finally { harness.renderer.destroy() }
 })
@@ -274,5 +274,52 @@ test("EXT-UX-04 the pending status takes the hint row's place and no row moves",
     assert.match(after, /Waiting for the kernel…/)
     for (const marker of [/External agent access/, /Passkey:/, /\[ Approve \]/]) assert.equal(rowOf(after, marker), rowOf(before, marker))
     assert.equal(rowOf(after, /Waiting for the kernel…/), rowOf(before, /Enter approves/))
+  } finally { h.renderer.destroy() }
+})
+
+// MP-08 / MP-11: a pending notice reserves a row instead of covering code.
+test("MP-08/MP-11 passkey notice reserves an opaque row above the prompt", async () => {
+  const h = await createTestRenderer({ width: 90, height: 12, useThread: false })
+  const column = new BoxRenderable(h.renderer, { flexDirection: "column", width: 90 })
+  h.renderer.root.add(column)
+  column.add(new TextRenderable(h.renderer, { content: "const denseCode = 42;" }))
+  const banner = new BoxRenderable(h.renderer, { flexShrink: 0, visible: false })
+  column.add(banner)
+  column.add(new TextRenderable(h.renderer, { content: "Prompt > draft kept" }))
+  const overlay = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(overlay)
+  let opened = false
+  const surface = createPasskeyPopupRenderer(h.renderer, { ...noActions, show() { opened = true } })
+  surface.assign(overlay)
+  try {
+    ;(surface as unknown as { assignBanner(value: BoxRenderable): void }).assignBanner(banner)
+    surface.render({ ...view, open: false }, { width: 90, height: 12 })
+    await h.renderOnce()
+    const lines = h.captureCharFrame().split("\n")
+    assert.match(lines[0]!, /const denseCode = 42;/)
+    assert.match(lines[1]!, /Chariox · Approve App action/)
+    assert.match(lines[2]!, /Prompt > draft kept/)
+    await h.mockMouse.click(5, 1, 0)
+    assert.equal(opened, true)
+    surface.render({ ...view, count: 0, prompt: null }, { width: 90, height: 12 })
+    await h.renderOnce()
+    assert.match(h.captureCharFrame().split("\n")[1]!, /Prompt > draft kept/)
+  } finally { h.renderer.destroy() }
+})
+
+// MP-08 / MP-11: requester attribution uses only kernel-verified harness metadata.
+test("MP-08/MP-11 notice names the request and verified requester", async () => {
+  const h = await createTestRenderer({ width: 100, height: 12, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: false, prompt: { ...prompt, kind: "access_extension", requester: {
+      executable: "/opt/claude", pid: 42, process_start_id: "1", process_exec_version: 0, provider_harness: "claude",
+    } } }, { width: 100, height: 12 })
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Claude Code asks to extend access/)
+    assert.doesNotMatch(h.captureCharFrame(), /42|\/opt\/claude/)
   } finally { h.renderer.destroy() }
 })

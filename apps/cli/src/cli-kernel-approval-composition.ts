@@ -102,6 +102,7 @@ export function createCliKernelApprovalComposition(deps: {
     handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
     ownsInput: () => popup.ownsInput() || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
+    assignPopupBanner(value: BoxRenderable) { popupSurface.assignBanner(value); popupSurface.render(popup.view(), deps.dimensions()) },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },
   }
 }
