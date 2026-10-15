@@ -15,6 +15,76 @@ function terminalCatalog() {
   }
 }
 
+test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves buffered live output", async () => {
+  const session = { id: "s", active_provider_run_id: "run-1", agents: [{ id: "a" }], focused_agent_id: "a", workspace_id: "/workspace", worktree_id: "/workspace" }
+  const outline = { agents: [outlineAgent("a", "real earlier prompt", "earlier answer")] }
+  const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  let bulkReads = 0
+  const pendingPromptHistory = new Promise<never>(() => {})
+  const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getPromptInputHistory: () => { bulkReads++; return pendingPromptHistory },
+    getProviderCatalog: async () => { bulkReads++; return fallbackProviderCatalog() },
+    getProviderCommandCatalogs: async () => { bulkReads++; return fallbackProviderCommandCatalogs() },
+    getTerminalCommandCatalog: async () => { bulkReads++; return terminalCatalog() },
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  assert.equal(bulkReads, 0, "MP-08 / MP-10: attach must not request composer inventories")
+  assert.equal(boot.binding?.attachment.id, "binding")
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked", "bundled transcript must not wait for composer input history")
+  if (history === "blocked") return
+  assert.equal(history?.agentEntries.a?.length, 2)
+})
+
+test("MP-08 / MP-10 / MP-11: explicit attach mounts without startup inventory or launch defaults", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: [{ id: "a" }], focused_agent_id: "a" }
+  const calls: string[] = []
+  const pending = new Promise<never>(() => {})
+  const unexpected = async () => { throw new Error("unexpected fallback") }
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "alias", model: "default", effort: "", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    getConfiguredProviderLaunchDefaults: () => { calls.push("defaults"); return pending },
+    listSessions: () => { calls.push("inventory"); return pending },
+    resolveSession: async () => { calls.push("resolve"); return session },
+    attachSessionView: async () => { calls.push("view"); return { attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "prompt", "answer")] } } },
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(result, "blocked", "explicit attach waited for unrelated startup reads")
+  assert.deepEqual(calls, ["resolve", "view"])
+  if (result !== "blocked") {
+    assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
+    assert.deepEqual(result.sessions.map(session => session.id), ["s"])
+  }
+})
+
+test("MP-08 / MP-10: the bundled later desk hydrates before any off-desk outline request", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: Array.from({ length: 8 }, (_, i) => ({ id: `a${i}` })), focused_agent_id: "a7" }
+  const outline = { agents: [outlineAgent("a6", "six", "six answer"), outlineAgent("a7", "seven", "seven answer")] }
+  let extraRequests = 0
+  const unexpected = async () => { throw new Error("extra attach/state/catch-up") }
+  const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: () => { extraRequests++; return new Promise<never>(() => {}) }, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a7", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked")
+  assert.equal(extraRequests, 0)
+  if (history !== "blocked") assert.deepEqual(Object.keys(history?.agentEntries ?? {}), ["a6", "a7"])
+})
+
 test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
   const pending = new Promise<never>(() => {})
   const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
@@ -219,7 +289,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
@@ -228,7 +298,8 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hi"])
   assert.deepEqual(deferredHistory?.nextHistoryCursor, {
     agentId: "agent-a",
     cursor: { before_sequence: 9 },
@@ -430,7 +501,8 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hello"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hello"])
   const assistantEntry = deferredHistory?.historyEntries.find((entry) => entry.role === "assistant")
   assert.equal(assistantEntry?.text, "while you were away")
 })
@@ -738,4 +810,19 @@ test("MP-08 / MP-11 direct session creation checks the default account before cr
     prepareHistoryOutlineAgent: () => [],
   }), /codex-1 needs sign-in/)
   assert.equal(created, false)
+})
+
+
+test("MP-08 / MP-10 / MP-11 full session IDs paint from the kernel bundle without a resolve round trip", async () => {
+  const id = "18de8597bddf72dc", calls: string[] = []
+  const session = {id,active_provider_run_id:"run",agents:[{id:"a"}],focused_agent_id:"a"}
+  const unexpected = async () => { throw new Error("unnecessary startup read") }
+  const boot = await bootstrapSession({} as never,{clientId:"cli",sessionId:id,model:"known",effort:"high",provider:"claude-p",accountProfile:"work"},"/workspace","/workspace",{}, {
+    resolveSession: async () => { calls.push("resolve"); throw new Error("unnecessary resolve round trip") },
+    attachSessionView: async (_client:unknown,sessionId:string,_clientId:string,preferred:string|null) => {calls.push("view");assert.equal(sessionId,id);assert.equal(preferred,null);return {attachment:{id:"binding",session_id:id},session,history:{agents:[outlineAgent("a","prompt","answer")]}}},
+    listSessions:unexpected,attachToSession:unexpected,getSessionState:unexpected,catchUpAttachedSession:unexpected,getSessionHistoryOutline:unexpected,
+    tryGetProviderRun:async()=>null,resolveVisibleAgentId:()=>"a",prepareHistoryOutlineAgent:hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  assert.deepEqual(calls,["view"]);assert.equal(boot.binding?.session.id,id)
+  assert.equal((await boot.deferred?.attachedHistory)?.historyEntries.length,2)
 })

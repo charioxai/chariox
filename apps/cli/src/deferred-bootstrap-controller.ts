@@ -1,3 +1,4 @@
+import { clientInventoryEpoch } from "./client-inventory-cache.js"
 import type {
   BootstrapDeferredState,
   SessionHistoryCursorState,
@@ -13,6 +14,10 @@ export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
+  currentAttachmentId: () => string | null
+  currentPromptHistoryEntries?: () => readonly string[]
+  currentPromptHistoryIndex?: () => number | null
+  currentPromptHistoryDraft?: () => string | null
   currentTranscriptEntryCount: () => number
   entryCounter: () => number
   setProviderCatalog: (catalog: ProviderCatalog) => void
@@ -23,6 +28,7 @@ export type DeferredBootstrapControllerDeps = {
   resetPromptHistoryNavigation: () => void
   setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
   setAgentPaneEntries: (agentId: string, entries: TranscriptEntry[]) => void
+  setSessionHydratingState: (next: boolean) => void
   setAgentPanePreview: (agentId: string, preview: string) => void
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   prependTranscriptEntries: (entries: TranscriptEntry[]) => Promise<void>
@@ -44,8 +50,10 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     if (deps.currentAttachmentSessionId() !== history.sessionId) {
       return
     }
-    deps.setPromptHistoryEntries(history.promptHistoryEntries)
-    deps.resetPromptHistoryNavigation()
+    if (history.includesPromptHistory !== false) {
+      deps.setPromptHistoryEntries(history.promptHistoryEntries)
+      deps.resetPromptHistoryNavigation()
+    }
     if (!history.visibleAgentId) {
       deps.setNextHistoryCursor(history.nextHistoryCursor)
       return
@@ -105,12 +113,73 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       warn("failed to hydrate terminal command catalog after bootstrap", error)
     })
 
+    // Only the startup attachment's hydration ends here; a newer attach owns its own.
+    const startupAttachmentId = deps.currentAttachmentId()
+    const startupPromptHistory = deps.currentPromptHistoryEntries?.()
+    const startupPromptIndex = deps.currentPromptHistoryIndex?.()
+    const startupPromptDraft = deps.currentPromptHistoryDraft?.()
+    void deferred.promptInputHistory?.then(history => {
+      if (deps.currentAttachmentId() !== startupAttachmentId
+        || deps.currentAttachmentSessionId() !== history.sessionId
+        || deps.currentPromptHistoryEntries?.() !== startupPromptHistory
+        || deps.currentPromptHistoryIndex?.() !== startupPromptIndex
+        || deps.currentPromptHistoryDraft?.() !== startupPromptDraft) return
+      deps.setPromptHistoryEntries(history.entries)
+      deps.resetPromptHistoryNavigation()
+    }).catch(error => {
+      warn("failed to hydrate prompt input history after bootstrap", error)
+    })
     void deferred.attachedHistory?.then(applyAttachedHistory).catch((error) => {
       warn("failed to hydrate attached history after bootstrap", error)
+    }).finally(() => {
+      if (deps.currentAttachmentId() === startupAttachmentId) {
+        deps.setSessionHydratingState(false)
+      }
     })
   }
 
+  let promptFlight: Promise<void> | undefined, promptAttachment: string | null | undefined
+  const hydratePromptInputHistory = () => {
+    const attachment = deps.currentAttachmentId(), sessionId = deps.currentAttachmentSessionId()
+    if (promptAttachment !== attachment) { promptFlight = undefined; promptAttachment = attachment }
+    if (!sessionId) return Promise.resolve()
+    return promptFlight ??= (async () => {
+      const history = await deps.getDeferred()?.loadPromptInputHistory?.(sessionId)
+      if (!history || attachment !== deps.currentAttachmentId() || history.sessionId !== deps.currentAttachmentSessionId()) return
+      if (deps.currentPromptHistoryIndex?.() == null) deps.setPromptHistoryEntries(history.entries)
+    })().catch(error => { promptFlight = undefined; warn("failed to load prompt navigation", error) })
+  }
+  let composerFlight: Promise<void> | undefined
+  let composerEpoch = clientInventoryEpoch(), composerLoadedAt = 0
+  let composerAttachment: string | null | undefined, composerScope: string | undefined
+  const hydrateComposer = () => {
+    const load = deps.getDeferred()?.loadComposer
+    if (!load) return Promise.resolve()
+    const selectedScope = deps.getDeferred()?.composerScopeKey?.()
+    if (composerAttachment !== deps.currentAttachmentId() || composerScope !== selectedScope
+      || composerEpoch !== clientInventoryEpoch() || Date.now() - composerLoadedAt >= 4 * 60 * 60 * 1000) {
+      composerAttachment = deps.currentAttachmentId(); composerScope = selectedScope
+      composerFlight = undefined; composerEpoch = clientInventoryEpoch(); composerLoadedAt = Date.now()
+    }
+    if (composerFlight) return composerFlight
+    const attachment = deps.currentAttachmentId()
+    const applyComposer = (data: import("./cli-types.js").ComposerInventory) => {
+      if (attachment !== deps.currentAttachmentId() || selectedScope !== deps.getDeferred()?.composerScopeKey?.()) return
+      deps.setProviderCatalog(data.providerCatalog)
+      deps.setProviderCommandCatalogs(data.providerCommandCatalogs)
+      deps.setTerminalCommandCatalog(data.terminalCommandCatalog)
+      deps.updateSessionChrome()
+    }
+    composerFlight = load().then(data => {
+      applyComposer(data)
+      void data.reconciliation?.then(applyComposer).catch(error => warn("failed to reconcile composer inventory", error))
+    }).catch(error => { composerFlight = undefined; warn("failed to load composer inventory", error) })
+    return composerFlight
+  }
+
   return {
+    hydrateComposer,
+    hydratePromptInputHistory,
     apply,
   }
 }

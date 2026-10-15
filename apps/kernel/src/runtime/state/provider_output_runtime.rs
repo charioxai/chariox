@@ -23,7 +23,7 @@ impl KernelRuntimeState {
         if !initial_liveness_already_checked
             && uses_structured_prompt_io
             && self
-                .reconcile_provider_run_exit(session_id, provider_run_id)
+                .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                 .await?
         {
             return Ok(owned
@@ -112,7 +112,7 @@ impl KernelRuntimeState {
                     return Ok(Vec::new());
                 }
                 if self
-                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                     .await?
                 {
                     return Ok(owned
@@ -174,29 +174,22 @@ impl KernelRuntimeState {
             let agent_id = provider_run.agent_instance_id().map(str::to_string);
             let prompt_metadata =
                 owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-            let mut history_entries = Vec::with_capacity(chunks.len());
             let terminal_outputs = chunks
                 .into_iter()
                 .map(|chunk| {
-                    let history_text = (!uses_transient_native_terminal)
-                        .then(|| String::from_utf8_lossy(&chunk.bytes).into_owned());
-                    if let Some(history_text) = history_text.as_ref() {
-                        history_entries.push(
-                            crate::history::SessionHistoryEntry::provider_output(
-                                session_id,
-                                provider_run_id,
-                                agent_id.as_deref(),
-                                crate::terminal::TerminalOutputKind::ProviderOutput,
-                                None,
-                                history_text.clone(),
-                            )
-                            .with_prompt_origin(prompt_metadata.prompt_origin)
-                            .with_source_attachment_id(
-                                prompt_metadata.source_attachment_id.clone(),
-                            ),
-                        );
-                    }
-                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                    let history_entry = (!uses_transient_native_terminal).then(|| {
+                        crate::history::SessionHistoryEntry::provider_output(
+                            session_id,
+                            provider_run_id,
+                            agent_id.as_deref(),
+                            crate::terminal::TerminalOutputKind::ProviderOutput,
+                            None,
+                            String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                        )
+                        .with_prompt_origin(prompt_metadata.prompt_origin)
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                    });
+                    let output = super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                         provider_run_id: provider_run_id.to_string(),
                         agent_id: agent_id.clone(),
                         kind: if uses_transient_native_terminal {
@@ -205,17 +198,17 @@ impl KernelRuntimeState {
                             crate::terminal::TerminalOutputKind::ProviderOutput
                         },
                         merge_key: None,
+                        sequence: None,
                         bytes: chunk.bytes,
-                    }
+                    };
+                    (output, history_entry)
                 })
                 .collect::<Vec<_>>();
-            let records = owned.fan_out_terminal_outputs_to_recipients(
+            owned.append_history_and_fan_out(
                 session_id,
-                recipient_attachment_ids,
+                Some(recipient_attachment_ids),
                 terminal_outputs,
-            );
-            owned.append_history_entries(session_id, history_entries);
-            records
+            )
         };
         if let Some(message) = terminal_failure {
             let run = owned
@@ -229,7 +222,9 @@ impl KernelRuntimeState {
         // Settlement can include cancellation, queue advancement, and remote
         // substitute reconciliation. Keep that future off enclosing
         // launch/dispatch/output stack frames.
-        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await? {
+        if !Box::pin(self.reconcile_provider_run_exit_for_output(session_id, provider_run_id))
+            .await?
+        {
             if records.is_empty() {
                 let _ = self
                     .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)

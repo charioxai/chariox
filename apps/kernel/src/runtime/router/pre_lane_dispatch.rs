@@ -34,6 +34,9 @@ impl CommandRouter {
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         super::retired_cloud_controls::require_kernel_authority(request)?;
+        if let LocalDaemonRequest::AttachSessionView(request) = request {
+            return self.attach_session_view(command, request.clone()).await.map(Some);
+        }
         if let Some(response) = self
             .runtime_state
             .app_control()
@@ -345,6 +348,7 @@ impl CommandRouter {
                     .map(Some);
             }
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetClientCatalogRevisions(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
                 return execute_provider_catalog_request(
                     &self.provider_catalog_projection,

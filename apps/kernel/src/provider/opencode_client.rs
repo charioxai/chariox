@@ -30,6 +30,9 @@ pub use session::{OpenCodeSessionSnapshot, OpenCodeSessionStatus};
 pub struct OpenCodeClient {
     provider_run_id: String,
     base_url: String,
+    // Clones belong to the same native server/run. Never share this with a
+    // newly constructed client, another account or another endpoint.
+    model_selection_cache: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
 }
 
 impl OpenCodeClient {
@@ -40,6 +43,7 @@ impl OpenCodeClient {
         Ok(Self {
             provider_run_id: provider_run_id.into(),
             base_url: base_url.into(),
+            model_selection_cache: Default::default(),
         })
     }
 

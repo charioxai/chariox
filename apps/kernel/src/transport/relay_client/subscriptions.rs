@@ -483,6 +483,35 @@ pub(super) async fn run_relay_subscription_loop(
                 workflow_run_updates,
                 snapshot,
             } => {
+                // The same wake can contain an accepted prompt and a large output
+                // backlog. Publish its authoritative projection before that backlog.
+                let projection_events = (*snapshot)
+                    .map(|snapshot| {
+                        let events = crate::runtime_transport::session_projection_events(
+                            &snapshot,
+                            previous_snapshot.as_ref(),
+                            !workflow_run_updates.is_empty(),
+                        );
+                        previous_snapshot = Some(snapshot);
+                        events
+                    })
+                    .unwrap_or_default();
+                for event in projection_events {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        event,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
                 if !records.is_empty() {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
@@ -564,7 +593,6 @@ pub(super) async fn run_relay_subscription_loop(
                         return;
                     }
                 }
-                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
                 for workflow_run in workflow_run_updates {
                     if emit_relay_event(
                         &router,
@@ -576,105 +604,6 @@ pub(super) async fn run_relay_subscription_loop(
                         KernelEvent::WorkflowRunUpdated {
                             session_id: session_id.clone(),
                             workflow_run,
-                        },
-                    )
-                    .await
-                    .is_err()
-                    {
-                        break;
-                    }
-                }
-                if let Some(snapshot) = *snapshot {
-                    let previous_snapshot_ref = previous_snapshot.as_ref();
-                    // A terminal run update is the authoritative replacement for the
-                    // archived run. Treat it as a projection delta so the fallback full
-                    // hot-session snapshot cannot immediately erase it in the client.
-                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
-                    let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        emitted_projection_delta = true;
-                        if emit_relay_event(
-                            &router,
-                            &outgoing_tx,
-                            &subscription_id,
-                            &client_public_key,
-                            &event_runtime,
-                            &event_stream_id,
-                            event,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            emit_failed = true;
-                            break;
-                        }
-                    }
-                    if emit_failed {
-                        break;
-                    }
-                    let workflow_run_events =
-                        workflow_run_updated_events(&snapshot, previous_snapshot_ref)
-                            .into_iter()
-                            .chain(
-                                crate::transport::kernel_protocol::room_workflows_changed_event(
-                                    &snapshot,
-                                    previous_snapshot_ref,
-                                ),
-                            )
-                            .collect::<Vec<_>>();
-                    let workflow_run_only =
-                        workflow_run_only_changed(&snapshot, previous_snapshot_ref)
-                            && !workflow_run_events.is_empty();
-                    for event in workflow_run_events {
-                        // Inventory is an additional read model. Definition changes still
-                        // need the existing full snapshot for canvas and other consumers.
-                        if !matches!(&event, KernelEvent::RoomWorkflowsChanged { .. }) {
-                            emitted_projection_delta = true;
-                        }
-                        if emit_relay_event(
-                            &router,
-                            &outgoing_tx,
-                            &subscription_id,
-                            &client_public_key,
-                            &event_runtime,
-                            &event_stream_id,
-                            event,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
-                        continue;
-                    }
-                    if emit_relay_event(
-                        &router,
-                        &outgoing_tx,
-                        &subscription_id,
-                        &client_public_key,
-                        &event_runtime,
-                        &event_stream_id,
-                        KernelEvent::SessionSnapshot {
-                            room_workflows: snapshot.room_workflows,
-                            session: Box::new(snapshot.session),
-                            provider_run: Box::new(
-                                snapshot
-                                    .provider_run
-                                    .map(crate::provider::PublicProviderRun::from),
-                            ),
-                            agent_activity: Box::new(snapshot.agent_activity),
-                            agent_activity_revision: snapshot.metadata.last_event_id,
                         },
                     )
                     .await

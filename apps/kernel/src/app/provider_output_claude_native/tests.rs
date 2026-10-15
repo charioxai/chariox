@@ -1706,7 +1706,18 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "no PTY bytes may be sent before trust approval"
     );
 
+    // MP-08 / MP-10: a human can answer after the provider has gone quiet.
+    // The mailbox write must wake the shared owner without another PTY byte.
+    let output_ready = app.providers.output_ready_signal();
+    output_ready.take_ready_provider_run_ids();
+    let before_reply = output_ready.sequence();
     bridge.resolve("allow_once", "allow");
+    let wake_deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while output_ready.sequence() == before_reply && std::time::Instant::now() < wake_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(output_ready.take_ready_provider_run_ids().contains(run.id()),
+        "MP-08 / MP-10: a resolved workspace trust mailbox must wake this run's shared pump");
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
@@ -1752,6 +1763,8 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
     )
     .expect("composer fixture should be written");
+    let output_ready = app.providers.output_ready_signal();
+    output_ready.take_ready_provider_run_ids();
     let typed = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
         .expect("approved task should be typed through dispatch");
@@ -1759,6 +1772,8 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     assert!(claude_native_marker(&context_file)
         .as_deref()
         .is_some_and(|value| value.starts_with("submit-wait:")));
+    assert!(output_ready.next_due_at_ms().is_some(),
+        "MP-08 / MP-10: the first visible prompt must schedule its deferred Enter without PTY output");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     let submitted = ProviderOutputClaudeNativeBridge::new(&mut app)

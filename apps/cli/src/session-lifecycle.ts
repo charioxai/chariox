@@ -21,8 +21,6 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
 
-type ProviderCatalog = Record<string, unknown>
-type TerminalCommandCatalog = Record<string, unknown>
 type LaunchSelection = SessionLifecycleLaunchSelection
 
 type ProviderSelectionState = {
@@ -100,11 +98,7 @@ type SessionLifecycleDeps = {
   tryGetProviderRun: (
     providerRunId: string,
   ) => Promise<RuntimeProviderRun | null>
-  setProviderCatalogState: (catalog: ProviderCatalog) => void
-  setTerminalCommandCatalogState: (catalog: TerminalCommandCatalog) => void
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
-  getProviderCatalog: () => Promise<ProviderCatalog>
-  getTerminalCommandCatalog: () => Promise<TerminalCommandCatalog>
   primeAttachedSessionBinding?: (session: RuntimeSession) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
@@ -127,6 +121,7 @@ type SessionLifecycleDeps = {
 }
 
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
+  let attachGeneration = 0
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
@@ -207,7 +202,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       return
     }
     await deps.detachAttachment(attachment.id)
-    deps.setAttachmentState(null)
+    if (deps.attachmentState()?.id === attachment.id) deps.setAttachmentState(null)
   }
 
   const rollbackAttachedSession = async (
@@ -240,22 +235,36 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (currentAttachment?.session_id === session.id) {
       return
     }
-    if (currentAttachment) {
-      await detachCurrentAttachment()
-    }
-    deps.clearPendingPromptAttachments()
-    deps.bumpHistoryLoadGeneration()
+    const generation = ++attachGeneration
+    const isCurrent = () => generation === attachGeneration
     let sessionHydratingCleared = false
     const clearSessionHydrating = () => {
       if (sessionHydratingCleared) {
         return
       }
       sessionHydratingCleared = true
-      deps.setSessionHydratingState(false)
+      if (isCurrent()) deps.setSessionHydratingState(false)
     }
     deps.setSessionHydratingState(true)
     try {
+      if (currentAttachment) {
+        try {
+          await detachCurrentAttachment()
+        } catch (error) {
+          if (isCurrent()) await transitionToNoSession("Could not switch Rooms. Reconnect and try again.")
+          throw error
+        }
+        if (!isCurrent()) return
+      }
+      deps.clearPendingPromptAttachments()
+      deps.bumpHistoryLoadGeneration()
+      // Clear the previous Room's history cursor before publishing this binding.
+      deps.setNextHistoryCursor(null)
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
+      if (!isCurrent()) {
+        await deps.detachAttachment(attachment.id)
+        return
+      }
 
       const provisionalSession = isCompleteSessionSnapshot(session)
         ? session
@@ -265,6 +274,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       let attachedSession = await deps.getSessionState(session.id)
+      if (!isCurrent()) {
+        // A partial snapshot has not published the attachment, so the newer
+        // binding could not release it through detachCurrentAttachment.
+        if (!provisionalSession) await deps.detachAttachment(attachment.id)
+        return
+      }
 
       applyAttachedState(attachedSession, attachment, createdSession)
 
@@ -277,6 +292,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           error: formatError(error),
         })
       }
+      if (!isCurrent()) return
       clearSessionHydrating()
 
       try {
@@ -289,6 +305,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      if (!isCurrent()) return
       let postHydrationStatusLine: string | null = null
       const providerSettlement = await settleAttachProviderRun(
         attachedSession,
@@ -301,6 +318,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           tryGetProviderRun: deps.tryGetProviderRun,
         },
       )
+      if (!isCurrent()) return
       attachedSession = providerSettlement.session
       switch (providerSettlement.action) {
         case "launched": {
@@ -379,23 +397,6 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         }
       }
 
-      try {
-        deps.setProviderCatalogState(await deps.getProviderCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh provider catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
-      try {
-        deps.setTerminalCommandCatalogState(await deps.getTerminalCommandCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh terminal command catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
-
       deps.reconcileWaitingRoom(deps.waitingRoomState())
 
       let hydratedSession = attachedSession
@@ -413,6 +414,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      if (!isCurrent()) return
       applyAttachedState(hydratedSession, attachment, createdSession)
       if (postHydrationStatusLine) {
         deps.setStatusLine(postHydrationStatusLine)

@@ -83,6 +83,31 @@ test("transcript state controller toggles turns through shared display state", (
   assert.equal(harness.focusRetained, 1)
 })
 
+// MP-08 / MP-10 (panes R11): Ctrl+O opens every collapsed tool / thought row,
+// then a second press collapses them all.
+test("transcript state controller expands every collapsed row, then collapses them all", () => {
+  const harness = transcriptHarness({
+    entries: [
+      entry(1, "user", "prompt", { turnId: 1 }),
+      entry(2, "tool", "ls", { turnId: 1, blobCollapsible: true, blobCollapsed: true }),
+      entry(3, "reasoning", "thinking", { turnId: 1, blobCollapsible: true, blobCollapsed: true }),
+      entry(4, "assistant", "done", { turnId: 1 }),
+    ],
+  })
+
+  harness.controller.toggleAllBlobs()
+  assert.deepEqual(
+    harness.entries.filter((item) => item.blobCollapsible).map((item) => [item.id, item.blobCollapsed]),
+    [[2, false], [3, false]],
+  )
+
+  harness.controller.toggleAllBlobs()
+  assert.deepEqual(
+    harness.entries.filter((item) => item.blobCollapsible).map((item) => [item.id, item.blobCollapsed]),
+    [[2, true], [3, true]],
+  )
+})
+
 test("transcript state controller toggles serialized zero turn ids", () => {
   const harness = transcriptHarness({
     entries: [
@@ -144,6 +169,7 @@ function transcriptHarness(options: {
   entryCounter?: number
   currentTurnId?: number | null
   collapsedTurnIds?: number[]
+  reconcileInPlace?: boolean
 }) {
   const harness = {
     entries: options.entries ?? [],
@@ -164,7 +190,14 @@ function transcriptHarness(options: {
   harness.controller = createTranscriptStateController({
     entries: () => harness.entries,
     setEntries: (nextEntries) => {
-      harness.entries = nextEntries
+      if (options.reconcileInPlace) {
+        for (const next of nextEntries) {
+          const current = harness.entries.find((item) => item.id === next.id)
+          if (current) Object.assign(current, next)
+        }
+      } else {
+        harness.entries = nextEntries
+      }
     },
     entryCounter: () => harness.entryCounter,
     setEntryCounter: (value) => {
@@ -205,3 +238,29 @@ function entry(
     ...overrides,
   } as TranscriptEntry
 }
+
+// MP-08 / MP-10, #987: one detail action commits one projection.
+test("Ctrl+O projects all loaded rows once", () => {
+  const harness = transcriptHarness({ entries: [
+    entry(1, "tool", "a", { blobCollapsible: true, blobCollapsed: true }),
+    entry(2, "reasoning", "b", { blobCollapsible: true, blobCollapsed: true }),
+  ] })
+  harness.controller.toggleAllBlobs()
+  assert.equal(harness.reconciled.length, 1)
+})
+
+// MP-08 / MP-10: Solid reconcile updates existing rows in place. The mounted
+// comparison must retain the state that was visible before that write.
+test("disclosure retains the pre-update render snapshot with in-place stores", () => {
+  const harness = transcriptHarness({
+    entries: [entry(1, "tool", "actual file output", { blobCollapsible: true, blobCollapsed: true })],
+    reconcileInPlace: true,
+  })
+  harness.controller.toggleBlob(1, false)
+  assert.equal(harness.entries[0]?.blobCollapsed, false)
+  assert.equal(harness.reconciled[0]?.current[0]?.blobCollapsed, true)
+  assert.equal(harness.reconciled[0]?.next[0]?.blobCollapsed, false)
+  harness.controller.toggleBlob(1, true)
+  assert.equal(harness.reconciled[1]?.current[0]?.blobCollapsed, false)
+  assert.equal(harness.reconciled[1]?.next[0]?.blobCollapsed, true)
+})

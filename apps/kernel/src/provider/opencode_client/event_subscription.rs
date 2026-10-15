@@ -18,6 +18,7 @@ use super::{OpenCodeClient, OpenCodeEvent};
 pub struct OpenCodeEventSubscription {
     pub receiver: Receiver<OpenCodeEvent>,
     stop: Arc<AtomicBool>,
+    pub(crate) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
 }
 
 impl OpenCodeEventSubscription {
@@ -29,6 +30,7 @@ impl OpenCodeEventSubscription {
     pub(crate) fn for_tests(receiver: Receiver<OpenCodeEvent>) -> Self {
         Self {
             receiver,
+            output_notifier: Default::default(),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -72,9 +74,14 @@ impl OpenCodeClient {
         let stop_for_thread = stop.clone();
         let provider_run_id = self.provider_run_id.clone();
 
+        let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
+        let notifier = output_notifier.clone();
         thread::spawn(move || {
             let mut reader = BufReader::new(Cursor::new(buffered_body).chain(stream));
             let mut data_lines = Vec::new();
+            let mut last_text_message = String::new();
+            let mut last_part_message = String::new();
+            let mut text_part_ids = std::collections::BTreeSet::new();
 
             loop {
                 if stop_for_thread.load(Ordering::SeqCst) {
@@ -94,7 +101,53 @@ impl OpenCodeClient {
                             let payload = data_lines.join("\n");
                             data_lines.clear();
                             if let Some(event) = parse_sse_event(&payload, &provider_run_id) {
-                                if tx.send(event).is_err() {
+                                // MP-08 / MP-10: reasoning parts also use a `text`
+                                // delta field. Classify from native part metadata,
+                                // with bounded diagnostic state and no content.
+                                if let OpenCodeEvent::MessagePartUpdated { part } = &event {
+                                    if part.kind == "text" {
+                                        text_part_ids.insert(part.id.clone());
+                                        if text_part_ids.len() > 128 {
+                                            text_part_ids.pop_first();
+                                        }
+                                    } else {
+                                        text_part_ids.remove(&part.id);
+                                    }
+                                }
+                                // MP-08 / MP-10: first-part/first-text timestamps at
+                                // the reader, before the output pump. No content.
+                                let first = match &event {
+                                    OpenCodeEvent::MessagePartUpdated { part }
+                                        if part.message_id != last_part_message =>
+                                    {
+                                        last_part_message.clone_from(&part.message_id);
+                                        Some(("first part received", &part.message_id, &part.id))
+                                    }
+                                    OpenCodeEvent::MessagePartDelta {
+                                        message_id,
+                                        part_id,
+                                        delta,
+                                        field,
+                                        ..
+                                    } if field == "text"
+                                        && text_part_ids.contains(part_id)
+                                        && !delta.is_empty()
+                                        && *message_id != last_text_message =>
+                                    {
+                                        last_text_message.clone_from(message_id);
+                                        Some(("first text delta received", message_id, part_id))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((stage, message_id, part_id)) = first {
+                                    crate::logging::debug_with_fields(
+                                        "daemon.provider.opencode.timing",
+                                        stage,
+                                        serde_json::json!({"provider_run_id": provider_run_id,
+                                            "message_id": message_id, "part_id": part_id}),
+                                    );
+                                }
+                                if notifier.send(&tx, event).is_err() {
                                     break;
                                 }
                             }
@@ -115,7 +168,11 @@ impl OpenCodeClient {
             }
         });
 
-        Ok(OpenCodeEventSubscription { receiver: rx, stop })
+        Ok(OpenCodeEventSubscription {
+            receiver: rx,
+            stop,
+            output_notifier,
+        })
     }
 
     pub fn subscribe_events_with_retry(

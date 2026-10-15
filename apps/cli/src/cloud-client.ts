@@ -1,3 +1,4 @@
+import { clearClientViews } from "./client-view-cache.js"
 import { CloudClientCollaboration } from "./cloud-client-collaboration.js"
 import type { CloudControlProfile } from "./cloud-control-auth.js"
 import { RelayAuthRenewal } from "@chariox/kernel-client/relay-auth-renewal"
@@ -81,6 +82,7 @@ export class CloudClient {
         }
         const credential: CloudClientCredential = { profile: { ...result.profile, apiUrl }, clientId, publicKeyThumbprint: identity.publicKeyThumbprint, refreshCredential: result.refreshCredential, accessToken: result.cloudSessionToken, expiresAtMs: Date.parse(result.cloudSessionExpiresAt) }
         if (!Number.isFinite(credential.expiresAtMs)) throw new CloudClientAuthError("invalid_client_enrollment")
+        await clearClientViews()
         await this.store.saveLogin(credential)
         this.startRenewal(credential)
         return publicRelayCloudProfile(credential.profile)!
@@ -111,6 +113,7 @@ export class CloudClient {
     }, () => {}, () => this.invalidate(new CloudClientAuthError("client_revoked")))
   }
   private invalidate(error: CloudClientAuthError) {
+    void clearClientViews()
     if (this.revoked) return
     this.revoked = true
     this.renewal?.stop(); this.renewal = undefined
@@ -123,6 +126,7 @@ export class CloudClient {
     this.clients.clear()
   }
   async logout(): Promise<void> {
+    await clearClientViews()
     if (!await this.store.load()) return
     try { await this.authenticated(async credential => cloudClientRequest(credential.profile.apiUrl, "/auth/logout", { body: { sessionToken: credential.accessToken, accountId: credential.profile.accountId, clientId: credential.clientId, revokeClient: true } })) }
     catch (error) { if (!(error instanceof CloudClientAuthError) || !["client_revoked", "refresh_reuse_detected"].includes(error.code)) throw error }

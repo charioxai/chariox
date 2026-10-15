@@ -1,3 +1,4 @@
+import { getClientCatalogRevisions } from "./client-catalog-api.js"
 import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
 import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -18,6 +19,7 @@ import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { joinKernelTerminalPairingLink } from "./relay-api.js"
 import {
   attachToSession,
+  attachSessionView,
   createSession,
   deleteSessionByRef,
   getSessionState,
@@ -130,6 +132,7 @@ export type CliRuntimeBootstrapOptions = {
   argv: string[]
   cwd: string
   logger?: CharioxLogger | null
+  onClientReady?: (client: LocalIpcClient, options: CliOptions, preferences: CharioxPreferences) => void
 }
 
 export type CliRuntimeBootstrapResult =
@@ -234,6 +237,7 @@ export async function bootstrapCliRuntime(
       throw error
     }
   }
+  options.onClientReady?.(client, cliOptions, preferences)
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
   const workspace = cliOptions.workspace ?? inferredTargets.workspace
   const worktree = cliOptions.worktree ?? inferredTargets.worktree
@@ -318,7 +322,9 @@ export async function bootstrapCliRuntime(
       attachment_id: bootstrap.binding.attachment.id,
       created_session: bootstrap.binding.createdSession,
     })
-    await deps.maybeResize(client, bootstrap.binding.session.id)
+    // Sizing is advisory. Send it before mounting, but do not put another
+    // relay round trip between the bundled transcript and the first frame.
+    void deps.maybeResize(client, bootstrap.binding.session.id).catch(() => {})
   } else {
     options.logger?.info("starting cli without attached session")
   }
@@ -374,12 +380,14 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
       return result
     },
     listSessions,
+    getClientCatalogRevisions,
     getProviderCatalog,
     getProviderCommandCatalogs,
     getTerminalCommandCatalog,
     createSession,
     resolveSession,
     attachToSession,
+    attachSessionView,
     getSessionState,
     launchProviderRun,
     tryGetProviderRun,

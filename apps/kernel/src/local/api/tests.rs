@@ -80,6 +80,7 @@ use super::{
 
 mod cloud_kernel_ownership;
 mod protocol_shapes;
+mod session_view;
 mod provider_prompt_runtime;
 mod remote_inventory;
 mod room_environment;

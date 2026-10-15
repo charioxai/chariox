@@ -524,6 +524,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
     let history_request =
         LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
             session_id: session_id.clone(),
+            include_prefetched_content: false,
             agent_ids: Some(vec![agent_id.clone()]),
             latest_prompt_count: Some(4),
             cursor: None,

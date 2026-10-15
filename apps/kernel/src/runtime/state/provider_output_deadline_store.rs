@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct ProviderOutputDeadlineStore {
+pub(crate) struct ProviderOutputDeadlineStore {
     inner: Arc<Mutex<ProviderOutputDeadlineState>>,
 }
 
@@ -15,7 +15,7 @@ struct ProviderOutputDeadlineState {
 }
 
 impl ProviderOutputDeadlineStore {
-    pub(super) fn schedule(&self, provider_run_id: &str, due_at_ms: u64) {
+    pub(crate) fn schedule(&self, provider_run_id: &str, due_at_ms: u64) {
         let mut state = self
             .inner
             .lock()
@@ -60,7 +60,7 @@ impl ProviderOutputDeadlineStore {
             .remove(provider_run_id);
     }
 
-    pub(super) fn take_due_provider_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
+    pub(crate) fn take_due_provider_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
         let mut state = self
             .inner
             .lock()
@@ -84,7 +84,7 @@ impl ProviderOutputDeadlineStore {
         due
     }
 
-    pub(super) fn next_due_at_ms(&self) -> Option<u64> {
+    pub(crate) fn next_due_at_ms(&self) -> Option<u64> {
         let mut state = self
             .inner
             .lock()

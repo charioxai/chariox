@@ -63,14 +63,17 @@ async fn subscription_delivers_three_mib_burst_in_order_without_another_append()
     let receipt = tokio::time::timeout(Duration::from_secs(3), async {
         let mut delivered = Vec::new();
         let mut heartbeats = 0;
+        let mut snapshot_seen = false;
         while delivered.len() < expected.len() {
             match event_rx.recv().await.expect("subscription remains open") {
                 KernelOutgoingFrame::Event { event, .. } => match *event {
                     KernelEvent::TerminalOutput { records } => {
+                        assert!(snapshot_seen, "initial session projection must precede bulk output from the same wake");
                         for record in records {
                             delivered.extend(record.bytes);
                         }
                     }
+                    KernelEvent::SessionSnapshot { .. } => snapshot_seen = true,
                     KernelEvent::Heartbeat { .. } => heartbeats += 1,
                     _ => {}
                 },
@@ -309,6 +312,9 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
     KernelEvent::TerminalOutput {
         records: vec![TerminalOutputRecord {
             record_id: None,
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000,
             session_id: session_id.to_string(),
             provider_run_id: "provider-run-a".to_string(),

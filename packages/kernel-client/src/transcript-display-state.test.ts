@@ -135,6 +135,20 @@ test("projectSettledTranscriptTurnDisplayState collapses a settled collapsible t
   )
 })
 
+// MP-08 / MP-10 (panes, Miguel 2026-10-12 correction): the TUI never folds
+// a finished turn by itself; the turn keeps its toggle.
+test("projectSettledTranscriptTurnDisplayState leaves a finished turn expanded", () => {
+  const projection = projectSettledTranscriptTurnDisplayState(baseTurnEntries(), [])
+
+  assert.equal(projection.settledTurnId, 1)
+  assert.deepEqual(projection.collapsedTurnIds, [])
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => entry.role),
+    ["user", "turn_toggle", "reasoning", "tool", "assistant"],
+  )
+  assert.equal(projection.entries.find((entry) => entry.role === "turn_toggle")?.text, "click to collapse")
+})
+
 test("projectSettledTranscriptTurnDisplayState keeps open history turns expanded", () => {
   const projection = projectSettledTranscriptTurnDisplayState(
     openHistoryEntries(baseTurnEntries()),
@@ -248,13 +262,13 @@ test("applyTranscriptDisplayState uses shared collapsed blob descriptions by def
   const reasoning = entries.find((entry) => entry.id === 2)
   assert.equal(reasoning?.blobCollapsible, true)
   assert.equal(reasoning?.blobCollapsed, true)
-  assert.equal(reasoning?.blobTitle, "reasoning")
+  assert.equal(reasoning?.blobTitle, "Thought")
   assert.equal(reasoning?.blobSummary, "Thinking through the render model")
 
   const toolEntry = entries.find((entry) => entry.id === 3)
   assert.equal(toolEntry?.blobCollapsible, true)
   assert.equal(toolEntry?.blobCollapsed, true)
-  assert.equal(toolEntry?.blobTitle, "bash · COMPLETED")
+  assert.equal(toolEntry?.blobTitle, "Ran git status · COMPLETED")
   assert.equal(toolEntry?.blobSummary, "$ git status")
 })
 
@@ -291,7 +305,7 @@ test("applyTranscriptDisplayState applies shared blob defaults by role", () => {
       .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null, entry.blobTitle ?? null]),
     [
       ["user", false, null, null],
-      ["reasoning", true, true, "reasoning"],
+      ["reasoning", true, true, "Thought"],
       ["status", true, true, "status"],
       ["tool", true, true, "tool"],
       ["error", false, null, null],

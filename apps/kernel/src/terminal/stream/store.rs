@@ -334,6 +334,7 @@ impl TerminalStreamStore {
         prompt_origin: Option<PromptOrigin>,
         source_attachment_id: &str,
         merge_key: Option<String>,
+        sequence: Option<u64>,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
@@ -349,6 +350,7 @@ impl TerminalStreamStore {
                 prompt_origin,
                 source_attachment_id,
                 merge_key,
+                sequence,
                 recipient_attachment_ids,
                 bytes,
             );

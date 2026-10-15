@@ -140,6 +140,11 @@ async fn oversized_codex_poll_failure_settles_failed_run_without_touching_health
                 }),
             );
 
+        // MP-08 / MP-10: each run drains its own completion mailbox.
+        runtime
+            .pump_ready_provider_output_run(failed_run.id())
+            .await;
+
         let result = runtime
             .pump_owned_structured_provider_output(
                 session.id(),
@@ -354,6 +359,9 @@ async fn stale_oversized_codex_poll_cannot_settle_replacement_prompt() {
             );
             replacement_prompt_id = Some(replacement);
         }
+
+        // MP-08 / MP-10: each run drains its own completion mailbox.
+        runtime.pump_ready_provider_output_run(run.id()).await;
 
         runtime
             .pump_owned_structured_provider_output(
@@ -647,6 +655,9 @@ async fn promptless_codex_poll_failure_before_prompt_start_reschedules_and_deliv
                         .to_string(),
                 }),
             );
+
+        // MP-08 / MP-10: each run drains its own completion mailbox.
+        runtime.pump_ready_provider_output_run(run.id()).await;
 
         runtime
             .pump_owned_structured_provider_output(

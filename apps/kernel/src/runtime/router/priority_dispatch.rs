@@ -236,6 +236,7 @@ impl CommandRouter {
                 .await
             }),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetClientCatalogRevisions(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => Box::pin(async move {
                 execute_provider_catalog_request(
                     &self.provider_catalog_projection,
@@ -573,6 +574,7 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+            | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => Box::pin(async move {

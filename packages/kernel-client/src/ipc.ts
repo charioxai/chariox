@@ -1434,7 +1434,16 @@ export class LocalIpcClient {
         session_id: subscription.sessionId,
         resumed_from_event_id: resumeFromEventId,
       })
-    } catch {
+    } catch (error) {
+      // The kernel rejected this session/attachment pair: retrying it can
+      // never succeed. Hand it to session-unavailable recovery (re-attach).
+      const message = error instanceof Error ? error.message : String(error)
+      if (subscription.sessionId && kernelRejectedSubscriptionPair(message)) {
+        this.activeKernelSubscription = null
+        this.clearReconnectState()
+        this.emitSyntheticEvent({ event: "session_unavailable", session_id: subscription.sessionId, message })
+        return
+      }
       this.scheduleReconnect()
     }
   }
@@ -1625,4 +1634,8 @@ function clampRandom(value: number): number {
     return 0
   }
   return Math.min(Math.max(value, 0), 0.999999)
+}
+
+function kernelRejectedSubscriptionPair(message: string): boolean {
+  return /does not belong to session|attachment `[^`]+` was not found|session `[^`]+` was not found/i.test(message)
 }

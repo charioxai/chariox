@@ -60,6 +60,10 @@ impl ProviderProcessService {
         self.run_actor_mailbox.native_interaction_bridge()
     }
 
+    pub(crate) fn output_ready_signal(&self) -> super::output_ready::ProviderOutputReadySignal {
+        self.run_actor_mailbox.output_ready_signal()
+    }
+
     pub(crate) fn run_actor_completion_signal(&self) -> ProviderRunActorCompletionSignal {
         self.run_actor_mailbox.completion_signal()
     }

@@ -32,6 +32,7 @@ export type CliStdinKeyControllerDeps = {
   commandCenterQuery: () => string
   clearCommandCenter: () => void
   toggleWorkspaceScreen: () => void
+  toggleTranscriptDetails: () => void
   isAttached: () => boolean
   workflowScreenActive: () => boolean
   cycleWorkflowCanvasNode: () => void
@@ -133,6 +134,12 @@ export function createCliStdinKeyController(
         return true
       }
       deps.toggleWorkspaceScreen()
+      return true
+    }
+    if (event.eventType !== "release" && event.ctrl && event.name === "o" && deps.isAttached()) {
+      if (!deps.dialogOverlayOpen()) {
+        deps.toggleTranscriptDetails()
+      }
       return true
     }
     if (shouldCycleFocusOnTabEvent(event, {

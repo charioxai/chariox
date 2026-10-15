@@ -361,3 +361,12 @@ pub struct TeardownProviderProcessesRequest {
     #[serde(default)]
     pub force: bool,
 }
+
+/// MP-08 / MP-10 / MP-11: public hashes for rare client inventory reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCatalogRevisions {
+    pub provider_accounts: String,
+    pub provider_catalog: String,
+    pub provider_commands: String,
+    pub terminal_commands: String,
+}

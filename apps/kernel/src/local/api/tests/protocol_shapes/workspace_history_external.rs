@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn local_daemon_protocol_history_turn_lifecycles_are_versioned() {
     use crate::local::SessionHistoryOutlineTurnLifecycle::{Cancelled, Completed, Failed, Open};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
     assert_eq!(
         serde_json::to_value([Open, Completed, Cancelled, Failed]).expect("encode lifecycles"),
         serde_json::json!(["open", "completed", "cancelled", "failed"])
@@ -12,7 +12,7 @@ fn local_daemon_protocol_history_turn_lifecycles_are_versioned() {
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -51,7 +51,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -180,11 +180,12 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: "session-1".to_string(),
+            include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".to_string(), "agent-2".to_string()]),
             latest_prompt_count: Some(4),
             cursor: Some(crate::local::SessionHistoryOutlineCursor {
@@ -246,6 +247,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let outline = LocalDaemonResponse::SessionHistoryOutline {
         agents: vec![crate::local::SessionHistoryOutlineAgent {
             agent_id: "agent-1".to_string(),
+            prefetched_blobs: None,
             turns: vec![crate::local::SessionHistoryOutlineTurn {
                 turn_id: "turn-1".to_string(),
                 prompt_id: Some("prompt-1".to_string()),
@@ -261,6 +263,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 summary: Some(summary),
                 blobs: vec![crate::local::SessionHistoryOutlineBlob {
                     blob_id: "history:11:11".to_string(),
+                    steering: false,
                     kind: crate::history::SessionHistoryEntryKind::ProviderTool,
                     title: "bash · COMPLETED".to_string(),
                     summary: "$ cargo test".to_string(),
@@ -269,6 +272,10 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                     entry_count: 1,
                     total_chars: 38,
                     timestamp_ms: 43,
+                    preview: Some(
+                        r#"{"id":"call-1","input":{"command":"cargo test"},"status":"completed","tool":"bash"}"#
+                            .to_string(),
+                    ),
                 }],
             }],
             next_cursor: Some(crate::local::SessionHistoryOutlineCursor {
@@ -281,7 +288,45 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
         entries: vec![blob_entry],
     };
 
-    let snapshot = serde_json::json!([request, blob_request, outline, blob_response]);
+    let blobs_request = LocalDaemonRequest::GetSessionHistoryBlobContents(
+        crate::local::GetSessionHistoryBlobContentsRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            blob_ids: vec!["history:11:11".to_string(), "history:12:14".to_string()],
+        },
+    );
+    let blobs_response = LocalDaemonResponse::SessionHistoryBlobContents {
+        blobs: vec![crate::local::SessionHistoryBlobContentPage {
+            blob_id: "history:11:11".to_string(),
+            entries: Vec::new(),
+        }],
+    };
+
+    let snapshot = serde_json::json!([
+        request,
+        blob_request,
+        outline,
+        blob_response,
+        blobs_request,
+        blobs_response
+    ]);
+    // MP-08 / MP-10 (panes R7): outline blobs carry display previews and blobs
+    // load in one batch since local protocol 508.
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 518);
+    assert_eq!(
+        snapshot.pointer("/2/SessionHistoryOutline/agents/0/turns/0/blobs/0/preview"),
+        Some(&serde_json::json!(
+            r#"{"id":"call-1","input":{"command":"cargo test"},"status":"completed","tool":"bash"}"#
+        ))
+    );
+    assert_eq!(
+        snapshot.pointer("/4/GetSessionHistoryBlobContents/blob_ids/1"),
+        Some(&serde_json::json!("history:12:14"))
+    );
+    assert_eq!(
+        snapshot.pointer("/5/SessionHistoryBlobContents/blobs/0/blob_id"),
+        Some(&serde_json::json!("history:11:11"))
+    );
     assert_eq!(
         snapshot.pointer("/0/GetSessionHistoryOutline/latest_prompt_count"),
         Some(&serde_json::json!(4))
@@ -366,13 +411,13 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "94157ad720fb4c9c3f38baa8a2e19546f112a8605152dd6a5d5f9b71be193afd"
+        "ffedac9dfef1bcafbd27d812d1c536e7c0c92772f4131fa1b242d3cbb2f0c582"
     );
 }
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -419,7 +464,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -486,7 +531,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -575,7 +620,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -705,7 +750,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -817,7 +862,7 @@ fn relay_home_credential_secret_debug_output_is_redacted() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 518);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),

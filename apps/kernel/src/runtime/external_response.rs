@@ -87,6 +87,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        SessionViewAttached,
         SessionInviteCreated,
         DebugBundleExported,
         McpServerInstalled,
@@ -239,6 +240,7 @@ response_policies! {
         ProviderRun,
         ProviderRunSelectionUpdated,
         ProviderCatalog,
+        ClientCatalogRevisions,
         ProviderCommandCatalogs,
         McpServerUninstalled,
         EnvironmentRegistered,
@@ -345,6 +347,7 @@ response_policies! {
         ProviderProcessesTornDown,
         SessionHistoryOutline,
         SessionHistoryBlobContent,
+        SessionHistoryBlobContents,
         PromptInputHistory,
         PromptInputHistoryRecorded,
         PromptSettingsListed,

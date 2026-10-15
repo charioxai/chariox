@@ -337,13 +337,30 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         .await
         .terminal_stream_store()
         .drain_output_records(&session_id, attachment.id());
+    // MP-08 / MP-10 (panes R5, chariox#987 review): the echo names the
+    // history row the prompt was stored as.
+    let prompt_row = app
+        .lock()
+        .await
+        .operational_history_store()
+        .load_latest_user_prompt_events(&session_id, &agent_id, None, 8)
+        .expect("prompt history should load")
+        .into_iter()
+        .find(|event| event.prompt_id.as_deref() == Some(started_next.id()))
+        .map(|event| event.sequence);
+    assert!(prompt_row.is_some(), "promoted prompt should be stored");
     assert!(
         source_records.iter().any(|record| {
             record.kind == crate::terminal::TerminalOutputKind::PromptEcho
                 && record.prompt_id.as_deref() == Some(started_next.id())
                 && String::from_utf8_lossy(&record.bytes).contains(second.prompt())
+                && record.sequence == prompt_row
         }),
-        "promoted queued prompt should be echoed to the source attachment"
+        "promoted queued prompt should be echoed to the source attachment with its history sequence: {:?}",
+        source_records
+            .iter()
+            .map(|record| (&record.kind, &record.prompt_id, record.sequence))
+            .collect::<Vec<_>>()
     );
 }
 

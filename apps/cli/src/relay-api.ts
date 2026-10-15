@@ -1,3 +1,5 @@
+import { clearClientViews } from "./client-view-cache.js"
+import { invalidateClientInventories } from "./client-inventory-cache.js"
 import type {
   WaitingRoomRelayStatusView,
   WaitingRoomTerminalView,
@@ -154,8 +156,12 @@ export async function logoutCloudRelay(
   client: LocalIpcClient,
   options: { revokeClient?: boolean; revokeMachine?: boolean } = {},
 ): Promise<void> {
-  const response = await client.send<Record<string, unknown>>(logoutCloudRelayRequest(options))
-  expectVariant(response, "CloudRelayLoggedOut")
+  await clearClientViews()
+  await invalidateClientInventories()
+  const response = await client.send<unknown>(logoutCloudRelayRequest(options))
+  if (response !== "CloudRelayLoggedOut") {
+    throw new Error("unexpected response variant: expected CloudRelayLoggedOut")
+  }
 }
 
 export async function pairKernelCloudRelayClient(

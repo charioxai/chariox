@@ -76,6 +76,11 @@ export async function settleAttachProviderRun(
         recoveredRemotePlacement: false,
       }
     case "launch_provider_run": {
+      // MP-08 / MP-10: an attach observes the agent's account selection;
+      // CLI defaults belong to a newly created session.
+      const launchAccount = createdSession
+        ? accountProfile
+        : decision.targetAgent?.account_profile?.trim() || accountProfile
       try {
         return {
           action: "launched",
@@ -83,7 +88,7 @@ export async function settleAttachProviderRun(
           providerRun: await deps.launchProviderRun(
             session.id,
             decision.launch.provider,
-            accountProfile,
+            launchAccount,
             decision.launch.model,
             decision.launch.effort,
             decision.targetAgentId,

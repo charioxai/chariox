@@ -6,6 +6,7 @@ import {
   createConnectionHealthWatchdogController,
 } from "./connection-health-watchdog-controller.js"
 import { createDaemonActivityController } from "./daemon-activity-controller.js"
+import { recordPaneKernelEvent } from "./pane-first-frame-timing.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { createKernelResyncController } from "./kernel-resync-controller.js"
@@ -688,6 +689,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   const disposeKernelEventHandler = deps.supportsKernelEventStream
     ? deps.client.onKernelEvent((event: any) => {
+      recordPaneKernelEvent(event)
       void handleKernelEvent(event)
     })
     : () => {}
@@ -775,6 +777,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,
+    handleKernelSessionUnavailable,
   }
 }
 

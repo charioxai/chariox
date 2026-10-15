@@ -116,6 +116,7 @@ export type CliResponseShellCompositionDeps = {
   setCurrentAuxiliaryAgentId: AnyFn
   registerAgentScrollbox: AnyFn
   rebuildAuxiliaryAgentPane: AnyFn
+  rebuildEmptyAuxiliaryAgentPanes: AnyFn
   primaryTranscriptRuntimeStore: {
     getMountedTranscriptAgentId: AnyFn
   }
@@ -218,6 +219,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     workflowScreenActive: () => deps.workflowScreenActive(),
     rebuildTranscript: () => deps.rebuildTranscript(),
     requestTranscriptRender,
+    rebuildEmptyAuxiliaryPanes: () => deps.rebuildEmptyAuxiliaryAgentPanes(),
   })
 
   const statusIndicatorController = createStatusIndicatorController<BoxRenderable>({

@@ -34,6 +34,8 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  hydrateComposer?: () => Promise<void>
+  hydratePromptInputHistory?: () => Promise<void>
   cloudClient?: import("./cloud-client.js").CloudClient
 
   roomWorkflowsOwnsInput?: () => boolean
@@ -215,6 +217,7 @@ export type CliInputRoutingCompositionDeps = {
   handleManagedMachineDialogKey: AnyFn
   openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
+  toggleTranscriptDetails: AnyFn
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
@@ -571,6 +574,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const handlePromptKeyDown = (
     event: Parameters<typeof promptKeyDownController.handleKeyDown>[0],
   ) => {
+    void deps.hydrateComposer?.()
+    if (event.name === "up") void deps.hydratePromptInputHistory?.()
     if (deps.kernelApprovalOwnsInput?.()) {
       event.preventDefault?.()
       event.stopPropagation?.()
@@ -721,6 +726,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     commandCenterQuery: () => deps.commandCenterController.query(),
     clearCommandCenter: deps.clearCommandCenter,
     toggleWorkspaceScreen: deps.toggleWorkspaceScreen,
+    toggleTranscriptDetails: deps.toggleTranscriptDetails,
     isAttached: deps.isAttached,
     workflowScreenActive: deps.workflowScreenActive,
     cycleWorkflowCanvasNode: deps.cycleWorkflowCanvasNode,

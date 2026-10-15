@@ -10,6 +10,60 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
+test("MP-08 / MP-10: delayed composer history belongs to its unchanged startup attachment and input", async () => {
+  for (const change of ["none", "attachment", "input", "navigation"]) {
+    let resolve!: (value: { sessionId: string; entries: string[] }) => void
+    const harness = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "attachment-1",
+      deferred: { promptInputHistory: new Promise(r => { resolve = r }) } })
+    harness.controller.apply()
+    if (change === "attachment") harness.attachmentId = "attachment-2"
+    if (change === "input") harness.promptHistoryEntries = ["fresh user prompt"]
+    if (change === "navigation") { harness.promptHistoryIndex = 0; harness.promptHistoryDraft = "draft" }
+    resolve({ sessionId: "session-1", entries: ["earlier input"] })
+    await flushPromises()
+    assert.deepEqual(harness.promptHistoryEntries, change === "none" ? ["earlier input"] : change === "input" ? ["fresh user prompt"] : [])
+    assert.equal(harness.promptHistoryResetCount, change === "none" ? 1 : 0)
+  }
+})
+
+test("MP-08 / MP-10 composer inventory stays lazy and rejects a superseded attachment", async () => {
+  for (const replace of [false, true]) {
+    let finish!: (value: Awaited<ReturnType<NonNullable<BootstrapDeferredState["loadComposer"]>>>) => void
+    let calls = 0
+    const h = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "binding-1", deferred: {
+      loadComposer: () => { calls++; return new Promise(resolve => { finish = resolve }) },
+    } })
+    h.controller.apply(); assert.equal(calls, 0)
+    const pending = h.controller.hydrateComposer(); void h.controller.hydrateComposer(); assert.equal(calls, 1)
+    if (replace) h.attachmentId = "binding-2"
+    const catalog = { all: [], connected: [], default: {} } as ProviderCatalog
+    finish({ sessionId: "session-1", providerCatalog: catalog, providerCommandCatalogs: {} as ProviderCommandCatalogs,
+      terminalCommandCatalog: { revision: "one", nodes: [] }, promptHistoryEntries: ["earlier"] })
+    await pending
+    assert.equal(h.providerCatalog, replace ? null : catalog)
+    assert.deepEqual(h.promptHistoryEntries, [])
+  }
+})
+
+// MP-08 / MP-10 / MP-11: catalog refresh and prompt navigation own independent data.
+test("a composer scope refresh preserves prompt history already loaded on this attachment", async () => {
+  let scope = "codex:first", historyCalls = 0
+  const catalog = {all:[],connected:[],default:{}} as ProviderCatalog
+  const h = bootstrapHarness({attachmentSessionId:"session-1",attachmentId:"binding-1",deferred:{
+    composerScopeKey:()=>scope,
+    loadPromptInputHistory:async()=>{historyCalls++;return {sessionId:"session-1",entries:["earlier input"]}},
+    loadComposer:async()=>({sessionId:"session-1",providerCatalog:catalog,providerCommandCatalogs:{} as ProviderCommandCatalogs,terminalCommandCatalog:{revision:"one",nodes:[]},promptHistoryEntries:[]}),
+  }})
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  await h.controller.hydrateComposer()
+  scope="claude:second"
+  await h.controller.hydrateComposer()
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  assert.equal(historyCalls,1)
+})
+
 test("deferred bootstrap controller applies provider catalog hydration", async () => {
   const providerCatalog = {} as ProviderCatalog
   const providerCommandCatalogs = {} as ProviderCommandCatalogs
@@ -55,6 +109,73 @@ test("deferred bootstrap controller replaces matching attached history", async (
   assert.equal(harness.agentPanePreviews["agent-1"], "Asst: hello")
   assert.deepEqual(harness.replaceCalls, [{ agentId: "agent-1", entries: ["hello"] }])
   assert.deepEqual(harness.prependCalls, [])
+})
+
+test("deferred bootstrap controller keeps the session hydrating until attached history settles", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  await flushPromises()
+  assert.deepEqual(harness.hydrating, [])
+
+  resolveHistory({
+    sessionId: "session-1",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "hello")] },
+    historyEntries: [entry(1, "assistant", "hello")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(harness.replaceCalls, [{ agentId: "agent-1", entries: ["hello"] }])
+  assert.deepEqual(harness.hydrating, [false])
+
+  const failed = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: { attachedHistory: Promise.reject(new Error("offline")) },
+  })
+  failed.controller.apply()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(failed.hydrating, [false])
+})
+
+// MP-08 / MP-10 (panes R1 review): a startup history that settles after the
+// user attached elsewhere must not clear the newer attach's hydrating state.
+test("deferred bootstrap controller leaves hydration to a newer attachment", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-a",
+    attachmentId: "attachment-a",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  harness.attachmentSessionId = "session-b"
+  harness.attachmentId = "attachment-b"
+  resolveHistory({
+    sessionId: "session-a",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "stale")] },
+    historyEntries: [entry(1, "assistant", "stale")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.deepEqual(harness.replaceCalls, [])
+  assert.deepEqual(harness.hydrating, [])
 })
 
 test("deferred bootstrap controller prepends attached history when transcript already exists", async () => {
@@ -111,12 +232,14 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
+  attachmentId?: string | null
   currentTranscriptEntryCount?: number
   entryCounter?: number
 } = {}) {
   const harness = {
     deferred: options.deferred,
     attachmentSessionId: options.attachmentSessionId ?? null,
+    attachmentId: options.attachmentId ?? null,
     currentTranscriptEntryCount: options.currentTranscriptEntryCount ?? 0,
     entryCounter: options.entryCounter ?? 0,
     providerCatalog: null as ProviderCatalog | null,
@@ -124,6 +247,8 @@ function bootstrapHarness(options: {
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
+    promptHistoryIndex: null as number | null,
+    promptHistoryDraft: null as string | null,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     terminalCommandCatalog: null as unknown,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
@@ -131,11 +256,16 @@ function bootstrapHarness(options: {
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
     prependCalls: [] as Array<Array<{ id: number; text: string }>>,
     warnings: [] as string[],
+    hydrating: [] as boolean[],
     controller: null as ReturnType<typeof createDeferredBootstrapController> | null,
   }
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
     currentAttachmentSessionId: () => harness.attachmentSessionId,
+    currentAttachmentId: () => harness.attachmentId,
+    currentPromptHistoryEntries: () => harness.promptHistoryEntries,
+    currentPromptHistoryIndex: () => harness.promptHistoryIndex,
+    currentPromptHistoryDraft: () => harness.promptHistoryDraft,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
     setProviderCatalog: (catalog) => {
@@ -161,6 +291,9 @@ function bootstrapHarness(options: {
     },
     setAgentPaneEntries: (agentId, entries) => {
       harness.agentPaneEntries[agentId] = entries
+    },
+    setSessionHydratingState: (next) => {
+      harness.hydrating.push(next)
     },
     setAgentPanePreview: (agentId, preview) => {
       harness.agentPanePreviews[agentId] = preview

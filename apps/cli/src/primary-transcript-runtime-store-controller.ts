@@ -38,6 +38,7 @@ export function createPrimaryTranscriptRuntimeStoreController<
     tools,
     activeToolLabels,
     transcriptRenderables,
+    hasMountedSurface: () => transcriptRenderables.size > 0 || emptyTranscriptRenderable !== undefined,
     getEmptyRenderable: () => emptyTranscriptRenderable,
     setEmptyRenderable,
     getLastScrollTop: () => lastTranscriptScrollTop,

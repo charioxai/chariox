@@ -38,8 +38,12 @@ export type CliPrimaryTranscriptCompositionDeps = {
   entryCounter: AnyFn
   setEntryCounter: AnyFn
   setHistoryLoadingState: AnyFn
+  setSessionHydratingState: AnyFn
   setEntries: AnyFn
   setPromptHistoryEntries: AnyFn
+  promptHistoryEntries?: AnyFn
+  promptHistoryIndex?: AnyFn
+  promptHistoryDraft?: AnyFn
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   setProviderCatalogState: AnyFn
@@ -113,7 +117,6 @@ export type CliPrimaryTranscriptCompositionDeps = {
   requestTranscriptRender: AnyFn
   requestRootRender: AnyFn
   logViewDebug: AnyFn
-  promptHistoryHydrationController: any
   splitAgentResponseMode: AnyFn
   maxAgentsPerScreen: AnyFn
   setAgentPaneEntries: AnyFn
@@ -295,7 +298,6 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   }
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
-    promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadSessionHistoryOutline: (sessionId, agentIds) => getSessionHistoryOutline(deps.client, sessionId, agentIds, 4),
@@ -321,6 +323,10 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     getDeferred: () => deps.bootstrap.deferred,
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
+    currentAttachmentId: () => deps.attachmentState()?.id ?? null,
+    ...(deps.promptHistoryEntries ? { currentPromptHistoryEntries: deps.promptHistoryEntries } : {}),
+    ...(deps.promptHistoryIndex ? { currentPromptHistoryIndex: deps.promptHistoryIndex } : {}),
+    ...(deps.promptHistoryDraft ? { currentPromptHistoryDraft: deps.promptHistoryDraft } : {}),
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
@@ -340,6 +346,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       }))
     },
     setAgentPanePreview: deps.setAgentPanePreview,
+    setSessionHydratingState: deps.setSessionHydratingState,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     logWarning: (message, fields) => {
@@ -365,6 +372,8 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
 
   return {
+    hydrateComposer: deferredBootstrapController.hydrateComposer,
+    hydratePromptInputHistory: deferredBootstrapController.hydratePromptInputHistory,
     mountTranscriptEntry,
     reconcileMountedTranscript,
     updateTranscriptEntry,

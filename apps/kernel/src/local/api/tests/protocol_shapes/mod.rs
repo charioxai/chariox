@@ -16,6 +16,7 @@ mod browser_import;
 mod cloud_relay;
 mod computer_hold;
 mod core;
+mod client_catalog_revisions;
 mod credential_enrollment;
 mod disposable_worker;
 mod event_publication;
@@ -27,6 +28,7 @@ mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod panes_history;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -38,6 +40,7 @@ mod publication;
 mod recall_terminal_metaagent;
 mod released_provider_run;
 mod resource_telemetry;
+mod session_view;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
@@ -56,6 +59,9 @@ fn history_page_entry(
 ) -> crate::session_history_page::SessionHistoryPageEntry {
     crate::session_history_page::SessionHistoryPageEntry {
         entry_index: sequence,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
