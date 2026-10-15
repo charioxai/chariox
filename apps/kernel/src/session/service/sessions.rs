@@ -37,7 +37,9 @@ impl SessionService {
         let workspace_sessions = all_sessions
             .iter()
             .filter(|session| {
-                workspace_id.is_none_or(|workspace| session.workspace_id() == workspace)
+                workspace_id.is_none_or(|workspace| {
+                    RuntimeProject::workspace_paths_match(session.workspace_id(), workspace)
+                })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -167,10 +169,15 @@ impl SessionService {
             .list()
             .into_iter()
             .any(|session| !session.is_hidden() && session.project_id() == project_id.as_str());
-        let removed_project =
-            (!retain_project && !project_id.is_empty() && !project_has_visible_sessions)
-                .then(|| self.projects.remove(&project_id))
-                .flatten();
+        let removed_project = (!retain_project
+            && !project_id.is_empty()
+            && !project_has_visible_sessions
+            && !self
+                .projects
+                .get(&project_id)
+                .is_some_and(|project| project.is_standalone()))
+        .then(|| self.projects.remove(&project_id))
+        .flatten();
         Ok((deleted, removed_project))
     }
 
@@ -670,11 +677,10 @@ impl SessionService {
         workspace_id: &str,
         alias: &str,
     ) -> Result<(), DaemonError> {
-        if self
-            .store
-            .visible_non_ended_sessions()
-            .any(|session| session.workspace_id() == workspace_id && session.alias() == Some(alias))
-        {
+        if self.store.visible_non_ended_sessions().any(|session| {
+            RuntimeProject::workspace_paths_match(session.workspace_id(), workspace_id)
+                && session.alias() == Some(alias)
+        }) {
             return Err(DaemonError::SessionAliasConflict {
                 workspace_id: workspace_id.to_string(),
                 alias: alias.to_string(),
@@ -730,7 +736,7 @@ impl SessionService {
     ) -> Result<(), DaemonError> {
         if self.store.visible_non_ended_sessions().any(|session| {
             session.id() != session_id
-                && session.workspace_id() == workspace_id
+                && RuntimeProject::workspace_paths_match(session.workspace_id(), workspace_id)
                 && session.alias() == Some(alias)
         }) {
             return Err(DaemonError::SessionAliasConflict {

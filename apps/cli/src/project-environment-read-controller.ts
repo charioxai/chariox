@@ -1,3 +1,5 @@
+import { resolveProjectRequest, projectResolutionFromResponse, projectResolutionFailureMessage } from "@chariox/kernel-client"
+import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { createEnvironmentApplyController } from "./project-environment-apply-controller.js"
 import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatusRequest } from "@chariox/kernel-client/ipc-requests"
@@ -8,11 +10,37 @@ export function projectEnvironmentPageSize(height: number) {
   return Math.max(1, height - Math.max(1, Math.floor(height / 5)) - 4)
 }
 
+// Inner text width of the Environment panel (see cli-dialog-overlay.ts: panel width, 2-column padding each side).
+export function projectEnvironmentPanelWidth(viewportWidth: number) {
+  return Math.min(110, Math.max(30, viewportWidth - 4))
+}
+
+export function projectEnvironmentTextWidth(viewportWidth: number) {
+  return Math.max(1, Math.min(projectEnvironmentPanelWidth(viewportWidth), viewportWidth - 4) - 4)
+}
+
+// Word-wrap keeping the line's indentation; words longer than the row are split.
+function wrapLine(line: string, width: number): string[] {
+  if (line.length <= width) return [line]
+  const indent = " ".repeat(Math.min(line.length - line.trimStart().length, Math.floor(width / 2)))
+  const room = width - indent.length
+  const words = line.trimStart().split(" ").flatMap(word => word.match(new RegExp(`.{1,${room}}`, "gs")) ?? [""])
+  const rows: string[] = []
+  for (const word of words) {
+    const last = rows.at(-1)
+    if (last !== undefined && last.length + 1 + word.length <= room) rows[rows.length - 1] = `${last} ${word}`
+    else rows.push(word)
+  }
+  return rows.map(row => indent + row)
+}
+
 export function createProjectEnvironmentReadController(deps: {
   send: (request: unknown) => Promise<unknown>
   render: () => void
   pageSize: () => number
   copyLink?: (link: string) => void
+  kernelKey?: () => unknown
+  textWidth?: () => number
 }) {
   const cache = createEnvironmentViewCache()
   let previousProposalOffsets: number[] = []
@@ -23,6 +51,10 @@ export function createProjectEnvironmentReadController(deps: {
   let generation = 0
   let lines: string[] = []
   let offset = 0
+  let requestedProjectId: string | null = null
+  let requestedWorkspaceId: string | null = null
+  let resolutionConfirmed = false
+  let resolutionKernel: unknown
   let current: ProjectEnvironment | null = null
   let proposalIndex = 0
   let diff: EnvironmentRevisionDiff | null = null
@@ -34,17 +66,46 @@ export function createProjectEnvironmentReadController(deps: {
   let checkingGeneration: number | null = null
   let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const apply = createEnvironmentApplyController({ send: deps.send, current: () => current, snapshot: snapshot => { cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render() }, render: () => { if(open && current){ lines=viewLines(current); deps.render() } } })
+  const displayLines = () => (current ? lines : ["An Environment lists what this project needs on this machine.", ...lines]).flatMap(line => wrapLine(line, deps.textWidth?.() ?? Infinity))
   const controller = {
     isOpen: () => open,
-    visibleLines: () => lines.slice(offset, offset + Math.max(1, deps.pageSize())),
-    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; deps.render() },
-    async open(projectId: string) {
-      apply.reset()
+    visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),
+    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; deps.render() },
+    async resolveOpening(projectId: string | null, workspaceId: string | null, create = false): Promise<void> {
+      if (!workspaceId) { generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; refreshing = false; offset = 0; open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
+      const g = ++generation, kernel = deps.kernelKey?.()
+      requestedProjectId = projectId; requestedWorkspaceId = workspaceId
+      open = true; current = null; refreshing = true; resolutionConfirmed = false; offset = 0
+      lines = [create ? "Setting up Environment…" : "Looking for this Project’s Environment…"]; deps.render()
+      try {
+        const project = projectResolutionFromResponse(await deps.send(resolveProjectRequest(workspaceId, projectId, create)))
+        if (g !== generation) return
+        if (kernel !== deps.kernelKey?.()) throw new Error("Kernel selection changed. Close Environment and reopen it on the selected kernel.")
+        if (project) { await controller.open(project.id, project.workspace_id); return }
+        if (create) throw new Error("Project setup response is unavailable")
+        resolutionConfirmed = true; resolutionKernel = kernel
+        lines = ["No Environment for this project yet.", `Folder: ${workspaceId}`, "s · Set up Environment for this folder", "r · Refresh"]
+      } catch (cause) { if (g === generation) lines = [projectResolutionFailureMessage(cause), "r · Refresh"] }
+      finally { if (g === generation) { refreshing = false; deps.render() } }
+    },
+    async setup(): Promise<void> {
+      if (!resolutionConfirmed || refreshing || !requestedWorkspaceId) return
+      if (resolutionKernel !== deps.kernelKey?.()) {
+        apply.reset(); resolutionConfirmed = false
+        lines = ["Kernel selection changed. Close Environment and reopen it on the selected kernel."]; deps.render(); return
+      }
+      await controller.resolveOpening(requestedProjectId, requestedWorkspaceId, true)
+    },
+    async open(projectId: string | null, workspaceId?: string): Promise<void> {
+      const workspace = workspaceId ?? (projectId !== null && projectId === requestedProjectId ? requestedWorkspaceId : null)
+      requestedWorkspaceId = workspace
+      if (!projectId) { await controller.resolveOpening(null, workspace); return }
+      apply.reset(); resolutionConfirmed = false
       previousProposalOffsets = []
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
       if (current?.local_project_id !== projectId) diff = null
-      open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
+      requestedProjectId = projectId; open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
       lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines({...current,observations:(current.observations??[]).map(o=>({...o,stale:true}))})] : ["Loading Environment…"]; deps.render()
       try {
         const environment = await readEnvironment(projectId)
@@ -56,7 +117,10 @@ export function createProjectEnvironmentReadController(deps: {
       } catch (error) {
         if (requestGeneration !== generation) return
         cache.forget(scope, projectId); current = null
-        lines = [error instanceof Error ? error.message : "Environment unavailable"]
+        if (workspace && environmentReadFailureMessage(error) === "No Environment for this project yet.") {
+          await controller.resolveOpening(projectId, workspace); return
+        }
+        lines = [environmentReadFailureMessage(error), "r · Refresh"]
       }
       if (requestGeneration === generation) refreshing = false
       deps.render()
@@ -187,10 +251,12 @@ export function createProjectEnvironmentReadController(deps: {
       if ((event.name === "left" || event.name === "right") && current) {
         const titles = ["Project-wide", ...current.folders.map(f => f.label)]
         const positions = titles.map(t => lines.indexOf(t)).filter(p => p >= 0)
+          .map(index => lines.slice(0, index).reduce((rows, line) => rows + wrapLine(line, deps.textWidth?.() ?? Infinity).length, 0))
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }
-      if (event.name === "r" && current) { void controller.open(current.local_project_id); return true }
+      if (event.name === "s" && !current) { void controller.setup(); return true }
+      if (event.name === "r" && (requestedProjectId || requestedWorkspaceId)) { void controller.open(requestedProjectId, requestedWorkspaceId ?? undefined); return true }
       if (event.name === "a" || event.name === "x") { void controller.review(event.name === "a" ? "accept" : "exclude"); return true }
       if (!refreshing && !showingDiff && savingGeneration !== generation && detectionGeneration !== generation && checkingGeneration !== generation && apply.handleKey(event.name)) return true
       if ((event.name === "n" || event.name === "p") && current && (current.proposals.length || (current.read_view?.proposal_count ?? 0)>0)) {
@@ -205,7 +271,7 @@ export function createProjectEnvironmentReadController(deps: {
       if (event.name === "d") { void controller.detect(); return true }
       if (event.name === "escape") { controller.close(); return true }
       const amount = event.name === "down" ? 1 : event.name === "up" ? -1 : event.name === "pagedown" ? deps.pageSize() : event.name === "pageup" ? -deps.pageSize() : 0
-      offset = Math.max(0, Math.min(Math.max(0, lines.length - deps.pageSize()), offset + amount))
+      offset = Math.max(0, Math.min(Math.max(0, displayLines().length - deps.pageSize()), offset + amount))
       deps.render()
       return true
     },
@@ -222,7 +288,7 @@ export function createProjectEnvironmentReadController(deps: {
       expiryTimer.unref?.()
     }
     const selected = environment.proposals[proposalIndex]
-    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${(environment.read_view?.proposal_offset ?? 0)+proposalIndex + 1}/${environment.read_view?.proposal_count ?? environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : [environment.read_view?.proposal_count ? `${environment.read_view.proposal_count} proposals · n to begin review` : "No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...apply.lines(), ...projectEnvironmentLines(environment)]
+    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${(environment.read_view?.proposal_offset ?? 0)+proposalIndex + 1}/${environment.read_view?.proposal_count ?? environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : [environment.read_view?.proposal_count ? `${environment.read_view.proposal_count} proposals · n to begin review` : "No pending proposals"])] : []), "An Environment lists what this project needs on this machine.", ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...apply.lines(), ...projectEnvironmentLines(environment), environment.delivered_capabilities.enabled_environment_operations.includes("save") ? "Edit requirements in Web; this terminal supports Check and proposal review." : "Read only: this kernel can show Environments but cannot change them yet. Update Chariox on this machine to edit."]
   }
   return controller
 }

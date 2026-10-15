@@ -3412,3 +3412,31 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+
+### MP-08 / MP-10 / MP-11: standalone Project resolution (local 524 / peer 132)
+
+`ResolveProject { project_id, workspace_id, create_if_missing }` is a kernel-owned,
+session-free entry into a Project Environment. A read (`create_if_missing=false`)
+returns `ProjectResolved { project: null }` for definitive absence without creating
+an agent, session or provider run. Explicit Set up (`true`) resolves or creates the
+ordinary default Project for the caller and admitted canonical workspace, using
+the same identity as normal session creation. A stale missing ID is never adopted
+as a new identity; an existing ID must belong to the caller and include the folder.
+Archived Projects must be restored explicitly. Ordinary working-directory and
+protected-state admission applies before creating a binding on every placement.
+
+The Project journal is written before its in-memory publication. Explicitly set-up
+Projects serialize `standalone:true`, remain owner-visible with zero sessions, and
+survive recovery's cleanup of hidden-session-only Projects. Omission means false
+for existing records. Retry is idempotent for the same caller/workspace. This flag
+does not claim that machine requirements have been installed or validated: the
+normal Environment Get/editor/Check/Plan/Apply contract remains the authority for
+those operations. The result uses the public response projection, consistent with other Project
+metadata responses such as `ProjectsListed` and `ProjectRenamed`; request admission
+still checks the external grant and the caller’s Project/workspace ownership.
+
+Only the new resolution action requires client protocol 524. Older supported
+Environment reads retain their existing minimum. UI selection changes fence
+resolution replies and creation dispatch; Web and TUI use the ID returned by the
+selected kernel and never manufacture a Project or a dummy session.

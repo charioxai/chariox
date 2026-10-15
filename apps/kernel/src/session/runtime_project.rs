@@ -41,6 +41,8 @@ pub struct RuntimeProject {
     workspace_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    standalone: bool,
     name: String,
     kind: RuntimeProjectKind,
     status: RuntimeProjectStatus,
@@ -67,6 +69,7 @@ impl RuntimeProject {
             owner_user_id: owner_user_id.into(),
             workspace_ids: vec![workspace_id.clone()],
             workspace_id,
+            standalone: false,
             name: name.into(),
             kind,
             status: RuntimeProjectStatus::Active,
@@ -74,6 +77,18 @@ impl RuntimeProject {
             updated_at_ms: now,
             archived_at_ms: None,
             environment_definition: None,
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11: explicit Project setup survives without sessions.
+    pub(crate) fn is_standalone(&self) -> bool {
+        self.standalone
+    }
+
+    pub(crate) fn retain_without_sessions(&mut self) {
+        if !self.standalone {
+            self.standalone = true;
+            self.updated_at_ms = unix_epoch_ms();
         }
     }
 
@@ -100,10 +115,22 @@ impl RuntimeProject {
         }
     }
 
+    // MP-02 / MP-08 / MP-10 / MP-11: old path spellings retain Project and
+    // Environment identities after filesystem normalization was introduced.
+    pub(crate) fn workspace_paths_match(a: &str, b: &str) -> bool {
+        a == b
+            || (std::path::Path::new(a).is_absolute()
+                && std::path::Path::new(b).is_absolute()
+                && std::fs::canonicalize(a)
+                    .ok()
+                    .zip(std::fs::canonicalize(b).ok())
+                    .is_some_and(|(a, b)| a == b))
+    }
+
     pub fn contains_workspace(&self, workspace_id: &str) -> bool {
         self.workspace_ids()
             .iter()
-            .any(|candidate| candidate == workspace_id)
+            .any(|candidate| Self::workspace_paths_match(candidate, workspace_id))
     }
 
     pub fn name(&self) -> &str {
@@ -170,4 +197,8 @@ impl RuntimeProject {
         self.updated_at_ms = unix_epoch_ms();
         self.archived_at_ms = None;
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

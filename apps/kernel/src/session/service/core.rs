@@ -307,7 +307,10 @@ impl SessionService {
             .collect::<BTreeSet<_>>();
         self.projects
             .values()
-            .filter(|project| visible_project_ids.contains(project.id()))
+            .filter(|project| {
+                visible_project_ids.contains(project.id())
+                    || (project.is_standalone() && project.owner_user_id() == caller_user_id)
+            })
             .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
             .cloned()
             .collect()
@@ -323,9 +326,11 @@ impl SessionService {
             .collect::<BTreeSet<_>>();
         let empty_project_ids = self
             .projects
-            .keys()
-            .filter(|project_id| !visible_project_ids.contains(project_id.as_str()))
-            .cloned()
+            .values()
+            .filter(|project| {
+                !project.is_standalone() && !visible_project_ids.contains(project.id())
+            })
+            .map(|project| project.id().to_string())
             .collect::<Vec<_>>();
         empty_project_ids
             .into_iter()
@@ -692,28 +697,9 @@ impl SessionService {
         workspace_id: &str,
         name_hint: Option<&str>,
     ) -> String {
-        if let Some(project) = self.projects.values().find(|project| {
-            project.owner_user_id() == owner_user_id
-                && project.workspace_id() == workspace_id
-                && project.kind() == RuntimeProjectKind::Default
-        }) {
-            return project.id().to_string();
-        }
-        let id = default_project_id(owner_user_id, workspace_id);
-        let name = name_hint
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| default_project_name(workspace_id));
-        let name = self.unique_project_name(owner_user_id, &name, None);
-        let project = RuntimeProject::new(
-            id.clone(),
-            owner_user_id.to_string(),
-            workspace_id.to_string(),
-            name,
-            RuntimeProjectKind::Default,
-        );
-        self.projects.insert(id.clone(), project);
+        let project = self.prepare_default_project(owner_user_id, workspace_id, name_hint);
+        let id = project.id().to_string();
+        self.projects.entry(id.clone()).or_insert(project);
         id
     }
 
@@ -728,7 +714,7 @@ impl SessionService {
             .saturating_add(1)
     }
 
-    fn unique_project_name(
+    pub(super) fn unique_project_name(
         &self,
         owner_user_id: &str,
         desired_name: &str,
@@ -1833,14 +1819,14 @@ fn project_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
 
-fn default_project_id(owner_user_id: &str, workspace_id: &str) -> String {
+pub(super) fn default_project_id(owner_user_id: &str, workspace_id: &str) -> String {
     format!(
         "project-default-{:016x}",
         stable_hash(&format!("{owner_user_id}\0{workspace_id}"))
     )
 }
 
-fn default_project_name(workspace_id: &str) -> String {
+pub(super) fn default_project_name(workspace_id: &str) -> String {
     let trimmed = workspace_id.trim().trim_end_matches(['/', '\\']);
     std::path::Path::new(trimmed)
         .file_name()

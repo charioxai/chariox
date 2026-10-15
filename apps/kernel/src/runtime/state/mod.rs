@@ -387,6 +387,7 @@ pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
 mod project_runtime_state;
+mod project_resolution;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;

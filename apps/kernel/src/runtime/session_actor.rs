@@ -20,6 +20,7 @@ impl SessionActor {
         matches!(
             request,
             LocalDaemonRequest::CreateSession(_)
+                | LocalDaemonRequest::ResolveProject(_)
                 | LocalDaemonRequest::ListProjects(_)
                 | LocalDaemonRequest::RenameProject(_)
                 | LocalDaemonRequest::UpdateProjectWorkspaces(_)
