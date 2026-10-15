@@ -21,7 +21,7 @@ impl std::fmt::Debug for ResolvedProjectEnvironment {
     }
 }
 
-pub(crate) fn environment_error(message: &'static str) -> DaemonError {
+pub(crate) fn environment_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "Project environment",
         message: message.into(),
@@ -207,6 +207,12 @@ pub fn resolve_project_environment(
             skipped.status = ProjectEnvironmentEntryStatus::Missing;
             resolved.unresolved.push(skipped);
             continue;
+        }
+        // MP-11: export/refresh share the same public-source fence as launch.
+        if entry.classification == ProjectEnvironmentClassification::NonSecret
+            && project_environment_public_source_protected(&entry.locator)
+        {
+            return Err(environment_error("Protected public source binding"));
         }
         let root = workspaces
             .get(&entry.workspace_id)

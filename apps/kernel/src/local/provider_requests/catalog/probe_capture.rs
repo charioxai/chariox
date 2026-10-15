@@ -26,7 +26,14 @@ impl From<io::Error> for CaptureError {
     }
 }
 
-pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+pub(crate) fn capture(command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+    capture_cancellable(command, timeout, || false)
+}
+pub(crate) fn capture_cancellable(
+    mut command: Command,
+    timeout: Duration,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
     command
         .stdin(Stdio::null())
@@ -36,6 +43,9 @@ pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     loop {
+        if cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "owned probe cancelled").into());
+        }
         #[cfg(unix)]
         process.observe_descendants()?;
         drain(stdout_pipe(&mut process), &mut stdout, stderr.len())?;

@@ -21,6 +21,51 @@ fn environment() -> (
 fn requirement(id: &str) -> Requirement {
     serde_json::from_value(serde_json::json!({"requirement_id":id,"title":id,"scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":null,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap()
 }
+
+#[test]
+fn envp05a_check_selection_freshly_includes_optional_prerequisites() {
+    let (_root, _store, mut env) = environment();
+    let mut node = requirement("node");
+    node.required = false;
+    let mut npm = requirement("npm");
+    npm.depends_on = vec!["node".into()];
+    let mut unrelated = requirement("unrelated");
+    unrelated.required = false;
+    env.project_requirements = vec![node, npm, unrelated];
+    assert_eq!(check_selection(&env, &[]).unwrap(), vec!["node", "npm"]);
+    assert_eq!(
+        check_selection(&env, &["npm".into(), "npm".into()]).unwrap(),
+        vec!["node", "npm"]
+    );
+    assert!(check_selection(&env, &["foreign".into()]).is_err());
+    env.project_requirements[1]
+        .depends_on
+        .push("missing".into());
+    assert!(check_selection(&env, &["npm".into()]).is_err());
+}
+
+#[test]
+fn envp05a_check_selection_includes_service_specific_transitive_dependencies() {
+    let (_root, _store, mut env) = environment();
+    let mut node = requirement("node");
+    node.required = false;
+    let mut npm = requirement("npm");
+    npm.required = false;
+    npm.depends_on = vec!["node".into()];
+    let mut service = requirement("service");
+    service.spec = RequirementSpec::Services {
+        identity: "documentation".into(),
+        target_binding: None,
+        probe: None,
+        health_expectation: None,
+        depends_on: vec!["npm".into()],
+    };
+    env.project_requirements = vec![node, npm, service];
+    assert_eq!(
+        check_selection(&env, &[]).unwrap(),
+        vec!["node", "npm", "service"]
+    );
+}
 fn observation(
     env: &ProjectEnvironment,
     id: &str,
@@ -269,13 +314,13 @@ fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
     );
 }
 
-#[path = "review0212_check_tests.rs"]
+#[path = "check_measurement_tests.rs"]
 mod review0212;
 
-#[path = "review0821_check_tests.rs"]
+#[path = "check_probe_validation_tests.rs"]
 mod review0821;
 
-#[path = "review1118_check_tests.rs"]
+#[path = "check_provider_safety_tests.rs"]
 mod review1118;
 
 // MP-08 / MP-10 / MP-11: a later partial Check cannot extend prerequisite evidence.
@@ -313,6 +358,19 @@ fn review1301_partial_check_dependency_expires_on_snapshot() {
 }
 
 #[test]
+fn check_project_lock_wait_respects_the_absolute_deadline() {
+    let (_root, store, env) = environment();
+    let _detect = store.lock(&env.local_project_id).unwrap();
+    let started = std::time::Instant::now();
+    let result = store.lock_until(
+        &env.local_project_id,
+        started + std::time::Duration::from_millis(30),
+    );
+    assert!(result.is_err());
+    assert!(started.elapsed() < std::time::Duration::from_millis(160));
+}
+
+#[test]
 #[cfg(unix)]
 fn named_host_probe_keeps_its_symlink_invocation_name() {
     let root = crate::test_support::TestWorktree::new("named-shim");
@@ -338,3 +396,6 @@ mod review0034;
 
 #[path = "review0440_tests.rs"]
 mod review0440;
+
+#[path = "review0440_migration_tests.rs"]
+mod review0440_migration;

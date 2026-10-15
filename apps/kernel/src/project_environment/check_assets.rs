@@ -115,12 +115,20 @@ pub(super) fn check_assets(
         }
         RequirementSpec::Variables { name, locator } => {
             if project_environment_protected_name(name)
-                || project_environment_public_source_protected(locator)
+                || project_environment_source_name(locator)
+                    .is_some_and(project_environment_protected_name)
             {
                 return outcome(
                     NeedsYourInput,
                     "protected_binding",
                     "Protected kernel/provider binding cannot be probed",
+                );
+            }
+            if project_environment_public_source_protected(locator) {
+                return outcome(
+                    NeedsYourInput,
+                    "vault_required",
+                    "Binding source requires Vault classification; no value or digest exposed",
                 );
             }
             let binding = match locator {

@@ -89,6 +89,9 @@ fn missing_relay_config_without_cloud_profile_is_local_idle() {
 fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".to_string(),
         email: "user@example.test".to_string(),
         account_id: "account-1".to_string(),
@@ -544,10 +547,10 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [70, 73] {
+    for version in [100, 101] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -587,7 +590,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 73 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }

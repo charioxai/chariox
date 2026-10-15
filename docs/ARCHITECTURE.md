@@ -810,6 +810,11 @@ event projection. Hosted `Service` identities are denied every other kernel
 request. Cloud and relay remain outside the encrypted provider URL and
 callback payload. This is an official Claude CLI callback bridge, not a Chariox
 OAuth or PKCE implementation.
+MP-08 / MP-10: Codex native TUI always uses the normal kernel-managed provider
+adapter to start its app-server, including local placement. This applies the
+agent-scoped MCP grants and managed account configuration before the native
+TUI connects; a bare shell-launched server cannot substitute for that path.
+Kernel output is projected into the native TUI for local and leased execution.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.

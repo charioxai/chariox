@@ -166,13 +166,6 @@ pub(crate) fn dispatch_provider_mcp_proxy_request_with_excluded_roots(
                 .lock()
                 .expect("stdio MCP process mutex poisoned")
                 .dispatch(payload);
-            if response.is_err() {
-                let discarded = stdio_mcp_supervisor()
-                    .lock()
-                    .expect("stdio MCP supervisor mutex poisoned")
-                    .discard_process(&key, &process);
-                drop(discarded);
-            }
             response
         }
     }?;
@@ -220,6 +213,10 @@ pub(crate) fn shutdown_provider_mcp_proxy_run(provider_run_id: &str) {
             }),
         );
     }
+}
+
+pub(crate) fn cancel_provider_mcp_proxy_run(provider_run_id: &str) {
+    streamable_http::cancel_run(provider_run_id);
 }
 
 fn mark_provider_proxy_tools_preapproved(response: &mut serde_json::Value) {

@@ -8,6 +8,9 @@ use std::path::Path;
 const LIMIT: u64 = 8 * 1024 * 1024;
 const PAGE: u64 = 4096;
 const MAGIC: &[u8; 8] = b"CXCHECK2";
+#[cfg(target_os = "linux")]
+#[path = "check_journal/direct_io.rs"]
+mod direct_io;
 
 struct Snapshot {
     sequence: u64,
@@ -23,7 +26,7 @@ pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
     };
     match capacity(&mut file)? {
         Some(capacity) => Ok(Some(latest(&mut file, capacity)?.bytes)),
-        None => legacy_latest(&mut file).map(|(bytes, _)| Some(bytes)),
+        None => Err(environment_error("invalid Check journal")),
     }
 }
 
@@ -35,14 +38,14 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     if bytes.len() as u64 > LIMIT {
         return Err(environment_error("Check journal exceeds bounds"));
     }
+    let began = std::time::Instant::now();
     let mut file = match open(path, true) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return publish(path, bytes, 1),
         Err(_) => return Err(environment_error("Check journal write failed")),
     };
     let Some(capacity) = capacity(&mut file)? else {
-        legacy_latest(&mut file)?;
-        return publish(path, bytes, 1);
+        return Err(environment_error("invalid Check journal"));
     };
     let prior = latest(&mut file, capacity)?;
     let sequence = prior
@@ -53,13 +56,54 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
         return publish(path, bytes, sequence);
     }
     let offset = PAGE + (1 - prior.slot) * (PAGE + capacity);
+    let read_us = began.elapsed().as_micros();
+    let record = record(bytes, sequence);
+    let write_began = std::time::Instant::now();
+    // MP-08 / MP-10 / MP-11: synchronized direct I/O avoids buffered journal
+    // writeback stalls without moving the durable acknowledgment fence.
+    #[cfg(target_os = "linux")]
+    if direct_io::write(&file, &record, offset)
+        .map_err(|_| environment_error("Check journal write failed"))?
+    {
+        journal_write_timing(
+            "direct_dsync",
+            bytes.len(),
+            capacity,
+            read_us,
+            write_began.elapsed().as_micros(),
+        );
+        return Ok(());
+    }
     file.seek(SeekFrom::Start(offset))
-        .and_then(|_| file.write_all(&record(bytes, sequence)))
+        .and_then(|_| file.write_all(&record))
         .and_then(|_| file.sync_data())
-        .map_err(|_| environment_error("Check journal write failed"))
+        .map_err(|_| environment_error("Check journal write failed"))?;
+    journal_write_timing(
+        "buffered_dsync",
+        bytes.len(),
+        capacity,
+        read_us,
+        write_began.elapsed().as_micros(),
+    );
+    Ok(())
+}
+
+fn journal_write_timing(
+    backend: &str,
+    payload_bytes: usize,
+    capacity_bytes: u64,
+    read_us: u128,
+    synchronized_write_us: u128,
+) {
+    crate::logging::info_with_fields(
+        "daemon.environment_journal_latency",
+        "Journal write synchronized",
+        serde_json::json!({"backend":backend,"payload_bytes":payload_bytes,"capacity_bytes":capacity_bytes,"read_us":read_us,"synchronized_write_us":synchronized_write_us}),
+    );
 }
 
 fn publish(path: &Path, bytes: &[u8], sequence: u64) -> Result<(), DaemonError> {
+    let began = std::time::Instant::now();
     let capacity = bytes.len().max(64 * 1024).next_power_of_two() as u64;
     let mut image = vec![0; (PAGE + 2 * (PAGE + capacity)) as usize];
     image[..8].copy_from_slice(MAGIC);
@@ -68,7 +112,15 @@ fn publish(path: &Path, bytes: &[u8], sequence: u64) -> Result<(), DaemonError> 
     image[PAGE as usize..PAGE as usize + record.len()].copy_from_slice(&record);
     // Existing private writer syncs the fully allocated file and its directory.
     crate::config::write_private_file(path, &image)
-        .map_err(|_| environment_error("Check journal write failed"))
+        .map_err(|_| environment_error("Check journal write failed"))?;
+    journal_write_timing(
+        "publish",
+        bytes.len(),
+        capacity,
+        0,
+        began.elapsed().as_micros(),
+    );
+    Ok(())
 }
 
 fn record(bytes: &[u8], sequence: u64) -> Vec<u8> {
@@ -146,40 +198,6 @@ fn latest(file: &mut File, capacity: u64) -> Result<Snapshot, DaemonError> {
         }
     }
     best.ok_or_else(|| environment_error("invalid Check journal"))
-}
-
-fn legacy_latest(file: &mut File) -> Result<(Vec<u8>, u64), DaemonError> {
-    let len = file
-        .metadata()
-        .map_err(|_| environment_error("Check journal unavailable"))?
-        .len();
-    if len == 0 || len > LIMIT + 1 {
-        return Err(environment_error("Check journal exceeds bounds"));
-    }
-    let mut window = len.min(64 * 1024);
-    loop {
-        let offset = len - window;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|_| environment_error("Check journal unavailable"))?;
-        let mut tail = Vec::with_capacity(window as usize);
-        (&mut *file)
-            .take(window)
-            .read_to_end(&mut tail)
-            .map_err(|_| environment_error("Check journal unavailable"))?;
-        if let Some(end) = tail.iter().rposition(|byte| *byte == b'\n') {
-            let start = tail[..end].iter().rposition(|byte| *byte == b'\n');
-            if start.is_some() || offset == 0 {
-                return Ok((
-                    tail[start.map_or(0, |p| p + 1)..end].to_vec(),
-                    offset + end as u64 + 1,
-                ));
-            }
-        }
-        if window == len {
-            return Err(environment_error("invalid Check journal"));
-        }
-        window = (window * 2).min(len);
-    }
 }
 
 fn open(path: &Path, write: bool) -> std::io::Result<File> {

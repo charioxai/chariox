@@ -7,6 +7,9 @@ impl KernelRuntimeState {
         request: crate::local::GetProjectEnvironmentRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // MP-08 / MP-10 / MP-11: opt-in public numbers only, no Project or request payloads.
+        let timing = std::env::var("CHARIOX_ENVIRONMENT_GET_TIMINGS").as_deref() == Ok("1");
+        let began = std::time::Instant::now();
         let project = self.owned.session_store.get_project(&request.project_id)?;
         if project.owner_user_id() != caller_user_id {
             return Err(DaemonError::LocalTransport {
@@ -20,22 +23,45 @@ impl KernelRuntimeState {
         );
         // MP-08 / MP-10 / MP-11: journals and projection use blocking filesystem I/O.
         let response = tokio::task::spawn_blocking(move || {
-            let mut environment = if request.view.is_some() {
-                store.cached_read_snapshot(&project)?
-            } else {
-                store.snapshot(&project)?
-            };
+            let queued_us = began.elapsed().as_micros() as u64;
+            let started = std::time::Instant::now();
+            let mut environment = store.cached_read_snapshot(&project)?;
+            let specification_us = started.elapsed().as_micros() as u64;
+            let checks_started = std::time::Instant::now();
             store.attach_checks(
                 &mut environment,
                 &crate::project_environment::current_check_target(&config),
                 crate::session::unix_epoch_ms(),
             )?;
-            Ok::<_, DaemonError>(match request.view {
+            // MP-08 / MP-10 / MP-11: reconnect reads durable Apply and recovery facts.
+            store.attach_applies(
+                &mut environment,
+                &crate::project_environment::current_check_target(&config),
+            )?;
+            let checks_us = checks_started.elapsed().as_micros() as u64;
+            let projection_started = std::time::Instant::now();
+            let compact = request.view.is_some();
+            let response = match request.view {
                 Some(read) => LocalDaemonResponse::ProjectEnvironmentView {
                     view: crate::project_environment::environment_read_view(environment, read)?,
                 },
                 None => LocalDaemonResponse::ProjectEnvironment { environment },
-            })
+            };
+            if timing {
+                crate::logging::info_with_fields(
+                    "daemon.environment_get_latency",
+                    "Environment read stages completed",
+                    serde_json::json!({
+                        "compact": compact,
+                        "queued_us": queued_us,
+                        "specification_us": specification_us,
+                        "checks_us": checks_us,
+                        "projection_us": projection_started.elapsed().as_micros() as u64,
+                        "total_us": began.elapsed().as_micros() as u64,
+                    }),
+                );
+            }
+            Ok::<_, DaemonError>(response)
         })
         .await
         .map_err(|_| {
@@ -50,6 +76,8 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10 / MP-11: new agents recheck applied package references
+        // through the ordinary grant service before their next provider turn.
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some()
@@ -61,6 +89,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        self.apply_environment_agent_bindings(session_id, agent_id)?;
         let Some(run) = self
             .owned
             .provider_store
@@ -91,12 +120,14 @@ impl KernelRuntimeState {
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
-        let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
+        let needs_vault = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         )
         .load(session.project_id())?
-        .is_some();
-        let _vault = if has_environment {
+        .is_some_and(|state| {
+            crate::project_environment::project_environment_requires_vault(&state.manifest)
+        });
+        let _vault = if needs_vault {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,
@@ -383,6 +414,7 @@ mod tests {
             .unwrap();
         let evidence = ProjectEnvironmentEvidence::default();
         let state = StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: ProjectEnvironmentManifest {
                 schema_version: 1,

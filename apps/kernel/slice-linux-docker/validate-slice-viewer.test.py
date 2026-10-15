@@ -27,7 +27,8 @@ class ViewerRuntimeTest(unittest.TestCase):
                                           "python3", str(browser), profile],
                                          env=environment, capture_output=True, text=True, check=True, timeout=10)
                 record = json.loads(started.stdout)
-                viewer.crash_chromium(record["browser"]["pid"])
+                browser_launch = viewer.owned_signals.record(record["browser"]["pid"])
+                viewer.crash_chromium(browser_launch)
             finally:
                 stopped = subprocess.run([*helper, "stop", profile], env=environment,
                                          capture_output=True, text=True, timeout=10)

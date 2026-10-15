@@ -392,19 +392,24 @@ impl KernelRuntimeState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(), DaemonError> {
-        let workflow_run_id = self
+        let workflow_run = self
             .owned
             .session_store
             .read()
             .resolve_workflow_run_ref(session_id, workflow_run_ref)?
-            .id()
-            .to_string();
+            .clone();
+        if workflow_run.status() != crate::session::WorkflowRunStatus::Paused {
+            return Ok(());
+        }
+        let workflow_run_id = workflow_run.id().to_string();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
             self.authorize_current_external_command()?;
             self.reap_structured_prompt_jobs_and_dispatch();
             let session = self.owned.session_store.get_session(session_id)?;
-            let cancelling = self
+            // Paused is published before cancellation admission. Its preceding
+            // prompt must settle even if it has not entered Cancelling yet.
+            let settling = self
                 .owned
                 .agent_store
                 .get_session_agents(session_id)
@@ -414,11 +419,8 @@ impl KernelRuntimeState {
                         .prompt_state_owner
                         .active_prompt_for_agent(&session, agent.id())
                 })
-                .any(|prompt| {
-                    prompt.workflow_run_id() == Some(workflow_run_id.as_str())
-                        && prompt.status() == crate::session::PromptStatus::Cancelling
-                });
-            if !cancelling {
+                .any(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()));
+            if !settling {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {

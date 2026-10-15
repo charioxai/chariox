@@ -17,7 +17,7 @@ import type {
   DeploymentCredentialEnrollmentStatus,
   DeploymentCredentialProfileResult,
 } from "./deployed-workflow-types.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("attached TUI setup arms protocol 241 before Cloud and preserves the shared web/TUI interaction projection", async () => {
   const originalFetch = globalThis.fetch

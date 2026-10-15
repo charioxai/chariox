@@ -33,6 +33,37 @@ test('fixed command owner acknowledges success and leaves no owned process behin
   assert.ok(f.session.evidence.samples >= 1);
 });
 
+for (const missing of ['interpreter', 'cwd']) {
+  test(`command owner rejects cleanly when its ${missing} is unavailable`, { timeout: 5000 }, async t => {
+    const f = await fixture(t);
+    const command = f.command('throw new Error("must not execute")');
+    if (missing === 'interpreter') f.plan.tools.python = join(f.plan.scratch, 'missing-python');
+    else command.cwd = join(f.plan.scratch, 'missing-cwd');
+    const listeners = ['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal));
+    await assert.rejects(runMacCommand(command, process.env, f.plan, f.session, async () => healthy),
+      /^Error: macOS build stopped: command-start$/);
+    assert.deepEqual(['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal)), listeners);
+  });
+}
+
+test('an owner without a spawned PID never sends a group signal', () => {
+  const child = new EventEmitter();
+  const calls = []; const signal = ownedGroupSignaler(child, (...args) => calls.push(args));
+  signal('SIGTERM'); signal('SIGKILL');
+  child.emit('close', -2); signal('SIGKILL');
+  assert.deepEqual(calls, []);
+});
+
+test('an owner with an invalid target still rejects without sending a signal', () => {
+  const calls = [];
+  for (const pid of [0, 1, -1, -23, NaN, null, '23', 2.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const child = new EventEmitter(); child.pid = pid;
+    const signal = ownedGroupSignaler(child, (...args) => calls.push(args));
+    assert.throws(() => signal('SIGTERM'), /invalid owned process identity/);
+  }
+  assert.deepEqual(calls, []);
+});
+
 test('guard cancellation terminates and reaps the retained command group', async t => {
   const f = await fixture(t);
   const before = performance.now();
@@ -69,8 +100,8 @@ test('a successful command cannot leave a background descendant running', async 
 
 test('exit withdraws signal authority before delayed stdio close', () => {
   const child = new EventEmitter(); child.pid = 123;
-  const calls = []; const signal = ownedGroupSignaler(child, (...args) => calls.push(args));
-  signal('SIGTERM'); assert.deepEqual(calls, [[-123, 'SIGTERM']]);
+  const calls = []; const signal = ownedGroupSignaler(child, (child, signal) => calls.push([child.pid, signal]));
+  signal('SIGTERM'); assert.deepEqual(calls, [[123, 'SIGTERM']]);
   child.emit('exit', 0); signal('SIGKILL'); signal('SIGTERM');
   assert.equal(calls.length, 1);
   child.emit('close', 0); signal('SIGKILL'); assert.equal(calls.length, 1);

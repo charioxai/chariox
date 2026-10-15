@@ -122,13 +122,8 @@ pub struct CommitEnvironmentImportRequest {
 impl LocalDaemonRequest {
     pub(crate) fn unsupported_environment_capability(&self) -> Option<EnvironmentCapability> {
         Some(match self {
-            Self::DetectProjectEnvironment(_) => EnvironmentCapability::Detect,
-            Self::PreviewEnvironmentDiff(_) => EnvironmentCapability::PreviewDiff,
-            Self::SaveProjectEnvironmentRevision(_) => EnvironmentCapability::Save,
             Self::PlanProjectEnvironment(_) => EnvironmentCapability::Plan,
             Self::ApplyProjectEnvironment(_) => EnvironmentCapability::Apply,
-            Self::CheckProjectEnvironment(_) => EnvironmentCapability::Check,
-            Self::GetEnvironmentOperation(_) => EnvironmentCapability::GetOperation,
             Self::CancelEnvironmentOperation(_) => EnvironmentCapability::CancelOperation,
             Self::RetryEnvironmentOperation(_) => EnvironmentCapability::RetryOperation,
             Self::ExportProjectEnvironment(_) => EnvironmentCapability::Export,

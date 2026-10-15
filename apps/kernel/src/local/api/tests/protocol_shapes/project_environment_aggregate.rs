@@ -1,7 +1,7 @@
 //! MP-08: P01 protocol allocation and full contract source guard.
 use super::*;
 #[test]
-fn envp01_aggregate_protocol_471_request_rejects_session_and_agent_context() {
+fn envp01_aggregate_protocol_505_request_rejects_session_and_agent_context() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 505);
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
@@ -29,12 +29,12 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
             "{:x}",
             Sha256::digest(view.split("#[cfg(test)]").next().unwrap().as_bytes())
         ),
-        "ee7fde1092a82995b81e141a9bc374a3bd888e7207d728528302b9c2b17ee20c"
+        "12358696ba1097268fca362eae8045d95957f64fb41fb704cd59251f7b723705"
     );
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(
         format!("{:x}", Sha256::digest(requests.as_bytes())),
-        "d0288c92f041de90be5aaff9763f6489ba15e1d6ecefad883c461675ee06e34b"
+        "9bfafde97159dc4a53498fe49697fd036e4a528af030012ba9ca80c7b821c207"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(contract.as_bytes())),

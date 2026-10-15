@@ -28,11 +28,13 @@ pub(crate) fn provider_account_credential_id(
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider,
+        crate::provider::canonical_provider_family(provider)
+            .map(str::to_string)
+            .unwrap_or_else(|| provider.trim().to_ascii_lowercase()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
-    format!("provider-account-{}-{digest:x}", canonical_label(provider))[..64].to_string()
+    format!("provider-account-{}-{digest:x}", canonical_label(&provider))[..64].to_string()
 }
 
 pub(crate) fn resolve_provider_account_credentials(
@@ -68,10 +70,9 @@ pub(crate) fn resolve_provider_account_credentials(
     Ok(environment)
 }
 
-/// One sign-in per account: the account's own Claude login runs every agent of
-/// that account, interactive or not, on Linux (its credential file) and macOS
-/// (its login Keychain) alike. A Chariox-vault setup token is only the fallback
-/// for an account without a usable login, such as a headless server.
+/// MP-08 / MP-11: an explicitly enrolled token runs every mode. Only accounts
+/// without a registered token may use the provider's native login. In particular,
+/// Authenticated alone cannot distinguish a macOS Keychain login from a token.
 pub(crate) fn resolve_provider_account_credentials_for_launch(
     config: &DaemonConfig,
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -99,7 +100,9 @@ fn resolve_provider_account_credentials_for_platform(
     client_interface: crate::provider::ProviderClientInterface,
     platform: &str,
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
-    if crate::provider::canonical_provider_family(provider) != Some("claude") {
+    if crate::provider::canonical_provider_family(provider) != Some("claude")
+        || provider_account_credential_registered(owner_user_id, provider, profile_id)?
+    {
         return resolve_provider_account_credentials(config, owner_user_id, provider, profile_id);
     }
     if claude_login_runs_agents_for_platform(profiles, owner_user_id, profile_id, platform)? {
@@ -148,41 +151,6 @@ fn claude_login_runs_agents_for_platform(
         }
         _ => Ok(false),
     }
-}
-
-/// Whether a launch reads the account's Chariox-vault credential, by the same
-/// rule as `resolve_provider_account_credentials_for_launch`: never when the
-/// account's own Claude login runs the agent, so it needs no vault unlock.
-pub(crate) fn launch_uses_vault_credential(
-    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    provider: &str,
-    profile_id: &str,
-    client_interface: crate::provider::ProviderClientInterface,
-) -> Result<bool, DaemonError> {
-    launch_uses_vault_credential_for_platform(
-        profiles,
-        owner_user_id,
-        provider,
-        profile_id,
-        client_interface,
-        std::env::consts::OS,
-    )
-}
-fn launch_uses_vault_credential_for_platform(
-    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    provider: &str,
-    profile_id: &str,
-    _client_interface: crate::provider::ProviderClientInterface,
-    platform: &str,
-) -> Result<bool, DaemonError> {
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && claude_login_runs_agents_for_platform(profiles, owner_user_id, profile_id, platform)?
-    {
-        return Ok(false);
-    }
-    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
 }
 
 /// Whether a Chariox-held launch credential is registered for the account.
@@ -309,6 +277,22 @@ mod tests {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn claude_setup_token_aliases_share_the_canonical_credential_handle() {
+        let canonical = provider_account_credential_id("local", "claude", "work");
+        for alias in ["claude", "claude-p", "claude-headless", " CLAUDE-P "] {
+            assert_eq!(
+                provider_account_credential_id("local", alias, "work"),
+                canonical,
+                "MP-08/MP-10/MP-11: launch and storage must share credential identity for {alias}"
+            );
+        }
+        assert_ne!(
+            canonical,
+            provider_account_credential_id("another-owner", "claude-p", "work")
+        );
     }
 
     #[test]
@@ -491,6 +475,75 @@ mod tests {
             resolved.iter().collect::<Vec<_>>(),
             vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]
         );
+        let profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(root.join("profiles"))
+                .unwrap();
+        let profile = profiles
+            .create_managed("local", "claude", "aliases")
+            .unwrap();
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude-p",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .unwrap();
+        profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        // MP-08/MP-11: an authenticated observation must not hide an explicitly
+        // enrolled token, even if a previous native login remains on disk.
+        let config_dir = profiles
+            .resolve_environment("local", "claude", &profile.profile_id)
+            .unwrap()["CLAUDE_CONFIG_DIR"]
+            .clone();
+        std::fs::write(
+            std::path::Path::new(&config_dir).join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"synthetic-native-login"}}"#,
+        )
+        .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            assert!(
+                provider_account_credential_registered("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            assert!(
+                provider_account_credential_uses_vault("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            for interface in [
+                crate::provider::ProviderClientInterface::Chariox,
+                crate::provider::ProviderClientInterface::NativeTui,
+            ] {
+                assert!(
+                    provider_account_credential_uses_vault("local", alias, &profile.profile_id,)
+                        .unwrap(),
+                    "MP-08/MP-11: every enrolled-token launch requires Vault access"
+                );
+                let env = resolve_provider_account_credentials_for_launch(
+                    &config,
+                    &profiles,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    interface,
+                )
+                .unwrap();
+                assert!(!env.is_empty(), "{alias} must resolve the stored token");
+                assert!(!format!("{env:?}").contains("setup-token-secret"));
+            }
+        }
         let duplicate = store_provider_account_credential(
             &config,
             "local",
@@ -581,16 +634,14 @@ mod tests {
         std::env::remove_var("CHARIOX_HOME");
         std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
     }
-    // MP-08 / MP-10 / MP-11: native status supersedes a token without deleting the fallback.
+    // MP-08 / MP-10 / MP-11: native login cannot bypass an explicitly enrolled token.
     #[cfg(unix)]
     #[test]
-    fn review1118_native_claude_login_with_registered_token_needs_no_vault() {
-        use std::os::unix::fs::PermissionsExt;
+    fn review1118_native_claude_login_cannot_bypass_registered_vault_token() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = crate::test_support::TestWorktree::new("review1118-native");
         std::env::set_var("CHARIOX_HOME", root.path());
-
         let mut config = DaemonConfig::for_tests();
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -618,65 +669,30 @@ mod tests {
             false,
         )
         .unwrap();
-        let executable = root.path().join("claude");
-        std::fs::write(&executable, r#"#!/bin/sh
-if [ "$1" = '--version' ]; then echo '2.1.0'; else echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'; fi
-"#).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
-        crate::local::provider_requests::observe_provider_auth_status(
-            &profiles,
-            "local",
-            "claude",
-            &p.profile_id,
-        )
-        .unwrap();
-        // The actual encrypted Vault is locked; native launch must still work.
+        profiles
+            .record_claude_native_login("local", &p.profile_id, true)
+            .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
-        assert!(
-            resolve_provider_account_credentials(&config, "local", "claude", &p.profile_id)
-                .is_err()
-        );
-        let env = resolve_provider_account_credentials_for_platform(
-            &config,
-            &profiles,
-            "local",
-            "claude-p",
-            &p.profile_id,
-            crate::provider::ProviderClientInterface::Chariox,
-            "macos",
-        )
-        .expect("verified native login must work with locked token fallback");
-        assert!(env.is_empty());
-        assert!(provider_account_credential_registered("local", "claude", &p.profile_id).unwrap());
-        let reopened = crate::account_profile::ProviderAccountProfileRegistry::open(
-            root.path().join("accounts.json"),
-        )
-        .unwrap();
-        for interface in [
-            crate::provider::ProviderClientInterface::Chariox,
-            crate::provider::ProviderClientInterface::NativeTui,
-        ] {
-            assert!(!launch_uses_vault_credential_for_platform(
-                &reopened,
-                "local",
-                "claude-p",
-                &p.profile_id,
-                interface,
-                "macos"
-            )
-            .unwrap());
-            assert!(resolve_provider_account_credentials_for_platform(
-                &config,
-                &reopened,
-                "local",
-                "claude-p",
-                &p.profile_id,
-                interface,
-                "macos"
-            )
-            .unwrap()
-            .is_empty());
+        for platform in ["linux", "macos"] {
+            for interface in [
+                crate::provider::ProviderClientInterface::Chariox,
+                crate::provider::ProviderClientInterface::NativeTui,
+            ] {
+                assert!(
+                    provider_account_credential_uses_vault("local", "claude-p", &p.profile_id,)
+                        .unwrap()
+                );
+                assert!(resolve_provider_account_credentials_for_platform(
+                    &config,
+                    &profiles,
+                    "local",
+                    "claude-p",
+                    &p.profile_id,
+                    interface,
+                    platform
+                )
+                .is_err());
+            }
         }
         crate::secret::unlock_chariox_encrypted_vault(
             &vault,
@@ -684,36 +700,18 @@ if [ "$1" = '--version' ]; then echo '2.1.0'; else echo '{"loggedIn":true,"authM
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
         .unwrap();
-        std::fs::write(root.path().join("claude"), "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo 2.1.0; else echo '{\"loggedIn\":false}'; exit 1; fi\n").unwrap();
-        crate::local::provider_requests::observe_provider_auth_status(
-            &profiles,
-            "local",
-            "claude",
-            &p.profile_id,
-        )
-        .unwrap();
-        assert!(launch_uses_vault_credential_for_platform(
-            &profiles,
-            "local",
-            "claude-p",
-            &p.profile_id,
-            crate::provider::ProviderClientInterface::Chariox,
-            "macos"
-        )
-        .unwrap());
         assert!(!resolve_provider_account_credentials_for_platform(
             &config,
             &profiles,
             "local",
             "claude-p",
             &p.profile_id,
-            crate::provider::ProviderClientInterface::Chariox,
+            crate::provider::ProviderClientInterface::NativeTui,
             "macos"
         )
         .unwrap()
         .is_empty());
         crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
-        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("CHARIOX_HOME");
     }
 }

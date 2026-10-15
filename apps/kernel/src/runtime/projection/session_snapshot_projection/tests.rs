@@ -854,11 +854,10 @@ fn session_snapshot_projection_marks_dispatching_prompt_as_active_work() {
         .expect("queued prompt should exist");
     app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
         .expect("active prompt should complete");
-    app.prompt_owner_activate_next_queued_prompt_with_prompt_id(
+    app.prompt_owner_activate_next_queued_prompt_for_dispatch(
         session.id(),
         agent.id(),
         Some(pending.id()),
-        "prompt-dispatching".to_string(),
     )
     .expect("queued prompt should activate");
 

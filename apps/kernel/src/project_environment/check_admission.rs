@@ -49,6 +49,7 @@ pub(super) fn check_admission(
                     family,
                     profile,
                     Some(deadline),
+                    &ctx.config,
                 )
                 .is_err()
                 {

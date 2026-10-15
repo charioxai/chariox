@@ -7,8 +7,10 @@ use super::project_environment_setup_storage::{
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
 
-pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
 pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+// Cold toolchain setup may need the full stage budget. Each command still
+// shares the earlier overall deadline, so a sequence cannot extend it.
+pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = VALIDATION_TOTAL_TIMEOUT.as_millis() as u64;
 const VALIDATION_OUTPUT_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 const VALIDATION_OUTPUT_UNSETTLED_PREFIX: &str =
     "validation cleanup incomplete: output pipes remained open after process settlement";
@@ -706,6 +708,16 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
         && !name.starts_with("GIT_CONFIG_KEY_")
         && !name.starts_with("GIT_CONFIG_VALUE_")
         && !name.starts_with("CHARIOX_")
+}
+
+// MP-08 / MP-10 / MP-11: Project-owned Apply uses the same stripping policy
+// without manufacturing a provider run or inheriting a linked account.
+pub(super) fn worker_validation_environment_without_provider(home: &Path) -> BTreeMap<String, String> {
+    let removed = crate::provider::managed_provider_isolation_env_remove().into_iter().collect();
+    let mut environment: BTreeMap<_, _> = std::env::vars().filter(|(name, _)| worker_validation_environment_allowed(name, &removed)).collect();
+    environment.insert("HOME".into(), home.to_string_lossy().into_owned());
+    environment.insert("PATH".into(), worker_preparation_path(home, None, environment.get("PATH").map(String::as_str).unwrap_or_default(), None));
+    environment
 }
 
 #[expect(
@@ -1519,7 +1531,7 @@ fn run_worker_setup_steps_until(
     overall_deadline: Instant,
     should_cancel: impl Fn() -> bool,
 ) -> Result<bool, String> {
-    for command in commands {
+    for (command_index, command) in commands.iter().enumerate() {
         if should_cancel() {
             return Err("worker setup command cancelled".to_string());
         }
@@ -1535,8 +1547,25 @@ fn run_worker_setup_steps_until(
             environment,
             || should_cancel(),
             Some(overall_deadline),
-        )?;
+        )
+        .inspect_err(|error| {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command could not complete",
+                serde_json::json!({
+                    "command_index": command_index,
+                    "timed_out": error.contains("timed out"),
+                    "cancelled": error.contains("cancelled"),
+                    "cleanup_incomplete": error.contains("cleanup"),
+                }),
+            );
+        })?;
         if exit_code != 0 {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command failed",
+                serde_json::json!({"command_index": command_index, "exit_code": exit_code}),
+            );
             return Ok(false);
         }
     }

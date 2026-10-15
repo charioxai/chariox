@@ -1,6 +1,6 @@
 mod sessions;
 use sessions::HttpState;
-pub(super) use sessions::{dispatch_with_excluded_roots, release_run, release_session};
+pub(super) use sessions::{cancel_run, dispatch_with_excluded_roots, release_run, release_session};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
@@ -14,6 +14,7 @@ fn forward_streamable_http_mcp_request(
     timeout_sec: Option<u64>,
     state: &mut HttpState,
     excluded_roots: &[std::path::PathBuf],
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<serde_json::Value, DaemonError> {
     let crate::mcp::CharioxMcpTransportConfig::StreamableHttp { url, .. } = transport else {
         return Err(DaemonError::LocalTransport {
@@ -99,6 +100,7 @@ fn forward_streamable_http_mcp_request(
             url,
             BufReader::new(response.into_reader()),
             request_id.as_ref(),
+            cancelled,
         )?
     } else {
         let text = response
@@ -112,6 +114,12 @@ fn forward_streamable_http_mcp_request(
             message: format!("upstream `{url}` returned invalid JSON: {error}"),
         })?
     };
+    if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.cancelled",
+            message: "MCP call cancelled".into(),
+        });
+    }
     if initialize && message.get("error").is_none() && message.get("result").is_some() {
         state.session_id = assigned_session;
         state.protocol_version = message
@@ -183,10 +191,17 @@ fn read_sse_json_rpc_response(
     url: &str,
     mut reader: impl BufRead,
     request_id: Option<&serde_json::Value>,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<serde_json::Value, DaemonError> {
     let mut data_lines = Vec::new();
     let mut line = String::new();
     loop {
+        if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.cancelled",
+                message: "MCP call cancelled".into(),
+            });
+        }
         line.clear();
         let bytes_read =
             reader

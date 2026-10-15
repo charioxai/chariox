@@ -33,6 +33,7 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(response) = self
             .runtime_state
             .app_control()
@@ -157,6 +158,15 @@ impl CommandRouter {
             .map(Some);
         }
         match request {
+            LocalDaemonRequest::PreflightProviderAccountPortability(request) => {
+                return crate::runtime::provider_account_portability::execute_preflight(
+                    &self.config_projection.snapshot(),
+                    &self.provider_account_profiles,
+                    command,
+                    request,
+                )
+                .map(Some);
+            }
             request @ (LocalDaemonRequest::CreateDisposableWorker(_)
             | LocalDaemonRequest::GetDisposableWorker(_)
             | LocalDaemonRequest::ReleaseDisposableWorker(_)
@@ -323,6 +333,19 @@ impl CommandRouter {
                     .get_environment_operation(request.clone(), caller_user_id)
                     .await
                     .map(Some);
+            }
+            // MP-08 / MP-10 / MP-11: one Project-owned Apply path for every client.
+            LocalDaemonRequest::PlanProjectEnvironment(request) => {
+                return self.runtime_state.plan_project_environment(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::ApplyProjectEnvironment(request) => {
+                return self.runtime_state.apply_project_environment(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::CancelEnvironmentOperation(request) => {
+                return self.runtime_state.cancel_environment_operation(request.clone(), caller_user_id).await.map(Some);
+            }
+            LocalDaemonRequest::RetryEnvironmentOperation(request) => {
+                return self.runtime_state.retry_environment_operation(request.clone(), caller_user_id).await.map(Some);
             }
             LocalDaemonRequest::PreviewEnvironmentDiff(request) => {
                 return self

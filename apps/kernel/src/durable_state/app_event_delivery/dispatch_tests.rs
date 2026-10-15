@@ -309,3 +309,40 @@ fn submission_receipt_retention_follows_actual_run_deletion() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn paused_unsubmitted_workflow_entry_is_not_recovered_or_blocking_new_admissions() {
+    let fixture = Fixture::new();
+    let (store, _sessions, session_id, _receipt, ready) = ready_fixture(&fixture);
+    store.commit_workflow_queue_start(ready.clone()).unwrap();
+    let mut session = ready.after().clone();
+    let run_id = ready.next().unwrap().1.id();
+    session
+        .workflow_run_mut(run_id)
+        .unwrap()
+        .set_status(crate::session::WorkflowRunStatus::Paused);
+    store
+        .persist_workflow_runtime_transition(&session, "workflow_run_paused")
+        .unwrap();
+    assert!(
+        store
+            .pending_workflow_dispatch_intent(session.host_daemon_id(), &session_id)
+            .unwrap()
+            .is_none(),
+        "a captured pause must not recover the same unsubmitted entry"
+    );
+    assert!(
+        store
+            .pending_workflow_dispatch_sessions(session.host_daemon_id(), None, 16)
+            .unwrap()
+            .is_empty(),
+        "a paused entry must not block future admission or restart itself"
+    );
+    assert!(
+        store
+            .workflow_dispatch_intent(session.host_daemon_id(), &session_id, run_id)
+            .unwrap()
+            .is_some(),
+        "explicit resume must retain the original entry identity"
+    );
+}

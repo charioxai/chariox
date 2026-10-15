@@ -321,6 +321,7 @@ fn mp08_evidence_refresh_is_incremental_and_kernel_copies_are_independent() {
     let mut manifest = fixture_manifest(vec![]);
     manifest.evidence_digest = original.digest();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence: original.clone(),
@@ -584,6 +585,7 @@ fn mp08_export_reuses_discovery_but_resolves_current_values_and_new_target_entri
     .unwrap();
     target_store
         .save(&StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: target_manifest,
             evidence: evidence.clone(),
@@ -715,6 +717,7 @@ fn mp08_project_cleanup_removes_only_its_captured_values() {
         .unwrap();
     store
         .save(&StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest,
             evidence,
@@ -1060,6 +1063,7 @@ fn review_state() -> StoredProjectEnvironment {
         reason: "Personal Project instructions".into(),
     });
     StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence,

@@ -3,7 +3,13 @@ use super::*;
 use crate::mcp::CharioxMcpServerConfig;
 #[cfg(test)]
 use crate::mcp::CharioxMcpTransportConfig;
-use std::sync::{Arc, Mutex, OnceLock};
+#[path = "session_lifecycle.rs"]
+mod lifecycle;
+use lifecycle::{CallLease, PendingCall};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub(super) struct HttpState {
@@ -19,19 +25,59 @@ struct HttpSession {
 struct SessionState {
     headers: HttpState,
     generation: u64,
+    retired: bool,
+    next_call: u64,
+    calls: BTreeMap<u64, PendingCall>,
 }
 impl HttpSession {
     fn dispatch(&self, payload: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
         // Protect header state only. Tool POSTs and cancellation must run concurrently.
         let initialize =
             payload.get("method").and_then(serde_json::Value::as_str) == Some("initialize");
-        let (before, generation) = {
+        let (before, generation, call) = {
             let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
+            if state.retired {
+                return Err(cancelled_error("MCP owner retired"));
+            }
+            if payload.get("method").and_then(serde_json::Value::as_str)
+                == Some("notifications/cancelled")
+            {
+                for call in state
+                    .calls
+                    .values()
+                    .filter(|call| payload.pointer("/params/requestId") == Some(&call.id))
+                {
+                    call.cancelled.store(true, Ordering::Release);
+                }
+            }
             if initialize {
                 state.generation += 1;
                 state.headers = HttpState::default()
             }
-            (state.headers.clone(), state.generation)
+            let call = if !initialize && payload.get("method").is_some() {
+                payload.get("id").cloned().map(|id| {
+                    state.next_call += 1;
+                    let key = state.next_call;
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let headers = state.headers.clone();
+                    state.calls.insert(
+                        key,
+                        PendingCall {
+                            id,
+                            headers,
+                            cancelled: cancelled.clone(),
+                        },
+                    );
+                    CallLease {
+                        session: self,
+                        key,
+                        cancelled,
+                    }
+                })
+            } else {
+                None
+            };
+            (state.headers.clone(), state.generation, call)
         };
         let mut headers = before.clone();
         let result = forward_streamable_http_mcp_request(
@@ -40,9 +86,19 @@ impl HttpSession {
             self.backing.tool_timeout_sec,
             &mut headers,
             &self.excluded_roots,
+            call.as_ref().map(|call| call.cancelled.as_ref()),
         );
         if initialize || headers != before {
             let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
+            if state.retired {
+                // Initialization can finish after retirement. Its newly assigned
+                // upstream lease must still be released, without resurrecting it.
+                drop(state);
+                if initialize {
+                    self.release_remote(&headers);
+                }
+                return Err(cancelled_error("MCP owner retired"));
+            }
             // An older 404/initialize must not erase or replace a newer handshake.
             if state.generation == generation && state.headers == before {
                 state.headers = headers
@@ -50,27 +106,25 @@ impl HttpSession {
         }
         result
     }
+    fn begin_retire(&self) -> HttpState {
+        let mut state = self.state.lock().expect("HTTP MCP session mutex poisoned");
+        state.retired = true;
+        for call in state.calls.values() {
+            call.cancelled.store(true, Ordering::Release);
+        }
+        std::mem::take(&mut state.headers)
+    }
 }
 impl Drop for HttpSession {
     fn drop(&mut self) {
-        let state = &self
-            .state
-            .get_mut()
-            .expect("HTTP MCP session mutex poisoned")
-            .headers;
-        if state.session_id.is_some() {
-            // Best-effort remote lease release. Local state is always retired;
-            // servers may legitimately reject DELETE with 405. Bound cleanup.
-            if let Ok(request) = http_request(
-                &self.backing.transport,
-                "DELETE",
-                Duration::from_secs(1),
-                state,
-                &self.excluded_roots,
-            ) {
-                let _ = request.call();
-            }
-        }
+        let state = std::mem::take(
+            &mut self
+                .state
+                .get_mut()
+                .expect("HTTP MCP session mutex poisoned")
+                .headers,
+        );
+        self.release_remote(&state);
     }
 }
 type OwnerKey = (String, String, String, Vec<std::path::PathBuf>);
@@ -112,6 +166,18 @@ pub(crate) fn release_session(owner: &str) {
 pub(crate) fn release_run(run: &str) {
     release(|key| key.0 == run);
 }
+pub(crate) fn cancel_run(run: &str) {
+    let owned: Vec<_> = sessions()
+        .lock()
+        .expect("HTTP MCP sessions mutex poisoned")
+        .iter()
+        .filter(|(key, _)| key.0 == run)
+        .map(|(_, session)| session.clone())
+        .collect();
+    for session in owned {
+        session.cancel_pending();
+    }
+}
 fn release(matches: impl Fn(&OwnerKey) -> bool) {
     // Drop final leases after releasing the registry lock: remote I/O must not
     // serialize unrelated sessions. In-flight requests retain their own Arc.
@@ -129,7 +195,24 @@ fn release(matches: impl Fn(&OwnerKey) -> bool) {
     if !released.is_empty() {
         // Callers may hold the provider-service lock. DELETE is best effort and
         // belongs on a blocking cleanup thread, after all local leases retire.
-        std::thread::spawn(move || drop(released));
+        let released: Vec<_> = released
+            .into_iter()
+            .map(|session| {
+                let headers = session.begin_retire();
+                (session, headers)
+            })
+            .collect();
+        std::thread::spawn(move || {
+            for (session, headers) in released {
+                session.release_remote(&headers);
+            }
+        });
+    }
+}
+fn cancelled_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "mcp.proxy.http.cancelled",
+        message: message.into(),
     }
 }
 

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned as spawn } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { randomUUID } from "node:crypto"
 import { access, mkdir, rm, stat } from "node:fs/promises"
 import os from "node:os"
