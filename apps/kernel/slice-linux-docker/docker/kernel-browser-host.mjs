@@ -660,7 +660,7 @@ export class KernelBrowserHost {
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
-    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop)return subscribeVisiblePage(this,command,scope,signal);
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return subscribeVisiblePage(this,command,scope,signal);
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
       return subscribeRegion(this,command,scope,signal);
