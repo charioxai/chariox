@@ -17,6 +17,7 @@ fn check(f: &Fixture, result: serde_json::Value) -> AgentTaskExecution {
     let id = t.pending_prompt_id.unwrap();
     f.begin(&id);
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        work_answer: Some("public corrected work".into()),
         task: "p".into(),
         prompt: id,
         result: result.to_string(),
@@ -181,6 +182,7 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let id = f.task().pending_prompt_id.unwrap();
         f.begin(&id);
         f.apply(Operation::EvaluateGoal {
+            work_answer: None,
             task: "p".into(),
             prompt: id.clone(),
             result: result.clone(),
@@ -189,6 +191,7 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let before = f.task();
         assert_eq!(before.state, ExecutionState::Blocked);
         f.apply(Operation::EvaluateGoal {
+            work_answer: None,
             task: "p".into(),
             prompt: id,
             result,
@@ -250,6 +253,7 @@ fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
     let edited = f.task();
     assert_eq!(edited.goal.as_ref().unwrap().objective_revision, 2);
     f.apply(Operation::EvaluateGoal {
+        work_answer: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -334,6 +338,7 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
             })
             .is_err());
         let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+            work_answer: None,
             task: "p".into(),
             prompt: check_id,
             result: assessment("continue").to_string(),
@@ -386,6 +391,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         now: 60_006,
     });
     f.apply(Operation::EvaluateGoal {
+        work_answer: None,
         task: "p".into(),
         prompt: id,
         result: assessment("continue").to_string(),
@@ -632,6 +638,7 @@ fn a12_current_ledger_is_rechecked_after_a_source_changes_during_assessment() {
         now: 4,
     });
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        work_answer: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -704,7 +711,7 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
     f.begin(&id);
     f.settle(&id, true);
     let t = check(&f, assessment("continue"));
-    assert_eq!(t.state, ExecutionState::Blocked);
+    assert_eq!(t.state, ExecutionState::Done);
     assert!(t.pending_prompt_id.is_none());
     assert_eq!(t.completion_check.unwrap().check_count, 2);
 }
@@ -756,7 +763,7 @@ fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
             now: 4
         })
         .is_err());
-    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
+    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { work_answer: None, task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
     assert_eq!(t.state, ExecutionState::Done);
     assert!(t.goal.is_none());
     f.settle(&id, true);
@@ -818,6 +825,7 @@ fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() 
     });
     let resumed = f.task();
     f.apply(Operation::EvaluateGoal {
+        work_answer: None,
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
@@ -1130,7 +1138,7 @@ fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
     f.begin(&id);
     bind(&id, "node").expect("the check continuation keeps its workflow lineage");
     assert!(bind(&id, "other-node").is_err());
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal { work_answer: None,
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),
@@ -1143,4 +1151,71 @@ fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
         f.store.agent_task_workflow("p").unwrap(),
         Some(("run".into(), "node".into()))
     );
+}
+
+// MP-08 / MP-10 / MP-11: coordinator 2026-10-15, assessor notes cannot
+// demand owner intervention after a plain request's one correction has resolved all work.
+#[test]
+fn r16_plain_zero_obligations_finishes_after_correction_with_assessment_notes() {
+    for result in [
+        assessment("continue"),
+        serde_json::json!({"status":"blocked","reason":"Would prefer another public trace"}),
+        serde_json::json!({"status":"waiting","reason":"Would prefer another check","registration_ids":[],"deadline_ms":60_004}),
+    ] {
+        let f = Fixture::new();
+        plain(&f);
+        f.settle("p", true);
+        let first = check(&f, assessment("continue"));
+        assert!(first.correction_used);
+        let id = first.pending_prompt_id.unwrap();
+        f.begin(&id);
+        f.settle(&id, true);
+        let t = check(&f, result.clone());
+        assert_eq!(t.state, ExecutionState::Done, "{}", t.reason);
+        assert!(t.reason.is_empty());
+        assert!(t.pending_prompt_id.is_none());
+        assert_eq!(completion::evaluation(&t).unwrap().result, Some(result));
+        assert_eq!(t.completion_check.as_ref().unwrap().check_count, 2);
+        assert_eq!(
+            t.completion_check.as_ref().unwrap().final_answer.as_deref(),
+            Some("public corrected work")
+        );
+        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+        assert_eq!(
+            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+            t
+        );
+        f.settle(&t.prompt_id, true);
+        assert_eq!(f.task(), t, "duplicate EOF cannot start another turn");
+    }
+}
+
+#[test]
+fn r16_plain_correction_keeps_real_unresolved_obligations_blocking() {
+    for status in ["open", "settling", "failed"] {
+        let f = Fixture::new();
+        plain(&f);
+        f.register();
+        if status != "open" {
+            f.subscribe();
+            f.apply(Operation::SourceOutcome {
+                now: 2,
+                public_answer: None,
+                room: "room".into(),
+                source: "child".into(),
+                occurrence: "result".into(),
+                success: status == "settling",
+            });
+        }
+        assert_eq!(f.task().obligations[0].status, status);
+        f.settle("p", true);
+        let t = check(&f, assessment("continue"));
+        let id = t.pending_prompt_id.unwrap();
+        f.begin(&id);
+        f.settle(&id, true);
+        assert_eq!(
+            check(&f, assessment("continue")).state,
+            ExecutionState::Blocked
+        );
+    }
 }

@@ -186,6 +186,16 @@ impl KernelRuntimeOwnedState {
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
+                        work_answer: ledger::completion::evaluation(&task).map(|check| {
+                            super::agent_task_projection::task_public_outputs(
+                                &entries,
+                                &check.work_prompt_id,
+                                super::agent_task_projection::task_answer_history_run(
+                                    check.work_provider_run_id.as_deref(),
+                                ),
+                            )
+                            .concat()
+                        }),
                         task: task.task_id,
                         prompt: prompt.id().into(),
                         result,
@@ -354,16 +364,13 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        let message = format!(
-            "Agent task {}: {:?}; {} unresolved obligations. {}",
-            task.task_id,
-            task.state,
-            task.obligations
-                .iter()
-                .filter(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
-                .count(),
-            task.reason
-        );
+        let name = self
+            .owned
+            .agent_store
+            .get_agent(&task.agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_string())
+            .unwrap_or_else(|_| "Agent".into());
+        let message = super::agent_task_projection::task_status_notice(&task, &name);
         self.owned.record_notice_for_agent(
             &task.room_id,
             None,

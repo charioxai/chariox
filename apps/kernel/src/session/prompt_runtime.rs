@@ -275,13 +275,11 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
-    /// Client projections omit the kernel's completion assessment prompt.
+    /// Client projections omit agent-only kernel instructions.
     pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
         let internal = |prompt: &PromptQueueItem| {
             prompt.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
-                || crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id(
-                    prompt.id(),
-                )
+                || crate::session::is_internal_prompt_echo_id(prompt.id())
         };
         for state in self.prompt_states.values_mut() {
             if state.active_prompt.as_ref().is_some_and(internal) {
@@ -441,20 +439,18 @@ mod tests {
 
     #[test]
     fn client_projection_hides_the_correction_prompt() {
-        let mut runtime = PromptRuntimeState::default();
-        runtime.mirror_agent_prompt_state(
-            "agent-1",
-            Some(prompt(
-                "task-correction-prompt-1",
+        for prompt_id in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+            let mut runtime = PromptRuntimeState::default();
+            runtime.mirror_agent_prompt_state(
                 "agent-1",
-                PromptStatus::Running,
-            )),
-            VecDeque::new(),
-            Some("agent-1"),
-        );
-        runtime.hide_internal_prompts(Some("agent-1"));
-        assert!(runtime.active_prompt_for_agent("agent-1").is_none());
-        assert!(runtime.prompt_states().is_empty());
+                Some(prompt(prompt_id, "agent-1", PromptStatus::Running)),
+                VecDeque::new(),
+                Some("agent-1"),
+            );
+            runtime.hide_internal_prompts(Some("agent-1"));
+            assert!(runtime.active_prompt_for_agent("agent-1").is_none());
+            assert!(runtime.prompt_states().is_empty());
+        }
     }
 
     #[test]

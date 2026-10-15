@@ -148,34 +148,36 @@ fn completion_check_turn_is_not_delivered_to_clients() {
 // The kernel's correction instruction is internal too; the agent's answer is not.
 #[test]
 fn correction_prompt_echo_is_hidden_but_its_answer_is_delivered() {
-    let mut terminal = TerminalStreamService::new();
-    let recipients = || vec!["attachment-1".to_string()];
-    terminal.fan_out_prompt_output(
-        "session-1",
-        "run-1",
-        Some("agent-1"),
-        "task-correction-prompt-1",
-        Some(crate::session::PromptOrigin::Chariox),
-        "attachment-1",
-        recipients(),
-        b"The prior answer is progress, not completion.",
-    );
-    assert!(terminal
-        .drain_output_records("session-1", "attachment-1")
-        .is_empty());
-    terminal.fan_out_output_with_prompt_origin(
-        "session-1",
-        "run-1",
-        Some("agent-1"),
-        TerminalOutputKind::ProviderOutput,
-        None,
-        Some(crate::session::PromptOrigin::Chariox),
-        recipients(),
-        b"final answer",
-    );
-    let delivered = terminal.drain_output_records("session-1", "attachment-1");
-    assert_eq!(delivered.len(), 1);
-    assert_eq!(delivered[0].bytes, b"final answer");
+    for prompt_id in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+        let mut terminal = TerminalStreamService::new();
+        let recipients = || vec!["attachment-1".to_string()];
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            prompt_id,
+            Some(crate::session::PromptOrigin::Chariox),
+            "attachment-1",
+            recipients(),
+            b"The prior answer is progress, not completion.",
+        );
+        assert!(terminal
+            .drain_output_records("session-1", "attachment-1")
+            .is_empty());
+        terminal.fan_out_output_with_prompt_origin(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Some(crate::session::PromptOrigin::Chariox),
+            recipients(),
+            b"final answer",
+        );
+        let delivered = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, b"final answer");
+    }
 }
 
 #[test]

@@ -648,6 +648,17 @@ blocks, even for `/goal`. A legitimate not-achieved check with no sources
 continues only for goal mode. Plain prompts that still need work receive the
 single corrective turn when their ending was invalid; they cannot gain goal
 mode through repeated final answers or agent-created messages.
+Once that correction has produced a public answer and every obligation is
+resolved, a plain request ends Done. Any further assessment notes are retained
+as information and cannot create an owner blocker or another continuation
+(coordinator decision, 2026-10-15). Explicit unresolved obligations and real
+provider/assessment delivery failures retain their recovery paths.
+
+Kernel inbox instructions are agent-only too: live echoes, prompt-state rows
+and history user rows omit their text while preserving the agent's public
+answer, including a child whose first turn came only from an inbox event.
+Kernel task notices use the agent name and a short state, without task IDs,
+obligation counts or internal assessment reasons.
 
 **Check-in cadence and UI.** Propose default 10 minutes, owner-configurable
 1–60 minutes per goal (plain waits use the same maximum deadline interval).

@@ -226,6 +226,7 @@ pub(super) fn evaluate(
     task: String,
     prompt: String,
     mut result: String,
+    work_answer: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -263,7 +264,36 @@ pub(super) fn evaluate(
         None
     };
     let mut again = false;
-    match assessment {
+    // MP-08 / MP-10 / MP-11: a plain request gets one correction. Once
+    // that work has a public answer and zero unresolved obligations, further
+    // assessor notes are information, not an owner action or a goal loop.
+    let plain_correction_finished = t.goal.is_none()
+        && t.correction_used
+        && assessment.is_some()
+        && !t
+            .obligations
+            .iter()
+            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if plain_correction_finished {
+        if let Some(answer) = work_answer.filter(|s| !s.trim().is_empty()) {
+            let evidence = format!(
+                "history:{}:prompt:{}",
+                t.room_id,
+                completion::evaluation(&t).unwrap().work_prompt_id
+            );
+            t.state = ExecutionState::Done;
+            t.wait = None;
+            t.pending_prompt_id = None;
+            t.reason.clear();
+            let check = t.completion_check.as_mut().unwrap();
+            check.final_answer =
+                Some(crate::secret_redaction::redact_secrets(&answer).into_owned());
+            check.evidence = vec![evidence];
+        } else {
+            blocked(&mut t, "The corrected public answer is unavailable; reconcile the work history before resuming");
+        }
+    } else {
+        match assessment {
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
@@ -319,6 +349,7 @@ pub(super) fn evaluate(
             }
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
+    }
     }
     let receipt = if result.len() > RESULT_LIMIT {
         serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})

@@ -30,11 +30,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             now,
         } => super::goals::start(tx, task, owner, objective, minutes, now),
         Operation::EvaluateGoal {
+            work_answer,
             task,
             prompt,
             result,
             now,
-        } => super::goals::evaluate(tx, task, prompt, result, now),
+        } => super::goals::evaluate(tx, task, prompt, result, work_answer, now),
         Operation::ControlGoal {
             task,
             owner,

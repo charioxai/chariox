@@ -92,6 +92,7 @@ pub(crate) async fn execute_scoped_session_history_blob_content_request(
         let entries = events
             .into_iter()
             .filter(|event| event_belongs_to_external_import(agent_import.as_ref(), event))
+            .filter(|event| !event.is_completion_check_turn() && !event.is_internal_prompt_echo())
             .filter_map(page_entry_from_event)
             .collect::<Vec<_>>();
         Ok(LocalDaemonResponse::SessionHistoryBlobContent {
@@ -161,7 +162,11 @@ fn load_scoped_agent_outline(
     )?;
     prompts.retain(|prompt| {
         !prompt.is_completion_check_turn()
-            && !prompt.is_internal_correction_prompt()
+            && (!prompt.is_internal_prompt_echo()
+                || prompt
+                    .prompt_id
+                    .as_deref()
+                    .is_some_and(crate::session::is_agent_inbox_prompt_id))
             && !external_observed_tool_call_prompt(prompt)
             && !external_recovery_envelope_prompt(prompt)
     });
@@ -211,9 +216,8 @@ fn load_scoped_agent_outline(
                 }
             }
         }
-        events.retain(|event| {
-            !event.is_completion_check_turn() && !event.is_internal_correction_prompt()
-        });
+        events
+            .retain(|event| !event.is_completion_check_turn() && !event.is_internal_prompt_echo());
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
@@ -537,6 +541,13 @@ fn outline_turn_from_events_with_lifecycle(
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
+    if prompt.is_internal_prompt_echo() {
+        // Preserve the agent's reply and turn identity without a user instruction row.
+        user_prompt.entry.text.clear();
+        user_prompt.fragment_start = 0;
+        user_prompt.fragment_end = 0;
+        user_prompt.total_chars = 0;
+    }
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);

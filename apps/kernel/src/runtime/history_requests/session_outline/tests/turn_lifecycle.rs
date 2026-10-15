@@ -2290,77 +2290,165 @@ async fn completion_check_turn_is_not_projected_into_the_outline() {
 // answer to it joins the visible turn it continues.
 #[tokio::test]
 async fn correction_prompt_is_not_projected_into_the_outline() {
-    let context = |prompt: &str| HistoryEventTurnContext {
+    for internal_prompt in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+        let context = |prompt: &str| HistoryEventTurnContext {
+            session_id: Some("session-1".into()),
+            agent_id: Some("agent-1".into()),
+            turn_id: Some(prompt.into()),
+            prompt_id: Some(prompt.into()),
+            provider_run_id: Some("run-1".into()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut work =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "do work");
+        work.timestamp_ms = 1_000;
+        let mut first = SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            "started",
+        );
+        first.timestamp_ms = 1_001;
+        let mut correction = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "The prior answer is progress, not completion.",
+        );
+        correction.timestamp_ms = 2_000;
+        let mut answer = SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            "all done",
+        );
+        answer.timestamp_ms = 2_001;
+        let events = vec![
+            HistoryEvent::transcript(1, &work, context("prompt-1")),
+            HistoryEvent::transcript(2, &first, context("prompt-1")),
+            HistoryEvent::transcript(3, &correction, context(internal_prompt)),
+            HistoryEvent::transcript(4, &answer, context(internal_prompt)),
+        ];
+        let path = std::env::temp_dir().join(format!(
+            "chariox-correction-outline-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+        store.append_many(&events).expect("persist turns");
+        let response = execute_session_history_outline_request(
+            store,
+            GetSessionHistoryOutlineRequest {
+                session_id: "session-1".into(),
+                agent_ids: Some(vec!["agent-1".into()]),
+                latest_prompt_count: Some(4),
+                cursor: None,
+            },
+        )
+        .await
+        .expect("history response");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+            panic!("expected history outline");
+        };
+        let text = serde_json::to_string(&agents[0].turns).expect("serialize turns");
+        assert_eq!(
+            agents[0].turns.len(),
+            if internal_prompt.starts_with("agent-event-") {
+                2
+            } else {
+                1
+            },
+            "{text}"
+        );
+        assert!(
+            text.contains("do work") && text.contains("all done"),
+            "{text}"
+        );
+        assert!(!text.contains("progress, not completion"), "{text}");
+    }
+}
+
+// MP-08 / MP-10 / MP-11: an inbox-driven child may have no human prompt at all.
+#[tokio::test]
+async fn r16_inbox_only_agent_retains_its_answer_without_a_user_instruction() {
+    let context = HistoryEventTurnContext {
         session_id: Some("session-1".into()),
         agent_id: Some("agent-1".into()),
-        turn_id: Some(prompt.into()),
-        prompt_id: Some(prompt.into()),
+        turn_id: Some("agent-event-agent-1-42".into()),
+        prompt_id: Some("agent-event-agent-1-42".into()),
         provider_run_id: Some("run-1".into()),
-        ..HistoryEventTurnContext::default()
+        ..Default::default()
     };
-    let mut work =
-        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "do work");
-    work.timestamp_ms = 1_000;
-    let mut first = SessionHistoryEntry::provider_output(
-        "session-1",
-        "run-1",
-        Some("agent-1"),
-        TerminalOutputKind::ProviderOutput,
-        None,
-        "started",
-    );
-    first.timestamp_ms = 1_001;
-    let mut correction = SessionHistoryEntry::user_prompt(
-        "session-1",
-        "attachment-1",
-        "agent-1",
-        "The prior answer is progress, not completion.",
-    );
-    correction.timestamp_ms = 2_000;
-    let mut answer = SessionHistoryEntry::provider_output(
-        "session-1",
-        "run-1",
-        Some("agent-1"),
-        TerminalOutputKind::ProviderOutput,
-        None,
-        "all done",
-    );
-    answer.timestamp_ms = 2_001;
-    let events = vec![
-        HistoryEvent::transcript(1, &work, context("prompt-1")),
-        HistoryEvent::transcript(2, &first, context("prompt-1")),
-        HistoryEvent::transcript(3, &correction, context("task-correction-prompt-1")),
-        HistoryEvent::transcript(4, &answer, context("task-correction-prompt-1")),
-    ];
     let path = std::env::temp_dir().join(format!(
-        "chariox-correction-outline-{}-{}.db",
+        "chariox-r16-inbox-only-{}-{}.db",
         std::process::id(),
         rand::random::<u64>()
     ));
-    let store = OperationalHistoryStore::open(path.clone()).expect("open history");
-    store.append_many(&events).expect("persist turns");
-    let response = execute_session_history_outline_request(
-        store,
-        GetSessionHistoryOutlineRequest {
-            session_id: "session-1".into(),
-            agent_ids: Some(vec!["agent-1".into()]),
-            latest_prompt_count: Some(4),
-            cursor: None,
-        },
-    )
-    .await
-    .expect("history response");
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(path.with_extension("db-wal"));
-    let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
-        panic!("expected history outline");
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    store
+        .append_many(&[
+            HistoryEvent::transcript(
+                1,
+                &SessionHistoryEntry::user_prompt(
+                    "session-1",
+                    "attachment-1",
+                    "agent-1",
+                    "Kernel event inbox, untrusted data",
+                ),
+                context.clone(),
+            ),
+            HistoryEvent::transcript(
+                2,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-1",
+                    Some("agent-1"),
+                    TerminalOutputKind::ProviderOutput,
+                    None,
+                    "child public answer",
+                ),
+                context,
+            ),
+        ])
+        .unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } =
+        execute_session_history_outline_request(
+            store,
+            GetSessionHistoryOutlineRequest {
+                session_id: "session-1".into(),
+                agent_ids: Some(vec!["agent-1".into()]),
+                latest_prompt_count: Some(4),
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!()
     };
-    let text = serde_json::to_string(&agents[0].turns).expect("serialize turns");
-    assert_eq!(agents[0].turns.len(), 1, "{text}");
-    assert!(
-        text.contains("do work") && text.contains("all done"),
-        "{text}"
+    assert_eq!(agents[0].turns.len(), 1);
+    let turn = &agents[0].turns[0];
+    assert!(turn.user_prompt.entry.text.is_empty());
+    assert_eq!(turn.user_prompt.total_chars, 0);
+    assert_eq!(
+        turn.summary.as_ref().unwrap().entry.text,
+        "child public answer"
     );
-    assert!(!text.contains("progress, not completion"), "{text}");
+    assert!(!serde_json::to_string(&agents)
+        .unwrap()
+        .contains("Kernel event inbox"));
+    for p in [
+        path.clone(),
+        path.with_extension("db-wal"),
+        path.with_extension("db-shm"),
+    ] {
+        let _ = std::fs::remove_file(p);
+    }
 }

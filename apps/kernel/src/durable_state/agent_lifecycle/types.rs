@@ -166,6 +166,7 @@ pub(crate) enum Operation {
         task: String,
         prompt: String,
         result: String,
+        work_answer: Option<String>,
         now: u64,
     },
     ControlGoal {

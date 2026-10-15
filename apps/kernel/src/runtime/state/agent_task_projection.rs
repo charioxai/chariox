@@ -97,6 +97,17 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+pub(super) fn task_status_notice(task: &AgentTaskExecution, name: &str) -> String {
+    let state = match task.state {
+        ExecutionState::Working => "Working",
+        ExecutionState::Waiting => "Waiting",
+        ExecutionState::Done => "Done",
+        ExecutionState::Blocked => "Needs your help",
+        ExecutionState::Cancelled => "Stopped",
+    };
+    format!("{name}: {state}.")
+}
+
 // Leased history retains the worker run ID. Resolve it from the task's durable
 // execution binding, so reconciliation does not depend on the current lease or
 // active run. This is a history lookup only; the task's authority stays projected.
@@ -131,7 +142,7 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     };
     let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
     if settling.is_empty() && running.is_empty() && failed.is_empty() {
-        return "Every tracked obligation is already resolved and the prior turn ended without a final answer. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
+        return "Every tracked obligation is already resolved. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
     }
     let mut text = String::from("The prior answer is progress, not completion.");
     if !settling.is_empty() {
@@ -203,6 +214,17 @@ mod tests {
             .map(|(i, status)| serde_json::json!({"id":format!("ob-{i}"),"kind":"delegate","resource_id":format!("agent-{i}"),"status":status,"dispatch_state":"accepted"}))
             .collect::<Vec<_>>();
         serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"working","reason":"","obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":true,"pending_prompt_id":"task-correction-t"})).unwrap()
+    }
+    #[test]
+    fn r16_task_notice_uses_the_agent_name_without_protocol_details() {
+        let mut task = correction_task(&["open"]);
+        task.reason = "Evaluating original goal objective".into();
+        assert_eq!(
+            task_status_notice(&task, "Researcher"),
+            "Researcher: Working."
+        );
+        task.state = ExecutionState::Done;
+        assert_eq!(task_status_notice(&task, "Researcher"), "Researcher: Done.");
     }
     #[test]
     fn correction_with_no_open_obligation_asks_only_for_the_final_answer() {
@@ -475,6 +497,7 @@ mod tests {
         }
         let Outcome::Settled { task, .. } = store
             .agent_lifecycle(Operation::EvaluateGoal {
+                work_answer: None,
                 task: "child-prompt".into(),
                 prompt: check.clone(),
                 result: raw,

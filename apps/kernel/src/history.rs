@@ -338,13 +338,13 @@ impl HistoryEvent {
             )
     }
 
-    /// The prompt event of the kernel's own correction instruction.
-    pub fn is_internal_correction_prompt(&self) -> bool {
+    /// Agent-only kernel instructions never become user prompt rows.
+    pub fn is_internal_prompt_echo(&self) -> bool {
         self.kind == HistoryEventKind::UserPrompt
             && self
                 .prompt_id
                 .as_deref()
-                .is_some_and(crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id)
+                .is_some_and(crate::session::is_internal_prompt_echo_id)
     }
 
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
