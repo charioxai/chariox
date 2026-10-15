@@ -30,3 +30,15 @@ test("MP-08 Codex upstream crosses the owning kernel API and closes its exact co
   }
   assert.ok(seen.some(scope => (scope.operation as {kind: string; connection_id?: string}).kind === "close" && (scope.operation as {connection_id?: string}).connection_id === "owning-connection"))
 })
+
+// MP-08 / MP-10 / MP-11: the older kernel RPC refusal becomes visible upgrade guidance.
+test("MP-08 old owning kernel gets an actionable scoped transport upgrade", async () => {
+  const client = { send: async () => { throw new Error("unknown variant NativeProviderTransport") } } as unknown as LocalIpcClient
+  const transport = await startCodexKernelTransport({ client, sessionId: "room", attachmentId: "attachment", agentId: "agent", providerRunId: "run" })
+  const socket = new WebSocket(transport.endpoint)
+  try {
+    const reply = once(socket, "message")
+    const [frame] = await reply
+    assert.match(JSON.parse(frame.toString()).params.message, /kernel protocol 526 and worker protocol 134; update the owning kernel and reattach/)
+  } finally { socket.close(); await transport.close() }
+})

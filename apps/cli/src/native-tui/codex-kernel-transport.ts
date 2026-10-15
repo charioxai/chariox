@@ -24,7 +24,15 @@ export async function startCodexKernelTransport(options: {
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("Codex kernel bridge did not bind")
   const send = async (operation: NativeProviderTransportOperation) => {
-    const response = await options.client.send(nativeProviderTransportRequest({ ...options, operation })) as { NativeProviderTransport?: { result: NativeProviderTransportResult } }
+    let response: { NativeProviderTransport?: { result: NativeProviderTransportResult } }
+    try {
+      response = await options.client.send(nativeProviderTransportRequest({ ...options, operation }))
+    } catch (error) {
+      if (error instanceof Error && /unknown variant.*NativeProviderTransport|unsupported.*native.?provider.?transport/i.test(error.message)) {
+        throw new Error("Codex native transport requires kernel protocol 526 and worker protocol 134; update the owning kernel and reattach")
+      }
+      throw error
+    }
     const result = response.NativeProviderTransport?.result
     if (!result) throw new Error("Codex native transport requires kernel protocol 526 and worker protocol 134; update and reattach")
     return result
@@ -66,6 +74,9 @@ export async function startCodexKernelTransport(options: {
           if (result.frames.length === 0 && frames.length === 0) await sleep(25)
         }
       } catch (error) {
+        if (error instanceof Error && /^Codex native transport requires kernel protocol 526/.test(error.message)) {
+          process.stderr.write(`${error.message}\n`)
+        }
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ method: "error", params: { message: error instanceof Error ? error.message : "Codex kernel transport failed" } }))
         }
