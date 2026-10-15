@@ -9,6 +9,9 @@ import { createPasskeyPopupController, passkeyPromptsFromEvent } from "./passkey
 import { createPasskeyPopupRenderer } from "./passkey-popup-renderer.js"
 import { respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
+import { getCredentialVaultStatus } from "./config-api.js"
+import { listKernelAccessGrants } from "./kernel-api.js"
+import { createKernelSecurityRefresh } from "./kernel-security-refresh.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
  * on top of it, the passkey popup (protocol 403), which shows the owner's
@@ -32,6 +35,11 @@ export function createCliKernelApprovalComposition(deps: {
   notify(message: string): void
 }) {
   let savedFocus: CliDialogFocusTarget | null = null
+  const security = createKernelSecurityRefresh({
+    readVault: () => getCredentialVaultStatus(deps.client),
+    readGrants: () => listKernelAccessGrants(deps.client),
+    notify: deps.notify,
+  })
   let dialogs = 0
   const opened = () => {
     if (dialogs++ === 0) {
@@ -77,6 +85,7 @@ export function createCliKernelApprovalComposition(deps: {
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })
   createEffect(() => {
+    if (!deps.kernelConnected()) { popup.invalidateConnectionState(); security.invalidate() }
     deps.themeRevision()
     deps.dimensions()
     controller.sync()
@@ -84,12 +93,17 @@ export function createCliKernelApprovalComposition(deps: {
   })
   onCleanup(deps.client.onKernelEvent((event) => {
     if (event.event === "passkey_prompts_changed") popup.apply(passkeyPromptsFromEvent(event.prompts))
+    else if (event.event === "transport_closed" || event.event === "transport_resumed") {
+      popup.invalidateConnectionState()
+      security.invalidate()
+      if (event.event === "transport_resumed") void security.refresh()
+    }
   }))
   // A paste while the popup or the panel is open never reaches the prompt;
   // in the popup it belongs to the passkey.
   onCleanup(routeRawPastes(deps.renderer.keyInput,
     (event: RawPasteEvent) => popup.handlePaste(event) || controller.handlePaste(event)))
-  onCleanup(() => { popup.dispose(); controller.dispose() })
+  onCleanup(() => { security.invalidate(); popup.dispose(); controller.dispose() })
   return {
     ...controller,
     openFromCommand() {

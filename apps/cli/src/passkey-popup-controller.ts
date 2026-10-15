@@ -108,6 +108,7 @@ export function createPasskeyPopupController(deps: {
   let accessLifetime: number | null = null
   // This terminal's own remember window; the kernel remains the authority.
   let rememberedUntil = 0
+  let connectionEpoch = 0
   let pending: object | null = null
   let error: string | null = null
   let disposed = false
@@ -156,15 +157,18 @@ export function createPasskeyPopupController(deps: {
     syncOpen()
   }
   const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
+    const epoch = connectionEpoch
     const token = {}
     pending = token
     error = null
     render()
     try {
       await (proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
+      if (epoch !== connectionEpoch) return
       if (proof?.rememberMinutes) rememberedUntil = Date.now() + proof.rememberMinutes * 60_000
       settle(prompt)
     } catch (failure) {
+      if (epoch !== connectionEpoch) return
       const refusal = passkeyRefusal(failure)
       if (refusal === "PASSKEY_ALREADY_ANSWERED") {
         settle(prompt)
@@ -222,6 +226,17 @@ export function createPasskeyPopupController(deps: {
   }
   return {
     view, approve, refuse, cycleRemember, hide,
+    invalidateConnectionState() {
+      connectionEpoch++
+      rememberedUntil = 0
+      pending = null
+      prompts = []
+      answered.clear()
+      hidden = true
+      clearEntry()
+      syncOpen()
+      render()
+    },
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     /** The kernel's current set, from `passkey_prompts_changed`. A prompt

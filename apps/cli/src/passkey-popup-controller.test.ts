@@ -313,3 +313,20 @@ test("sudo always asks for a fresh passkey and has no remember or lifetime contr
   assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null }])
   h.resolve(); await settle()
 })
+
+test("MP-08/MP-11 reconnect clears remembered presence including a late old acknowledgement", async () => {
+  const h = harness()
+  h.popup.apply([prompt("old")])
+  h.popup.show()
+  type(h, "pk")
+  h.popup.cycleRemember()
+  const pending = h.popup.approve()
+  h.popup.invalidateConnectionState()
+  h.resolve()
+  await pending
+  h.popup.apply([prompt("fresh")])
+  h.popup.show()
+  await h.popup.approve()
+  assert.equal(h.requests.length, 1)
+  assert.match(h.popup.view().error ?? "", /Enter your Chariox passkey/)
+})
