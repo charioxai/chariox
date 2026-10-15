@@ -174,22 +174,6 @@ impl SkillCatalogService {
         let (revision, rows) = self.projections(project_id, native)?;
         let mut selected = BTreeSet::new();
         let mut native_selections = Vec::new();
-        for name in explicit_skill_names(prompt) {
-            if rows
-                .iter()
-                .any(|row| row.skill.name.eq_ignore_ascii_case(&name))
-            {
-                selected.insert(resolve_name(&rows, &name)?.skill.id.clone());
-            } else {
-                let matches: Vec<_> = native.iter().filter(|entry| entry.exposure == NativeSkillExposure::Confirmed).filter(|entry| matches!(&entry.selection, SkillSelection::Native { name: candidate, .. } if candidate.eq_ignore_ascii_case(&name))).collect();
-                if matches.len() != 1 {
-                    return Err(failure(
-                        "unknown or ambiguous skill name; open Skills and select a current entry",
-                    ));
-                }
-                native_selections.push(matches[0].selection.clone());
-            }
-        }
         for selection in selections {
             match selection {
                 SkillSelection::Chariox {
@@ -223,15 +207,42 @@ impl SkillCatalogService {
                 }
             }
         }
+        // A typed chip owns its printed token's source. Validate those identities
+        // first; only unbound textual names use ordinary Chariox precedence.
+        for name in explicit_skill_names(prompt) {
+            if selections.iter().any(|selection| match selection {
+                SkillSelection::Chariox { name: bound, .. }
+                | SkillSelection::Native { name: bound, .. } => bound.eq_ignore_ascii_case(&name),
+            }) {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| row.skill.name.eq_ignore_ascii_case(&name))
+            {
+                selected.insert(resolve_name(&rows, &name)?.skill.id.clone());
+            } else {
+                let matches: Vec<_> = native.iter().filter(|entry| entry.exposure == NativeSkillExposure::Confirmed).filter(|entry| matches!(&entry.selection, SkillSelection::Native { name: candidate, .. } if candidate.eq_ignore_ascii_case(&name))).collect();
+                if matches.len() != 1 {
+                    return Err(failure(
+                        "unknown or ambiguous skill name; open Skills and select a current entry",
+                    ));
+                }
+                native_selections.push(matches[0].selection.clone());
+            }
+        }
         let explicit: Vec<_> = selected.iter().cloned().collect();
         let mut reasons: BTreeMap<String, SkillLoadReason> = selected
             .into_iter()
             .map(|id| (id, SkillLoadReason::Explicit))
             .collect();
-        for previous in self.storage.loads(session_id)? {
+        for previous in self.storage.loads(session_id)?.into_iter().rev() {
             if previous.agent_id == agent_id
                 && rows.iter().any(|r| {
                     r.skill.id == previous.skill_id && r.effective_state != SkillState::Off
+                        && (explicit.contains(&r.skill.id) || !selections.iter().any(|selection| matches!(selection,
+                            SkillSelection::Native { name, .. } if name.eq_ignore_ascii_case(&r.skill.name)
+                        )))
                 })
             {
                 reasons.entry(previous.skill_id).or_insert(previous.reason);

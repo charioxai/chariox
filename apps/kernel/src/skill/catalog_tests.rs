@@ -708,3 +708,152 @@ fn skills_v2_missing_native_ack_fails_selection_without_duplicate_delivery() {
         .to_string()
         .contains("load acknowledgement"));
 }
+
+#[test]
+fn skills_v2_review_explicit_native_selection_wins_over_conflicting_text_token() {
+    let f = StorageFixture::new();
+    let (service, _) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\n---\nCHARIOX BODY\n",
+    );
+    let inventory = vec![native(&"b".repeat(64))];
+    let turn = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[inventory[0].selection.clone()],
+            &inventory,
+            Some(128_000),
+            1.0,
+            8192,
+            "g1",
+        )
+        .unwrap();
+    assert!(
+        turn.loaded.is_empty(),
+        "From Codex must not also select the conflicting Chariox body"
+    );
+    assert_eq!(turn.native_selections, vec![inventory[0].selection.clone()]);
+    // Plain text still chooses Chariox, preserving its normal precedence.
+    let plain = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[],
+            &inventory,
+            Some(128_000),
+            1.0,
+            8192,
+            "g1",
+        )
+        .unwrap();
+    assert_eq!(plain.loaded.len(), 1);
+    assert!(plain.native_selections.is_empty());
+}
+#[test]
+fn skills_v2_review_explicit_native_selection_is_independent_of_chariox_off() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\n---\nCHARIOX BODY\n",
+    );
+    let id = set.catalogs[0].skills[0].id.clone();
+    f.storage
+        .publish(
+            &SkillCatalogMutation {
+                scope: SkillScope::Chariox,
+                expected_revision: 1,
+                actions: vec![SkillCatalogAction::SetState {
+                    skill_id: id,
+                    state: Some(SkillState::Off),
+                }],
+            },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let inventory = vec![native(&"b".repeat(64))];
+    let turn = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[inventory[0].selection.clone()],
+            &inventory,
+            Some(128_000),
+            1.0,
+            8192,
+            "g1",
+        )
+        .expect("explicit From Codex selection is independent of Chariox Off");
+    assert!(turn.loaded.is_empty());
+    assert_eq!(turn.native_selections.len(), 1);
+    assert!(service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[],
+            &inventory,
+            Some(128_000),
+            1.0,
+            8192,
+            "g1"
+        )
+        .is_err());
+}
+#[test]
+fn skills_v2_review_manual_active_load_survives_other_agents_receipt_tail() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nMANUAL BODY\n");
+    let skill = &set.catalogs[0].skills[0];
+    let first = SkillLoadRecord {
+        skill_id: skill.id.clone(),
+        digest: skill.digest.clone(),
+        session_id: "s".into(),
+        agent_id: "original-agent".into(),
+        run_id: "r".into(),
+        prompt_id: "p".into(),
+        reason: SkillLoadReason::Explicit,
+        context_generation: "g1".into(),
+        delivered_at_ms: 1,
+    };
+    f.storage.record_load(&first).unwrap();
+    for n in 0..201 {
+        let mut other = first.clone();
+        other.agent_id = format!("other-agent-{n}");
+        f.storage.record_load(&other).unwrap();
+    }
+    let turn = service
+        .pinned_turn(
+            None,
+            "original-agent",
+            "s",
+            "continue after compaction",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "g2",
+        )
+        .unwrap();
+    assert_eq!(
+        turn.loaded.len(),
+        1,
+        "an active Manual load is not a last-200 activity feed"
+    );
+    assert_eq!(turn.loaded[0].skill_id, skill.id);
+    assert_eq!(f.storage.loads("s").unwrap().len(), 202);
+    f.storage.record_load(&first).unwrap();
+    assert_eq!(
+        f.storage.loads("s").unwrap().len(),
+        202,
+        "old acknowledgement remains idempotent"
+    );
+}

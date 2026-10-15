@@ -156,7 +156,7 @@ fn sync_directories(root: &Path) -> Result<(), DaemonError> {
         .and_then(|file| file.sync_all())
         .map_err(|_| failure("cannot persist skill directory"))
 }
-fn verify_package(
+pub(crate) fn verify_package(
     package: &CharioxSkillPackage,
 ) -> Result<Vec<(&CharioxSkillPackageFile, Vec<u8>)>, DaemonError> {
     if package.files.is_empty() || package.files.len() > MAX_SKILL_PACKAGE_FILES {
@@ -203,7 +203,7 @@ fn verify_package(
     }
     Ok(decoded)
 }
-fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
+pub(crate) fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
     let mut files: Vec<_> = files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let mut hasher = Sha256::new();

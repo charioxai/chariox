@@ -103,15 +103,35 @@ impl SkillCatalogStorage {
         )?;
         Ok(())
     }
+    /// Session history is not a capped activity tail: all confirmed receipts
+    /// remain available for active Manual loads, compaction and acknowledgement
+    /// idempotency even after other agents generate more than one journal page.
     pub fn loads(&self, session_id: &str) -> Result<Vec<SkillLoadRecord>, DaemonError> {
-        self.durable
-            .load_subject_events_by_kind(session_id, "skills.v2.loaded", 200)?
-            .into_iter()
-            .map(|event| {
-                serde_json::from_value(event.payload)
-                    .map_err(|_| failure("invalid durable skill load receipt"))
-            })
-            .collect()
+        let through_sequence = self.durable.latest_event_sequence()?;
+        let mut after_sequence = 0;
+        let mut records = Vec::new();
+        loop {
+            let page = self.durable.load_subject_events_by_kind_after(
+                session_id,
+                "skills.v2.loaded",
+                after_sequence,
+                200,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                if event.sequence > through_sequence {
+                    return Ok(records);
+                }
+                after_sequence = event.sequence;
+                records.push(
+                    serde_json::from_value(event.payload)
+                        .map_err(|_| failure("invalid durable skill load receipt"))?,
+                );
+            }
+        }
+        Ok(records)
     }
     fn project(&self, snapshot: &SkillCatalogSet) -> Result<(), DaemonError> {
         for catalog in &snapshot.catalogs {

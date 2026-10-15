@@ -23,7 +23,9 @@ mod provider_import;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use package::package_skill_directory;
+pub(crate) use package::{package_skill_directory, verify_package as verify_skill_package};
+#[cfg(test)]
+pub(crate) use package::package_digest;
 pub(crate) use package::remote_skill_materialization_base;
 pub use package::{materialize_skill_package, CharioxSkillPackage, CharioxSkillPackageFile};
 pub use provider_import::{

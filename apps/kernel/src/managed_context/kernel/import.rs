@@ -976,12 +976,12 @@ fn validate_skill_package(
     package: &crate::skill::CharioxSkillPackage,
     executable_paths: &[String],
 ) -> Result<(), DaemonError> {
+    crate::skill::verify_skill_package(package)?;
     if package.files.is_empty() || package.files.len() > MAX_PACKAGE_FILES {
         return Err(import_error("skill package file count is invalid"));
     }
     let mut paths = BTreeSet::new();
     let mut aliases = BTreeSet::new();
-    let mut version_hasher = Sha256::new();
     let mut total_bytes = 0_u64;
     for file in &package.files {
         let bytes = decode_package_content(&file.path, &file.content_base64, None, &file.sha256)?;
@@ -996,13 +996,8 @@ fn validate_skill_package(
         if total_bytes > MAX_PACKAGE_BYTES {
             return Err(import_error("skill package exceeds its byte limit"));
         }
-        version_hasher.update(file.path.as_bytes());
-        version_hasher.update([0]);
-        version_hasher.update(file.sha256.as_bytes());
-        version_hasher.update([0]);
     }
-    let version_hash = format!("{:x}", version_hasher.finalize());
-    if version_hash != package.version_hash || !paths.contains("SKILL.md") {
+    if !paths.contains("SKILL.md") {
         return Err(import_error("skill package version digest is invalid"));
     }
     let mut executable = BTreeSet::new();
@@ -1011,6 +1006,10 @@ fn validate_skill_package(
         if !paths.contains(path.as_str()) || !executable.insert(path.as_str()) {
             return Err(import_error("skill executable path is invalid"));
         }
+    }
+    let manifest_executable: BTreeSet<_> = package.files.iter().filter(|file| file.executable).map(|file|file.path.as_str()).collect();
+    if executable != manifest_executable {
+        return Err(import_error("skill executable manifest does not match the package modes"));
     }
     Ok(())
 }
@@ -2841,11 +2840,6 @@ mod tests {
         };
         let skill_bytes = b"---\nname: review\ndescription: Review code\n---\nReview carefully.\n";
         let skill_sha256 = sha256_hex(skill_bytes);
-        let mut skill_hasher = Sha256::new();
-        skill_hasher.update(b"SKILL.md");
-        skill_hasher.update([0]);
-        skill_hasher.update(skill_sha256.as_bytes());
-        skill_hasher.update([0]);
         let skill_definition = KernelExtensionDefinition::Skill {
             package: crate::skill::CharioxSkillPackage {
                 metadata: crate::skill::CharioxSkillMetadata {
@@ -2854,7 +2848,10 @@ mod tests {
                     short_description: None,
                     path: PathBuf::from("SKILL.md"),
                 },
-                version_hash: format!("{:x}", skill_hasher.finalize()),
+                version_hash: crate::skill::package_digest(&[crate::skill::CharioxSkillPackageFile {
+                    executable: false, path: "SKILL.md".into(), sha256: skill_sha256.clone(),
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(skill_bytes),
+                }]),
                 files: vec![crate::skill::CharioxSkillPackageFile {
                     executable: false,
                     path: "SKILL.md".to_string(),
@@ -3098,6 +3095,24 @@ mod tests {
         restore_env("CHARIOX_CAPABILITY_ISOLATION_ROOT", previous.0);
         restore_env("CHARIOX_MANAGED_VAULT_PATH", previous.1);
         restore_env("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", previous.2);
+    }
+
+    #[test]
+    fn skills_v2_review_produced_skill_package_passes_environment_verification() {
+        let root = test_root("skills-v2-produced-package");
+        fs::write(root.join("SKILL.md"), "---\nname: review\ndescription: Review code\n---\nReview carefully.\n").unwrap();
+        fs::create_dir(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.join("scripts/check.sh"), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        // The real producer used by Environment export, not a handcrafted hash.
+        let package = crate::skill::package_skill_directory(&root).unwrap();
+        let executable:Vec<_> = package.files.iter().filter(|f|f.executable).map(|f|f.path.clone()).collect();
+        let result = validate_skill_package(&package, &executable);
+        fs::remove_dir_all(root).unwrap();
+        result.expect("a produced package must pass the Environment receiver's digest and mode checks");
     }
 
     fn test_root(label: &str) -> PathBuf {
