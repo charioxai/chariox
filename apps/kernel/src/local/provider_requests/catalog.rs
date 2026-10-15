@@ -17,6 +17,8 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+#[cfg(test)]
+mod codex_refresh_tests;
 mod opencode_model_cache;
 mod probe_capture;
 pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
@@ -312,12 +314,13 @@ pub(crate) fn refresh_provider_account_profile_with_config(
     {
         return Ok(profile);
     }
-    refresh_provider_account_profile_explicitly(
+    refresh_provider_account_profile_observation(
         registry,
         owner_user_id,
         provider,
         account_profile,
         config,
+        false,
     )
 }
 
@@ -364,6 +367,24 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    refresh_provider_account_profile_observation(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+        true,
+    )
+}
+
+fn refresh_provider_account_profile_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+    reload_codex_endpoint: bool,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
@@ -374,7 +395,14 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
             // The official app-server caches its login at startup. An explicit
             // account refresh must observe a native login imported since the
             // catalog last started this profile's utility server.
-            crate::provider::invalidate_codex_account_endpoint(owner_user_id, &profile.profile_id);
+            // MP-08 / MP-10 / MP-11: automatic login observations must retain
+            // the native server that owns the pending device challenge.
+            if reload_codex_endpoint {
+                crate::provider::invalidate_codex_account_endpoint(
+                    owner_user_id,
+                    &profile.profile_id,
+                );
+            }
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
