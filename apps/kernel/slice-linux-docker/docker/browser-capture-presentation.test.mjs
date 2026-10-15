@@ -31,3 +31,13 @@ test('MP-08/MP-10 only screenshots restore native presentation through an isolat
  assert.deepEqual(sent.slice(1).map(x=>x.method),['Page.captureScreenshot','Page.getFrameTree','Page.createIsolatedWorld','Runtime.evaluate']);
  assert.equal(sent.at(-1).params.contextId,3);assert.equal(sent.at(-1).params.awaitPromise,true);
 });
+
+test('MP-08/MP-10 CSS activation and screenshot deadlines survive the presentation fence',async()=>{
+ const sent=[];const connection={send:async(...args)=>{sent.push(args);if(args[0]==='Page.getFrameTree')return {frameTree:{frame:{id:'top'}}};if(args[0]==='Page.createIsolatedWorld')return {executionContextId:3};if(args[0]==='Runtime.evaluate')return {result:{value:true}};return {ok:true};}};
+ fenceScreenshotPresentation(connection);
+ const css={timeoutMs:30000},capture={timeoutMs:12000};
+ await connection.send('CSS.enable',{},'page',css);
+ await connection.send('Page.captureScreenshot',{format:'png'},'page',capture);
+ assert.equal(sent[0][3],css,'A bounded CSS watcher must keep its own timeout');
+ assert.equal(sent[1][3],capture,'Capture must keep its own timeout');
+});
