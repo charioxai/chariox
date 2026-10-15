@@ -68,5 +68,5 @@ test('MP-11 headed mirror refuses an unavailable private display before spawning
 // (sign-in is policy-blocked); evidence r4/strip a-ExplicitBrowserSigninUIOnDesktop.png.
 test('the owned window has no "Sign in to Chrome?" chip in its band', async () => {
  const {launchArguments}=await import('./kernel-browser-process.mjs');
- assert(launchArguments('/private',false,true).includes('--disable-features=ExplicitBrowserSigninUIOnDesktop'));
+ assert(launchArguments('/private',false,true).includes('--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill'));
 });

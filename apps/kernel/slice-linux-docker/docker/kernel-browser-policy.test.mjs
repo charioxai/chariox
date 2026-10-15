@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { blockedUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
+import { TAB_GROUPS_EXTENSION_ID } from "./kernel-browser-tab-groups.mjs";
 import { browserLauncher, namespaceLauncher, policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
 
 test("MP-11 the policy layer carries every compiled Chromium policy root", async () => {
@@ -30,6 +31,7 @@ test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usab
   for (const host of ["chromewebstore.google.com", "chrome.google.com/webstore"]) assert(managedPolicy.URLBlocklist.includes(host));
   assert(managedPolicy.URLAllowlist.includes("chrome-extension://ecideajikgeiboaphimcgeahicjgcfea"));
   assert.equal(managedPolicy.IncognitoModeAvailability, 1);
+  assert.deepEqual(managedPolicy.ExtensionSettings, { [TAB_GROUPS_EXTENSION_ID]: { toolbar_pin: "default_unpinned" } }, "no pinned extension icon in the band");
   assert.equal(managedPolicy.WebAppInstallByUserEnabled, false);
   assert.match(managedPolicy.DefaultSearchProviderSearchURL, /^https:\/\/duckduckgo\.com\//);
 });

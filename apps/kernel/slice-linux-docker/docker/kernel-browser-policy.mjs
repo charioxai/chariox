@@ -29,6 +29,8 @@ export const managedPolicy = Object.freeze({
   // Chrome then refuses that load even for an allow-listed id.
   ExtensionInstallSources: [],
   BlockExternalExtensions: true,
+  // Its icon is never pinned in the native toolbar (Chrome for Testing pins it by default).
+  ExtensionSettings: { [TAB_GROUPS_EXTENSION_ID]: { toolbar_pin: "default_unpinned" } },
   IncognitoModeAvailability: 1,
   BrowserGuestModeEnabled: false,
   BrowserAddPersonEnabled: false,
