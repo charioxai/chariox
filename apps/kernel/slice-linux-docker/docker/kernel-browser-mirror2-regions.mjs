@@ -91,7 +91,7 @@ export class Mirror2Regions {
       const validate=async()=>{
         if(!alive()){await retire();return false;}
         try {
-          const now=await this.measure(stream,tab,request,scope,signal);
+          const now=await this.measure(stream,tab,request,scope);
           if(!alive() || !same(now,measured)){await retire();return false;}
           return true;
         } catch { await retire();return false; }
@@ -108,7 +108,7 @@ export class Mirror2Regions {
         // the subscribe request or the viewer's tile/mask coordinates.
         attestationState:()=>this.locked(stream,async()=>{
           if(!await validate())refuse('region_retired');
-          const boxes=await this.mirror.regionBoxes(stream,tab,signal),media=[];
+          const boxes=await this.mirror.regionBoxes(stream,tab),media=[];
           for(const b of boxes)if(b.media===true&&!b.distorted){
             const checked=this.check({...request,sequence:stream.issued,region_id:b.id},scope,stream);
             media.push({id:b.id,box:[...(b.clip??b.box)],identities:checked.identities});

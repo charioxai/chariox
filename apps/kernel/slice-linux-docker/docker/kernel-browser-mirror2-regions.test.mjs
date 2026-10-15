@@ -96,3 +96,13 @@ test('MP-11: stale documents and wrong target identities refuse attestation evid
   await assert.rejects(lease.attestationState(),/retired/);
  }
 });
+test('MP-08/MP-10/MP-11 completed subscribe cancellation does not poison the owned region lease',async()=>{
+ const f=fixture(),request=new AbortController();f.boxes[0].media=true;
+ const cancelled=new AbortController();cancelled.abort();
+ await assert.rejects(f.regions.resolve(f.target,'owner',{signal:cancelled.signal}));
+ const lease=await f.regions.resolve(f.target,'owner',{signal:request.signal});
+ request.abort(); // RPC lifetime ended; the display has its own close/expiry.
+ assert.equal(await lease.isCurrent(),true);
+ assert.equal((await lease.attestationState()).media.length,1);
+ await lease.close();assert.equal(await lease.isCurrent(),false);
+});
