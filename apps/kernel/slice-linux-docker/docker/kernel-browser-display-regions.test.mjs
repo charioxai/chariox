@@ -9,7 +9,7 @@ function fixture(kind='region') {
   rect:{x:10,y:20,width:100,height:50},element_offset:{x:0,y:0},device_scale_factor:2,
   isAlive:()=>alive,isCurrent:async()=>{calls.push('live');return alive;},close:async()=>{alive=false;},
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
- const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,scale:2,isCurrent:()=>alive};
+ const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,page_rect:{left:0,top:174,width:2560,height:1600},scale:2,isCurrent:()=>alive,isPageCurrent:async()=>alive};
  const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
   chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
@@ -142,4 +142,20 @@ for(const value of [undefined,{x:-1,y:0},{x:0,y:NaN},{x:Infinity,y:0}])test(`MP-
  const f=fixture();f.lease.element_offset=value;
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));
  assert.equal(f.host.displays.size,0);assert(!f.calls.some(x=>x?.surface));assert.equal(f.lease.isAlive(),false);
+});
+
+test('MP-08/MP-10/MP-11 529 placement keeps native page origin out of CSS paint/input offsets',async()=>{
+ const f=fixture();f.binding.page_rect={left:8,top:174,width:2544,height:1592};f.binding.isPageCurrent=async()=>true;
+ const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const s=[...f.host.displays.values()][0];
+ assert.deepEqual(s.regionSource.options.rect,{left:28,top:214,width:200,height:100});
+ assert.deepEqual(s.regionSource.options.contentRect,f.binding.page_rect);
+ assert.deepEqual(result.region_offset,{x:0,y:0});assert.deepEqual(s.regionOffset,{x:0,y:0});await s.close();
+});
+test('MP-08/MP-10/MP-11 page crop clips to the actual native viewport before inward rounding',async()=>{
+ const f=fixture();f.binding.page_rect={left:8,top:174,width:2544,height:1592};f.binding.isPageCurrent=async()=>true;
+ f.lease.rect={x:1270,y:790,width:10,height:20};
+ const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const s=[...f.host.displays.values()][0];assert.deepEqual(s.regionSource.options.rect,{left:2548,top:1754,width:4,height:12});
+ assert.equal(result.css_width,2);assert.equal(result.css_height,6);assert.deepEqual(result.region_offset,{x:0,y:0});await s.close();
 });

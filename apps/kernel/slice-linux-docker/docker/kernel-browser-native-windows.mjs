@@ -16,11 +16,12 @@ export async function nativeWindowInventory({display,pid,isCurrent}){
    child.stdin.end(JSON.stringify({pid}));
   });
   if(!current()||!Array.isArray(rows)||rows.length>32||rows.some(r=>!r||
-   Object.keys(r).sort().join(',')!=='focused,height,id,override_redirect,transient_for,visible,width,x,y'||
+   Object.keys(r).sort().join(',')!=='focused,frame_insets,height,id,override_redirect,transient_for,visible,width,x,y'||
+   !Array.isArray(r.frame_insets)||r.frame_insets.length!==4||!r.frame_insets.every(n=>Number.isSafeInteger(n)&&n>=0&&n<=64)||
    ![r.id,r.width,r.height,r.x,r.y,r.transient_for].every(Number.isSafeInteger)||r.id<=1||r.id>0xffffffff||
    r.width<1||r.width>8192||r.height<1||r.height>8192||r.transient_for<0||r.transient_for>0xffffffff||
    ![r.visible,r.override_redirect,r.focused].every(v=>typeof v==='boolean')))throw Error('MP-11: native window inventory binding');
-  return rows.map(r=>Object.freeze(r));
+  return rows.map(r=>Object.freeze({...r,frame_insets:Object.freeze(r.frame_insets)}));
  }finally{
   clearTimeout(timer);
   if(child.pid!==undefined){if(!Number.isSafeInteger(child.pid)||child.pid<=1)throw Error('MP-11: unsafe native inventory PID');

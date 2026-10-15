@@ -8,7 +8,7 @@ import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
-export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
+export function windowRegionGeometry(surface,window,rect,contentHeight,scale,contentRect){
  const {width,height}=rect,top=rect.top,left=rect.left;
  if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
  const auxiliary=surface==='browser_auxiliary';
@@ -26,11 +26,21 @@ export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
    width<2||width>2560||height<2||height>1600||width%2||height%2||
    contentHeight<2||contentHeight>window.height||left<0||top<0||
    left>window.width-width||top>window.height-height)throw Error('MP-11: invalid native window region');
- const contentTop=window.height-contentHeight;
+ let contentTop=window.height-contentHeight,contentLeft=0;
+ if(surface==='page'){
+  if(!contentRect||![contentRect.left,contentRect.top,contentRect.width,contentRect.height].every(Number.isSafeInteger)||
+   contentRect.left<0||contentRect.top<0||contentRect.width<2||contentRect.height!==contentHeight||
+   contentRect.left+contentRect.width>window.width||contentRect.top+contentRect.height>window.height)
+   throw Error('MP-11: native page origin unavailable');
+  contentTop=contentRect.top;contentLeft=contentRect.left;
+  if(left<contentLeft||left+width>contentLeft+contentRect.width||top+height>contentTop+contentRect.height)
+   throw Error('MP-11: native region crosses page boundary');
+ }
  if(!auxiliary&&(surface==='browser_chrome'?top+height>contentTop:top<contentTop))
   throw Error('MP-11: native region crosses surface boundary');
  return Object.freeze({width,height,contentHeight,css_width:width/scale,css_height:height/scale,
-  pageLeft:left,pageTop:top-contentTop,contentTop,
+  pageLeft:left-contentLeft,pageTop:top-contentTop,contentTop,
+  ...(contentRect?{contentRect:Object.freeze({...contentRect})}:{}),
   window_region:Object.freeze({width:window.width,height:window.height,left,top,...(window.id===undefined?{}:{id:window.id})})});
 }
 export function projectRegionMasks(regions,left,top){
@@ -38,11 +48,11 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,isCurrent,validateCurrent,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;
-  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale);
+  this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect);
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  onCdp(message){
@@ -84,7 +94,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     const reference=decodePng(cropProtectedPng(shot.data_base64,clip,this.scale).data_base64,this.scale);
     const raw=this.latest?.raw;
     if(!raw||raw.width!==reference.width||raw.height!==reference.height)throw Error('MP-11: native region attestation geometry');
-    const fullBand=statusBand({width:region.window_region.width,height:region.contentHeight},this.hostScale);
+    const fullBand=statusBand({width:region.contentRect.width,height:region.contentHeight},this.hostScale);
     const masks=projectRegionMasks([...(shot[displayMaskRegions]??[]),fullBand],region.pageLeft,region.pageTop);
     const masked=attestationMask(masks,raw.width,raw.height);
     if(masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9)throw Error('MP-11: native region attestation masked');

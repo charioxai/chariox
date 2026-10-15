@@ -53,7 +53,7 @@ int main(void) {
     assert(cx_capture_read(selected,pixels,bounds)==1);for(int i=0;i<128*32;i++)assert(pixels[i*4+2]==255);cx_capture_close(selected);
     assert(!cx_capture_open_selected_region(pid,DefaultRootWindow(d),128,160,0,0,128,32));
     assert(!cx_capture_open_selected_region(pid,w,127,160,0,0,128,32));
-    int64_t inventory[32*9];assert(cx_capture_inventory(pid,inventory,32)==2);assert(cx_capture_inventory(pid,inventory,1)==-1);assert(cx_capture_inventory(1,inventory,32)==-1);
+    int64_t inventory[32*13];assert(cx_capture_inventory(pid,inventory,32)==2);assert(cx_capture_inventory(pid,inventory,1)==-1);assert(cx_capture_inventory(1,inventory,32)==-1);
     XDestroyWindow(d,other);XSync(d,False);
     /* MP-08/MP-10/MP-11: an owned override-redirect dropdown is a separate
      * whole window. Its pixels/input never fall through to the page below. */

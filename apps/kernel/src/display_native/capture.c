@@ -234,12 +234,14 @@ static void inventory_windows(struct InventorySearch *s,Window parent,unsigned d
     s->remaining-=count;
     for(unsigned i=0;i<count&&!s->failed;i++){
         if(window_pid(s->display,children[i])==s->owner){
-            XWindowAttributes a;Window transient=0,child;int x,y;
+            XWindowAttributes a;Window transient=0,child;int x,y;unsigned long insets[4];
             if(!XGetWindowAttributes(s->display,children[i],&a)||a.width<1||a.height<1||s->found==s->limit||
-                !XTranslateCoordinates(s->display,children[i],s->root,0,0,&x,&y,&child)){s->failed=1;break;}
+                !XTranslateCoordinates(s->display,children[i],s->root,0,0,&x,&y,&child)||
+                !frame_insets(s->display,children[i],insets)){s->failed=1;break;}
             XGetTransientForHint(s->display,children[i],&transient);
-            int64_t *v=s->out+s->found++*9;v[0]=children[i];v[1]=a.width;v[2]=a.height;v[3]=x;v[4]=y;
+            int64_t *v=s->out+s->found++*13;v[0]=children[i];v[1]=a.width;v[2]=a.height;v[3]=x;v[4]=y;
             v[5]=a.map_state==IsViewable;v[6]=a.override_redirect;v[7]=transient;v[8]=s->focus==children[i];
+            for(int j=0;j<4;j++)v[9+j]=insets[j];
             continue; /* Nested controls belong to this client, not another top-level surface. */
         }
         inventory_windows(s,children[i],depth+1);

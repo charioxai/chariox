@@ -4,18 +4,18 @@ import assert from "node:assert/strict";
 import { ChromeWindows, InputArbiter, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
 import { OwnedDisplay } from "./kernel-browser-owned-display.mjs";
 
-function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" } } = {}) {
+function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" }, viewport } = {}) {
   const display = new OwnedDisplay("/unused");
   // ownsDisplay needs a live owned child; the fixture marks one without spawning.
   const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }], ["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]),
     chromium: { display, child: { pid: 4242, exitCode: null }, scale: 2 },
     browser: { connection: { send: async (method) => method === "Browser.getWindowForTarget" ? { windowId: 1, bounds } : {} } },
-    tabGroups: { active: async () => "tb" } };
-  const inventory = async () => rows ?? [
+    tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) } };
+  const inventory = async () => (rows ?? [
     { id: 0x400001, x: 0, y: 0, width: 128, height: 128, visible: true, focused: false, override_redirect: false, transient_for: 0 },
     { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 },
     { id: 0x600050, x: 200, y: 160, width: 1600, height: 401, visible: true, focused: false, override_redirect: true, transient_for: 0 },
-  ];
+  ]).map(r=>({...r,frame_insets:r.frame_insets??[0,0,0,0]}));
   return { host, windows: new ChromeWindows(host, { inventory }), display };
 }
 // Union seam (2026-10-15): on the shared owned desktop Chromium's window fills the 1280x800 screen at
@@ -79,7 +79,7 @@ test("MP-11 two equal tabbed windows or none never bind", async t => {
 });
 
 test("MP-11 band input acts on the kernel-observed active Tab; agents and stale windows are refused", async () => {
-  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" } };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) } };
   const binding = { window_generation: 2, isCurrent: () => true };
   const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
   assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: "host-tab-b", document_id: "db", generation: 3 });
@@ -97,7 +97,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const evaluated = [];
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
     : method === "Runtime.evaluate" ? (evaluated.push(params), { result: { value: focus } }) : {} };
-  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb", viewport: async target_id => ({target_id:target_id??'tb', ...(viewport ?? {width:bounds.width,height:bounds.height-87})}) },
     browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
   const arbiter = new InputArbiter(host, {});
   const calls = [];
@@ -143,4 +143,14 @@ test("MP-08 browser chords and refused chords", () => {
   for (const [k, m] of [[0x6c, 2], [0x74, 2], [0x77, 2], [0xff09, 2], [0xff09, 10], [0x54, 10], [0xff51, 1], [0xff53, 1]]) assert(bandChord(k, m), `${k}/${m}`);
   for (const [k, m] of [[0xffc9, 0], [0x49, 10], [0x4a, 10], [0x43, 10], [0x75, 2], [0x4e, 10], [0x70, 2], [0x73, 2], [0x6f, 2], [0x6a, 2], [0x68, 2]]) assert(refusedChord(k, m), `${k}/${m}`);
   for (const [k, m] of [[0x61, 0], [0x6c, 2], [0x63, 2], [0x76, 2]]) assert(!refusedChord(k, m), `${k}/${m}`);
+});
+
+test('MP-08/MP-10/MP-11 page origin uses native Tab dimensions and GTK insets; band keeps even rows',async()=>{
+ const rows=[{id:42,x:0,y:0,width:1280,height:800,visible:true,focused:true,override_redirect:false,transient_for:0,frame_insets:[4,4,0,4]}];
+ const {host,windows}=fake({rows,bounds:{left:0,top:0,width:1280,height:800,windowState:'normal'},viewport:{width:1272,height:709}});
+ const display=new OwnedDisplay(process.env.TMPDIR??'/tmp');await display.start();
+ try{Object.assign(host.chromium,{display,scale:1});const b=(await windows.resolve()).tabbed;
+ assert.deepEqual(b.page_rect,{left:4,top:87,width:1272,height:709});assert.equal(b.content_top,86);assert.equal(await b.isPageCurrent(),true);
+ host.tabGroups.viewport=async target_id=>({target_id:target_id??'tb',width:1272,height:700});assert.equal(await b.isPageCurrent(),false);assert.equal(b.isCurrent(),false);
+ }finally{await display.close()}
 });

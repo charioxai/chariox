@@ -707,12 +707,12 @@ pub(super) fn inventory() -> Result<(), String> {
     if q.pid <= 1 {
         return Err("MP-11: native window owner".into());
     }
-    let mut data = [0i64; 32 * 9];
+    let mut data = [0i64; 32 * 13];
     let count = unsafe { ffi::cx_capture_inventory(q.pid as libc::c_ulong, data.as_mut_ptr(), 32) };
     if count < 0 {
         return Err("MP-11: native window inventory".into());
     }
-    let rows:Vec<_>=data.chunks_exact(9).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1})).collect();
+    let rows:Vec<_>=data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect();
     serde_json::to_writer(std::io::stdout().lock(), &rows)
         .map_err(|_| "MP-11: native window inventory reply".into())
 }

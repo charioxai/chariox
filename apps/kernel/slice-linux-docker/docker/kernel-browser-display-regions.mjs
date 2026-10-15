@@ -38,13 +38,16 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    if(lease.tab_id!==tab.tab_id||lease.document_id!==tab.document_id||!await lease.isCurrent())refuse();
    const scale=lease.device_scale_factor,r=lease.rect;
    if(scale!==window.scale)refuse();
+   const page=window.page_rect;
+   if(!page||typeof window.isPageCurrent!=='function'||!await window.isPageCurrent())refuse();
    // A hidden mirror can retain its document/geometry while another Tab paints
    // in this SAME X window. Only the browser owner's native active-tab observer
    // can admit that readback; focus-emulated visibility is not authority.
    if(typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(tab,window))refuse();
    // Stay INSIDE the canonical clip; the codec's even dimensions never expose
    // adjacent pixels. Keep the offset for the existing mirror input resolver.
-   const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.floor((r.x+r.width)*scale)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*scale)-top)/2);
+   const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.min(page.width,Math.floor((r.x+r.width)*scale))-left)/2),height=2*Math.floor((Math.min(page.height,Math.floor((r.y+r.height)*scale))-top)/2);
+   if(width<2||height<2)refuse();
    offset={x:left/scale-r.x,y:top/scale-r.y};
    const element=lease.element_offset;
    if(!element||![element.x,element.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
@@ -53,8 +56,8 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    placement=Object.freeze({x:element.x+offset.x,y:element.y+offset.y});
    if(![placement.x,placement.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
-    rect:{left,top:window.content_top+top,width,height},contentHeight:window.bounds.height-window.content_top,
-    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
+    rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
+    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
   }catch(error){await lease.close();throw error;}
  } else {
   if(!Number.isSafeInteger(target.window_generation)||target.window_generation!==window.window_generation)refuse();
@@ -74,7 +77,7 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(tab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
   await source.start();assertNotCancelled(signal);
-  if(host.protection!==policy||!await lease.isCurrent()||!window.isCurrent())refuse();
+  if(host.protection!==policy||!await lease.isCurrent()||!window.isCurrent()||args.validateCurrent&&!await args.validateCurrent())refuse();
   const result={source_kind:'region',binding_id:lease.binding_id,document_id:lease.document_id,sequence:lease.sequence,
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
    device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height,
