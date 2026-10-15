@@ -26,7 +26,9 @@ esac
     registry
         .migrate_effective_defaults("local", &root.path().join("home"))
         .unwrap();
-    let profile = registry.get("local", "claude", "default").unwrap();
+    let profile = registry
+        .create_managed("local", "claude", "Explicit status fixture")
+        .unwrap();
     let environment = registry
         .resolve_environment("local", "claude", &profile.profile_id)
         .unwrap();
