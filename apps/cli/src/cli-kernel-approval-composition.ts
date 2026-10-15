@@ -76,6 +76,7 @@ export function createCliKernelApprovalComposition(deps: {
     choose: (interactionId, choiceId) => { void controller.choose(interactionId, choiceId) },
   })
   const controller = createKernelApprovalController({
+    delegateSudoToPasskeyPopup: true,
     getSession: deps.session,
     connected: deps.connected,
     onView: (view) => surface.render(view, deps.dimensions()),
@@ -112,7 +113,8 @@ export function createCliKernelApprovalComposition(deps: {
   return {
     ...controller,
     openFromCommand() {
-      if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
+      if (popup.view().count) popup.show()
+      else if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
       else if (controller.view().count) controller.show()
       else deps.flashFooter("No pending approvals", "info")
     },

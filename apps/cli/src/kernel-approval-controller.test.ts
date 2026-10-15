@@ -269,3 +269,9 @@ test("critical approvals anywhere in the queue are visible without stealing focu
   assert.equal(h.controller.view().interaction?.id, "approval-1")
   assert.deepEqual(h.focus, [])
 })
+
+test("MP-08/MP-11 sudo delegates to the one passkey popup without hiding routine approvals", () => {
+  const sudo = {...approvalFixture,id:"sudo:one",kernel_operation_id:"sudo:one",choices:[{id:"deny",label:"Refuse",reply:"deny"},{id:"allow",label:"Approve",reply:"allow",requires_passkey:true}]}
+  assert.deepEqual(kernelApprovals(session("session-1",[sudo,approvalFixture]),true).map(i=>i.id),[approvalFixture.id])
+  assert.equal(kernelApprovals(session("session-1",[sudo])).length,1,"fallback stays available")
+})
