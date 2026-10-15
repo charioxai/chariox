@@ -1403,3 +1403,96 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     .await
     .expect("the exact terminal projection should settle the cancelled prompt");
 }
+
+#[tokio::test]
+async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
+    // MP-08: ACK-settlement and receipt-reconciliation resume cancellation for a specific
+    // prompt; when its queued successor became active meanwhile, nothing may be cancelled.
+    let mut app = crate::test_support::bootstrap_authenticated_app(
+        crate::config::DaemonConfig::for_tests(),
+    )
+    .expect("home app should bootstrap with an authenticated Codex test profile");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new("resume-fence-workspace", "resume-fence-worktree")
+                .with_agent_defaults(
+                    crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+                ),
+        )
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "resume-fence-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: WORKER_ID.to_string(),
+                worker_machine_id: "worker-machine-resume-fence".to_string(),
+                execution_lease_id: "worker-lease-resume-fence".to_string(),
+                leased_agent_id: LEASED_AGENT_ID.to_string(),
+                active_worker_provider_run_id: Some(WORKER_RUN_ID.to_string()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .expect("home agent should bind to the fake worker");
+    let crate::session::PromptSubmissionOutcome::Started { prompt: active_prompt } = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "resume-fence-active-prompt",
+                attachment.id(),
+                agent.id(),
+                "the successor that is now active",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("active remote prompt should be admitted")
+    else {
+        panic!("remote prompt should become active immediately");
+    };
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let result = runtime
+        .cancel_remote_agent_prompt_if_remote(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            Some("resume-fence-settled-prompt"),
+            None,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(DaemonError::NoActivePrompt { .. })),
+        "a settled prompt's resumed cancellation must not select its successor: {:?}",
+        result.as_ref().err()
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("home session should remain available");
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .map(|prompt| prompt.id().to_string()),
+        Some(active_prompt.id().to_string()),
+        "the successor prompt must remain active and uncancelled"
+    );
+}
