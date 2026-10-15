@@ -98,6 +98,7 @@ fn run_apply(
             .clone();
         retire_removed_apply_bindings(store, env, &scopes)?;
     }
+    let mut workspace = CheckWorkspace::default();
     let mut good = std::collections::BTreeSet::new();
     for id in selected {
         let r = environment_requirements(env)
@@ -124,7 +125,7 @@ fn run_apply(
             .find(|receipt| receipt.requirement_id.as_deref() == Some(&id))
             .cloned();
         let mut checks = store.load_checks(project.id())?;
-        let mut observation = check_requirement(
+        let mut observation = check_requirement_in_workspace(
             ctx,
             env,
             r,
@@ -132,6 +133,7 @@ fn run_apply(
             &op.operation_id,
             &mut checks.public_bindings,
             std::time::Instant::now() + std::time::Duration::from_secs(60),
+            &mut workspace,
         );
         let mut result = apply_item_result(
             r,
@@ -177,7 +179,7 @@ fn run_apply(
                         commands.clear();
                         *legacy = None;
                     }
-                    let checked = check_requirement(
+                    let checked = check_requirement_in_workspace(
                         ctx,
                         env,
                         &probe,
@@ -185,6 +187,7 @@ fn run_apply(
                         &op.operation_id,
                         &mut checks.public_bindings,
                         std::time::Instant::now() + std::time::Duration::from_secs(60),
+                        &mut workspace,
                     );
                     // Applicability and probe-admission failures cannot authorize side effects.
                     // Only a measured readiness failure can be repaired by opted-in Setup.
@@ -296,7 +299,9 @@ fn run_apply(
                 commands.clear();
                 *legacy = None;
             }
-            let checked = check_requirement(
+            // Setup may change the folder, so its post-check measures again.
+            workspace = CheckWorkspace::default();
+            let checked = check_requirement_in_workspace(
                 ctx,
                 env,
                 &probe,
@@ -304,6 +309,7 @@ fn run_apply(
                 &op.operation_id,
                 &mut checks.public_bindings,
                 std::time::Instant::now() + std::time::Duration::from_secs(60),
+                &mut workspace,
             );
             if outcome.is_ok() && checked.status == EnvironmentObservationStatus::Ready {
                 observation = checked;

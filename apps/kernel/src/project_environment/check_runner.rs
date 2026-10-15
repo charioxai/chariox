@@ -47,6 +47,7 @@ impl ProjectEnvironmentStore {
         self.save_checks(project.id(), &checks)?;
         drop(lock);
         let selected = check_selection(&env, &operation.selected_items)?;
+        let mut workspace = CheckWorkspace::default();
         let mut last_progress = std::time::Instant::now();
         for r in env
             .project_requirements
@@ -71,7 +72,7 @@ impl ProjectEnvironmentStore {
                     stale: true,
                 }
             } else {
-                check_requirement(
+                check_requirement_in_workspace(
                     &ctx,
                     &env,
                     r,
@@ -79,6 +80,7 @@ impl ProjectEnvironmentStore {
                     &operation.operation_id,
                     &mut checks.public_bindings,
                     deadline,
+                    &mut workspace,
                 )
             };
             let _lock = self.lock_until(&env.local_project_id, deadline)?;

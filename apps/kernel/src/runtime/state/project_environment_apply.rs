@@ -65,6 +65,7 @@ impl KernelRuntimeState {
             };
             let mut checks = store.load_checks(project.id())?;
             let mut observations = vec![];
+            let mut workspace = CheckWorkspace::default();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             for r in environment_requirements(&env).filter(|r| selected.contains(&r.requirement_id))
             {
@@ -74,7 +75,7 @@ impl KernelRuntimeState {
                     ));
                 }
                 validate_project(&state, &project, &owner, &env, &store)?;
-                observations.push(check_requirement(
+                observations.push(check_requirement_in_workspace(
                     &ctx,
                     &env,
                     r,
@@ -82,6 +83,7 @@ impl KernelRuntimeState {
                     "apply-plan",
                     &mut checks.public_bindings,
                     deadline,
+                    &mut workspace,
                 ));
             }
             validate_project(&state, &project, &owner, &env, &store)?;
@@ -337,15 +339,12 @@ pub(in crate::runtime::state) fn validate_project(
 ) -> Result<(), DaemonError> {
     state.authorize_current_external_command()?;
     let current = state.owned.session_store.get_project(project.id())?;
-    if current.owner_user_id() != owner
-        || current.workspace_ids() != project.workspace_ids()
-        || {
-            let saved = store.snapshot_locked(&current)?;
-            saved.revision != env.revision
-                || saved.content_digest != env.content_digest
-                || folder_bindings_digest(&saved) != folder_bindings_digest(env)
-        }
-    {
+    if current.owner_user_id() != owner || current.workspace_ids() != project.workspace_ids() || {
+        let saved = store.snapshot_locked(&current)?;
+        saved.revision != env.revision
+            || saved.content_digest != env.content_digest
+            || folder_bindings_digest(&saved) != folder_bindings_digest(env)
+    } {
         return Err(environment_error(
             "Project ownership, revision or folder binding changed during Apply",
         ));

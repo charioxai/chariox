@@ -57,6 +57,27 @@ pub(crate) fn check_requirement(
     baseline: &mut BTreeMap<String, String>,
     deadline: Instant,
 ) -> MachineObservation {
+    check_requirement_in_workspace(
+        ctx,
+        env,
+        r,
+        target,
+        operation,
+        baseline,
+        deadline,
+        &mut super::check_workspace::CheckWorkspace::default(),
+    )
+}
+pub(crate) fn check_requirement_in_workspace(
+    ctx: &EnvironmentCheckContext,
+    env: &ProjectEnvironment,
+    r: &Requirement,
+    target: &EnvironmentTargetBinding,
+    operation: &str,
+    baseline: &mut BTreeMap<String, String>,
+    deadline: Instant,
+    workspace: &mut super::check_workspace::CheckWorkspace,
+) -> MachineObservation {
     let mut facts = inventory::facts();
     let budget = || {
         outcome(
@@ -83,21 +104,11 @@ pub(crate) fn check_requirement(
                 "This requirement is unavailable on this platform",
             );
         }
-        // MP-08 / MP-10 / MP-11: metadata on NFS/FUSE can block just like
-        // file reads. Its owned worker shares the operation's absolute budget.
-        let preflight = if matches!(&r.spec, RequirementSpec::Files { .. }) {
-            super::check_workspace::WorkspacePreflight {
-                roots: vec![],
-                folder_accessible: workspace(env, r).is_some(),
-            }
-        } else {
-            match super::check_files::workspace(&ctx.config, env, r, deadline) {
-                Ok(preflight) => preflight,
-                Err(_) => return outcome(NeedsYourInput, "workspace_preflight_unavailable", "Workspace metadata could not be checked within the probe budget; retry when the folder is available"),
-            }
+        let (roots, folder_accessible) = match workspace.for_requirement(&ctx.config, env, r, deadline) {
+            Ok(measured) => measured,
+            Err(()) => return outcome(NeedsYourInput, "workspace_preflight_unavailable", "Workspace metadata could not be checked within the probe budget; retry when the folder is available"),
         };
-        let roots = preflight.roots;
-        if !preflight.folder_accessible {
+        if !folder_accessible {
             return outcome(
                 Missing,
                 "folder_unavailable",
