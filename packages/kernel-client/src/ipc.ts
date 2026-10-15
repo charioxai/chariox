@@ -82,9 +82,11 @@ const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // worker, which can outlast the stall window; a replay then meets the first
 // one's operation guard and answers `busy` (or, once the first has finished,
 // restarts the worker again or is refused by the uninstall's generation fence)
-// although the first one succeeds. Once written, they wait for their answer
+// although the first one succeeds. Native socket exchanges also consume input
+// and output once, and their catalogs can exceed the response stall window.
+// Once written, these requests wait for their answer
 // and are never resent; losing the answer rejects with `outcome_unknown`.
-const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp"])
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "NativeProviderTransport"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"

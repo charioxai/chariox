@@ -19,6 +19,22 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
         expected_generation: "3".to_string(),
         delete_data: false,
     });
+    let native =
+        LocalDaemonRequest::NativeProviderTransport(crate::local::NativeProviderTransportRequest {
+            session_id: "room".into(),
+            attachment_id: "view".into(),
+            agent_id: "agent".into(),
+            provider_run_id: "run".into(),
+            operation: crate::local::NativeProviderTransportOperation::Open,
+        });
+    assert!(!request_is_cacheable(&native));
+    assert!(!should_persist_completed_result(&CommandFingerprint {
+        command_type: "native_provider.transport".into(),
+        source: "test".into(),
+        session_id: Some("room".into()),
+        attachment_id: Some("view".into()),
+        request_hash: 0,
+    }));
     assert!(!request_is_cacheable(&control));
     assert!(!request_is_cacheable(&uninstall));
     let client = include_str!("../../../../../packages/kernel-client/src/ipc.ts");
@@ -33,7 +49,14 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
                 .collect::<Vec<_>>()
         })
         .expect("the kernel client lists the requests it never resends");
-    assert_eq!(listed, ["ControlAppWorker", "UninstallApp"]);
+    assert_eq!(
+        listed,
+        [
+            "ControlAppWorker",
+            "UninstallApp",
+            "NativeProviderTransport"
+        ]
+    );
 }
 
 #[test]

@@ -281,7 +281,10 @@ limited to two per exact scope and 32 per kernel, and use 32-frame queues with
 256 KiB input frame/batch limits. Official catalog replies may reach 16 MiB
 and use the existing encrypted relay large-message framing (64 MiB envelope
 ceiling). Queued output has byte budgets of 32 MiB per connection and 256 MiB
-per kernel. Backpressure closes or rejects without replay.
+per kernel. Backpressure closes or rejects without replay. Native transport
+requests are never replayed after being written; a lost answer has an unknown
+outcome and requires reattachment. Provider frames are excluded from the
+in-memory command cache and persistent command-result history.
 This is a display/read/control transport: prompt start/steer/interrupt, arbitrary
 tool execution, login mutation and provider approval replies still use the
 normal kernel-owned prompt and RuntimeInteraction paths. Unsupported methods

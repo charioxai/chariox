@@ -143,7 +143,8 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     // which never resends it once written; the tests hold the two lists equal.
     !matches!(
         request,
-        LocalDaemonRequest::RequestKernelSudo(_)
+        LocalDaemonRequest::NativeProviderTransport(_)
+            | LocalDaemonRequest::RequestKernelSudo(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -933,7 +934,8 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "credential_enrollment.interaction.request"
+        "native_provider.transport"
+            | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"
