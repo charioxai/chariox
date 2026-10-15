@@ -3159,3 +3159,207 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: execute the generated hook with the actual event
+// consumer. A context request is not a provider admission acknowledgement.
+#[test]
+fn claude_skill_hook_block_leaves_no_running_prompt_and_next_turn_can_start() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let worktree = crate::test_support::TestWorktree::new("claude-skill-hook-admission");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let _attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "skill-hook-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-skill-hook-admission-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    let responses = root.join("hook-context-responses");
+    fs::create_dir_all(&responses).unwrap();
+    let script = root.join("hook.mjs");
+    fs::write(&script, crate::provider::claude_native_hook_handler()).unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "skill-hook-run",
+        &context,
+        &events,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let mut results = Vec::new();
+    for prompt in ["$review inspect source", "ordinary next task"] {
+        fs::write(&context, "").unwrap();
+        fs::write(&events, "").unwrap();
+        let mut child = Command::new("node")
+            .arg(&script)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &events)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &context)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", "0")
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &responses)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(
+                serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":prompt})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        while child.try_wait().unwrap().is_none() {
+            ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process(session.id(), run.id(), &run, None)
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .map(|p| p.prompt().to_string());
+        results.push((response, active));
+    }
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(results[0].0["decision"], "block");
+    assert_eq!(
+        results[0].1, None,
+        "blocked hook must never create a running prompt"
+    );
+    assert_eq!(results[1].0["decision"], Value::Null);
+    assert_eq!(
+        results[1].1.as_deref(),
+        Some("ordinary next task"),
+        "blocked hook must not hold the next task in a queue"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: context preparation is not dispatch acceptance;
+// a rejected managed hook must settle only its own matching injected turn.
+#[test]
+fn claude_skill_hook_context_request_and_rejection_are_prompt_scoped() {
+    let worktree = crate::test_support::TestWorktree::new("claude-skill-hook-scoped");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "scoped-hook-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-skill-hook-scoped-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context = root.join("hidden-context.txt");
+    let events = root.join("events.jsonl");
+    fs::write(&context, "managed hidden context").unwrap();
+    fs::write(&events, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "scoped-hook-run",
+        &context,
+        &events,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "$review inspect source",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    let marker = format!("injected:{}", prompt.id());
+    write_claude_native_marker(context.to_str().unwrap(), &marker);
+    fs::write(&events, serde_json::json!({"hook_event_name":"UserPromptContextRequest", "hook_context_request_id":"scoped-context", "prompt":prompt.prompt()}).to_string()).unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let prepared = fs::read_to_string(root.join("hook-context-responses/scoped-context.txt")).ok();
+    let waiting = claude_native_marker(context.to_str().unwrap());
+    let mut unrelated_survives = true;
+    for (id, text) in [
+        ("stale-prompt", prompt.prompt()),
+        (prompt.id(), "different user prompt"),
+    ] {
+        fs::write(&events, serde_json::json!({"hook_event_name":"UserPromptSubmitRejected", "native_prompt_id":id, "prompt":text}).to_string()).unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+        unrelated_survives &= app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .is_some_and(|active| active.id() == prompt.id());
+    }
+    fs::write(&events, serde_json::json!({"hook_event_name":"UserPromptSubmitRejected", "native_prompt_id":prompt.id(), "prompt":prompt.prompt()}).to_string()).unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let settled = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap()
+        .is_none();
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(prepared.as_deref(), Some("managed hidden context"));
+    assert_eq!(
+        waiting.as_deref(),
+        Some(marker.as_str()),
+        "context request cannot acknowledge injection"
+    );
+    assert!(
+        unrelated_survives,
+        "stale or mismatched rejection cannot settle another turn"
+    );
+    assert!(
+        settled,
+        "matching rejected hook must settle its already active managed prompt"
+    );
+}

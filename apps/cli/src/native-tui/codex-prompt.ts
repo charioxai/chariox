@@ -9,7 +9,12 @@ export function extractCodexPrompt(params: Record<string, unknown> | undefined):
     const record = part as Record<string, unknown>
     return record.type === "text" && typeof record.text === "string" ? [record.text] : []
   }).join("\n")
-  return text.endsWith("\n") ? text : `${text}\n`
+  // Skill input paths come from an untrusted native client. Preserve only the
+  // invocation label; the kernel resolves a current source-bound selection.
+  const missing = extractCodexSkillNames(params).filter(name =>
+    !new RegExp(`\\$${name}(?![a-zA-Z0-9_-])`).test(text))
+  const prompt = [text, ...missing.map(name => `$${name}`)].filter(Boolean).join("\n")
+  return prompt.endsWith("\n") ? prompt : `${prompt}\n`
 }
 
 // MP-08 / MP-10: Codex clears a pending steer by comparing its committed
@@ -64,4 +69,17 @@ function filenameFromUrl(value: string): string | null {
     const name = path.basename(value)
     return name || null
   }
+}
+
+// MP-08 / MP-10 / MP-11: never forward a client-supplied native skill path.
+export function extractCodexSkillNames(params: Record<string, unknown> | undefined): string[] {
+  const names = new Set<string>()
+  for (const part of Array.isArray(params?.input) ? params.input : []) {
+    if (!part || typeof part !== "object" || part.type !== "skill") continue
+    if (typeof part.name !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(part.name)) {
+      throw new Error("invalid Codex skill input; refresh skills and select again")
+    }
+    names.add(part.name)
+  }
+  return [...names]
 }

@@ -67,6 +67,7 @@ pub enum LocalDaemonRequest {
     LaunchProviderRun(LaunchProviderRunRequest),
     LaunchProviderRuns(LaunchProviderRunsRequest),
     ListProjects(ListProjectsRequest),
+    CreateProject(CreateProjectRequest),
     GetProjectEnvironment(GetProjectEnvironmentRequest),
     DetectProjectEnvironment(DetectProjectEnvironmentRequest),
     PreviewEnvironmentDiff(PreviewEnvironmentDiffRequest),

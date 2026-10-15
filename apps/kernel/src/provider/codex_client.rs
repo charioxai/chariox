@@ -10,6 +10,7 @@ use super::resolve_codex_executable;
 mod approval_bodies;
 mod auth;
 mod catalog;
+mod skills;
 mod health;
 mod interrupt_cleanup;
 mod json_rpc;

@@ -111,10 +111,8 @@ fn queued_selection(value: &Value) -> bool {
     // Cancel explicit selections, including old invocation spelling. Do not
     // reinterpret an unknown $name as a provider-native selection after reset.
     let prompt = value.get("prompt").and_then(Value::as_str).unwrap_or("");
-    prompt
-        .split_whitespace()
-        .any(|word| word.starts_with('$') && word.len() > 1)
-        || prompt.contains("/skill ")
+    !crate::skill::selection::explicit_skill_names(prompt).is_empty()
+        || prompt.trim_start().starts_with("/skill ")
         || value
             .get("skill_selections")
             .and_then(Value::as_array)
@@ -270,6 +268,32 @@ mod tests {
         assert_eq!(value["queued_prompts"], json!([ordinary]));
         assert!(value["active_prompt"].is_null());
         assert_eq!(value["history"][0]["prompt"], "Use $review");
+    }
+    #[test]
+    fn skill_reset_preserves_currency_shell_variables_and_literal_code() {
+        let prompts = [
+            "Inspect $HOME/.config",
+            "The budget is $42",
+            "Discuss `$review` without loading it",
+            "```sh\n$review\n```",
+            "Read \"$review\" as a quoted example",
+            r"The escaped marker is \$review",
+            "[attachment]($review)",
+            "Explain the /skill command in the old docs",
+        ]
+        .map(|prompt| json!({"prompt":prompt,"status":"Queued"}));
+        let mut value = json!({"queued_prompts":prompts,
+            "active_prompt":{"prompt":"Inspect $HOME/.config","status":"Running"}});
+        let before = value.clone();
+        retire(&mut value);
+        assert_eq!(value, before);
+        let mut selected = json!({"queued_prompts":[
+            {"prompt":"Use $review","status":"Queued"},
+            {"prompt":"Read the file","skill_selections":[{"name":"review"}]},
+            {"prompt":"/skill review","status":"Queued"}
+        ]});
+        retire(&mut selected);
+        assert_eq!(selected["queued_prompts"], json!([]));
     }
     #[test]
     fn skill_reset_does_not_reinterpret_user_json_or_v2_state() {

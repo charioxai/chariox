@@ -1,6 +1,14 @@
 // MP-08 / MP-10 / MP-11: no client-owned resolver, bodies or capability grants.
 import type { SkillsV2Request, SkillsV2Response, SkillCatalogMutation, SkillSelection } from "./kernel-types-skills-v2.js"
+import { SKILLS_MIN_LOCAL_PROTOCOL } from "./kernel-types-skills-v2.js"
 export { SKILLS_MIN_LOCAL_PROTOCOL, SKILLS_MIN_PEER_PROTOCOL } from "./kernel-types-skills-v2.js"
+
+export const SKILLS_V2_RUNTIME_CAPABILITY = "skills_v2_runtime"
+// 533/141 is also used by foundation builds that deliberately reject V2 RPCs.
+export function supportsSkillsV2Runtime(protocolVersion: number, capabilities: readonly string[] | null | undefined): boolean {
+  return Number.isInteger(protocolVersion) && protocolVersion >= SKILLS_MIN_LOCAL_PROTOCOL
+    && capabilities?.includes(SKILLS_V2_RUNTIME_CAPABILITY) === true
+}
 
 export function skillsV2Request(request: SkillsV2Request): { SkillsV2: SkillsV2Request } {
   return { SkillsV2: request }
