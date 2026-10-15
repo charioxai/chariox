@@ -4,20 +4,25 @@ use crate::git_observer::CompletedTurnSettlementStatus;
 
 #[test]
 fn mp08_mp10_failed_without_termination_marks_home_error() {
-    assert_failed_projection(None);
+    assert_failed_projection(None, false);
 }
 
 #[test]
 fn mp08_mp10_failed_without_termination_fails_workflow_with_valid_output() {
-    assert_failed_projection(Some(true));
+    assert_failed_projection(Some(true), false);
 }
 
 #[test]
 fn mp08_mp10_failed_without_termination_fails_workflow_without_output() {
-    assert_failed_projection(Some(false));
+    assert_failed_projection(Some(false), false);
 }
 
-fn assert_failed_projection(workflow_output: Option<bool>) {
+#[test]
+fn mp08_projection_paged_workflow_waits_for_final_failure_with_valid_output() {
+    assert_failed_projection(Some(true), true);
+}
+
+fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
     let mut app =
         crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -139,28 +144,115 @@ fn assert_failed_projection(workflow_output: Option<bool>) {
         &mut app,
         &crate::provider::projected_leased_provider_run_id("leased", "run"),
     );
-    let outcome = RemoteLeaseRuntime::new(&mut app)
-        .project_remote_runtime_projection(
-            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
-            RelayPeerEvent::LeasedRuntimeProjection {
-                delivery: None,
-                home_session_id: session.id().into(),
-                home_agent_id: agent.id().into(),
-                provider_run_id: "run".into(),
-                provider_run: None,
-                prompts: vec![],
-                output_chunks: vec![],
-                notices: vec![],
-                completions: vec![RelayProjectedCompletion {
-                    message_id: "failed-worker-turn".into(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(prompt.id().into()),
-                    settlement_status: Some(CompletedTurnSettlementStatus::Failed),
-                    provider_termination: None,
-                }],
+    let event = RelayPeerEvent::LeasedRuntimeProjection {
+        delivery: None,
+        home_session_id: session.id().into(),
+        home_agent_id: agent.id().into(),
+        provider_run_id: "run".into(),
+        provider_run: None,
+        prompts: vec![],
+        output_chunks: if paged {
+            (0..12)
+                .map(|n| RelayProjectedOutputChunk {
+                    kind: TerminalOutputKind::ProviderOutput,
+                    merge_key: Some(format!("page-{n}")),
+                    bytes: vec![b'x'; 16 * 1024],
+                })
+                .collect()
+        } else {
+            vec![]
+        },
+        notices: vec![],
+        completions: vec![RelayProjectedCompletion {
+            message_id: "failed-worker-turn".into(),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+            home_prompt_id: Some(prompt.id().into()),
+            settlement_status: Some(CompletedTurnSettlementStatus::Failed),
+            provider_termination: None,
+        }],
+    };
+    let pages = if paged {
+        delivery::pages(
+            event,
+            crate::transport::relay_peer::RelayProjectionDelivery {
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased".into(),
+                sequence: 1,
             },
         )
-        .unwrap();
+    } else {
+        vec![event]
+    };
+    if paged {
+        assert!(pages.len() > 1);
+    }
+    let total = pages.len();
+    let mut outcome = RemoteRuntimeProjectionOutcome::default();
+    let mut observed_bytes = 0;
+    for (index, event) in pages.into_iter().enumerate() {
+        let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = &event;
+        observed_bytes += output_chunks
+            .iter()
+            .map(|chunk| chunk.bytes.len())
+            .sum::<usize>();
+        outcome = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                event,
+            )
+            .unwrap();
+        assert!(
+            outcome.accepted,
+            "MP-08 every retained page must stay admitted"
+        );
+        if paged {
+            assert!(outcome.acknowledgement.is_some());
+        }
+        if index + 1 < total {
+            assert!(
+                outcome.completions.is_empty(),
+                "MP-08 output-only pages cannot settle valid workflow output"
+            );
+            assert!(app
+                .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .unwrap()
+                .is_some());
+            assert_eq!(
+                app.agents
+                    .get_agent(agent.id())
+                    .unwrap()
+                    .remote_execution()
+                    .unwrap()
+                    .active_worker_provider_run_id
+                    .as_deref(),
+                Some("run")
+            );
+        }
+    }
+    if paged {
+        assert_eq!(observed_bytes, 12 * 16 * 1024);
+        let history = app
+            .operational_history_store()
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session.id().into()),
+                agent_id: Some(agent.id().into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .filter(
+                    |event| event
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content.len() == 16 * 1024
+                            && content.bytes().all(|b| b == b'x'))
+                )
+                .count(),
+            12
+        );
+    }
     assert!(outcome.accepted);
     assert_eq!(outcome.completions.len(), 1);
     assert!(

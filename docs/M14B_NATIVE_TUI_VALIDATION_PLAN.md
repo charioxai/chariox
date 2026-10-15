@@ -491,6 +491,14 @@ Focused supplementary guards include
 `mp08_projection_home_deduplicates_replayed_output_and_rechecks_admission`,
 and `mp08_projection_delivery_531_139_snapshot_and_hash`.
 
+MP-08 / MP-10 / MP-11 additionally require a remote workflow with validated
+pending final output and a transcript spanning several retained pages. Output-only
+pages must retain the active prompt/run binding; the matching final completion
+must determine success, cancellation or failure. Exercise a final failure and
+verify every output page arrives before failure is visible. The home-side
+`mp08_projection_paged_workflow_waits_for_final_failure_with_valid_output`
+is a supplementary regression, not that live workflow drill.
+
 
 ### MP-08 / MP-10 / MP-11: native catalog backpressure and reload states
 
@@ -511,3 +519,12 @@ screenshots. A DOM check ending at the first restored frame cannot accept this
 case. Original intermittent restore errors remain blockers until the actual
 failing flow is green; source tests and a simple held-session reload are not
 substitutes. The dedicated-worker two-hour and quiet-host timing gates remain.
+
+MP-08 / MP-10 / MP-11: while an official native catalog burst is backpressured,
+close the attachment normally, then separately revoke its run authority. Both
+must close the upstream socket and release retained frame/byte permits promptly;
+reattaching must not accumulate old sockets. Cover both the32-frame queue and
+32MiB connection budget. The four `mp08_native_capacity_*` local socket tests
+prove these capacity/cancellation boundaries only; they do not replace the real
+native-client drill. Fresh waiting-room entry also must show Loading Catalog
+while discovery is idle or retrying; only a completed failure is unavailable.

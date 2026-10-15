@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
 use super::native_provider_buffer::{
@@ -44,6 +44,7 @@ struct Connection {
     open_request_id: String,
     output_budget: NativeConnectionOutputBudget,
     touched: std::sync::Mutex<std::time::Instant>,
+    shutdown: watch::Sender<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -187,6 +188,11 @@ fn validate_endpoint(endpoint: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
+// Return no watch Ref: select branches may await after another branch wins.
+async fn wait_for_shutdown(receiver: &mut watch::Receiver<bool>) {
+    let _ = receiver.wait_for(|closed| *closed).await;
+}
+
 impl NativeProviderSockets {
     pub(crate) async fn execute<F, Fut>(
         &self,
@@ -253,9 +259,11 @@ impl NativeProviderSockets {
                 let (sender, mut outbound) = mpsc::channel::<String>(QUEUE_FRAMES);
                 let (inbound, receiver) = mpsc::channel::<NativeBufferedFrame>(QUEUE_FRAMES);
                 let output_budget = self.1.connection();
+                let (shutdown, mut shutdown_requested) = watch::channel(false);
                 let entry = Arc::new(Connection {
                     scope,
                     sender,
+                    shutdown,
                     exchange: Mutex::new(NativeExchangeState::new(receiver)),
                     open_request_id: request_id,
                     output_budget: output_budget.clone(),
@@ -269,6 +277,7 @@ impl NativeProviderSockets {
                     let mut interval = tokio::time::interval(Duration::from_secs(1));
                     loop {
                         tokio::select! {
+                            _ = wait_for_shutdown(&mut shutdown_requested) => break,
                             _ = interval.tick() => {
                                 let idle = entry.touched.lock().expect("native touch lock").elapsed() > Duration::from_secs(120);
                                 if idle || authorize().await.is_err() { break; }
@@ -279,7 +288,29 @@ impl NativeProviderSockets {
                             }
                             message = socket.next() => {
                                 match message {
-                                    Some(Ok(Message::Text(frame))) => { let Ok(frame) = output_budget.reserve_wait(frame.to_string()).await else { break; }; if authorize().await.is_err() || tokio::time::timeout(Duration::from_secs(120), inbound.send(frame)).await.map_or(true, |result| result.is_err()) { break; } }
+                                    Some(Ok(Message::Text(frame))) => {
+                                        // MP-08 / MP-11: neither capacity wait may mask Close,
+                                        // attachment/run revocation or the existing idle bound.
+                                        let forward = async {
+                                            let frame = output_budget.reserve_wait(frame.to_string()).await?;
+                                            authorize().await?;
+                                            tokio::time::timeout(Duration::from_secs(120), inbound.send(frame))
+                                                .await.map_err(|_| error("native output queue timed out"))?
+                                                .map_err(|_| error("native output receiver closed"))
+                                        };
+                                        tokio::pin!(forward);
+                                        let forwarded = loop {
+                                            tokio::select! {
+                                                _ = wait_for_shutdown(&mut shutdown_requested) => break false,
+                                                result = &mut forward => break result.is_ok(),
+                                                _ = interval.tick() => {
+                                                    let idle = entry.touched.lock().expect("native touch lock").elapsed() > Duration::from_secs(120);
+                                                    if idle || authorize().await.is_err() { break false; }
+                                                }
+                                            }
+                                        };
+                                        if !forwarded { break; }
+                                    }
                                     Some(Ok(Message::Ping(data))) => { if tokio::time::timeout(Duration::from_secs(1), socket.send(Message::Pong(data))).await.map_or(true, |result| result.is_err()) { break; } }
                                     Some(Ok(Message::Pong(_))) => {}
                                     _ => break,
@@ -295,7 +326,10 @@ impl NativeProviderSockets {
                     drop(inbound);
                     drop(outbound);
                     loop {
-                        interval.tick().await;
+                        tokio::select! {
+                            _ = wait_for_shutdown(&mut shutdown_requested) => break,
+                            _ = interval.tick() => {}
+                        }
                         let Some(entries) = weak_entries.upgrade() else {
                             break;
                         };
@@ -397,9 +431,8 @@ impl NativeProviderSockets {
                     if entry.scope != scope {
                         return Err(error("native connection attachment or run mismatch"));
                     }
-                    // Wake the socket actor immediately on close.
-                    *entry.touched.lock().expect("native touch lock") =
-                        std::time::Instant::now() - Duration::from_secs(121);
+                    // Cancellation also interrupts byte/channel backpressure.
+                    entry.shutdown.send_replace(true);
                     entries.remove(&connection_id);
                 }
                 Ok(NativeProviderTransportResult {
@@ -415,410 +448,4 @@ impl NativeProviderSockets {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn mp08_native_transport_rejects_prompt_approval_and_arbitrary_endpoint() {
-        for method in [
-            "turn/start",
-            "turn/steer",
-            "turn/interrupt",
-            "command/exec",
-            "account/login/start",
-            "config/value/write",
-        ] {
-            assert!(
-                validate_frame(&serde_json::json!({"id":1,"method":method}).to_string()).is_err()
-            );
-        }
-        assert!(validate_frame(r#"{"id":1,"result":{"decision":"accept"}}"#).is_err());
-        assert!(validate_frame(r#"{"id":1,"method":"initialize"}"#).is_ok());
-        for endpoint in [
-            "ws://example.com:1234",
-            "ws://127.0.0.1",
-            "wss://localhost:1234",
-            "ws://user@localhost:1234",
-        ] {
-            assert!(validate_endpoint(endpoint).is_err());
-        }
-        assert!(validate_endpoint("ws://127.0.0.1:1234").is_ok());
-    }
-
-    #[test]
-    fn mp08_native_folder_trust_is_only_for_the_owning_workspace() {
-        let scope = SocketScope {
-            session_id: "room".into(),
-            agent_id: "agent".into(),
-            attachment_id: "attachment".into(),
-            provider_run_id: "run".into(),
-            leased_agent_id: None,
-            endpoint: "ws://127.0.0.1:1234".into(),
-            working_directory: Some("/workspace/repo".into()),
-        };
-        let frame = serde_json::json!({"id":1,"method":"config/batchWrite","params":{
-            "edits":[{"keyPath":"projects.\"/workspace/repo\".trust_level","value":"trusted","mergeStrategy":"replace"}],
-            "filePath":null,"expectedVersion":null,"reloadUserConfig":true
-        }});
-        assert!(validate_scoped_frame(&frame.to_string(), &scope).is_ok());
-        for (field, value) in [
-            (
-                "keyPath",
-                serde_json::json!("projects.\"/workspace/other\".trust_level"),
-            ),
-            ("keyPath", serde_json::json!("sandbox_mode")),
-            ("value", serde_json::json!("danger-full-access")),
-            ("mergeStrategy", serde_json::json!("upsert")),
-        ] {
-            let mut bad = frame.clone();
-            bad["params"]["edits"][0][field] = value;
-            assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
-        }
-        let mut bad = frame.clone();
-        bad["params"]["filePath"] = serde_json::json!("/workspace/config.toml");
-        assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
-        let mut bad = frame.clone();
-        bad["params"]["edits"]
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!({"keyPath":"model","value":"other","mergeStrategy":"replace"}));
-        assert!(validate_scoped_frame(&bad.to_string(), &scope).is_err());
-    }
-
-    #[tokio::test]
-    async fn mp08_native_large_official_catalog_uses_shared_relay_sized_frames() {
-        use base64::Engine as _;
-        use sha2::{Digest, Sha256};
-        use std::io::Read;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let catalog = serde_json::json!({"id":1,"result":{"catalog":"x".repeat(14 * 1024 * 1024)}})
-            .to_string();
-        let expected = catalog.len();
-        let expected_hash = Sha256::digest(catalog.as_bytes());
-        let upstream = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-            socket.send(Message::Text(catalog.into())).await.unwrap();
-            while let Some(Ok(message)) = socket.next().await {
-                if matches!(message, Message::Close(_)) {
-                    break;
-                }
-            }
-        });
-        let scope = SocketScope {
-            session_id: "room".into(),
-            agent_id: "agent".into(),
-            attachment_id: "attachment".into(),
-            provider_run_id: "run".into(),
-            leased_agent_id: None,
-            endpoint: format!("ws://{address}"),
-            working_directory: Some("/workspace".into()),
-        };
-        let sockets = NativeProviderSockets::default();
-        let id = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Open {
-                    request_id: "open-test".into(),
-                },
-                || async { Ok(()) },
-            )
-            .await
-            .unwrap()
-            .connection_id;
-        let mut received = false;
-        let mut compressed = Vec::new();
-        for index in 0..500 {
-            let result = sockets
-                .execute(
-                    scope.clone(),
-                    NativeProviderTransportOperation::Exchange {
-                        connection_id: id.clone(),
-                        frames: vec![],
-                        sequence: index + 1,
-                    },
-                    || async { Ok(()) },
-                )
-                .await
-                .unwrap();
-            assert!(result.frames.is_empty(), "a large reply must use bounded pages");
-            assert!(serde_json::to_vec(&result).unwrap().len() < 128 * 1024);
-            if let Some(page) = result.gzip_fragment {
-                assert_eq!(page.offset as usize, compressed.len());
-                compressed.extend(base64::engine::general_purpose::STANDARD.decode(page.data).unwrap());
-                if compressed.len() == page.total_bytes as usize {
-                    let mut decoded = Vec::new();
-                    flate2::read::GzDecoder::new(compressed.as_slice()).read_to_end(&mut decoded).unwrap();
-                    assert_eq!(decoded.len(), expected);
-                    assert_eq!(Sha256::digest(&decoded), expected_hash);
-                    assert!(!result.closed);
-                    received = true;
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            received,
-            "native official 14 MiB catalog must arrive intact"
-        );
-        let closed = sockets
-            .execute(
-                scope,
-                NativeProviderTransportOperation::Close { connection_id: id },
-                || async { Ok(()) },
-            )
-            .await
-            .unwrap();
-        assert!(closed.closed);
-        tokio::time::timeout(Duration::from_secs(3), upstream)
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    // MP-08 / MP-10 / MP-11: a final reply must survive upstream closure and reply loss.
-    #[tokio::test]
-    async fn mp08_native_closed_upstream_retains_final_receipt() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let upstream = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-            socket
-                .send(Message::Text(r#"{"id":7,"result":{}}"#.into()))
-                .await
-                .unwrap();
-            socket.close(None).await.unwrap();
-        });
-        let sockets = NativeProviderSockets::default();
-        let scope = SocketScope {
-            session_id: "room".into(),
-            agent_id: "agent".into(),
-            attachment_id: "view".into(),
-            provider_run_id: "run".into(),
-            leased_agent_id: None,
-            endpoint: format!("ws://{address}"),
-            working_directory: Some("/workspace".into()),
-        };
-        let opened = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Open {
-                    request_id: "open-final".into(),
-                },
-                || async { Ok(()) },
-            )
-            .await
-            .unwrap();
-        upstream.await.unwrap();
-        // Wait until the owner observes the upstream close rather than racing its final frame.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let operation = NativeProviderTransportOperation::Exchange {
-            connection_id: opened.connection_id.clone(),
-            sequence: 1,
-            frames: vec![],
-        };
-        let first = sockets
-            .execute(scope.clone(), operation.clone(), || async { Ok(()) })
-            .await
-            .unwrap();
-        assert_eq!(first.frames, [r#"{"id":7,"result":{}}"#]);
-        assert!(first.closed);
-        let repeated = sockets
-            .execute(scope.clone(), operation, || async { Ok(()) })
-            .await
-            .unwrap();
-        assert_eq!(repeated, first);
-        let repeated_open = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Open {
-                    request_id: "open-final".into(),
-                },
-                || async { Ok(()) },
-            )
-            .await
-            .unwrap();
-        assert_eq!(repeated_open.connection_id, opened.connection_id);
-        sockets
-            .execute(
-                scope,
-                NativeProviderTransportOperation::Close {
-                    connection_id: opened.connection_id,
-                },
-                || async { Ok(()) },
-            )
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn mp08_native_socket_fences_attachment_and_passive_run_revocation() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (ended_tx, ended_rx) = tokio::sync::oneshot::channel();
-        let writes = Arc::new(AtomicUsize::new(0));
-        let writes_observed = writes.clone();
-        let upstream = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-            while let Some(Ok(message)) = socket.next().await {
-                match message {
-                    Message::Text(_) => {
-                        writes_observed.fetch_add(1, Ordering::SeqCst);
-                        socket
-                            .send(Message::Text(
-                                r#"{"id":1,"result":{"userAgent":"official-test-seam"}}"#.into(),
-                            ))
-                            .await
-                            .unwrap();
-                    }
-                    Message::Close(_) => break,
-                    _ => {}
-                }
-            }
-            let _ = ended_tx.send(());
-        });
-        let scope = SocketScope {
-            session_id: "room".into(),
-            agent_id: "agent".into(),
-            attachment_id: "attachment".into(),
-            provider_run_id: "run".into(),
-            leased_agent_id: Some("lease-agent".into()),
-            endpoint: format!("ws://{address}"),
-            working_directory: Some("/workspace/repo".into()),
-        };
-        let allowed = Arc::new(AtomicBool::new(true));
-        let guard = {
-            let allowed = allowed.clone();
-            move || {
-                let allowed = allowed.clone();
-                async move {
-                    if allowed.load(Ordering::SeqCst) {
-                        Ok(())
-                    } else {
-                        Err(error("run replaced"))
-                    }
-                }
-            }
-        };
-        let sockets = NativeProviderSockets::default();
-        let id = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Open {
-                    request_id: "open-test".into(),
-                },
-                guard.clone(),
-            )
-            .await
-            .unwrap()
-            .connection_id;
-        let replayed_open = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Open {
-                    request_id: "open-test".into(),
-                },
-                guard.clone(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            replayed_open.connection_id, id,
-            "lost Open acknowledgement cannot create another upstream"
-        );
-        let mut foreign = scope.clone();
-        foreign.attachment_id = "foreign".into();
-        assert!(sockets
-            .execute(
-                foreign,
-                NativeProviderTransportOperation::Close {
-                    connection_id: id.clone()
-                },
-                guard.clone()
-            )
-            .await
-            .is_err());
-        sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Exchange {
-                    connection_id: id.clone(),
-                    frames: vec![r#"{"id":1,"method":"initialize"}"#.into()],
-                    sequence: 1,
-                },
-                guard.clone(),
-            )
-            .await
-            .unwrap();
-        let replayed = sockets
-            .execute(
-                scope.clone(),
-                NativeProviderTransportOperation::Exchange {
-                    connection_id: id.clone(),
-                    frames: vec![r#"{"id":1,"method":"initialize"}"#.into()],
-                    sequence: 1,
-                },
-                guard.clone(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(replayed.sequence, 1);
-        let mut observed = false;
-        for index in 0..100 {
-            let result = sockets
-                .execute(
-                    scope.clone(),
-                    NativeProviderTransportOperation::Exchange {
-                        connection_id: id.clone(),
-                        frames: vec![],
-                        sequence: index + 2,
-                    },
-                    guard.clone(),
-                )
-                .await
-                .unwrap();
-            if !result.frames.is_empty() {
-                observed = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(observed);
-        assert_eq!(
-            writes.load(Ordering::SeqCst),
-            1,
-            "duplicate exchange cannot resend official frames"
-        );
-        allowed.store(false, Ordering::SeqCst);
-        assert!(
-            sockets
-                .execute(
-                    scope.clone(),
-                    NativeProviderTransportOperation::Open {
-                        request_id: "open-test".into()
-                    },
-                    guard.clone()
-                )
-                .await
-                .is_err(),
-            "replay cannot bypass revoked run authority"
-        );
-        tokio::time::timeout(Duration::from_secs(3), ended_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        upstream.await.unwrap();
-        // The socket stops even when a revoked attachment never polls again.
-        for _ in 0..100 {
-            if sockets.0.lock().await.is_empty() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("revoked native connection was retained");
-    }
-}
+mod tests;

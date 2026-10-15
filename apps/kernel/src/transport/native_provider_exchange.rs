@@ -80,6 +80,11 @@ impl NativeExchangeState {
         Ok(None)
     }
 
+    #[cfg(test)]
+    pub(super) fn buffered_frames(&self) -> usize {
+        self.receiver.len()
+    }
+
     pub(super) fn take_frame(&mut self) -> Option<NativeBufferedFrame> {
         if self.partial.is_some() {
             None

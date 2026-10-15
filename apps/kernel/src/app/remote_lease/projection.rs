@@ -1156,6 +1156,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Ok(outcome);
         }
+        let receipted = delivery.is_some();
         if let Some(delivery) = delivery {
             if delivery.execution_lease_id != remote.execution_lease_id
                 || delivery.leased_agent_id != remote.leased_agent_id
@@ -1372,7 +1373,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     &active_prompt,
                     Some(provider_run_id),
                 );
-            if !saw_completion && !workflow_output_ready {
+            // MP-08 / MP-10 / MP-11: validated workflow output may already
+            // exist while retained transcript pages are still arriving. Only
+            // the matching completion follows the worker's final output page.
+            // Keep run admission until that definitive boundary is consumed.
+            if !saw_completion && (receipted || !workflow_output_ready) {
                 return Ok(outcome);
             }
             // MP-08 / MP-10 / MP-11: a worker's definitive cancellation failure
