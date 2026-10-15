@@ -15,16 +15,17 @@ static int counted_compare(const void *a,const void *b,size_t n){
 #undef memcmp
 
 /* The raster is supplied directly, without launching an X server. */
-Atom XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)only;return !strcmp(name,"_GTK_FRAME_EXTENTS")?2:1;}
+Atom XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)only;return !strcmp(name,"_GTK_FRAME_EXTENTS")?2:!strcmp(name,"_NET_WM_STATE")?3:!strcmp(name,"_NET_WM_STATE_FULLSCREEN")?4:1;}
 int XGetWindowProperty(Display *d,Window w,Atom p,long off,long len,Bool del,Atom requested,
     Atom *actual,int *format,unsigned long *count,unsigned long *remaining,unsigned char **data){
     (void)d;(void)w;(void)off;(void)len;(void)del;(void)requested;
-    if(p==2){*actual=None;*format=0;*count=*remaining=0;*data=NULL;return Success;}
+    if(p==2||p==3){*actual=None;*format=0;*count=*remaining=0;*data=NULL;return Success;}
     *actual=XA_CARDINAL;*format=32;*count=1;*remaining=0;
     unsigned long *pid=malloc(sizeof(*pid));*pid=42;*data=(unsigned char*)pid;return Success;
 }
-Status XGetGeometry(Display *d,Drawable a,Window *root,int *x,int *y,unsigned *w,unsigned *h,unsigned *border,unsigned *depth){
-    (void)d;(void)a;*root=0;*x=*y=0;*w=1280;*h=800;*border=0;*depth=24;return 1;
+Status XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
+    (void)d;(void)w;memset(attributes,0,sizeof(*attributes));
+    attributes->width=1280;attributes->height=800;attributes->map_state=IsViewable;return 1;
 }
 Bool XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
     (void)d;(void)a;(void)image;(void)x;(void)y;(void)plane;return True;

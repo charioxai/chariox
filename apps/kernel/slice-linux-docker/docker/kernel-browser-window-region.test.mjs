@@ -47,3 +47,30 @@ test('MP-11 async mirror geometry retirement precedes raster publication',async(
  source.subscribe(()=>{encoded++;});await source.publish();await source.close();
  assert.equal(checks,1);assert.equal(encoded,0);assert.equal(source.latest,null);assert.equal(releases,1);
 });
+
+test('MP-08/MP-10/MP-11 auxiliary producer consumes the owned whole-window binding at both densities',()=>{
+ for(const scale of [1,2]){
+  const window={id:43,width:641*scale,height:201*scale};
+  const rect={left:0,top:0,width:window.width-window.width%2,height:window.height-window.height%2};
+  const source=new NativeWindowRegionCapture({surface:'browser_auxiliary',window,rect,scale,
+   isCurrent:()=>true,policy:{},allowed:()=>true});
+  assert.equal(source.region.window_region.id,43);
+  assert.equal(source.region.contentTop,0);
+  assert.equal(source.region.css_width,rect.width/scale);
+  assert.equal(source.region.css_height,rect.height/scale);
+  assert.equal(source.point(rect.width/scale-1,rect.height/scale-1),true);
+  assert.equal(source.point(rect.width/scale,0),false);
+  // Browser shortcuts still belong to the band arbiter.
+  source.attested=true;assert.equal(source.chord(0x6c,2),false);
+ }
+});
+test('MP-11 auxiliary regions require an exact window and cannot crop arbitrary page bounds',()=>{
+ const window={id:43,width:640,height:200},rect={left:0,top:0,width:640,height:200};
+ for(const [w,r,content] of [
+  [{width:640,height:200},rect,undefined],
+  [window,{...rect,left:2,width:638},undefined],
+  [window,{...rect,top:2,height:198},undefined],
+  [window,{...rect,height:198},undefined],
+  [window,rect,200],
+ ])assert.throws(()=>windowRegionGeometry('browser_auxiliary',w,r,content,1),/region|window/);
+});

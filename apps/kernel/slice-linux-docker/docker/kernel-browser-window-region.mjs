@@ -1,8 +1,6 @@
 // MP-08/MP-10/MP-11: kernel-private region producer for the shared video pump.
 // A consumer supplies an admitted kernel lease and kernel-resolved window
 // geometry. This is not a client API for naming windows, PIDs or policies.
-import {mkdtemp} from 'node:fs/promises';
-import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
 import {startNativeReadback} from './kernel-browser-native-readback.mjs';
@@ -13,14 +11,23 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 export function windowRegionGeometry(surface,window,rect,contentHeight,scale){
  const {width,height}=rect,top=rect.top,left=rect.left;
  if(window.id!==undefined&&(!Number.isSafeInteger(window.id)||window.id<=1||window.id>0xffffffff))throw Error('MP-11: invalid owned X window');
- if(!['page','browser_chrome'].includes(surface)||![1,2].includes(scale)||
+ const auxiliary=surface==='browser_auxiliary';
+ // Browser-owned dropdowns have no page boundary. The owner binds their
+ // exact X window; only its whole inward-even raster may reach the pump.
+ if(auxiliary){
+  if(window.id===undefined||contentHeight!==undefined||left!==0||top!==0||
+   width!==window.width-window.width%2||height!==window.height-window.height%2)
+   throw Error('MP-11: invalid native auxiliary region');
+  contentHeight=window.height;
+ }
+ if(!['page','browser_chrome','browser_auxiliary'].includes(surface)||![1,2].includes(scale)||
    ![window.width,window.height,contentHeight,left,top,width,height].every(Number.isSafeInteger)||
    window.width<2||window.width>2560||window.height<2||window.height>2400||
    width<2||width>2560||height<2||height>1600||width%2||height%2||
    contentHeight<2||contentHeight>window.height||left<0||top<0||
    left>window.width-width||top>window.height-height)throw Error('MP-11: invalid native window region');
  const contentTop=window.height-contentHeight;
- if(surface==='browser_chrome'?top+height>contentTop:top<contentTop)
+ if(!auxiliary&&(surface==='browser_chrome'?top+height>contentTop:top<contentTop))
   throw Error('MP-11: native region crosses surface boundary');
  return Object.freeze({width,height,contentHeight,css_width:width/scale,css_height:height/scale,
   pageLeft:left,pageTop:top-contentTop,contentTop,
@@ -56,7 +63,8 @@ export class NativeWindowRegionCapture extends LinuxCapture {
     this.regions.measure=async()=> (await measure()).map(([x,y,w,h])=>
      [x-region.pageLeft,y-region.pageTop,w,h]);
    }else{
-    // The band is proved disjoint from page pixels, including Vault fields.
+    // Chrome UI is proved disjoint from page pixels: the band boundary or
+    // a whole separate auxiliary window selected by the browser owner.
     // The kernel policy/lease still gates every sample and asynchronous commit.
     const protection={guard:null,beforeAt:-Infinity,
      async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
