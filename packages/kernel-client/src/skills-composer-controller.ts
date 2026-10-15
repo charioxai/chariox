@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: source-bound chips never submit through the picker.
-import { SkillsClient, skillPickerRows, insertSkillChip, reconcileSkillChips, skillTokenAtCursor, type SkillChip, type SkillFocus, type SkillsContext } from "./skills-client.js";
+import { SkillsClient, skillPickerRows, insertSkillChip, reconcileSkillChips, skillTokenAtCursor, hasSkillReferences, type SkillChip, type SkillFocus, type SkillsContext } from "./skills-client.js";
 import type { SkillSelection } from "./kernel-types-skills-v2.js";
 export class SkillsComposerController {
     readonly client: SkillsClient;
@@ -145,7 +145,7 @@ export class SkillsComposerController {
             throw new Error("Reselect or remove stale provider skill chips before sending.");
         if (this.chips.some(c => c.selection.source === "native") && agentId !== this.deps.context().agentId)
             throw new Error("Reselect provider skills for the addressed agent.");
-        return this.chips.length || text.includes("$") ? this.chips.map(c => c.selection) : null;
+        return this.chips.length || hasSkillReferences(text) ? this.chips.map(c => c.selection) : null;
     }
     clear(): void { this.chips = []; this.text = ""; this.render(); }
     private render(): void {

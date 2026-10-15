@@ -1,3 +1,4 @@
+import { hasSkillReferences } from "@chariox/kernel-client/skills-client"
 import type { SkillSelection } from "@chariox/kernel-client/kernel-types-skills-v2"
 import type {
   PromptAttachmentPart,
@@ -126,11 +127,14 @@ export function createNormalPromptSubmitController(
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
-        skillsPrompt=addressedAgent?deps.prepareSkillSelections?.(rawPrompt,addressedAgent.id)??null:null
-        const selections=skillsPrompt?.selections
+        skillsPrompt = deps.prepareSkillSelections?.(rawPrompt, addressedAgent?.id ?? targetAgentId ?? "") ?? null
+        const selections = skillsPrompt?.selections
+        const selectedSkills = selections !== null && selections !== undefined || hasSkillReferences(prompt)
+        if (aliasRoute && selectedSkills && !addressedAgent) {
+          throw new Error(`Agent alias @${aliasRoute.alias} is unavailable. Refresh and choose an agent before sending Skills.`)
+        }
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
-        const selectedSkills = selections !== null && selections !== undefined || prompt.includes("$")
-        const submission = await deps.submitPrompt(attachment.id, selectedSkills ? addressedAgent?.id ?? targetAgentId : targetAgentId, selectedSkills ? renderedPrompt : prompt, attachments, selections)
+        const submission = await deps.submitPrompt(attachment.id, selectedSkills ? addressedAgent?.id ?? targetAgentId : targetAgentId, prompt, attachments, selections)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(payload.session)

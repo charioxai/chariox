@@ -298,3 +298,13 @@ test("Skills refusal does not fall through to the retired prompt/grant path", as
     assert.equal(requests.length, 1);
     assert.ok("SkillsV2" in (requests[0] as object));
 });
+
+// MP-08 / MP-10 / MP-11: compatible kernels need no Skills feature for dollars.
+test("literal dollars use SubmitPrompt on a pre-533 kernel", async () => {
+  for (const prompt of ["Explain $HOME", "Pay $20", String.raw`Escape \$review`, "Use `$review`", "```sh\n$review\n```", "Only $"]) {
+    const requests: unknown[]=[]
+    const client={send:async (request:Record<string,unknown>)=>{requests.push(request); if("SkillsV2" in request) throw Error("requires protocol 533");return {PromptSubmitted:{session:runtimeSession("session-1"),agent_activity:{},agent_activity_revision:1}}}} as unknown as LocalIpcClient
+    await submitPromptWithRecovery(client,"session-1","attachment","agent-1",prompt,[],()=>runtimeSession("session-1"),{} as CliOptions)
+    assert.ok("SubmitPrompt" in (requests[0] as object),prompt)
+  }
+})

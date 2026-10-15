@@ -25,7 +25,16 @@ export type SkillToken = {
     end: number;
     query: string;
 };
-export const providerLabel = (provider: string): string => ({ codex: "Codex", claude: "Claude", opencode: "OpenCode" })[provider] ?? provider;
+const providerLabels: Record<string, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
+export const providerLabel = (provider: string): string => providerLabels[provider] ?? provider;
+export function hasSkillReferences(text: string): boolean {
+    for (const match of text.matchAll(/(?:^|\s)\$([\p{L}_][\p{L}\p{N}_-]*)(?=$|[\s.,;:!?()\[\]{}])/gu)) {
+        const end = match.index! + match[0].length;
+        if (skillTokenAtCursor(text, end))
+            return true;
+    }
+    return false;
+}
 export function skillPickerRows(skills: readonly SkillProjection[], native: readonly NativeSkillEntry[], revision: number, focus: SkillFocus | null, query = ""): SkillPickerRow[] {
     const duplicate = new Set(skills.filter(p => p.effective_state !== "off").flatMap(p => p.delivery.kind === "provided_by" ? [p.delivery.entry_id] : []));
     return [

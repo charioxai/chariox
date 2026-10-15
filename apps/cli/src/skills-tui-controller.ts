@@ -152,7 +152,11 @@ export class SkillsTuiController {
         throw new Error("/skills install folder|url|content <source>"); if (kind === "folder")
         return { kind: "folder", path: value }; if (kind === "url")
         return { kind: "url", url: value, pinned_revision: null }; if (kind === "content")
-        return { kind: "content", skill_md: JSON.parse(value) as string }; throw new Error("Choose folder, url or JSON-encoded content"); }
+        {
+        const body: unknown = JSON.parse(value);
+        if (typeof body !== "string") throw new Error("Skill content must be a JSON-encoded string");
+        return { kind: "content", skill_md: body };
+    } throw new Error("Choose folder, url or JSON-encoded content"); }
     private updateSource(p: {
         kind: string;
         locator: string | null;

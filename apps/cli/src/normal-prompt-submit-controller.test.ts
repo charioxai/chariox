@@ -344,6 +344,7 @@ test("normal prompt submit failure preserves active session runtime state", asyn
 })
 
 function createHarness(options: {
+  prepareSkillSelections?: NormalPromptSubmitControllerDeps["prepareSkillSelections"]
   promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
   onPromptRejected?: NormalPromptSubmitControllerDeps["onPromptRejected"]
   attachment?: RuntimeAttachment | null
@@ -384,6 +385,7 @@ function createHarness(options: {
   let clearPromptCount = 0
 
   const controller = createNormalPromptSubmitController({
+    ...(options.prepareSkillSelections ? {prepareSkillSelections: options.prepareSkillSelections} : {}),
     ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
     ...(options.onPromptRejected ? {onPromptRejected: options.onPromptRejected} : {}),
     getPendingAttachments: () => options.pendingAttachments ?? [],
@@ -602,4 +604,29 @@ test("MP-08/MP-10/MP-11 kernel auth rejection retains the addressed alias instea
   assert.deepEqual(targets, [{sessionId: "session-1", agentId: "agent-b"}])
   assert.equal(h.restoredSnapshots()[0]?.rawPrompt, "@agent-b read README")
   assert.equal(h.footerMessages().at(-1)?.message, "selected codex account b is not authenticated")
+})
+
+// MP-08 / MP-10 / MP-11: unresolved addresses never become focused Skills turns.
+test("unresolved Skills alias is rejected before stripping or clearing its draft", async () => {
+  const h = createHarness({prepareSkillSelections: () => ({selections:[],restore:()=>{}})})
+  await h.controller.submit("@missing Use $review")
+  assert.deepEqual(h.submissions(),[])
+  assert.match(h.footerMessages().at(-1)!.message,/alias.*missing/i)
+  assert.deepEqual(h.restoredSnapshots(),[])
+})
+test("ordinary dollar alias remains intact for authoritative kernel routing", async () => {
+  const h = createHarness()
+  await h.controller.submit("@remote Explain $HOME")
+  assert.equal(h.submissions()[0]?.prompt,"@remote Explain $HOME\n")
+})
+
+// MP-08 / MP-10 / MP-11: retain the address for final kernel revalidation.
+test("resolved Skills alias also retains the original address for kernel dispatch", async () => {
+  const h = createHarness({
+    session:runtimeSession("session-1",null,{agents:[agent("agent-1"),{...agent("agent-2"),alias:"remote"}]}),
+    prepareSkillSelections:()=>({selections:[],restore:()=>{}}),
+  })
+  await h.controller.submit("@remote Use $review")
+  assert.equal(h.submissions()[0]?.targetAgentId,"agent-2")
+  assert.equal(h.submissions()[0]?.prompt,"@remote Use $review\n")
 })
