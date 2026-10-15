@@ -296,7 +296,14 @@ pub(super) fn evaluate(
                 && t.obligations.iter().filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
                     .all(|o| regs.iter().any(|r| r.live && registration_ids.contains(&r.id) && r.obligation_id.as_deref() == Some(&o.id)));
             if !valid_sources {
-                blocked(&mut t, "Goal waiting needs live sources covering all obligations and a finite deadline");
+                // A source that already completed leaves its obligation settling until
+                // the agent acknowledges the receipt: send it there once, never the owner.
+                if !t.correction_used && t.obligations.iter().any(|o| o.status == "settling") {
+                    again = continue_work(&mut t, "Waiting was rejected: these sources already completed. Read the inbox and acknowledge each completion receipt, then answer");
+                    t.correction_used = true;
+                } else {
+                    blocked(&mut t, "Goal waiting needs live sources covering all obligations and a finite deadline");
+                }
             } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
                 blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
             } else {

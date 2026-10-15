@@ -708,6 +708,38 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
     assert!(t.pending_prompt_id.is_none());
     assert_eq!(t.completion_check.unwrap().check_count, 2);
 }
+// MP-08 / MP-10 / MP-11: a real Haiku assessment answered `waiting` on registrations
+// whose sources had already completed (obligations settling, receipt unhandled). The
+// kernel blocked the owner; it must send the agent once to acknowledge the receipts.
+#[test]
+fn a12_waiting_on_completed_sources_continues_once_instead_of_blocking_the_owner() {
+    let f = Fixture::new();
+    plain(&f);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    f.apply(Operation::SourceOutcome {
+        now: 3,
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "result".into(),
+        success: true,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+    let waiting = serde_json::json!({"status":"waiting","reason":"children still running","registration_ids":["reg"],"deadline_ms":60_004});
+    let t = check(&f, waiting.clone());
+    assert_ne!(t.state, ExecutionState::Blocked, "{}", t.reason);
+    assert!(t.correction_used);
+    let id = t
+        .pending_prompt_id
+        .clone()
+        .expect("one bounded continuation");
+    f.begin(&id);
+    f.settle(&id, true);
+    // A second invalid waiting is still blocked: the bound holds.
+    assert_eq!(check(&f, waiting).state, ExecutionState::Blocked);
+}
 #[test]
 fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
     let f = Fixture::new();
