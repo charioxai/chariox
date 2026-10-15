@@ -88,7 +88,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   // A browser-modal dialog's page overlay: the page area of the tabbed window (its page document fences it).
   this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;
   if(this.pageOverlay&&typeof pageDocument!=='string')throw Error('MP-11: invalid native page overlay');
-  if(this.pageOverlay&&(this.region.pageTop!==0||contentHeight-rect.height>1))throw Error('MP-11: invalid native page overlay');
+  if(this.pageOverlay&&this.region.pageTop!==0)throw Error('MP-11: invalid native page overlay');
   // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
   this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
  }

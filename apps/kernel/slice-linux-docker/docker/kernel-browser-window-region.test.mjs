@@ -132,3 +132,15 @@ test('MP-11 the page overlay attests the scrimmed page and bounds what differs',
  const masked=new Uint8Array(width*height).fill(1);
  assert.throws(()=>overlayAttestation(reference,native(0.4),masked),/masked/,'a masked page proves nothing');
 });
+
+// r8 union live drill (1440x900@1): the dialog overlay is the binding's exact page rect inside Chrome's
+// window frame (x 4, y 87, 1272 x 708 in an 800-row window); its capture must accept that rect.
+test('MP-11 a dialog page overlay accepts the exact native page rect inside the window frame',()=>{
+ const base={surface:'browser_auxiliary',inWindow:true,pageOverlay:true,pageDocument:'doc-a',window:{id:42,width:1280,height:800},contentHeight:713,isCurrent:()=>true,
+  display:{},pid:7,connection:{},sessionId:'s',tab:{tab_id:'t',target_id:'x',document_id:'chrome-window-1-1'},scale:1,policy:{},allowed:()=>true,timing:()=>{}};
+ const s=new NativeWindowRegionCapture({...base,rect:{left:4,top:87,width:1272,height:708}});
+ assert.equal(s.region.css_width,1272);assert.equal(s.region.css_height,708);assert.equal(s.region.pageTop,0);
+ assert.throws(()=>new NativeWindowRegionCapture({...base,rect:{left:4,top:86,width:1272,height:708}}),/region/,'never a band row');
+ assert.throws(()=>new NativeWindowRegionCapture({...base,rect:{left:4,top:88,width:1272,height:708}}),/page overlay/,'starts at the page top');
+ assert.throws(()=>new NativeWindowRegionCapture({...base,pageDocument:undefined,rect:{left:4,top:87,width:1272,height:708}}),/page overlay/);
+});
