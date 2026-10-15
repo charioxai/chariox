@@ -80,7 +80,7 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,pageRect,...options}){
   super(options);
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
@@ -91,13 +91,34 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   if(this.pageOverlay&&this.region.pageTop!==0)throw Error('MP-11: invalid native page overlay');
   // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
   this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
+  // An in-window popup is drawn over the page and closes without an X event: until the owner retires it,
+  // its crop may show page pixels. The active Tab's masks, at the page's native origin, apply to every readback.
+  this.overPage=inWindow===true&&!this.pageOverlay;
+  if(this.overPage&&(!pageRect||![pageRect.left,pageRect.top].every(Number.isSafeInteger)))throw Error('MP-11: invalid native auxiliary region');
+  this.pageRect=pageRect;
+ }
+ // Protection of a crop that is not a whole page region.
+ protection(){
+  if(this.pageOverlay)return regionProtection(this,0,0);
+  const masks=this.staticMasks;
+  if(this.overPage){
+   const {left,top}=this.region.window_region,page=regionProtection(this,left-this.pageRect.left,top-this.pageRect.top),regions=page.regions.bind(page);
+   page.regions=async raw=>[...await regions(raw),...masks];
+   return page;
+  }
+  // The band is proved disjoint from page pixels by its boundary; a separate auxiliary window is
+  // selected by the browser owner. The kernel policy/lease still gates every sample and asynchronous commit.
+  return {guard:null,beforeAt:-Infinity,
+   async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
+   retire(){this.guard=null;},tracker(){return {targets:false};},
+   async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [...masks];} };
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  // Diagnostics for the dialog's page overlay (labels and counts only).
  fence(){if(this.pageOverlay&&!this.closed)this.timing(`native_overlay_fenced ${this.attested?'attested':'starting'}`,performance.timeOrigin+performance.now());super.fence();}
  subscribe(fn){if(!this.pageOverlay)return super.subscribe(fn);let first=true;return super.subscribe(frame=>{if(first){first=false;this.timing('native_overlay_first_frame',performance.timeOrigin+performance.now());}fn(frame);});}
  onCdp(message){
-  if(this.surface==='page'||this.pageOverlay){super.onCdp(message);return;}
+  if(this.surface==='page'||this.pageOverlay||this.overPage){super.onCdp(message);return;}
   // Chrome belongs to the window lease, not the navigated page. Native
   // Destroy/Configure events retire the worker's exact owned-window binding.
   if(message.method==='Chariox.browserDisconnected')this.fence();
@@ -110,19 +131,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    if(this.surface==='page'){
     this.regions=regionProtection(this,region.pageLeft,region.pageTop);
     await attestNativeRegion(this);
-   }else if(this.pageOverlay){
-    this.regions=regionProtection(this,0,0);
-   }else{
-    // Chrome UI is proved disjoint from page pixels: the band boundary or
-    // a whole separate auxiliary window selected by the browser owner.
-    // The kernel policy/lease still gates every sample and asynchronous commit.
-    const masks=this.staticMasks;
-    const protection={guard:null,beforeAt:-Infinity,
-     async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
-     retire(){this.guard=null;},tracker(){return {targets:false};},
-     async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [...masks];} };
-    this.regions=protection;
-   }
+   }else this.regions=this.protection();
    await this.regions.refresh();
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});

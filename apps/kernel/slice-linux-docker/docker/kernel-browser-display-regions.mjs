@@ -69,8 +69,9 @@ export async function subscribeRegion(host,command,scope,signal,{Capture=NativeW
   const popup=target.kind==='browser_auxiliary'?host.chromeWindows.auxiliary(target.auxiliary_id):null;
   const current=()=>host.chromium.policy==='managed'&&window.isCurrent()&&(!popup||popup.isCurrent());
   args={...(popup?host.chromeWindows.auxiliaryRegion(popup):host.chromeWindows.band(window)),isCurrent:current};
-  // A browser-modal dialog's page overlay shows Chrome's ACTIVE Tab: its masks, reference and fence.
-  if(args.pageOverlay){
+  // Chrome UI drawn in the window over the page (a dialog's page overlay, the omnibox dropdown) shows
+  // Chrome's ACTIVE Tab around or after it: that Tab's masks and fence, on every readback.
+  if(args.inWindow){
    const active=await host.arbiter?.activeTab?.();
    if(!active||typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(active,window))refuse();
    overlayTab=active;args.validateCurrent=async()=>current()&&await host.arbiter.isActiveTab(active,window);

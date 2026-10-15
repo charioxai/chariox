@@ -309,6 +309,7 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     assert.deepEqual(popup, { auxiliary_id: popup.auxiliary_id, x: 119, y: 87, width: 1078, height: 88 }, "the list below the band, CSS px");
     const region = windows.auxiliaryRegion(windows.auxiliary(popup.auxiliary_id));
     assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
+    assert.deepEqual(region.pageRect, windows.current().tabbed.page_rect, "over the page: its masks use the page origin");
     assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
     // Only the slivers outside the rounded corners (radius 32 px at scale 2), one rect per row: no black squares.
     assert.deepEqual(region.masks.slice(0, 2), [{ x: 0, y: 144, width: 1, height: 1 }, { x: 2155, y: 144, width: 1, height: 1 }]);

@@ -248,12 +248,13 @@ export class ChromeWindows {
     }
     if (binding.in_window) {
       // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
+      // Its rect lies over the page, so the active Tab's masks apply there too (see the page rect).
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
       const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2;
       return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
         rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
         contentHeight: tabbed.bounds.height - tabbed.content_top, masks: cornerMasks(width, height, POPUP_CORNER * tabbed.scale),
-        isCurrent: binding.isCurrent};
+        pageRect: tabbed.page_rect, isCurrent: binding.isCurrent};
     }
     return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
       rect: {left: 0, top: 0, width: binding.bounds.width - binding.bounds.width % 2, height: binding.bounds.height - binding.bounds.height % 2}, isCurrent: binding.isCurrent};
