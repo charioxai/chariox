@@ -1,6 +1,8 @@
 // MP-11: opt-in diagnostics identify public code, never exception/page values.
 const names=new Set(['Error','TypeError','RangeError','ReferenceError','SyntaxError']);
 const files=new Set(['linux-owned-desktop.mjs','native-keyboard-channel.mjs','kernel-browser-host.mjs','kernel-browser-process.mjs','kernel-browser-owned-display.mjs','kernel-browser-linux.mjs','kernel-browser-display.mjs','kernel-browser-motion.mjs','kernel-browser-native.mjs','kernel-browser-native-worker.mjs','kernel-browser-native-pipe.mjs','kernel-browser-native-credit.mjs','kernel-browser-refiner.mjs','kernel-browser-pixels.mjs','kernel-browser-pixel-worker.mjs','kernel-browser-display-capture.mjs','kernel-browser-display-credit.mjs','browser-controller-cdp.mjs','browser-controller-actions.mjs','browser-controller-compatibility.mjs','kernel-browser-mirror2.mjs','native-computer.mjs','browser-protection-regions.mjs']);
+// MP-08/MP-10/MP-11: region adapters are public source positions, not page exception text.
+for(const file of ['kernel-browser-window-region.mjs','kernel-browser-display-regions.mjs','kernel-browser-chrome-window.mjs','kernel-browser-native-viewport.mjs','kernel-browser-native-readback.mjs','kernel-browser-native-windows.mjs','kernel-browser-webcodecs.mjs'])files.add(file);
 const codes=new Set(['ENOENT','EACCES','EINVAL','EPIPE','ETIMEDOUT','ERR_BUFFER_OUT_OF_BOUNDS','ERR_OUT_OF_RANGE','browser_cdp_timeout','browser_cdp_command_failed','browser_cdp_disconnected','NATIVE_PROTECTION_CHANGED','NATIVE_VALUE_ERROR','NATIVE_HELPER_TIMEOUT','NATIVE_DEPENDENCY_MISSING','NATIVE_FILE_MISSING','NATIVE_OS_ERROR','NATIVE_OUTPUT_LIMIT','browser_cdp_socket_error','browser_target_not_found','browser_connection_changed','browser_cdp_response_too_large','browser_action_cancelled','browser_namespace_permission_denied','browser_policy_mount_denied','browser_sandbox_unavailable','browser_display_unavailable','browser_executable_missing','browser_executable_permission_denied','browser_launch_failed','browser_navigation_failed','browser_navigation_identity_missing','browser_action_timeout','browser_action_failed','browser_action_invalid','browser_wait_timeout','browser_wait_invalid','stale_element_reference','stale_document_reference','ENOSPC','EMFILE','ENOMEM']);
 // MP-11: closed public codes declared by the shipped controller adapters; no caller-defined code passthrough.
 for(const code of 'browser_action_cancelled browser_action_failed browser_action_invalid browser_action_timeout browser_artifact_invalid browser_artifact_unavailable browser_attach_failed browser_cdp_command_failed browser_cdp_disconnected browser_cdp_socket_error browser_cdp_timeout browser_connection_changed browser_controller_internal browser_cookie_writer_fence_busy browser_cookie_writer_fence_timeout browser_debugger_endpoint_unsafe browser_debugger_invalid browser_debugger_unavailable browser_dialog_invalid browser_document_identity_missing browser_download_invalid browser_download_low_disk browser_download_not_active browser_download_unavailable browser_download_unconfigured browser_event_capacity_invalid browser_event_cursor_invalid browser_event_limit_invalid browser_history_action_invalid browser_history_timeout browser_history_unavailable browser_navigation_failed browser_navigation_identity_missing browser_navigation_invalid browser_observation_redacted browser_permission_invalid browser_permission_origin_denied browser_secret_input_exception browser_secret_target_changed browser_secret_target_not_focusable browser_secret_target_not_masked browser_snapshot_invalid browser_submit_failed browser_tab_action_invalid browser_tab_close_failed browser_target_not_found browser_unavailable browser_upload_denied browser_upload_invalid browser_upload_staging_unavailable browser_viewport_invalid browser_wait_invalid browser_wait_timeout invalid_request navigated resync snapshot_frame_limit stale_browser_generation stale_document_reference stale_element_reference viewport_apply_failed'.split(' '))codes.add(code);
@@ -16,6 +18,17 @@ export function mirrorExceptionReason(description) {
  return observerReasons.has(reason)?reason:'observer_exception';
 }
 const fixedReasons=new Map([
+ ['MP-11: native region lease retired','native_region_lease_retired'],
+ ['MP-11: native region attestation geometry','native_region_attestation_geometry'],
+ ['MP-11: native region attestation masked','native_region_attestation_masked'],
+ ['MP-11: native region attestation mismatch','native_region_attestation_mismatch'],
+ ['MP-08: native region readback unavailable','native_region_readback_unavailable'],
+ ['MP-11: invalid native window region','native_region_invalid'],
+ ['MP-11: invalid native auxiliary region','native_auxiliary_region_invalid'],
+ ['MP-11: native region crosses surface boundary','native_region_boundary_refused'],
+ ['MP-11: admitted region lease required','native_region_lease_required'],
+ ['MP-11: native window inventory lease','native_window_inventory_retired'],
+ ['MP-11: native keys held; release desktop input first','native_keys_held'],
  ['MP-08: physical key channel unavailable (Pillow missing)','native_keyboard_pillow_missing'],
  ['MP-08: physical key channel unavailable (Xlib missing)','native_keyboard_xlib_missing'],
  ['MP-08: physical key channel unavailable','native_keyboard_unavailable'],
@@ -73,7 +86,7 @@ const fixedReasons=new Map([
 for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReasons.set(`MP-08: owned desktop prerequisite unavailable (${name})`,'desktop_prerequisite_'+name.toLowerCase().replaceAll('-','_')+'_unavailable');
 export function hostErrorLabel(error) {
  const name=names.has(error?.name)?error.name:'Error';
- const frame=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].find(m=>files.has(m[1])):null;
+ const frame=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].find(m=>files.has(m[1])):null;
  const description=typeof error?.message==='string'?error.message:'';
  const command=error?.code==='browser_cdp_command_failed'?/^([A-Za-z.]+): (.*)$/.exec(description):null;
  const method=error?.code==='browser_cdp_timeout'?/^browser CDP method ([A-Za-z.]+) timed out after [0-9]+ms$/.exec(description)?.[1]:command?.[1];

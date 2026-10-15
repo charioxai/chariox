@@ -87,3 +87,20 @@ test('owned desktop failures retain fixed prerequisite and readiness causes priv
  assert.match(hostFailureMessage({message:'MP-08: desktop failed to become ready (openbox, exit 1)'}),/desktop_openbox_failed_to_start/);
  for(const message of ['MP-08: owned desktop prerequisite unavailable (private-canary)','MP-08: desktop failed to become ready (private-canary, exit 1)'])assert(!hostFailureMessage({message}).includes('private-canary'));
 });
+
+// MP-08/MP-10/MP-11: real BBC fallback failures were collapsed to the host dispatch frame.
+test('native region refusals and v2 module positions survive the public Browser reply',()=>{
+ for(const [message,reason]of [
+  ['MP-11: native region lease retired','native_region_lease_retired'],
+  ['MP-11: native region attestation geometry','native_region_attestation_geometry'],
+  ['MP-11: native region attestation masked','native_region_attestation_masked'],
+  ['MP-11: native region attestation mismatch','native_region_attestation_mismatch'],
+  ['MP-08: native region readback unavailable','native_region_readback_unavailable'],
+  ['MP-11: native keys held; release desktop input first','native_keys_held'],
+ ])assert(hostFailureMessage({message}).includes(reason));
+ for(const name of ['kernel-browser-window-region.mjs','kernel-browser-display-regions.mjs','kernel-browser-chrome-window.mjs','kernel-browser-mirror2.mjs']){
+  const reply=hostFailureMessage({message:'private-canary',stack:`Error: private-canary\n at source (/private-profile/${name}:95:13)\n at dispatch (/private-profile/kernel-browser-host.mjs:926:24)`});
+  assert(reply.includes(name+':95:13'));assert(!reply.includes('private'));
+ }
+ assert(!hostFailureMessage({message:'MP-11: native region attestation mismatch private-canary'}).includes('private-canary'));
+});
