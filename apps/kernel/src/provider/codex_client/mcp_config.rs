@@ -12,10 +12,6 @@ pub(super) fn append_runtime_mcp_overrides(
     auth_token: &str,
 ) {
     overrides.insert(
-        "mcp_servers.chariox.transport".to_string(),
-        json!("streamable_http"),
-    );
-    overrides.insert(
         "mcp_servers.chariox.url".to_string(),
         json!(server_url.to_string()),
     );
@@ -99,7 +95,6 @@ pub(super) fn append_codex_mcp_overrides(
                 credential_http_headers: _,
                 env_http_headers,
             } => {
-                overrides.insert(format!("{prefix}.transport"), json!("streamable_http"));
                 overrides.insert(format!("{prefix}.url"), json!(url));
                 if let Some(env_var) = bearer_token_env_var {
                     overrides.insert(format!("{prefix}.bearer_token_env_var"), json!(env_var));
