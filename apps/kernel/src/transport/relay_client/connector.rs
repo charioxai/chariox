@@ -224,10 +224,12 @@ where
         RelayConfigContinuity::Continue => Ok(None),
         RelayConfigContinuity::Reconnect(reason) => Err(reason),
         RelayConfigContinuity::Reauthenticate => {
-            let registration = registration().await;
-            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
-                return Err("relay token changed while building registration");
-            }
+            let mut registration = registration().await;
+            // MP-08/MP-10/MP-11: registration may read a newer config while
+            // awaiting runtime metadata. Authenticate the credential belonging
+            // to this continuity snapshot, then pick up further renewal on the
+            // next heartbeat. Never close a live socket for that harmless race.
+            registration.auth_token = config.relay_token.clone().ok_or("relay token missing")?;
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
