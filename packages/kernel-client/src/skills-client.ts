@@ -28,10 +28,62 @@ export type SkillToken = {
 const providerLabels: Record<string, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
 export const providerLabel = (provider: string): string => providerLabels[provider] ?? provider;
 export function hasSkillReferences(text: string): boolean {
-    for (const match of text.matchAll(/(?:^|\s)\$([\p{L}_][\p{L}\p{N}_-]*)(?=$|[\s.,;:!?()\[\]{}])/gu)) {
-        const end = match.index! + match[0].length;
-        if (skillTokenAtCursor(text, end))
+    let fence: { marker: string; length: number } | null = null;
+    let span = 0;
+    const whitespace = (char: string) => /[ \t\r\n\f\v]/.test(char);
+    for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+        const indent = /^ */.exec(line)![0].length;
+        const block = /^(`{3,}|~{3,})/.exec(line.slice(indent));
+        if (!span && indent <= 3 && block) {
+            const marker = block[1]![0]!;
+            const length = block[1]!.length;
+            if (!fence) fence = { marker, length };
+            else if (fence.marker === marker && length >= fence.length && !line.slice(indent + length).trim()) fence = null;
+            continue;
+        }
+        if (fence || (indent >= 4 && !span)) continue;
+        for (let i = 0; i < line.length;) {
+            const char = line[i]!;
+            if (span) {
+                if (char === "`") {
+                    let end = i + 1;
+                    while (line[end] === "`") end++;
+                    if (end - i === span) span = 0;
+                    i = end;
+                } else i++;
+                continue;
+            }
+            if (char === "[") {
+                const close = line.indexOf("](", i);
+                const end = close < 0 ? -1 : line.indexOf(")", close + 2);
+                if (end >= 0) { i = end + 1; continue; }
+            }
+            if (char === "\\") { i += 2; continue; }
+            if (char === "`") {
+                const start = i++;
+                while (line[i] === "`") i++;
+                span = i - start;
+                continue;
+            }
+            if ((char === "'" || char === '"') && !(i > 0 && /[a-zA-Z0-9]/.test(line[i - 1]!))) {
+                i++;
+                while (i < line.length) {
+                    if (line[i] === "\\") i += 2;
+                    else if (line[i++] === char) break;
+                }
+                continue;
+            }
+            if (char !== "$") { i++; continue; }
+            const start = i++;
+            if (start > 0 && !whitespace(line[start - 1]!) && !"([".includes(line[start - 1]!)) continue;
+            const nameStart = i;
+            while (i < line.length && /[a-zA-Z0-9_-]/.test(line[i]!)) i++;
+            const name = line.slice(nameStart, i);
+            if (!/^[a-zA-Z]/.test(name) || name.length > 128 || /^[A-Z0-9_]+$/.test(name)) continue;
+            if (i < line.length && !whitespace(line[i]!) && !")],.!?;:".includes(line[i]!)) continue;
+            if (line[i] === "]" && line[i + 1] === "(") continue;
             return true;
+        }
     }
     return false;
 }

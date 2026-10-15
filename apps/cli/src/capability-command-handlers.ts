@@ -272,8 +272,110 @@ export async function handleSkillSlashCommand(
   deps: CapabilityCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "skill" }>,
 ): Promise<void> {
-  if (!deps.skillsV2) throw new Error("Skills v2 is unavailable. Upgrade this client and kernel.")
+  // MP-08 / MP-10 / MP-11: preserve the shipped handlers until the home
+  // catalog endpoint is available. Never replay a refused v2 mutation as legacy.
+  if (!deps.skillsV2 || !await deps.skillsV2.available()) {
+    // The new plural command may list the existing catalog, but its mutation
+    // arguments must never be reinterpreted as the old path-based commands.
+    const action = command.args[0]
+    if (/^\/skills(?:\s|$)/.test(command.raw) && action && !["list", "ls", "show"].includes(action)) {
+      throw new Error("Skills v2 is unavailable on this kernel. Existing management is available with /skill; update the kernel for /skills actions.")
+    }
+    deps.appendNotice("Skills v2 is unavailable on this kernel; showing existing skill management.")
+    await handleFoundationSkillSlashCommand(deps, command)
+    return
+  }
   await deps.skillsV2.command(command.args)
+}
+
+async function handleFoundationSkillSlashCommand(
+  deps: CapabilityCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "skill" }>,
+): Promise<void> {
+  const [action] = command.args
+  if (!action || action === "list" || action === "ls") {
+    if (!deps.listSkills) {
+      deps.flashFooter("skill registry is not available in this daemon", "error")
+      return
+    }
+    const skills = await deps.listSkills()
+    deps.appendNotice(skills.length === 0 ? "No Chariox-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
+    deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
+    return
+  }
+  if (action === "show") {
+    const name = command.args[1]
+    if (!name || !deps.getSkill) {
+      deps.flashFooter("usage: /skill show <name>", "error")
+      return
+    }
+    const skill = await deps.getSkill(name)
+    deps.appendNotice(formatSkillDetails(skill))
+    deps.flashFooter(`showing skill ${skill.name}`, "info")
+    return
+  }
+  if (action === "install") {
+    const sourcePath = command.args[1]
+    if (!sourcePath || !deps.installSkill) {
+      deps.flashFooter("usage: /skill install <path>", "error")
+      return
+    }
+    const skill = await deps.installSkill(sourcePath)
+    deps.flashFooter(`installed skill ${skill.name}`, "info")
+    return
+  }
+  if (action === "update") {
+    const sourcePath = command.args[1]
+    if (!sourcePath || !deps.updateSkill) {
+      deps.flashFooter("usage: /skill update <path>", "error")
+      return
+    }
+    const skill = await deps.updateSkill(sourcePath)
+    deps.flashFooter(`updated skill ${skill.name}`, "info")
+    return
+  }
+  if (action === "uninstall" || action === "remove") {
+    const name = command.args[1]
+    if (!name || !deps.uninstallSkill) {
+      deps.flashFooter(`usage: /skill ${action} <name>`, "error")
+      return
+    }
+    const skill = await deps.uninstallSkill(name)
+    deps.flashFooter(`uninstalled skill ${skill.name}`, "info")
+    return
+  }
+  if (action === "import") {
+    const provider = command.args[1]
+    const name = command.args[2] ?? null
+    if (!provider || !deps.importSkills) {
+      deps.flashFooter("usage: /skill import <codex|opencode> [name]", "error")
+      return
+    }
+    const outcome = await deps.importSkills(provider, name)
+    deps.appendNotice(formatSkillImportOutcome(outcome))
+    deps.flashFooter(`imported ${outcome.imported.length} skill${outcome.imported.length === 1 ? "" : "s"} from ${provider}`, "info")
+    return
+  }
+  if (action === "grant" || action === "revoke") {
+    const agentRef = command.args[1]
+    const name = command.args[2]
+    const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
+    if (!agentRef || !name || !handler) {
+      deps.flashFooter(`usage: /skill ${action} <agent-ref> <name>`, "error")
+      return
+    }
+    const agent = await handler(agentRef, name)
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    return
+  }
+  if (action === "grants" || action === "agent") {
+    const agent = resolveGrantTarget(deps, command.args[1], `usage: /skill ${action} <agent-ref>`)
+    if (!agent) return
+    deps.appendNotice(formatAgentCapabilityGrants(agent, "skill"))
+    deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
+    return
+  }
+  deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
 }
 
 export async function handleEnvironmentSlashCommand(

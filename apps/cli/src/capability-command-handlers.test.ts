@@ -7,6 +7,7 @@ import {
   handleCredentialSlashCommand,
   handleExtensionSlashCommand,
   handleMcpSlashCommand,
+  handleSkillSlashCommand,
   VAULT_FOLDED_PASSPHRASE_HINT,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
@@ -219,3 +220,74 @@ function agent(options: Partial<AgentInstance> & { readonly remote?: boolean } =
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 / MP-11: foundation kernels retain working management.
+test("skill management survives the explicit unavailable v2 foundation endpoint", async () => {
+  const { SkillsTuiController } = await import("./skills-tui-controller.js")
+  const notices: string[] = [], calls: string[] = []
+  const metadata = { name: "review", description: "Review", source_path: "/work/review", instructions: "Read", files: [] } as any
+  const deps: CapabilityCommandHandlerDeps = {
+    flashFooter: () => {}, appendNotice: t => notices.push(t), resolveSessionAgent: () => { throw Error("No agent") },
+    listSkills: async () => { calls.push("list"); return [metadata] },
+    getSkill: async () => { calls.push("show"); return metadata },
+    installSkill: async path => { calls.push(`install:${path}`); return metadata },
+    updateSkill: async path => { calls.push(`update:${path}`); return metadata },
+    uninstallSkill: async name => { calls.push(`remove:${name}`); return metadata },
+    importSkills: async provider => { calls.push(`import:${provider}`); return { imported: [], skipped: [], failed: [] } as any },
+    skillsV2: new SkillsTuiController({context:()=>({key:"kernel",projectId:null,agentId:null,sessionId:null}),provider:()=>"codex",notice:t=>notices.push(t),send:async r=>{
+      assert.equal(r.SkillsV2.action,"catalog")
+      return {Error:{message:"local transport `skills.v2` failed: Skills v2 catalog service is not available in this protocol foundation build"}}
+    }}),
+  }
+  for(const raw of ["/skills", "/skill list", "/skill show review", '/skill install "/work/my skills"', '/skill update "/work/my skills"', "/skill remove review", "/skill import codex"]) {
+    await handleSkillSlashCommand(deps,parseSlashCommand(raw) as any)
+  }
+  assert.deepEqual(calls,["list","list","show","install:/work/my skills","update:/work/my skills","remove:review","import:codex"])
+  assert.match(notices.join("\n"),/review/)
+  assert.match(notices.join("\n"),/v2.*unavailable/i)
+})
+
+test("v2 catalog refusal and failed publication never fall through to old mutations", async () => {
+  const { SkillsTuiController } = await import("./skills-tui-controller.js")
+  for(const message of ["Permission denied", "Skills revision changed", "Connection closed"]) {
+    let oldCalls=0
+    const deps:CapabilityCommandHandlerDeps={flashFooter:()=>{},appendNotice:()=>{},resolveSessionAgent:()=>{throw Error("No agent")},listSkills:async()=>{oldCalls++;return []},skillsV2:new SkillsTuiController({context:()=>({key:"kernel",projectId:null,agentId:null,sessionId:null}),provider:()=>"codex",notice:()=>{},send:async()=>({Error:{message}})})}
+    await assert.rejects(()=>handleSkillSlashCommand(deps,parseSlashCommand("/skills") as any),new RegExp(message))
+    assert.equal(oldCalls,0)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: only capability absence permits the temporary route.
+test("pre-v2 kernel management works without replaying a refused publication", async () => {
+  const { SkillsTuiController } = await import("./skills-tui-controller.js")
+  const { KernelProtocolMinimumError } = await import("./protocol-minimum-diagnostic.js")
+  let legacy = 0
+  const notices: string[] = []
+  const context=()=>({key:"kernel",projectId:null,agentId:null,sessionId:null})
+  const deps:CapabilityCommandHandlerDeps={flashFooter:()=>{},appendNotice:t=>notices.push(t),resolveSessionAgent:()=>{throw Error("No agent")},listSkills:async()=>{legacy++;return []}}
+  deps.skillsV2=new SkillsTuiController({context,provider:()=>"codex",notice:t=>notices.push(t),send:async()=>{throw new KernelProtocolMinimumError("kernel too old: Skills v2 needs protocol ≥533; this kernel is 532; update the kernel")}})
+  await handleSkillSlashCommand(deps,parseSlashCommand("/skills") as any)
+  assert.equal(legacy,1)
+  legacy=0
+  const calls:string[]=[]
+  deps.skillsV2=new SkillsTuiController({context,provider:()=>"codex",notice:t=>notices.push(t),send:async r=>{
+    const a=r.SkillsV2;calls.push(a.action)
+    if(a.action==="mutate") return {Error:{message:"Skills v2 catalog service is not available in this protocol foundation build"}}
+    return {SkillsV2:{result:a.action==="catalog"?{kind:"catalog",revision:1,skills:[],packages:[],native:[],metadata_budget_percent:1}:{kind:"preview",expected_revision:1,affected:[],collisions:[],review_receipt:{id:"r",mutation_sha256:"hash",expires_at_ms:Date.now()+60000,sources:[]}}}}
+  }})
+  await handleSkillSlashCommand(deps,parseSlashCommand("/skills create-package Review") as any)
+  await assert.rejects(()=>handleSkillSlashCommand(deps,parseSlashCommand("/skills confirm") as any),/foundation build/)
+  assert.equal(legacy,0)
+  assert.equal(calls.filter(c=>c==="mutate").length,1)
+})
+
+// MP-08 / MP-10 / MP-11: v2 syntax cannot invoke path-based foundation writes.
+test("unavailable v2 mutations keep their meaning and never call foundation handlers", async () => {
+  const { SkillsTuiController } = await import("./skills-tui-controller.js")
+  let writes=0
+  const deps:CapabilityCommandHandlerDeps={flashFooter:()=>{},appendNotice:()=>{},resolveSessionAgent:()=>{throw Error("No agent")},installSkill:async()=>{writes++;throw Error("Wrong install")},updateSkill:async()=>{writes++;throw Error("Wrong update")},uninstallSkill:async()=>{writes++;throw Error("Wrong remove")},importSkills:async()=>{writes++;throw Error("Wrong import")},skillsV2:new SkillsTuiController({context:()=>({key:"kernel",projectId:null,agentId:null,sessionId:null}),provider:()=>"codex",notice:()=>{},send:async()=>({Error:{message:"Skills v2 catalog service is not available in this protocol foundation build"}})})}
+  for(const raw of ["/skills install folder /work/source", "/skills update review", "/skills remove skill-id", "/skills import native-id", "/skills confirm"]) {
+    await assert.rejects(()=>handleSkillSlashCommand(deps,parseSlashCommand(raw) as any),/Skills v2 is unavailable/)
+  }
+  assert.equal(writes,0)
+})
