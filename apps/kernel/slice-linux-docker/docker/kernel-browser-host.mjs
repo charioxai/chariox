@@ -317,7 +317,7 @@ export class KernelBrowserHost {
   // subscription) and the Tab Chrome's own strip shows, as last observed by the kernel.
   chromeWindow() {
     const tabbed = this.chromeWindows?.bound?.tabbed;
-    if (!tabbed?.isCurrent()) return null;
+    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || !tabbed?.isCurrent()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null };
   }

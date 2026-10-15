@@ -1206,6 +1206,9 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
 // MP-08/MP-10/MP-11 (BROWSER-UX-14): a viewer learns the band's window epoch and the
 // natively active Tab from state; it never names a window itself.
 test('MP-08 state projects the bound Chrome window epoch and its natively active Tab', () => using(async ({ host }) => {
+  const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
+  try {
   await host.request({ op: 'open', url: 'https://example.com/' });
   const b = await host.request({ op: 'open', url: 'https://example.org/' });
   host.chromeWindows.bound = null;
@@ -1214,8 +1217,12 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   host.chromeWindows.bound = { tabbed: { window_generation: 7, isCurrent: () => current }, auxiliary: [] };
   host.tabGroups = { active: async () => host.tabs.get(b.tab_id).target_id };
   assert.deepEqual((await host.request({ op: 'state' })).chrome_window, { window_generation: 7, active_tab_id: b.tab_id });
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '0';
+  assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'no band is offered when display is disabled');
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   current = false;
   assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'a retired window is not offered');
+  } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
 }));
 
 // MP-11 (Ubuntu >= 23.10 without the Setup's AppArmor profile): a browser without its
