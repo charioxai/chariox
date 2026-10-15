@@ -79,7 +79,7 @@ impl Phases {
         }
     }
 
-    pub(crate) fn finish(self, scope: &'static str, operation_id: &str) {
+    pub(crate) fn finish(self, scope: &'static str, operation_id: impl std::fmt::Display) {
         if self.previous.is_none() {
             return;
         }
@@ -87,7 +87,7 @@ impl Phases {
         crate::logging::info_with_fields(
             "daemon.phase_timing",
             "kernel path phases",
-            serde_json::json!({"scope": scope, "operation_id": operation_id, "phases_us": phases}),
+            serde_json::json!({"scope": scope, "operation_id": operation_id.to_string(), "phases_us": phases}),
         );
     }
 }

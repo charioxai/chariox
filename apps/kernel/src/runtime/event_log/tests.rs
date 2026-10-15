@@ -885,7 +885,11 @@ fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
     };
     writer.append(b"first\nsecond\n").unwrap();
     std::fs::write(&side, b"second\n").unwrap();
-    let retired = writer.swap_compacted(&side, 13).unwrap();
+    let retired = writer
+        .swap_compacted(&side, 13)
+        .unwrap()
+        .expect("the compactor must receive the old inode");
+    assert_eq!(retired.metadata().unwrap().len(), 13);
     assert!(
         writer.file.is_some(),
         "the next append must reuse the replacement descriptor"

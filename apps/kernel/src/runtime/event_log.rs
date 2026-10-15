@@ -250,7 +250,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
         drop(append_order_guard);
         release_dropped_events(dropped);
         timing.mark("release");
-        timing.finish("event_append", &event_id.to_string());
+        timing.finish("event_append", event_id);
         Ok(logged)
     }
 
@@ -433,7 +433,7 @@ enum PersistentEventWrite {
     SwapCompacted {
         side_path: PathBuf,
         compacted_prefix_bytes: u64,
-        compacting: Arc<AtomicBool>,
+        reply_tx: std::sync::mpsc::Sender<io::Result<Option<fs::File>>>,
     },
     #[cfg(test)]
     Flush(oneshot::Sender<io::Result<()>>),
@@ -531,12 +531,16 @@ impl PersistentEventStore {
         let (write_tx, write_rx) = mpsc::channel(PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY);
         #[cfg(test)]
         let append_test_gate = Arc::new(StdMutex::new(None));
+        // Open and recover the descriptor during startup, before clients can
+        // enqueue the first event. Normal appends never do cold path lookup.
+        let mut writer = EventFileWriter {
+            path: path.clone(),
+            file: None,
+            file_bytes: Arc::clone(&file_bytes),
+        };
+        writer.open()?;
         spawn_persistent_event_writer(
-            EventFileWriter {
-                path: path.clone(),
-                file: None,
-                file_bytes: Arc::clone(&file_bytes),
-            },
+            writer,
             write_rx,
             #[cfg(test)]
             Arc::clone(&append_test_gate),
@@ -678,19 +682,31 @@ impl PersistentEventStore {
                     &retained_event_ids,
                 )
                 .and_then(|()| {
+                    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
                     write_tx
                         .blocking_send(PersistentEventWrite::SwapCompacted {
                             side_path: side_path.clone(),
                             compacted_prefix_bytes,
-                            compacting: Arc::clone(&compacting),
+                            reply_tx,
                         })
-                        .map_err(|_| io::Error::other("persistent event writer stopped"))
+                        .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+                    let retired = reply_rx.recv().map_err(|_| {
+                        io::Error::other("persistent event writer stopped before swap")
+                    })??;
+                    // The last close of an unlinked, multi-megabyte inode can
+                    // truncate its pages and wait on the filesystem journal.
+                    // Keep that work on the compactor, beside its file copy.
+                    let mut timing = crate::runtime::perf_timing::Phases::new();
+                    drop(retired);
+                    timing.mark("close_retired_file");
+                    timing.finish("event_file_retire", "");
+                    Ok(())
                 });
                 if let Err(error) = result {
                     let _ = fs::remove_file(&side_path);
                     warn_compaction_failed(&path, &error);
-                    compacting.store(false, Ordering::Release);
                 }
+                compacting.store(false, Ordering::Release);
             });
         if let Err(error) = spawned {
             warn_compaction_failed(&self.path, &error);
@@ -781,28 +797,38 @@ impl EventFileWriter {
         }
     }
 
-    fn swap_compacted(&mut self, side_path: &Path, compacted_prefix_bytes: u64) -> io::Result<()> {
+    fn swap_compacted(
+        &mut self,
+        side_path: &Path,
+        compacted_prefix_bytes: u64,
+    ) -> io::Result<Option<fs::File>> {
         let mut timing = crate::runtime::perf_timing::Phases::new();
+        self.open()?;
         let complete_bytes = self.file_bytes.load(Ordering::Acquire);
         if complete_bytes < compacted_prefix_bytes {
             return Err(io::Error::other("event file shrank during compaction"));
         }
-        let mut tail = fs::File::open(&self.path)?;
-        tail.seek(SeekFrom::Start(compacted_prefix_bytes))?;
-        let mut side = fs::OpenOptions::new().append(true).open(side_path)?;
+        let old_file = self.file.as_mut().expect("event file is open");
+        old_file.seek(SeekFrom::Start(compacted_prefix_bytes))?;
+        let mut side = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(side_path)?;
         io::copy(
-            &mut tail.take(complete_bytes - compacted_prefix_bytes),
+            &mut old_file.take(complete_bytes - compacted_prefix_bytes),
             &mut side,
         )?;
         let compacted_bytes = side.metadata()?.len();
         timing.mark("copy_tail");
         fs::rename(side_path, &self.path)?;
         timing.mark("rename");
-        self.file = None;
-        timing.mark("close_old_file");
+        // Keep both descriptors live across the rename. The compactor takes
+        // the retired inode; the writer immediately appends to the new one.
+        let retired = self.file.replace(side);
         self.file_bytes.store(compacted_bytes, Ordering::Release);
+        timing.mark("activate");
         timing.finish("event_file_swap", "");
-        Ok(())
+        Ok(retired)
     }
 }
 
@@ -863,13 +889,10 @@ fn run_persistent_event_writer(
             PersistentEventWrite::SwapCompacted {
                 side_path,
                 compacted_prefix_bytes,
-                compacting,
+                reply_tx,
             } => {
-                if let Err(error) = writer.swap_compacted(&side_path, compacted_prefix_bytes) {
-                    let _ = fs::remove_file(&side_path);
-                    warn_compaction_failed(&writer.path, &error);
-                }
-                compacting.store(false, Ordering::Release);
+                let result = writer.swap_compacted(&side_path, compacted_prefix_bytes);
+                let _ = reply_tx.send(result);
             }
             #[cfg(test)]
             PersistentEventWrite::Flush(reply_tx) => {
