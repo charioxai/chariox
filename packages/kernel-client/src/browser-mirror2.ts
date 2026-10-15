@@ -15,6 +15,11 @@ const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
   deleteSoftLineBackward: ['Shift+Home', 'Backspace'], deleteHardLineBackward: ['Shift+Home', 'Backspace'], deleteSoftLineForward: ['Shift+End', 'Delete'], deleteHardLineForward: ['Shift+End', 'Delete'],
 }
+// Cloud MP-08/MP-10: undo/redo go to the kernel's editor as its own (Linux Chromium) chords, Control=2 and Shift=8,
+// on the document-bound display_input key (protocol 517 modifiers); mirror_input keys carry no modifiers.
+type Chord = { kind: 'key'; key: string; modifiers: number }
+type Mirror2Input = Mirror2Action | Chord
+const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', modifiers: 2 }, historyRedo: { kind: 'key', key: 'z', modifiers: 10 } }
 // Controls whose state the viewer's own UI commits (its popup or picker); protocol 492 `set` carries the result.
 const PICKED = new Set('date time datetime-local month week color range'.split(' '))
 const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
@@ -58,7 +63,7 @@ export class BrowserMirror2Renderer {
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
-  private queue: Array<{ action: Mirror2Action; epoch: { sequence: number; document_id: string } }> = []
+  private queue: Array<{ action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   private inputReplies = new Set<Promise<void>>() // MP-10: at most two written, unacknowledged inputs
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
@@ -68,7 +73,7 @@ export class BrowserMirror2Renderer {
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
-  constructor(private container: HTMLElement, private send: (action: Mirror2Action, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
+  constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     const owner = container.ownerDocument
     this.empty = URL.createObjectURL(new Blob([]))
     this.frame = owner.createElement('iframe')
@@ -89,7 +94,7 @@ export class BrowserMirror2Renderer {
   }
   private timed(stage: string, at: number): void { this.timings.push({ stage, duration_ms: performance.now() - at, ended_ms: performance.timeOrigin + performance.now() }); if (this.timings.length > 2048) this.timings.splice(0, 1024) }
   // ---- input: node-addressed, the kernel re-validates everything live.
-  private enqueue(action: Mirror2Action): void {
+  private enqueue(action: Mirror2Input): void {
     if (this.applying || this.disposed || !this.documentId) return
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
@@ -141,7 +146,7 @@ export class BrowserMirror2Renderer {
     const withheld = this.focusWithheld; this.focusWithheld = undefined
     if (withheld !== undefined && !this.pointerFocus && !this.focusHold) this.takeFocus(withheld)
   }
-  private holdFocus(action: Mirror2Action, before: string | null): void {
+  private holdFocus(action: Mirror2Input, before: string | null): void {
     // A packet since the input was sent already moved the kernel's focus: it reflects the input, nothing to hold.
     if (!['focus', 'click', 'selection'].includes(action.kind) || this.kernelFocus !== before) return
     const active = this.active(), id = active && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement ? this.ids.get(active) : undefined
@@ -234,7 +239,11 @@ export class BrowserMirror2Renderer {
       // not the kernel's either. The committed text travels on compositionend.
       if (isComposing || keyCode === 229) return
       this.syncRange()
-      if (ctrlKey || metaKey || altKey) return
+      if (ctrlKey || metaKey || altKey) {
+        const history = altKey ? undefined : /^z$/i.test(key) ? HISTORY[shiftKey ? 'historyRedo' : 'historyUndo'] : ctrlKey && !shiftKey && /^y$/i.test(key) ? HISTORY.historyRedo : undefined
+        if (history) { event.preventDefault(); this.enqueue(history) }
+        return
+      }
       // A select or picker keeps its keys (typeahead, arrows, its popup): the committed state goes as `set`.
       const active = this.active(); if (active && picked(active) && !['Tab', 'Enter'].includes(key)) return
       // Page keys scroll the viewer's own copy natively; the scroll listener sends the position.
@@ -255,6 +264,7 @@ export class BrowserMirror2Renderer {
     on('beforeinput', event => {
       const input = event as InputEvent; event.preventDefault()
       if (input.isComposing || input.inputType.includes('Composition')) return
+      const history = HISTORY[input.inputType]; if (history) { this.syncRange(); this.enqueue(history); return }
       if (input.inputType.startsWith('delete')) { this.syncRange(); for (const key of ranged() ? ['Delete'] : DELETIONS[input.inputType] ?? []) this.enqueue({ kind: 'key', key }); return }
       const data = input.data ?? (input.inputType.startsWith('insertFromPaste') ? input.dataTransfer?.getData('text/plain') : null)
       if (data === composed || !data) return
@@ -739,7 +749,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
       css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment') } as Mirror2Packet)
   }
-  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request('modifiers' in action ? { op: 'display_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, input: action } : { op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own
