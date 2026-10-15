@@ -225,15 +225,18 @@ export class KernelBrowserHost {
     }
     await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids })));
   }
-  // MP-11: fail-closed second layer behind the kernel's managed policies: no
-  // downloads, and a Tab that still reaches a blocked scheme is closed unless it
-  // shows the policy's own refusal (Chrome's error document).
+  // MP-11: fail-closed second layer behind the kernel's managed policies: a Tab that
+  // still reaches a blocked scheme is closed unless it shows the policy's own refusal
+  // (Chrome's error document). Downloads: under the managed policies DownloadRestrictions
+  // blocks the person's and agents' files, while Chrome's own Web Store package download
+  // for an extension the person adds still runs (a CDP deny cancels it: "Download error",
+  // r8 live drill). Without those policies the CDP layer denies every download.
   async lockdown(connection) {
     if (this.chromium.policy === "unavailable" && !this.policyWarned) {
       this.policyWarned = true;
       process.stderr.write("MP-11: kernel browser managed policies unavailable (no private namespace: run the Setup system step install-root.sh, which installs the kernel browser launcher and its AppArmor profile); only the CDP lockdown applies\n");
     }
-    await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
+    await connection.send("Browser.setDownloadBehavior", { behavior: this.chromium.policy === "managed" ? "default" : "deny" });
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
       const info = message?.params?.targetInfo;

@@ -1322,6 +1322,15 @@ test('MP-08/MP-10 Tabs keep their order and new Tabs are appended', () => using(
 
 // MP-11 (BROWSER-UX-14 lockdown): behind the kernel's managed policies, the host denies
 // downloads and closes a Tab that reaches a blocked scheme without the policy's refusal page.
+// r8 live drill: under the managed policies (DownloadRestrictions 3 blocks files) Chrome's own Web Store
+// package download must run, or the extension the person adds fails with "Download error".
+test('MP-11 under managed policies downloads follow DownloadRestrictions, not a CDP deny', () => using(async ({ host, sent }) => {
+  host.chromium.policy = 'managed';
+  await host.request({ op: 'open', url: 'about:blank' });
+  const behaviors = sent.filter(call => call.method === 'Browser.setDownloadBehavior').map(call => call.params.behavior);
+  assert.deepEqual([...new Set(behaviors)], ['default']);
+}));
+
 test('MP-11 the host denies downloads and closes Tabs on blocked schemes', () => using(async ({ host, handlers, sent, connection, pages }) => {
   await host.request({ op: 'open', url: 'about:blank' });
   assert(sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'));
