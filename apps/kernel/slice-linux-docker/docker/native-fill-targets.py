@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import time
 
 
@@ -15,9 +16,20 @@ def store_path():
     root = os.environ.get('XDG_RUNTIME_DIR')
     if not root:
         home = os.environ.get('CHARIOX_HOME')
-        if not home: return None
-        root = str(Path(home) / 'state' / 'native-fill-targets')
+        if home:
+            root = str(Path(home) / 'state' / 'native-fill-targets')
+        elif os.environ.get('CHARIOX_SLICE_ID'):
+            # MP-11: product workers do not inherit the host kernel's home.
+            # Input and capture share the existing private Room runtime.
+            private = os.environ.get('CHARIOX_SLICE_PRIVATE_ROOT')
+            runtime = Path(private) / 'runtime' if private else Path(os.environ.get('CHARIOX_SLICE_ROOT', '/opt/chariox-slice')) / 'private'
+            root = str(runtime / 'native-fill-targets')
+        else:
+            return None
         Path(root).mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = Path(root).lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+        raise ValueError('private native fill registration required')
     display = hashlib.sha256(os.environ.get('DISPLAY','').encode()).hexdigest()[:16]
     return Path(root) / ('chariox-vault-fill-targets-' + display + '.json')
 
@@ -71,6 +83,8 @@ def open_display(display):
 def begin(expected_window, value, connection=None):
     # The kernel already bound X11 focus; match the owning native application.
     try:
+        if store_path() is None:
+            raise ValueError('native fill registration required')
         import pyatspi
         try:
             from Xlib import X, display

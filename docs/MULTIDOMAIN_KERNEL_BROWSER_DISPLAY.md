@@ -613,6 +613,9 @@ the same private desktop bus. The launcher checks the bus file's owner, mode,
 type and address before execution and enables the native accessibility bridge;
 Chromium also enables renderer accessibility. An unsafe or unavailable binding
 refuses execution without logging arguments, bus addresses or input contents.
+Native fill registrations also use that private Room runtime when the worker
+has no host `CHARIOX_HOME` or `XDG_RUNTIME_DIR`. Input and capture share the
+same private store; exposed, foreign-owned or symlinked stores are refused.
 
 The worker protects capture under the Room observation and credential-input
 barriers, encodes the ordinary CXD1 event and encrypts it to the admitted viewer
