@@ -465,3 +465,23 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
   } finally { await real.close(); }
 });
+
+// MP-08/MP-10/MP-11: New Tab's home navigation can commit while a person types in Chrome's omnibox.
+for(const focus of ['chrome','page','unavailable','other-tab','window','generation','retired'])test(`MP-11 omnibox input across a home-document commit focus=${focus}`,async()=>{
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};let physical=false;const sent=[],marks=[];
+ const connection={send:async(method,p)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:p.expression==='document.hasFocus()'?physical:true}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},timing:s=>marks.push(s),browser:{inputCapture:{physicalFocus:async(_c,_s,read)=>read()},resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async key=>(sent.push(key),true)},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});sent.length=0;tab.document_id='home';
+ if(focus==='page')physical=true;
+ if(focus==='unavailable')delete host.browser.inputCapture.physicalFocus;
+ if(focus==='window')regionWindow.window_generation=2;
+ if(focus==='generation')host.generation=4;
+ if(focus==='retired')source.isCurrent=()=>false;
+ if(focus==='other-tab'){host.tabs.set('other',{tab_id:'other',target_id:'other',document_id:'home'});host.tabGroups.active=async()=> 'other'}
+ if(focus==='chrome'){
+  assert.deepEqual(await send({kind:'text',text:'https'}),{dispatched:true});assert.equal(String.fromCharCode(...sent),'https','the first URL character is retained');
+  assert(marks.includes('native_chrome_ui_document_changed'),'only the finite transition label is logged');
+ }else{await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'no character reaches an unproved target');}
+});

@@ -349,17 +349,16 @@ export class InputArbiter {
       if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
-    const current = async () => {
-      const tab = await activeAdmitted();
-      if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
-      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      return {connection, sessionId, tab};
-    };
+    const uiFocus = tab => ({tab_id:tab.tab_id, generation:this.host.generation, window_generation:stream.regionWindow?.window_generation});
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      const {connection, sessionId, tab} = await current();
+      const tab = await activeAdmitted(), sameDocument = tab.document_id === command.document_id;
+      const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
+        && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
+      if (!sameDocument && !ownsUiFocus) throw new UserDomainRefusal('stale_reference');
+      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
+      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
       const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
@@ -367,13 +366,16 @@ export class InputArbiter {
       // The person's own native action (a toolbar click, Ctrl+L) puts them in Chrome's UI; the page's
       // physical focus confirms it (read with focus emulation suspended: a mirror keeps it on, so
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
-      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) {
+      if (ownsUiFocus) {
         const capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') return;
-        if (!await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true)) return;
+        if (typeof capture?.physicalFocus !== 'function') { if (!sameDocument) throw new UserDomainRefusal('stale_reference'); return; }
+        if (!await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true)) {
+          if (!sameDocument) this.host.timing?.('native_chrome_ui_document_changed', performance.timeOrigin + performance.now());
+          return;
+        }
         this.chromeFocus = null;
       }
-
+      if (!sameDocument) throw new UserDomainRefusal('stale_reference');
       const {result} = await evaluate(sensitiveFocusExpression(false));
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
@@ -394,7 +396,7 @@ export class InputArbiter {
       // current (rechecked here): Chrome's UI, not the page's remembered field.
       if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
-      if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
+      if (tab) this.chromeFocus = lower(keysym) === key('l') ? uiFocus(tab) : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
       return dispatched(() => source.chord(keysym, modifiers));
     };
@@ -405,7 +407,7 @@ export class InputArbiter {
       if (button === undefined) throw new Error('MD-2: unsupported input');
       // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
       // A popup item (menu, dropdown) may navigate or switch Tabs: the keys return to the page.
-      const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? `${tab.tab_id}:${tab.document_id}` : null;
+      const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? uiFocus(tab) : null;
       return dispatched(() => source.click(input.x, input.y, button));
     }
     if (input.kind === 'drag') {
