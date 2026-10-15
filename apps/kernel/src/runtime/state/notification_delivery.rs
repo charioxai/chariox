@@ -45,6 +45,21 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            // A permission can arrive while this sender waits for the provider
+            // lane. Do not persist a send intent or start native ACK timing
+            // until that exact target agent can receive input.
+            if self
+                .owned
+                .session_store
+                .get_session(&session)
+                .is_ok_and(|snapshot| {
+                    snapshot.active_interactions().iter().any(|interaction| {
+                        interaction.agent_id() == Some(dispatch.agent_id.as_str())
+                    })
+                })
+            {
+                continue;
+            }
             if injection
                 .queued
                 .notification_expired_at(crate::session::unix_epoch_ms())
@@ -197,6 +212,19 @@ impl KernelRuntimeOwnedState {
                 let runs: Vec<_> = before.workflow_runs().iter().filter(|r|
                     r.workflow_id() == queued.workflow_id()
                         && !r.status().is_terminal()).collect();
+                // Waiting for the target's user is not an uncertain provider
+                // send. Leave this durable item untouched so other agents can
+                // progress, and reconsider the same active turn after approval.
+                if runs.len() == 1
+                    && runs[0].status() == crate::session::WorkflowRunStatus::Running
+                    && runs[0].node_runs().first().is_some_and(|entry| {
+                        before.active_interactions().iter().any(|interaction| {
+                            interaction.agent_id() == Some(entry.agent_id())
+                        })
+                    })
+                {
+                    return Ok(None);
+                }
                 let target = (runs.len() == 1).then(|| runs[0]).and_then(|run| {
                     if run.endpoint_id() != queued.endpoint_id() || run.status() != crate::session::WorkflowRunStatus::Running { return None }
                     let entry = run.node_runs().first()?;

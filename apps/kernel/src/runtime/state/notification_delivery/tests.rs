@@ -1161,3 +1161,82 @@ async fn notification_inject_structured_pending_survives_restart_before_actor_wr
     assert_ne!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
     assert!(matches!(item.status(), WorkflowQueuedPromptStatus::Running));
 }
+
+#[tokio::test]
+async fn notification_inject_waits_for_target_permission_without_marking_send_uncertain() {
+    // MP-08 / MP-10 / MP-11: waiting for a human must not start a native
+    // acknowledgement timeout, or block a different agent's notification.
+    for target_permission in [true, false] {
+        let (_root, runtime, session_id, id) = fixture(false, 1).await;
+        let agent_id = {
+            let mut sessions = runtime.owned.session_store.write();
+            let mut session = sessions.get_session(&session_id).unwrap();
+            let agent = session.workflow_runs()[0].node_runs()[0]
+                .agent_id()
+                .to_owned();
+            session.add_active_interaction(RuntimeInteraction::new(
+                "held-permission",
+                if target_permission {
+                    &agent
+                } else {
+                    "another-agent"
+                },
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Critical,
+                Some("Approve provider tool?".into()),
+                "Read a public documentation page",
+                vec![RuntimeInteractionChoice::new(
+                    "allow", "Allow", "allow", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+            sessions.restore_session(session);
+            agent
+        };
+        let before = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let admission = runtime
+            .owned
+            .prepare_notification_injection(&session_id, &id)
+            .unwrap();
+        if target_permission {
+            assert!(
+                admission.is_none(),
+                "defer injection until its own agent's permission is answered"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .workflow_queued_prompts(),
+                before.workflow_queued_prompts(),
+                "no send intent, fallback or queue mutation while permission is pending"
+            );
+            {
+                let mut sessions = runtime.owned.session_store.write();
+                let mut session = sessions.get_session(&session_id).unwrap();
+                session.remove_active_interaction("held-permission");
+                sessions.restore_session(session);
+            }
+            let admitted = runtime
+                .owned
+                .prepare_notification_injection(&session_id, &id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(admitted.queued.id(), id);
+            assert_eq!(admitted.dispatch.agent_id, agent_id);
+        } else {
+            assert!(
+                admission.is_some(),
+                "another agent's permission must not block this target"
+            );
+        }
+    }
+}
