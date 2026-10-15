@@ -87,7 +87,7 @@ function passkeyKeyText(event: PasskeyPopupKey): string {
   return event.shift ? event.name.toLocaleUpperCase() : event.name
 }
 
-const promptKey = (prompt: PasskeyPrompt) => `${prompt.session_id}\u001f${prompt.interaction_id}`
+const promptKey = (prompt: Pick<PasskeyPrompt, "session_id" | "interaction_id">) => `${prompt.session_id}\u001f${prompt.interaction_id}`
 
 /** Protocol 403: the kernel's passkey prompts as one popup on this terminal,
  * attached to a session or not. The passkey is typed only here. The kernel
