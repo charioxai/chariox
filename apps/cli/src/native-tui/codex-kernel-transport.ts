@@ -59,7 +59,7 @@ export async function startCodexKernelTransport(options: {
         // operation, including its sequence and input, never a new exchange.
         if (closed || operation.kind === "close" || Date.now() >= deadline
           || !(error instanceof LocalIpcError)
-          || !["target_disconnected", "target_not_connected", "connection_closed", "request_timeout", "outcome_unknown", "write_failed"].includes(error.code ?? "")) throw error
+          || !["native_transport_reconnecting", "target_disconnected", "target_not_connected", "connection_closed", "request_timeout", "outcome_unknown", "write_failed"].includes(error.code ?? "")) throw error
         await sleep(100)
       }
     }

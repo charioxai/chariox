@@ -9,7 +9,17 @@ fn mp08_native_provider_transport_531_139_snapshot_and_hash() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         139
     );
-    let snapshot: serde_json::Value = serde_json::from_str(r###"{"local_protocol":531,"peer_protocol":139,"peer_requests":[{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"worker-run"}],"requests":[{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"run","session_id":"session"}}],"response":{"NativeProviderTransport":{"result":{"closed":false,"connection_id":"connection","frames":[],"sequence":1}}}}"###).unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(r###"{"local_protocol":531,"peer_protocol":139,"peer_requests":[{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"worker-run"},{"attachment_id":"attachment","kind":"native_provider_transport","leased_agent_id":"leased","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"worker-run"}],"reconnecting_error":{"code":"native_transport_reconnecting","message":"relay transport `native provider transport` failed with code `native_transport_reconnecting` (retryable=true): native display is reconnecting; retry the same receipted operation","retryable":true},"requests":[{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"kind":"open","request_id":"open-request"},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","frames":["{\"id\":1,\"method\":\"initialize\"}"],"kind":"exchange","sequence":1},"provider_run_id":"run","session_id":"session"}},{"NativeProviderTransport":{"agent_id":"agent","attachment_id":"attachment","operation":{"connection_id":"connection","kind":"close"},"provider_run_id":"run","session_id":"session"}}],"response":{"NativeProviderTransport":{"result":{"closed":false,"connection_id":"connection","frames":[],"sequence":1}}}}"###).unwrap();
+    let error = crate::error::DaemonError::RelayTransport {
+        operation: "native provider transport",
+        code: "native_transport_reconnecting".into(),
+        message: "native display is reconnecting; retry the same receipted operation".into(),
+        retryable: true,
+    };
+    assert_eq!(
+        serde_json::to_value(crate::transport::kernel_protocol::map_kernel_error(&error)).unwrap(),
+        snapshot["reconnecting_error"]
+    );
     for value in snapshot["requests"].as_array().unwrap() {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), *value);
@@ -30,7 +40,7 @@ fn mp08_native_provider_transport_531_139_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bcc1899953bf49b88101f719d62cd5d5acdbf9e7526c3ee235ddbe1b453d6263"
+        "2f74384f0849384fea2f8dfc1bf42c433e0f75290bc0f43f56ed37560e82e3e7"
     );
     let mut arbitrary_endpoint = snapshot["requests"][0].clone();
     arbitrary_endpoint["NativeProviderTransport"]["endpoint"] =

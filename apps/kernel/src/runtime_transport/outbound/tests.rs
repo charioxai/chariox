@@ -239,3 +239,25 @@ fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
         "error":{"code":"local_transport_error","message":message,"retryable":true}});
     assert_eq!(project_payload(frame.clone()).unwrap(), frame);
 }
+
+// MP-08 / MP-10 / MP-11: test the actual public wire projection, including redaction.
+#[test]
+fn mp08_native_reconnect_code_survives_wire_mapping_without_private_error_text() {
+    let error = crate::error::DaemonError::RelayTransport {
+        operation: "native provider transport",
+        code: "native_transport_reconnecting".into(),
+        message: CANARY.into(),
+        retryable: true,
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    let frame =
+        serde_json::json!({"type":"response","request_id":"native","response":null,"error":mapped});
+    let projected = project_payload(frame).unwrap();
+    assert_eq!(projected["error"]["code"], "native_transport_reconnecting");
+    assert_eq!(projected["error"]["retryable"], true);
+    assert_eq!(
+        projected["error"]["message"],
+        "native display is reconnecting; retry the same receipted operation"
+    );
+    assert!(!projected.to_string().contains(CANARY));
+}

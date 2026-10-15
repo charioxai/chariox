@@ -879,6 +879,18 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        // MP-08 / MP-10 / MP-11: only this native receipt-recovery class
+        // crosses the shared projection without losing its machine-readable code.
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            retryable: true,
+            ..
+        } if *operation == "native provider transport"
+            && code == "native_transport_reconnecting" =>
+        {
+            kernel_error("native_transport_reconnecting", error, true)
+        }
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {

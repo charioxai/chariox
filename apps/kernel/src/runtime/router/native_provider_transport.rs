@@ -91,14 +91,43 @@ fn require_native_relay_configuration(
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
-        return Err(DaemonError::RelayTransport {
-            operation: "native provider transport",
-            code: "target_not_connected".into(),
-            message: "native transport is waiting for the owning relay to reconnect".into(),
-            retryable: true,
-        });
+        return Err(native_reconnecting_error());
     }
     Ok(())
+}
+
+// MP-08 / MP-10 / MP-11: preserve this specific retry classification through
+// the shared wire/error redaction path; do not retry generic authority errors.
+fn native_reconnecting_error() -> DaemonError {
+    DaemonError::RelayTransport {
+        operation: "native provider transport",
+        code: "native_transport_reconnecting".into(),
+        message: "native display is reconnecting; retry the same receipted operation".into(),
+        retryable: true,
+    }
+}
+
+fn map_native_relay_gap(error: DaemonError) -> DaemonError {
+    match &error {
+        DaemonError::RelayTransport {
+            code,
+            retryable: true,
+            ..
+        } if matches!(
+            code.as_str(),
+            "target_not_connected"
+                | "target_disconnected"
+                | "relay_disconnected"
+                | "connection_closed"
+                | "request_timeout"
+                | "write_failed"
+                | "outcome_unknown"
+        ) =>
+        {
+            native_reconnecting_error()
+        }
+        _ => error,
+    }
 }
 
 impl CommandRouter {
@@ -150,6 +179,8 @@ impl CommandRouter {
                     return Err(error("native projected run is stale or not the owning run"));
                 }
                 let config = app.relay_config_for_remote_execution(&binding);
+                let uses_home_relay =
+                    config.relay_url.as_deref() == app.config().relay_url.as_deref();
                 (
                     None,
                     Some((
@@ -157,6 +188,7 @@ impl CommandRouter {
                         binding.worker_kernel_id,
                         binding.leased_agent_id,
                         worker_run_id,
+                        uses_home_relay,
                     )),
                 )
             } else {
@@ -176,7 +208,8 @@ impl CommandRouter {
                 (Some(scope), None)
             }
         };
-        if let Some((config, worker_id, leased_agent_id, provider_run_id)) = remote {
+        if let Some((config, worker_id, leased_agent_id, provider_run_id, uses_home_relay)) = remote
+        {
             require_native_relay_configuration(&config)?;
             let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(worker_id),
@@ -190,9 +223,12 @@ impl CommandRouter {
             };
             let timeout = Duration::from_millis(config.relay_request_timeout_ms);
             let response = match self.runtime_state.connected_relay_state_for_config(&config).await {
-                Some(state) => crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(&config, &state, target, peer_request, timeout, || self.runtime_state.authorize_current_external_command()).await?,
-                None => crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(&config, target, peer_request, timeout, || self.runtime_state.authorize_current_external_command()).await?,
-            };
+                Some(state) => crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(&config, &state, target, peer_request, timeout, || self.runtime_state.authorize_current_external_command()).await,
+                // The normal home connector owns this relay registration. A
+                // second temporary registration could replace it during recovery.
+                None if uses_home_relay => return Err(native_reconnecting_error()),
+                None => crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(&config, target, peer_request, timeout, || self.runtime_state.authorize_current_external_command()).await,
+            }.map_err(map_native_relay_gap)?;
             return match response {
                 RelayPeerResponse::NativeProviderTransport { result } => Ok(result),
                 _ => Err(error(
@@ -267,12 +303,39 @@ mod tests {
             config.relay_url = url.map(str::to_owned);
             config.relay_token = admission.map(str::to_owned);
             assert!(
-                matches!(require_native_relay_configuration(&config), Err(DaemonError::RelayTransport { code, retryable: true, .. }) if code == "target_not_connected")
+                matches!(require_native_relay_configuration(&config), Err(DaemonError::RelayTransport { code, retryable: true, .. }) if code == "native_transport_reconnecting")
             );
         }
         config.relay_url = Some("wss://relay.example.test".into());
         config.relay_token = Some("fixture-admission".into());
         assert!(require_native_relay_configuration(&config).is_ok());
+    }
+
+    #[test]
+    fn mp08_native_gap_mapping_preserves_business_and_authority_failures() {
+        for (code, retryable, expected_gap) in [
+            ("target_disconnected", true, true),
+            ("relay_disconnected", true, true),
+            ("target_not_connected", true, true),
+            ("unauthorized", false, false),
+            ("leased_agent_not_found", false, false),
+            ("target_disconnected", false, false),
+            ("other", true, false),
+        ] {
+            let mapped = map_native_relay_gap(DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: code.into(),
+                retryable,
+                message: "private diagnostic canary".into(),
+            });
+            let DaemonError::RelayTransport {
+                code: mapped_code, ..
+            } = mapped
+            else {
+                panic!("relay error expected")
+            };
+            assert_eq!(mapped_code == "native_transport_reconnecting", expected_gap);
+        }
     }
 
     #[test]
