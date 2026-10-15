@@ -1613,6 +1613,88 @@ pub(in crate::runtime::state) mod tests {
         }
     }
 
+    // MP-08 / MP-10 / MP-11: the output pump can settle a turn while native
+    // dispatch waits for the app lock. A stale writer must not invent a failure
+    // for that settled turn, or send its text to a replacement turn.
+    #[tokio::test]
+    async fn mp08_claude_native_dispatch_skips_settled_and_replaced_prompts() {
+        crate::test_support::isolated_env_test!();
+        for replace in [false, true] {
+            let (_worktree, mut runtime, session_id, agent_id, source_id, run, dispatch) =
+                runtime_with_claude_headless_active_prompt().await;
+            let reached_native_attempt = Arc::new(tokio::sync::Notify::new());
+            runtime.observe_app_lock_wait_for_test(reached_native_attempt.clone());
+            let app = Arc::clone(&runtime.app);
+            let held = app.lock().await;
+            let writer = runtime.clone();
+            let task = tokio::spawn(async move {
+                writer
+                    .enqueue_prompt_dispatch_after_liveness_with_acceptance(
+                        &dispatch,
+                        &writer.owned,
+                    )
+                    .await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                reached_native_attempt.notified(),
+            )
+            .await
+            .expect("native attempt should wait for app ownership");
+            if replace {
+                runtime
+                    .owned
+                    .cancel_active_prompt_only(&session_id, &agent_id)
+                    .expect("a real user cancellation should settle the old turn");
+            } else {
+                runtime
+                    .owned
+                    .complete_local_prompt_without_advance(&session_id, &agent_id, Some(run.id()))
+                    .expect("the independent output pump should settle the first turn");
+            }
+            if replace {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap();
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .submit_prepared_prompt(
+                        &session,
+                        PromptQueueItem::new(
+                            "replacement-after-edit",
+                            &source_id,
+                            &agent_id,
+                            "replacement task",
+                            PromptStatus::Queued,
+                        ),
+                        false,
+                    )
+                    .expect("a replacement prompt should be admitted");
+            }
+            drop(held);
+            assert!(!task
+                .await
+                .unwrap()
+                .expect("settled prompt is a stale dispatch, not a provider failure"));
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            let active = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id);
+            assert_eq!(
+                active.as_ref().map(|prompt| prompt.id()),
+                replace.then_some("replacement-after-edit")
+            );
+        }
+    }
+
     #[tokio::test]
     async fn steering_dispatch_matches_target_active_prompt() {
         let (
@@ -3857,10 +3939,11 @@ impl KernelRuntimeState {
                 let attempt = self
                     .with_app_side_effect(|app| {
                         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "dispatch prompt",
-                                message: "prompt changed before native dispatch".into(),
-                            });
+                            // The output pump can acknowledge and finish the turn
+                            // before this retry acquires app ownership. A settled
+                            // or replaced prompt is a stale writer, not a new
+                            // provider failure. Keep the guard before every write.
+                            return Ok(None);
                         }
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
@@ -3868,8 +3951,12 @@ impl KernelRuntimeState {
                             &provider_run,
                             &dispatch_with_handoff,
                         )
+                        .map(Some)
                     })
                     .await?;
+                let Some(attempt) = attempt else {
+                    return Ok(false);
+                };
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
