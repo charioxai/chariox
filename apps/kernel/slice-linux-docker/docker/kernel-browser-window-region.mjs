@@ -124,7 +124,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
-  }catch(error){await this.close();throw error;}
+  }catch(error){if(this.pageOverlay)this.timing(`native_overlay_refused ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,80)}`,performance.timeOrigin+performance.now());await this.close();throw error;}
  }
  point(x,y){return Number.isInteger(x)&&Number.isInteger(y)&&x>=0&&y>=0&&
   x<this.region.css_width&&y<this.region.css_height;}

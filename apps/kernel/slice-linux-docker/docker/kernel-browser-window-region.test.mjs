@@ -93,6 +93,9 @@ test('MP-11 an in-window popup is a rect of the tabbed window below the band',()
  for(const [r,c] of [[{left:238,top:172,width:2156,height:176},content],[{left:238,top:174,width:2156,height:176},undefined],[{left:500,top:174,width:2156,height:176},content]])
   assert.throws(()=>windowRegionGeometry('browser_auxiliary',window,r,c,2,true),/region|window|boundary/);
  assert.throws(()=>windowRegionGeometry('browser_auxiliary',{width:2560,height:1774},{left:238,top:174,width:2156,height:176},content,2,true),/region/);
+ // DPR 1: Chrome's band is 87 rows (odd); the page overlay starts there, the even band crop at 86.
+ const page=windowRegionGeometry('browser_auxiliary',{id:42,width:1280,height:800},{left:0,top:87,width:1280,height:712},713,1,true);
+ assert.equal(page.pageTop,0);assert.equal(page.css_height,712);
 });
 
 // Coordinator 12:22Z ask 1: under a browser-modal dialog the page shows behind a uniform scrim (k = 0.4 in

@@ -115,7 +115,8 @@ export class ChromeWindows {
     });
     // A browser-modal dialog over the page: the whole page area of the same X window.
     if (this.modal && bound.length < 8) {
-      const top = tabbed.content_top, r = {id: row.id, x: row.x, y: row.y + top, width: row.width - row.width % 2, height: row.height - top - (row.height - top) % 2};
+      // From Chrome's own band edge (87 DIP; the band crop is even and may end a row above it).
+      const top = chromeBandHeight * tabbed.scale, r = {id: row.id, x: row.x, y: row.y + top, width: row.width - row.width % 2, height: row.height - top - (row.height - top) % 2};
       const key = `${tabbed.window_generation}:${r.id}:modal:${r.x},${r.y},${r.width}x${r.height}`;
       const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
       ids.set(key, auxiliary_id);
@@ -216,8 +217,8 @@ export class ChromeWindows {
     if (binding.page_overlay) {
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
       return {surface: 'browser_auxiliary', inWindow: true, pageOverlay: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
-        rect: {left: 0, top: tabbed.content_top, width: binding.bounds.width, height: binding.bounds.height},
-        contentHeight: tabbed.bounds.height - tabbed.content_top, isCurrent: binding.isCurrent};
+        rect: {left: 0, top: binding.bounds.y - tabbed.bounds.y, width: binding.bounds.width, height: binding.bounds.height},
+        contentHeight: tabbed.bounds.height - (binding.bounds.y - tabbed.bounds.y), isCurrent: binding.isCurrent};
     }
     if (binding.in_window) {
       // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
