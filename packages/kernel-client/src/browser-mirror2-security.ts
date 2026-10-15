@@ -141,7 +141,7 @@ function validateTree(records: Mirror2Record[], known: (id: string) => Mirror2Re
     validateMirror2Record(record)
     if (seen.has(record.id)) fail('duplicate node')
     const parent = record.parent === null ? null : seen.get(record.parent) ?? (record.parent === root ? known(record.parent) : undefined)
-    if (record.parent !== null && !parent) fail('tree')
+    if (record.parent !== null && !parent) fail(record.parent === root ? 'tree (missing operation target)' : 'tree (missing or out-of-order parent)')
     if (parent && ['text', 'mask', 'tile'].includes(parent.kind)) fail('leaf')
     if (record.kind === 'shadow' && parent && !['element'].includes(parent.kind)) fail('shadow')
     if (record.kind === 'document' && parent && parent.kind !== 'frame') fail('document')
