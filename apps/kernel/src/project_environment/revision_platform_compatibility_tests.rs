@@ -72,7 +72,10 @@ fn wildcard_operator_overlap_survives_preview_and_save() {
         (">22.3.x", "<22.5", true),
         (">22.3.x", "<22.4", false),
         ("^0.2.x", ">=0.3", false),
-        ("<=22.x", ">22", true),
+        ("<=22.x", ">22", false),
+        ("<=22.x", ">22.0.0", true),
+        ("<=22.3.x", ">22.3", false),
+        ("<=22.3.x", ">22.3.0", true),
         ("~22.3", ">=22.4", false),
         ("22.x || 24.x", ">=23 <24", false),
     ] {

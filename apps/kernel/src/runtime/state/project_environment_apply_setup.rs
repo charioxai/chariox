@@ -210,6 +210,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             "Review bounded Setup on the disposable worker",
         ));
     };
+    let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
     // MP-08 / MP-10 / MP-11: preparation errors precede every command.
     // Persist the zero frontier before workspace/public-input preparation.
     record_setup_admission(state, config, env, requirement, operation, 0)?;
@@ -220,31 +221,11 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
         }
     }
     .ok_or_else(|| environment_error("Setup folder unavailable"))?;
-    let home = resolved_worker_kernel_home(config)?;
-    let workspace =
-        canonical_worker_workspace(&root.local_workspace_binding, Some(home.as_os_str()))?;
-    let preparation = WorkerPreparationHome::for_project_worker(
-        &workspace,
-        &home,
-        &env.local_project_id,
-        &config.host_machine_id,
-    )?;
-    let mut environment = worker_validation_environment_without_provider(preparation.path());
     // Only explicitly dependent public bindings can enter Setup; named secrets
     // continue through provider/Agent-tool services, not generic injection.
     let dependencies: Vec<_> = environment_requirements(env)
         .filter(|r| requirement.depends_on.contains(&r.requirement_id))
         .collect();
-    let bindings = project_public_setup_environment(
-        config,
-        &env.local_project_id,
-        root,
-        &workspace,
-        &dependencies,
-    )?;
-    for (name, value) in bindings.iter() {
-        environment.insert(name.into(), value.into());
-    }
     // A different client may Save while the runner owns a live subprocess.
     // Revoke that process through the existing cancellation/cleanup path when
     // its saved Project authority changes or can no longer be established.
@@ -259,39 +240,46 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
         // command; a changed owner, revision or folder still revokes this one.
         validate_setup_project(state, env, &store).is_err()
     };
-    let deadline = Instant::now() + VALIDATION_TOTAL_TIMEOUT;
+    let (workspace, preparation) = setup_paths(
+        config,
+        &root.local_workspace_binding,
+        &env.local_project_id,
+        deadline,
+        &should_stop,
+    )?;
+    let mut environment = worker_validation_environment_without_provider(&preparation);
+    let bindings = project_public_setup_environment_until(
+        config,
+        &env.local_project_id,
+        root,
+        &workspace,
+        &dependencies,
+        deadline,
+        &should_stop,
+    )?;
+    for (name, value) in bindings.iter() {
+        environment.insert(name.into(), value.into());
+    }
+    if should_stop() || Instant::now() >= deadline {
+        return Err(environment_error("Setup cancelled during preparation"));
+    }
     for (index, command) in commands.iter().enumerate() {
         state.authorize_current_external_command()?;
         if should_stop() {
             return Err(environment_error("Setup cancelled before command start"));
         }
         if let Some(path) = source_path {
-            let mut file = open_workspace_file(&workspace, path)?;
-            let mut digest = Sha256::new();
-            let mut bytes = 0_u64;
-            let mut buffer = [0; 8192];
-            loop {
-                let n = file
-                    .read(&mut buffer)
-                    .map_err(|_| environment_error("Setup source unavailable"))?;
-                if n == 0 {
-                    break;
-                }
-                bytes += n as u64;
-                if bytes > 16 * 1024 * 1024 {
-                    return Err(environment_error("Setup source exceeds bounds"));
-                }
-                digest.update(&buffer[..n]);
-            }
-            let actual = format!("{:x}", digest.finalize());
-            if source_digest
-                .as_ref()
-                .is_none_or(|expected| expected.trim_start_matches("sha256:") != actual)
-            {
-                return Err(environment_error(
-                    "Setup source changed; review before executing",
-                ));
-            }
+            setup_source_digest(
+                config,
+                &workspace,
+                path,
+                source_digest.as_deref(),
+                deadline,
+                &should_stop,
+            )?;
+        }
+        if should_stop() || Instant::now() >= deadline {
+            return Err(environment_error("Setup cancelled before command start"));
         }
         // Literal shell quoting is only an adapter for the existing opaque
         // runner; command executable/arguments remain the reviewed typed input.
@@ -362,7 +350,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
         });
         let scratch = WorkerValidationScratch::create_for_worker(
             &workspace,
-            preparation.path(),
+            &preparation,
             &command_id,
             command_attempt,
             index,

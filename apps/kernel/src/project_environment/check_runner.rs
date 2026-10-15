@@ -141,11 +141,10 @@ impl ProjectEnvironmentStore {
         // the lock. Keep their observations and first public-binding baselines.
         self.merge_check_progress(project.id(), &mut checks, &operation.operation_id)?;
         // A dependent cannot become Ready while its prerequisite is missing, stale or excluded.
-        checks.invalidate_observations(&env, &target, crate::session::unix_epoch_ms());
-        invalidate_check_dependencies(
+        checks.invalidate_observations_for_operation(
             &env,
-            &mut checks.observations,
             &target,
+            crate::session::unix_epoch_ms(),
             Some(&operation.operation_id),
         );
         for result in &mut operation.per_item_results {

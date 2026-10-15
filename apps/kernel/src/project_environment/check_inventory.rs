@@ -243,6 +243,12 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
             continue;
         }
         let e = numbers(expected)?;
+        // MP-08 / MP-10: partial strict/upper comparators have the same bounds
+        // as their explicit wildcard form; zero padding changes npm's meaning.
+        if e.len() < 3 && matches!(op, ">" | "<=") {
+            accepted &= satisfies(version, &format!("{op}{expected}.*"))?;
+            continue;
+        }
         let padded = |n: &[u32]| {
             let mut n = n.to_vec();
             n.resize(4, 0);

@@ -163,6 +163,7 @@ export function createProjectEnvironmentReadController(deps: {
       const projectId = current.local_project_id
       detectionGeneration = requestGeneration
       lines = ["Detecting requirements…"]; deps.render()
+      let detectedReply: ProjectEnvironment | null = null
       try {
         const statusResponse = await deps.send(relayStatusRequest()) as { RelayStatus?: { status: { machine_id: string; daemon_id: string } } }
         const status = statusResponse.RelayStatus?.status
@@ -172,10 +173,20 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return
-        cache.remember(scope, environment); current = environment; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(environment); offset = 0
+        detectedReply = environment
+        // MP-08 / MP-10: full Detect replies cannot replace a compact kernel-clock anchor.
+        // The shared reader also restores snapshot-bound proposal paging after Detect.
+        const fresh = current.read_view && !environment.read_view ? await readEnvironment(projectId) : environment
+        if (requestGeneration !== generation) return
+        if (fresh.local_project_id !== projectId || fresh.lineage.environment_id !== environment.lineage.environment_id || fresh.revision < environment.revision || (current.read_view && !fresh.read_view)) throw new Error("Detected Environment refresh unavailable")
+        cache.remember(scope, fresh); current = fresh; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(fresh); offset = 0
       } catch (error) {
         if (requestGeneration !== generation) return
-        lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
+        if (detectedReply) {
+          current = {...detectedReply, observations: detectedReply.observations.map(o => ({...o, stale: true}))}
+          cache.remember(scope, current); previousProposalOffsets = []; proposalIndex = 0; offset = 0
+        }
+        lines = [detectedReply ? "Requirements detected · Refresh to load current Check freshness" : error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
       } finally { if (detectionGeneration === requestGeneration) detectionGeneration = null; if (requestGeneration === generation) deps.render() }
     },
     async web() {
