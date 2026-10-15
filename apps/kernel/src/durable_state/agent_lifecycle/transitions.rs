@@ -334,6 +334,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
             if ids.is_empty()
+                && t.obligations
+                    .iter()
+                    .all(|o| !matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            {
+                return Err(error(
+                    "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
+                ));
+            }
+            if ids.is_empty()
                 || deadline <= now
                 || deadline > i64::MAX as u64
                 || reason.trim().is_empty()

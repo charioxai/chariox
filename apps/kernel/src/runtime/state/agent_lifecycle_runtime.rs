@@ -379,8 +379,10 @@ impl KernelRuntimeState {
         }
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
-            let text=format!("The prior answer is progress, not completion. Finish or cancel these obligations, or call chariox.events.yield with admitted live sources and a future deadline. Otherwise call chariox.events.blocked with the exact owner action. One correction is allowed. Untrusted obligation data: {}",serde_json::to_string(&task.obligations).unwrap_or_default());
-            let text = self.owned.goal_continuation_context(&task)?.unwrap_or(text);
+            let text = match self.owned.goal_continuation_context(&task)? {
+                Some(text) => text,
+                None => super::agent_task_projection::task_correction_text(&task),
+            };
             if let Err(e) = Box::pin(self.dispatch_task_continuation(
                 &task,
                 source.source_attachment_id(),

@@ -118,6 +118,20 @@ fn answer_tail(text: &str, limit: usize) -> String {
     format!("…{tail}")
 }
 
+// The single correction for a turn that ended without a valid wait or answer.
+// Only unresolved obligations are actionable; with none, the agent just answers.
+pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
+    let open = task
+        .obligations
+        .iter()
+        .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+        .collect::<Vec<_>>();
+    if open.is_empty() {
+        return "Every tracked obligation is already resolved and the prior turn ended without a final answer. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
+    }
+    format!("The prior answer is progress, not completion. These obligations are unresolved: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms. Otherwise call chariox.events.blocked with the exact owner action. If they have all resolved by now, reply with the final answer instead. One correction is allowed.",serde_json::to_string(&open).unwrap_or_default())
+}
+
 // Steering belongs to the current turn; an independent prompt closes its answer boundary.
 pub(super) fn task_public_outputs<'a>(
     entries: &'a [crate::history::SessionHistoryEntry],
@@ -167,6 +181,32 @@ pub(super) fn task_public_outputs<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn correction_task(statuses: &[&str]) -> AgentTaskExecution {
+        let obligations = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| serde_json::json!({"id":format!("ob-{i}"),"kind":"delegate","resource_id":format!("agent-{i}"),"status":status,"dispatch_state":"accepted"}))
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"working","reason":"","obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":true,"pending_prompt_id":"task-correction-t"})).unwrap()
+    }
+    #[test]
+    fn correction_with_no_open_obligation_asks_only_for_the_final_answer() {
+        let text = task_correction_text(&correction_task(&["satisfied", "cancelled"]));
+        assert!(text.contains("final"), "{text}");
+        assert!(
+            !text.contains("yield") && !text.contains("blocked") && !text.contains("ob-0"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn correction_lists_only_unresolved_obligations_and_names_the_wait_route() {
+        let text = task_correction_text(&correction_task(&["satisfied", "open"]));
+        assert!(text.contains("ob-1") && !text.contains("ob-0"), "{text}");
+        assert!(
+            text.contains("chariox.events.yield") && text.contains("registration"),
+            "{text}"
+        );
+    }
     #[test]
     fn a02_public_answer_survives_steering_without_borrowing_later_tasks() {
         let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {

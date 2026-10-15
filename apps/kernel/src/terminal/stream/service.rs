@@ -396,7 +396,10 @@ impl TerminalStreamService {
     }
 
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
-        if record.pending_recipient_attachment_ids.is_empty() {
+        // The kernel's completion assessment turn is internal; no client sees it.
+        if record.pending_recipient_attachment_ids.is_empty()
+            || record.prompt_origin == Some(PromptOrigin::CompletionCheck)
+        {
             return;
         }
         let record_id = self.next_output_record_id;

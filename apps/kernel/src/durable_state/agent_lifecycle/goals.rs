@@ -178,7 +178,10 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         || t.completion_check.as_ref().unwrap().check_count,
         |g| g.check_count,
     ) + 1;
-    let prompt = format!("goal-check-{}-{}-{}", t.task_id, revision, count);
+    let prompt = format!(
+        "{COMPLETION_CHECK_PROMPT_PREFIX}{}-{}-{}",
+        t.task_id, revision, count
+    );
     let check = GoalEvaluation {
         origin: "completion_check".into(),
         prompt_id: prompt.clone(),
@@ -204,6 +207,10 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
     true
 }
 
+const COMPLETION_CHECK_PROMPT_PREFIX: &str = "goal-check-";
+pub(crate) fn is_completion_check_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(COMPLETION_CHECK_PROMPT_PREFIX)
+}
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
     completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }

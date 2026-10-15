@@ -2200,3 +2200,88 @@ fn blob_content_hides_external_observer_state_signals() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+// MP-08 / MP-10 / MP-11: the kernel's completion assessment turn is internal
+// protocol; its instruction and JSON answer never become an outline turn.
+#[tokio::test]
+async fn completion_check_turn_is_not_projected_into_the_outline() {
+    let context = |prompt: &str| HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some(prompt.into()),
+        prompt_id: Some(prompt.into()),
+        provider_run_id: Some("run-1".into()),
+        ..HistoryEventTurnContext::default()
+    };
+    let check = crate::session::PromptOrigin::CompletionCheck;
+    let mut work =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "do work");
+    work.timestamp_ms = 1_000;
+    let mut answer = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "work finished",
+    );
+    answer.timestamp_ms = 1_001;
+    let mut instruction = SessionHistoryEntry::user_prompt(
+        "session-1",
+        "attachment-1",
+        "agent-1",
+        "assess origin completion_check",
+    )
+    .with_prompt_origin(check);
+    instruction.timestamp_ms = 2_000;
+    let mut verdict = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "{\"status\":\"achieved\"}",
+    )
+    .with_prompt_origin(check);
+    verdict.timestamp_ms = 2_001;
+    let events = vec![
+        HistoryEvent::transcript(1, &work, context("prompt-1")),
+        HistoryEvent::transcript(2, &answer, context("prompt-1")),
+        HistoryEvent::transcript(3, &instruction, context("goal-check-prompt-1-1-1")),
+        HistoryEvent::transcript(4, &verdict, context("goal-check-prompt-1-1-1")),
+    ];
+    let path = std::env::temp_dir().join(format!(
+        "chariox-check-outline-{}-{}.db",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+    store.append_many(&events).expect("persist turns");
+    let response = execute_session_history_outline_request(
+        store,
+        GetSessionHistoryOutlineRequest {
+            session_id: "session-1".into(),
+            agent_ids: Some(vec!["agent-1".into()]),
+            latest_prompt_count: Some(4),
+            cursor: None,
+        },
+    )
+    .await
+    .expect("history response");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("expected history outline");
+    };
+    let text = serde_json::to_string(&agents[0].turns).expect("serialize turns");
+    assert_eq!(agents[0].turns.len(), 1, "{text}");
+    assert!(
+        text.contains("do work") && text.contains("work finished"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("completion_check") && !text.contains("achieved"),
+        "{text}"
+    );
+}

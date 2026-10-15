@@ -326,6 +326,18 @@ impl HistoryEvent {
         }
     }
 
+    /// The kernel's own completion assessment turn (prompt, answer, settlement)
+    /// is internal protocol; clients never project it into a transcript.
+    pub fn is_completion_check_turn(&self) -> bool {
+        self.metadata
+            .get("prompt_origin")
+            .and_then(serde_json::Value::as_str)
+            == Some("completion_check")
+            || self.prompt_id.as_deref().is_some_and(
+                crate::durable_state::agent_lifecycle::goals::is_completion_check_prompt_id,
+            )
+    }
+
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
         let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
         let session_id = self.session_id.clone()?;

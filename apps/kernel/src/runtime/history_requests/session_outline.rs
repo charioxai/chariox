@@ -160,7 +160,9 @@ fn load_scoped_agent_outline(
         agent_import,
     )?;
     prompts.retain(|prompt| {
-        !external_observed_tool_call_prompt(prompt) && !external_recovery_envelope_prompt(prompt)
+        !prompt.is_completion_check_turn()
+            && !external_observed_tool_call_prompt(prompt)
+            && !external_recovery_envelope_prompt(prompt)
     });
     suppress_chariox_owned_external_prompt_echoes(
         &mut prompts,
@@ -208,6 +210,7 @@ fn load_scoped_agent_outline(
                 }
             }
         }
+        events.retain(|event| !event.is_completion_check_turn());
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())

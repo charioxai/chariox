@@ -88,6 +88,63 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
     assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
 }
 
+// MP-08 / MP-10 / MP-11: the kernel's own completion assessment turn is
+// internal. No client receives its prompt echo or answer; ordinary turns still do.
+#[test]
+fn completion_check_turn_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    let recipients = || vec!["attachment-1".to_string()];
+    let check = Some(crate::session::PromptOrigin::CompletionCheck);
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "goal-check-1",
+        check,
+        "attachment-1",
+        recipients(),
+        b"internal assessment instruction",
+    );
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        check,
+        recipients(),
+        b"{\"status\":\"achieved\"}",
+    );
+    terminal.fan_out_outputs(vec![TerminalOutputAppend {
+        session_id: "session-1".to_string(),
+        provider_run_id: "run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_origin: check,
+        source_attachment_id: Some("attachment-1".to_string()),
+        kind: TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        recipient_attachment_ids: Arc::from(recipients()),
+        bytes: b"{\"status\":\"continue\"}".to_vec(),
+    }]);
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        recipients(),
+        b"ordinary answer",
+    );
+    let delivered = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].bytes, b"ordinary answer");
+}
+
 #[test]
 fn output_polling_is_per_recipient() {
     let mut terminal = TerminalStreamService::new();

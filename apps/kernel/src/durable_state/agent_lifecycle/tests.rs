@@ -3125,3 +3125,23 @@ fn a12_expired_message_or_unhandled_ack_never_revives_delivery() {
     });
     assert_eq!(f.task().obligations[0].status, "settling");
 }
+// MP-08 / MP-10 / MP-11: with every obligation resolved, an empty yield is told to
+// answer rather than to name live sources that cannot exist.
+#[test]
+fn yield_without_open_obligation_points_to_the_final_answer() {
+    let f = Fixture::new();
+    f.begin("p");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "nothing".into(),
+            now: 2,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("final answer"), "{error}");
+}
