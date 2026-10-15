@@ -3,7 +3,7 @@ use super::check_inventory as inventory;
 use super::*;
 use crate::config::DaemonConfig;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use zeroize::Zeroizing;
 
@@ -58,19 +58,6 @@ pub(crate) fn check_requirement(
     deadline: Instant,
 ) -> MachineObservation {
     let mut facts = inventory::facts();
-    let roots: Vec<PathBuf> = env
-        .folders
-        .iter()
-        .filter(|f| {
-            !f.local_workspace_binding.is_empty()
-                && !matches!(&r.spec, RequirementSpec::Files { .. })
-        })
-        .filter_map(|f| {
-            PathBuf::from(&f.local_workspace_binding)
-                .canonicalize()
-                .ok()
-        })
-        .collect();
     let budget = || {
         outcome(
             NeedsYourInput,
@@ -96,19 +83,26 @@ pub(crate) fn check_requirement(
                 "This requirement is unavailable on this platform",
             );
         }
-        if let RequirementScope::Folder { folder_id } = &r.scope {
-            if !env.folders.iter().any(|f| {
-                &f.folder_id == folder_id
-                    && !f.local_workspace_binding.is_empty()
-                    && (matches!(&r.spec, RequirementSpec::Files { .. })
-                        || std::fs::read_dir(&f.local_workspace_binding).is_ok())
-            }) {
-                return outcome(
-                    Missing,
-                    "folder_unavailable",
-                    "The required folder is absent or inaccessible",
-                );
+        // MP-08 / MP-10 / MP-11: metadata on NFS/FUSE can block just like
+        // file reads. Its owned worker shares the operation's absolute budget.
+        let preflight = if matches!(&r.spec, RequirementSpec::Files { .. }) {
+            super::check_workspace::WorkspacePreflight {
+                roots: vec![],
+                folder_accessible: workspace(env, r).is_some(),
             }
+        } else {
+            match super::check_files::workspace(&ctx.config, env, r, deadline) {
+                Ok(preflight) => preflight,
+                Err(_) => return outcome(NeedsYourInput, "workspace_preflight_unavailable", "Workspace metadata could not be checked within the probe budget; retry when the folder is available"),
+            }
+        };
+        let roots = preflight.roots;
+        if !preflight.folder_accessible {
+            return outcome(
+                Missing,
+                "folder_unavailable",
+                "The required folder is absent or inaccessible",
+            );
         }
         match &r.spec {
             RequirementSpec::Files { .. } => super::check_assets::check_assets(

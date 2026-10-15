@@ -332,3 +332,6 @@ fn named_host_probe_keeps_its_symlink_invocation_name() {
 
 #[path = "review0634_dependency_tests.rs"]
 mod review0634_dependencies;
+
+#[path = "review0034_tests.rs"]
+mod review0034;

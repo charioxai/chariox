@@ -114,7 +114,9 @@ pub(super) fn check_assets(
             )
         }
         RequirementSpec::Variables { name, locator } => {
-            if project_environment_protected_name(name) {
+            if project_environment_protected_name(name)
+                || project_environment_public_source_protected(locator)
+            {
                 return outcome(
                     NeedsYourInput,
                     "protected_binding",
