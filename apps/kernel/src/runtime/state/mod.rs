@@ -1172,3 +1172,6 @@ impl KernelRuntimeState {
         ).await
     }
 }
+
+#[cfg(test)]
+mod project_environment_detect_observation_tests;

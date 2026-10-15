@@ -11,6 +11,9 @@ const METADATA_LIMIT: u64 = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum Request {
+    Machine {
+        root: Option<PathBuf>,
+    },
     Files {
         current: ProjectEnvironment,
         draft: EnvironmentRevisionDraft,
@@ -29,6 +32,7 @@ enum Request {
 }
 #[derive(Serialize, Deserialize)]
 enum Response {
+    Machine(EnvironmentMeasuredFacts),
     Files(EnvironmentRevisionDraft),
     Workspace(super::check_workspace::WorkspacePreflight),
     Binding(super::check_binding::PublicBinding),
@@ -80,6 +84,23 @@ fn read_metadata<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Daemo
         return Err(environment_error("Files Check metadata exceeds bounds"));
     }
     serde_json::from_slice(&bytes).map_err(|_| environment_error("Files Check metadata invalid"))
+}
+
+pub(super) fn machine(
+    config: &crate::config::DaemonConfig,
+    root: Option<&Path>,
+    deadline: Instant,
+) -> Result<EnvironmentMeasuredFacts, DaemonError> {
+    match run(
+        config,
+        Request::Machine {
+            root: root.map(Path::to_path_buf),
+        },
+        deadline,
+    )? {
+        Response::Machine(facts) => Ok(facts),
+        _ => Err(environment_error("Machine Check worker result invalid")),
+    }
 }
 
 pub(super) fn measure(
@@ -237,6 +258,7 @@ fn run(
     #[cfg(test)]
     for key in [
         "CHARIOX_WORKSPACE_CHECK_COUNT",
+        "CHARIOX_MACHINE_CAPACITY_STALL_MARKER",
         "CHARIOX_TYPED_CHECK_STALL_MARKER",
     ] {
         if let Some(value) = std::env::var_os(key) {
@@ -265,6 +287,9 @@ pub fn run_files_measurement_worker(
     }
     let deadline = Instant::now() + budget;
     let response = match read_metadata::<Request>(request)? {
+        Request::Machine { root } => {
+            Response::Machine(super::check_inventory::machine(root.as_deref()))
+        }
         Request::Files { current, mut draft } => {
             super::manual_files::verify_check_files(&current, &mut draft, deadline)?;
             Response::Files(draft)
