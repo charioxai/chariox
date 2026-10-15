@@ -25,6 +25,7 @@ import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type BootstrapDeps = {
+  deferProviderLaunch?: boolean
   listProviderAccountProfiles?: (client: LocalIpcClient) => Promise<ProviderAccountProfile[]>
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
@@ -192,6 +193,7 @@ export async function bootstrapSession(
     options.accountProfile,
     createdSession,
     {
+      deferLaunch: deps.deferProviderLaunch === true,
       launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
         deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
@@ -266,6 +268,14 @@ export async function bootstrapSession(
     options,
     preferences,
     deferred: {
+      ...(providerSettlement.action === "deferred" ? {
+        providerLaunch: {
+          sessionId: session.id,
+          agentId: providerSettlement.targetAgentId,
+          isPending: providerSettlement.isPending,
+          start: providerSettlement.start,
+        },
+      } : {}),
       providerCatalog: providerCatalogPromise,
       providerCommandCatalogs: providerCommandCatalogsPromise,
       terminalCommandCatalog: terminalCommandCatalogPromise,

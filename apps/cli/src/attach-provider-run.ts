@@ -14,6 +14,14 @@ type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed
 
 export type AttachProviderRunSettlement =
   | {
+    action: "deferred"
+    session: RuntimeSession
+    providerRun: null
+    targetAgentId: string | null
+    isPending: () => boolean
+    start: () => Promise<AttachProviderRunSettlement>
+  }
+  | {
     action: "launched"
     session: RuntimeSession
     providerRun: RuntimeProviderRun
@@ -37,6 +45,8 @@ export type AttachProviderRunSettlement =
   }
 
 type AttachProviderRunDeps = {
+  /** Bootstrap has no rendered terminal in which to answer an interaction. */
+  deferLaunch?: boolean
   launchProviderRun: (
     sessionId: string,
     provider: string,
@@ -49,6 +59,20 @@ type AttachProviderRunDeps = {
   tryGetProviderRun: (providerRunId: string) => Promise<RuntimeProviderRun | null>
 }
 
+export function settleAttachProviderRun(
+  session: RuntimeSession,
+  fallback: SessionLifecycleLaunchSelection,
+  accountProfile: string,
+  createdSession: boolean,
+  deps: AttachProviderRunDeps & { deferLaunch?: false },
+): Promise<Exclude<AttachProviderRunSettlement, { action: "deferred" }>>
+export function settleAttachProviderRun(
+  session: RuntimeSession,
+  fallback: SessionLifecycleLaunchSelection,
+  accountProfile: string,
+  createdSession: boolean,
+  deps: AttachProviderRunDeps,
+): Promise<AttachProviderRunSettlement>
 export async function settleAttachProviderRun(
   session: RuntimeSession,
   fallback: SessionLifecycleLaunchSelection,
@@ -76,6 +100,20 @@ export async function settleAttachProviderRun(
         recoveredRemotePlacement: false,
       }
     case "launch_provider_run": {
+      if (deps.deferLaunch) {
+        let pending = true
+        let launch: Promise<AttachProviderRunSettlement> | undefined
+        return {
+          action: "deferred",
+          session,
+          providerRun: null,
+          targetAgentId: decision.targetAgentId,
+          isPending: () => pending,
+          start: () => launch ??= settleAttachProviderRun(session, fallback, accountProfile, createdSession, {
+            ...deps, deferLaunch: false,
+          }).finally(() => { pending = false }),
+        }
+      }
       try {
         return {
           action: "launched",

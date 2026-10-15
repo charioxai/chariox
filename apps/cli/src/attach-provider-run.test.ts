@@ -41,6 +41,36 @@ const session: RuntimeSession = {
   config_state: { version: 1, values: {} },
 }
 
+test("MP-08/MP-10 TUI bootstrap can render before a launch asks for human input", async () => {
+  let launches = 0
+  let release!: () => void
+  const humanReply = new Promise<void>(resolve => { release = resolve })
+  const task = settleAttachProviderRun(session,
+    { provider: "claude-p", model: "claude-haiku-5-5", effort: "low" }, "work", false, {
+      deferLaunch: true,
+      launchProviderRun: async () => { launches++; await humanReply; return {} as never },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(launches, 0, "an unlock wait cannot start before the TUI mounts")
+    const result = await task
+    assert.equal(result.action, "deferred")
+    if (result.action !== "deferred") return
+    assert.equal(result.isPending(), true)
+    const first = result.start()
+    assert.equal(result.start(), first, "mounting twice cannot launch twice")
+    assert.equal(launches, 1)
+    release()
+    await first
+    assert.equal(result.isPending(), false)
+  } finally {
+    release()
+    await task
+  }
+})
+
 test("settleAttachProviderRun keeps the TUI attachable when the credential vault is locked", async () => {
   const result = await settleAttachProviderRun(
     session,
