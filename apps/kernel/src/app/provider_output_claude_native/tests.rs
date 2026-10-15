@@ -3211,3 +3211,117 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
         }
     }
 }
+
+#[test]
+fn native_claude_usage_uses_bound_account_authority_without_aliasing_collaborators() {
+    // MP-08 / MP-10 / MP-11: Cloud runtime ownership and the selected home
+    // credential namespace differ. Usage must follow the same bound account
+    // as launch, or output preflight fails before notification steering.
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let local = app
+        .provider_account_profiles
+        .create_managed(
+            "local",
+            "claude",
+            &format!("native-usage-local-{}", timestamp_millis()),
+        )
+        .unwrap();
+    let collaborator = app
+        .provider_account_profiles
+        .create_managed(
+            "collaborator",
+            "claude",
+            &format!("native-usage-collaborator-{}", timestamp_millis()),
+        )
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-native-usage-authority-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let usage_file = root.join("usage.json");
+    for (runtime_owner, account_owner, profile_id, expected_success) in [
+        ("cloud-owner", "local", local.profile_id.as_str(), true),
+        ("collaborator", "local", local.profile_id.as_str(), false),
+        (
+            "collaborator",
+            "collaborator",
+            collaborator.profile_id.as_str(),
+            true,
+        ),
+    ] {
+        let local_before = app
+            .provider_account_profiles
+            .get("local", "claude", &local.profile_id)
+            .unwrap()
+            .usage;
+        let mut request = crate::provider::LaunchProviderRequest::new(
+            "usage-session",
+            "claude",
+            "claude-headless",
+            profile_id,
+            "claude-haiku-5-5",
+        )
+        .with_owner_user_id(runtime_owner);
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            account_owner.into(),
+            profile_id.into(),
+        );
+        let run = RuntimeProviderRun::new(
+            "usage-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "native-usage-authority".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_USAGE_FILE".into(),
+                    usage_file.display().to_string(),
+                )]),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        fs::write(
+            &usage_file,
+            serde_json::json!({"rate_limits":{"five_hour":{"used_percentage":12.0}}}).to_string(),
+        )
+        .unwrap();
+        let result =
+            ProviderOutputClaudeNativeBridge::new(&mut app).process_claude_account_usage(&run);
+        assert_eq!(
+            result.is_ok(),
+            expected_success,
+            "runtime={runtime_owner}, account={account_owner}"
+        );
+        if expected_success {
+            let profile = app
+                .provider_account_profiles
+                .get(account_owner, "claude", profile_id)
+                .unwrap();
+            assert_eq!(
+                profile.usage.availability,
+                crate::account_profile::ProviderAccountUsageAvailability::Available
+            );
+            assert_eq!(profile.usage.meters.len(), 1);
+        } else {
+            assert_eq!(
+                app.provider_account_profiles
+                    .get("local", "claude", &local.profile_id)
+                    .unwrap()
+                    .usage,
+                local_before
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
