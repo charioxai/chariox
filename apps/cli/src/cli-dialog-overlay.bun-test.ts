@@ -50,7 +50,7 @@ for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
 test("Environment transport failure shows connection guidance and Refresh",async()=>{
   const controller=createProjectEnvironmentReadController({send:async()=>{throw new Error("not available")},render(){},pageSize:()=>16,textWidth:()=>72})
   await controller.open("project")
-  assert.deepEqual(controller.visibleLines(),["Environment unavailable. Check the kernel connection and refresh.","r · Refresh"])
+  assert.deepEqual(controller.visibleLines(),["An Environment lists what this project needs on this machine.","Environment unavailable. Check the kernel connection and refresh.","r · Refresh"])
   controller.close()
 })
 
