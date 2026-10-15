@@ -295,6 +295,7 @@ mod tests {
             "amfix-catalog-independent-{}",
             rand::random::<u64>()
         ));
+        std::fs::create_dir_all(&root).unwrap();
         let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
             root.join("profiles.json"),
         )
