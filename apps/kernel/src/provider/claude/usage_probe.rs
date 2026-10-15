@@ -117,6 +117,7 @@ pub(super) fn verify_claude_account_credential_with_timeout(
         "Claude credential check",
     )
     .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
+    let has_json_result = result.is_some();
     let result = result.unwrap_or_default();
     if matches!(
         result
@@ -158,7 +159,12 @@ pub(super) fn verify_claude_account_credential_with_timeout(
     {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
-    let single_turn = super::auth_probe::validate_auth_result(&result).is_ok();
+    let verification = if has_json_result {
+        super::auth_probe::validate_auth_result(&result)
+    } else {
+        Err("missing_or_invalid_json_result")
+    };
+    let single_turn = verification.is_ok();
     if status.success() && single_turn {
         Ok(())
     } else {
@@ -175,8 +181,13 @@ pub(super) fn verify_claude_account_credential_with_timeout(
             .and_then(serde_json::Value::as_u64)
             .map(|count| count.to_string())
             .unwrap_or_else(|| "unreported".into());
+        let reason = if status.success() {
+            verification.expect_err("unsuccessful verification has a fixed reason")
+        } else {
+            "cli_exit_unsuccessful"
+        };
         Err(ClaudeCredentialCheckError::Inconclusive(format!(
-            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn})"
+            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn}; reason={reason})"
         )))
     }
 }
@@ -664,6 +675,79 @@ process.stdout.write(JSON.stringify({
                 assert!(message.contains("turns=1; valid_single_turn=false"));
                 assert!(!message.contains("synthetic-private-provider-detail"));
             }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_explains_unknown_verdict_without_provider_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let healthy = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+            "num_turns":1, "result":"CHARIOX_AUTH_OK", "usage":{"output_tokens":108}});
+        let mut cases = vec![("invalid JSON".into(), 0, "missing_or_invalid_json_result")];
+        for (field, value, reason) in [
+            ("type", serde_json::json!(null), "missing_result_envelope"),
+            (
+                "subtype",
+                serde_json::json!("error_max_turns"),
+                "turn_limit_reached",
+            ),
+            (
+                "subtype",
+                serde_json::json!("synthetic-private-provider-detail"),
+                "unsuccessful_result",
+            ),
+            ("is_error", serde_json::json!(true), "unsuccessful_result"),
+            ("num_turns", serde_json::json!(null), "missing_turn_count"),
+            ("num_turns", serde_json::json!(0), "unexpected_turn_count"),
+            (
+                "result",
+                serde_json::json!(null),
+                "missing_authentication_marker",
+            ),
+            (
+                "result",
+                serde_json::json!("synthetic-private-provider-detail"),
+                "authentication_marker_mismatch",
+            ),
+            (
+                "usage",
+                serde_json::json!({"output_tokens":0}),
+                "missing_model_output",
+            ),
+        ] {
+            let mut value_with_failure = healthy.clone();
+            value_with_failure[field] = value;
+            cases.push((value_with_failure.to_string(), 0, reason));
+        }
+        cases.push((healthy.to_string(), 1, "cli_exit_unsuccessful"));
+        for (output, exit, reason) in cases {
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {exit}\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let error = verify_claude_account_credential_with_timeout(
+                &executable,
+                &environment,
+                Duration::from_secs(2),
+            )
+            .unwrap_err();
+            assert!(matches!(error, ClaudeCredentialCheckError::Inconclusive(_)));
+            let message = error.into_daemon_error().to_string();
+            assert!(
+                message.contains(&format!("reason={reason}")),
+                "MP-08/MP-10/MP-11: {message}"
+            );
+            assert!(!message.contains("synthetic-private-provider-detail"));
         }
         fs::remove_dir_all(root).unwrap();
     }

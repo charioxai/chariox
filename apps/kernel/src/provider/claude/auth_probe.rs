@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::error::DaemonError;
-
 const AUTH_MARKER: &str = "CHARIOX_AUTH_OK";
 
 // setup-token credentials can make model requests, but cannot fetch account
@@ -19,29 +17,39 @@ pub(crate) fn verify_claude_setup_token(
     )
 }
 
-pub(super) fn validate_auth_result(value: &serde_json::Value) -> Result<(), DaemonError> {
-    let verified = value.get("type").and_then(serde_json::Value::as_str) == Some("result")
-        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("success")
-        && value.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
-        && value.get("num_turns").and_then(serde_json::Value::as_u64) == Some(1)
-        && value
-            .get("result")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|text| text.trim() == AUTH_MARKER)
-        && value
-            .get("usage")
-            .and_then(|usage| usage.get("output_tokens"))
-            .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| count > 0);
-    if verified {
-        return Ok(());
+pub(super) fn validate_auth_result(value: &serde_json::Value) -> Result<(), &'static str> {
+    // Fixed labels only: result/error text and unknown provider metadata can
+    // contain account details and must never enter diagnostics.
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+        return Err("missing_result_envelope");
     }
-    // Provider result text can contain account details. Never include it in
-    // errors, logs or runtime interactions.
-    Err(DaemonError::LocalTransport {
-        operation: "verify Claude setup token",
-        message: "Claude did not complete the authentication verification turn".into(),
-    })
+    if value.get("subtype").and_then(serde_json::Value::as_str) == Some("error_max_turns") {
+        return Err("turn_limit_reached");
+    }
+    if value.get("subtype").and_then(serde_json::Value::as_str) != Some("success")
+        || value.get("is_error").and_then(serde_json::Value::as_bool) != Some(false)
+    {
+        return Err("unsuccessful_result");
+    }
+    match value.get("num_turns").and_then(serde_json::Value::as_u64) {
+        None => return Err("missing_turn_count"),
+        Some(1) => {}
+        Some(_) => return Err("unexpected_turn_count"),
+    }
+    match value.get("result").and_then(serde_json::Value::as_str) {
+        None => return Err("missing_authentication_marker"),
+        Some(text) if text.trim() == AUTH_MARKER => {}
+        Some(_) => return Err("authentication_marker_mismatch"),
+    }
+    if !value
+        .get("usage")
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|count| count > 0)
+    {
+        return Err("missing_model_output");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
