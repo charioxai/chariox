@@ -14,14 +14,31 @@ impl KernelRuntimeState {
         expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
-        self.cancel_remote_agent_prompt_if_matches(
-            session_id,
-            target_agent_id,
-            attachment_id,
-            expected_prompt_id,
-            authority,
-        )
-        .await
+        let cancellation = self
+            .cancel_remote_agent_prompt_if_matches(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                expected_prompt_id,
+                authority,
+            )
+            .await?;
+        // Interactive cancellation keeps its no-active-prompt response. Exact
+        // supervised cleanup calls the idempotent matching operation directly.
+        if cancellation.is_none()
+            && expected_prompt_id.is_some()
+            && self
+                .owned
+                .agent_store
+                .get_agent(target_agent_id)?
+                .remote_execution()
+                .is_some()
+        {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
+        Ok(cancellation)
     }
 
     pub(super) async fn cancel_remote_agent_prompt_if_matches(

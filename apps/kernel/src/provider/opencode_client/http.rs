@@ -321,6 +321,9 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         ("GET", "/provider") => "provider_catalog",
         ("GET", "/config") => "configuration_read",
         ("GET", "/agent") => "agent_catalog",
+        ("GET", "/mcp") => "mcp_status",
+        ("POST", "/mcp") => "mcp_registration",
+        ("GET", "/config/providers") => "provider_configuration",
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
@@ -649,6 +652,12 @@ mod tests {
 
     #[test]
     fn names_native_initialization_and_permission_dispatch_failures() {
+        assert_eq!(method_to_operation("GET", "/mcp"), "mcp_status");
+        assert_eq!(method_to_operation("POST", "/mcp"), "mcp_registration");
+        assert_eq!(
+            method_to_operation("GET", "/config/providers"),
+            "provider_configuration"
+        );
         assert_eq!(method_to_operation("GET", "/config"), "configuration_read");
         assert_eq!(method_to_operation("GET", "/agent"), "agent_catalog");
         assert_eq!(

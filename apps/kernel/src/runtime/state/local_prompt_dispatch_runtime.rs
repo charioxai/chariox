@@ -930,6 +930,11 @@ impl KernelRuntimeState {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
         }
+        if dispatch_owns_active_prompt {
+            // MP-08/MP-10/MP-11: offer owner retry/cancel now, rather than
+            // waiting for the periodic lifecycle sweep after a failed request.
+            self.schedule_agent_lifecycle_sweep();
+        }
         if let Some(next_dispatch) = next_dispatch {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
         }
@@ -3359,6 +3364,24 @@ pub(in crate::runtime::state) mod tests {
         assert!(task.reason.contains("provider_catalog"));
         assert!(task.reason.contains("Resume"));
         assert!(!task.reason.contains("No live provider turn"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .any(|i| i.id().starts_with("task-blocked-"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed dispatch must offer owner actions without the periodic sweep");
         assert!(runtime
             .owned
             .prompt_state_owner
