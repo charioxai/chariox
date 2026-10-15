@@ -1,5 +1,5 @@
 // MP-08 / MP-10 / MP-11: source-bound chips never submit through the picker.
-import { SkillsClient, skillPickerRows, insertSkillChip, reconcileSkillChips, skillTokenAtCursor, hasSkillReferences, type SkillChip, type SkillFocus, type SkillsContext } from "./skills-client.js";
+import { skillsRuntimeAvailable, SkillsClient, skillPickerRows, insertSkillChip, reconcileSkillChips, skillTokenAtCursor, hasSkillReferences, type SkillChip, type SkillFocus, type SkillsContext } from "./skills-client.js";
 import type { SkillSelection } from "./kernel-types-skills-v2.js";
 export class SkillsComposerController {
     readonly client: SkillsClient;
@@ -7,7 +7,9 @@ export class SkillsComposerController {
     private text = "";
     private loadedKey = "";
     private loadingKey = "";
+    private generation = 0;
     private error = "";
+    private available: boolean | null = null;
     private draftKey = "";
     private pendingDraft: {
         text: string;
@@ -60,7 +62,11 @@ export class SkillsComposerController {
                 this.pendingDraft = null;
         }
         const context = this.deps.context();
-        if (this.loadedKey !== context.key && this.client.key !== context.key) {
+        if (this.client.key !== context.key) {
+            this.generation++;
+            this.available = null;
+            this.loadedKey = "";
+            this.loadingKey = "";
             this.chips = this.chips.map(c => c.selection.source === "native" ? { ...c, invalid: "Reselect this skill for the focused agent and account." } : c);
             this.client.invalidate(context.key);
             this.error = "";
@@ -84,22 +90,27 @@ export class SkillsComposerController {
             void this.refresh(context);
     }
     private async refresh(context: SkillsContext): Promise<void> {
+        const generation = ++this.generation;
         this.loadingKey = context.key;
         try {
+            const available = await skillsRuntimeAvailable(request => this.deps.send(request));
+            if (generation !== this.generation || this.deps.context().key !== context.key) return;
+            this.available = available;
+            if (!available) { this.loadedKey = context.key; return; }
             await this.client.refresh(context);
-            if (this.deps.context().key === context.key) {
+            if (generation === this.generation && this.deps.context().key === context.key) {
                 this.loadedKey = context.key;
                 this.error = "";
             }
         }
         catch (e) {
-            if (this.deps.context().key === context.key) {
+            if (generation === this.generation && this.deps.context().key === context.key) {
                 this.loadedKey = context.key;
                 this.error = e instanceof Error ? e.message : "Skills unavailable";
             }
         }
         finally {
-            if (this.loadingKey === context.key)
+            if (generation === this.generation && this.loadingKey === context.key)
                 this.loadingKey = "";
             this.deps.changed();
         }
@@ -107,7 +118,7 @@ export class SkillsComposerController {
     items() {
         const { text, cursor } = this.deps.read();
         const token = skillTokenAtCursor(text, cursor);
-        if (!token)
+        if (!token || this.available === false)
             return null;
         const context = this.deps.context();
         const rows = skillPickerRows(this.client.catalog?.skills ?? [], this.client.catalog?.native ?? [], this.client.catalog?.revision ?? 0, this.focus(), token.query);
@@ -126,7 +137,7 @@ export class SkillsComposerController {
         this.deps.write(result.text, result.cursor);
         this.render();
     }
-    invalidate(): void { this.loadedKey = ""; this.client.invalidate(); this.error = ""; }
+    invalidate(): void { this.available = null; this.generation++; this.loadingKey = ""; this.loadedKey = ""; this.client.invalidate(); this.error = ""; }
     submission(text: string, agentId: string) {
         const selections = this.selections(text, agentId);
         const chips = this.chips.map(chip => ({ ...chip }));

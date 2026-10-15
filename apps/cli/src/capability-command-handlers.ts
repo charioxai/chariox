@@ -281,7 +281,6 @@ export async function handleSkillSlashCommand(
     if (/^\/skills(?:\s|$)/.test(command.raw) && action && !["list", "ls", "show"].includes(action)) {
       throw new Error("Skills v2 is unavailable on this kernel. Existing management is available with /skill; update the kernel for /skills actions.")
     }
-    deps.appendNotice("Skills v2 is unavailable on this kernel; showing existing skill management.")
     await handleFoundationSkillSlashCommand(deps, command)
     return
   }

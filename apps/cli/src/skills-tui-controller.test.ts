@@ -13,6 +13,7 @@ test("TUI scopes, previews, confirmations and package actions share v2 requests"
     provider: () => "codex",
     notice: text => output.push(text),
     send: async request => {
+      if ("RelayStatus" in request) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}
       calls.push(request)
       const action = request.SkillsV2.action
       const result = action === "catalog"
@@ -40,7 +41,7 @@ test("TUI rejects obsolete grants and Project operations with no Project", async
   const controller = new SkillsTuiController({
     context: () => ({ key: "k", projectId: null, agentId: null, sessionId: null }),
     provider: () => "codex", notice: () => {},
-    send: async () => ({ SkillsV2: { result: { kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1 } } }),
+    send: async request => "RelayStatus" in request ? ({RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}) : ({ SkillsV2: { result: { kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1 } } }),
   })
   await assert.rejects(() => controller.command(["grant", "a", "s"]), /\/skills/)
   await assert.rejects(() => controller.command(["project"]), /Project/)
@@ -56,6 +57,7 @@ test("slash install preserves quoted folders and JSON content through review", a
   for (const entry of cases) {
     let reviewed: unknown
     const c = new SkillsTuiController({context:()=>({key:"k",projectId:null,agentId:null,sessionId:null}),provider:()=>"codex",notice:()=>{},send:async r=>{
+      if ("RelayStatus" in r) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}
       const action=r.SkillsV2
       if(action.action==="preview") reviewed=action.mutation.actions[0]
       return {SkillsV2:{result:action.action==="catalog"?{kind:"catalog",revision:1,skills:[],packages:[],native:[],metadata_budget_percent:1}:action.action==="loads"?{kind:"loads",records:[]}:{kind:"preview",expected_revision:1,affected:[],collisions:[],review_receipt:{id:"reviewed-by-home",expires_at_ms:Date.now()+60000,mutation_sha256:"hash",sources:[]}}}}
@@ -73,6 +75,7 @@ test("TUI show-from uses native details without importing", async () => {
   const selection={source:"native",entry_id:"n",name:"review",provider:"codex",account_profile:"acct",execution_id:"local",inventory_revision:"r1"}
   const calls:any[]=[];const output:string[]=[]
   const controller=new SkillsTuiController({context:()=>({key:"k",projectId:null,agentId:"a",sessionId:null}),provider:()=>"codex",notice:t=>output.push(t),send:async r=>{
+      if ("RelayStatus" in r) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}
     const a=r.SkillsV2;calls.push(a)
     return {SkillsV2:{result:a.action==="catalog"?{kind:"catalog",revision:1,skills:[],packages:[],native:[{selection}],metadata_budget_percent:1}:a.action==="loads"?{kind:"loads",records:[]}:{kind:"native_details",details:{entry:{selection,digest:"digest"},provenance:{locator:"safe-provider-source",source_machine:"worker",provider_version:"1"},files:[{path:"SKILL.md",bytes:10,sha256:"file-hash",executable:false}],declared_version:"v1",body:"Read instructions",compatibility_notes:["No tool grants"],unavailable_reason:null}}}}
   }})
@@ -88,6 +91,7 @@ test("TUI refuses expired review receipts without publishing", async () => {
   const receipt={id:"review",expires_at_ms:Date.now()+60000,mutation_sha256:"hash",sources:[]}
   const calls:string[]=[]
   const c=new SkillsTuiController({context:()=>({key:"k",projectId:null,agentId:null,sessionId:null}),provider:()=>"codex",notice:()=>{},send:async r=>{
+      if ("RelayStatus" in r) return {RelayStatus:{status:{capabilities:["skills_v2_runtime"]}}}
     const action=r.SkillsV2.action;calls.push(action)
     return {SkillsV2:{result:action==="catalog"?{kind:"catalog",revision:1,skills:[],packages:[],native:[],metadata_budget_percent:1}:{kind:"preview",expected_revision:1,affected:[],collisions:[],review_receipt:receipt}}}
   }})

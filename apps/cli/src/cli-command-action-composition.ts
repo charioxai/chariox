@@ -52,6 +52,14 @@ import {
   unsetUserConfigValue,
 } from "./config-api.js"
 import {
+  listSkills,
+  installSkill,
+  updateSkill,
+  uninstallSkill,
+  importSkills,
+  getSkill,
+  grantAgentSkill,
+  revokeAgentSkill,
   getMcpServer,
   getConnector,
   getConnectorAdapter,
@@ -715,6 +723,15 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getMcpServer: (name) => getMcpServer(client, pendingWorkspaceTarget(), name),
     grantAgentMcp: (agentRef, name) => grantAgentMcp(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentMcp: (agentRef, name) => revokeAgentMcp(client, agentRef, name),
+    // Foundation callbacks remain reachable only while runtime admission is absent.
+    listSkills: () => listSkills(client, pendingWorkspaceTarget()),
+    installSkill: (sourcePath) => installSkill(client, pendingWorkspaceTarget(), sourcePath),
+    updateSkill: (sourcePath) => updateSkill(client, pendingWorkspaceTarget(), sourcePath),
+    uninstallSkill: (name) => uninstallSkill(client, pendingWorkspaceTarget(), name),
+    importSkills: (provider, name) => importSkills(client, pendingWorkspaceTarget(), provider, name),
+    getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
+    grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
+    revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
     skillsV2: new SkillsTuiController({
       context:()=>tuiSkillsContext(sessionState(),focusedAgentId(),isAttached(),deps.waitingRoomState?.().projectSelectionId),
       provider:()=>(sessionState() as RuntimeSession).agents.find(a=>a.id===focusedAgentId())?.provider??"",notice:appendNotice,send:r=>client.send(r),

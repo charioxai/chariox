@@ -344,6 +344,7 @@ test("normal prompt submit failure preserves active session runtime state", asyn
 })
 
 function createHarness(options: {
+  skillsRuntimeAvailable?: () => Promise<boolean>
   prepareSkillSelections?: NormalPromptSubmitControllerDeps["prepareSkillSelections"]
   promptBlockReason?: NormalPromptSubmitControllerDeps["promptBlockReason"]
   onPromptRejected?: NormalPromptSubmitControllerDeps["onPromptRejected"]
@@ -385,6 +386,7 @@ function createHarness(options: {
   let clearPromptCount = 0
 
   const controller = createNormalPromptSubmitController({
+    skillsRuntimeAvailable: options.skillsRuntimeAvailable ?? (async () => true),
     ...(options.prepareSkillSelections ? {prepareSkillSelections: options.prepareSkillSelections} : {}),
     ...(options.promptBlockReason ? { promptBlockReason: options.promptBlockReason } : {}),
     ...(options.onPromptRejected ? {onPromptRejected: options.onPromptRejected} : {}),
@@ -629,4 +631,12 @@ test("resolved Skills alias also retains the original address for kernel dispatc
   await h.controller.submit("@remote Use $review")
   assert.equal(h.submissions()[0]?.targetAgentId,"agent-2")
   assert.equal(h.submissions()[0]?.prompt,"@remote Use $review\n")
+})
+
+// MP-08 / MP-10 / MP-11: capability absence preserves ordinary alias admission.
+test("unadvertised runtime lets the kernel resolve dollar prompt aliases", async () => {
+  const h = createHarness({skillsRuntimeAvailable: async () => false, prepareSkillSelections: () => ({selections: [], restore: () => {}})})
+  await h.controller.submit("@missing Use $review")
+  assert.equal(h.submissions()[0]?.prompt, "@missing Use $review\n")
+  assert.equal(h.submissions()[0]?.targetAgentId, "agent-1")
 })

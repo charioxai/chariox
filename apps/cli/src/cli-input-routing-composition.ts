@@ -1,3 +1,4 @@
+import { skillsRuntimeAvailable } from "@chariox/kernel-client/skills-client"
 import { cloudShellClient } from "./cloud-shell-client.js"
 import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
@@ -427,6 +428,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     beginSubmittedPromptUi: deps.beginSubmittedPromptUi,
     renderPromptTranscript,
     appendUserPrompt: deps.appendUserPrompt,
+    skillsRuntimeAvailable: () => skillsRuntimeAvailable(request => deps.client.send(request)),
     prepareSkillSelections:(prompt,agentId)=>deps.skillsComposer?.submission(prompt,agentId)??{selections:null,restore:()=>{}},
     submitPrompt: (attachmentId, targetAgentId, prompt, attachments,selections) =>
       submitPromptWithRecovery(

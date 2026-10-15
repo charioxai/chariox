@@ -1,3 +1,4 @@
+export { skillsRuntimeAvailable, requireSkillsRuntime } from "./skills-runtime-admission.js";
 // MP-08 / MP-10 / MP-11: presentation and typed client state; kernel owns resolution.
 import type { NativeSkillEntry, SkillCatalogMutation, SkillLoadRecord, SkillPackageRecord, SkillProjection, SkillReviewReceipt, SkillSelection, SkillsV2Request, SkillsV2Response } from "./kernel-types-skills-v2.js";
 export type SkillCatalogView = Extract<SkillsV2Response, {
@@ -88,14 +89,19 @@ export function hasSkillReferences(text: string): boolean {
     return false;
 }
 export function skillPickerRows(skills: readonly SkillProjection[], native: readonly NativeSkillEntry[], revision: number, focus: SkillFocus | null, query = ""): SkillPickerRow[] {
-    const duplicate = new Set(skills.filter(p => p.effective_state !== "off").flatMap(p => p.delivery.kind === "provided_by" ? [p.delivery.entry_id] : []));
+    const duplicate = (entry: NativeSkillEntry) => {
+        const selection = entry.selection;
+        return selection.source === "native" && skills.some(p => p.effective_state !== "off"
+            && p.also_in_provider === selection.provider && p.skill.name.toLowerCase() === selection.name.toLowerCase()
+            && p.skill.digest === entry.digest);
+    };
     return [
         ...skills.filter(p => p.effective_state !== "off").map(p => ({
             id: `chariox:${p.skill.id}`, label: `$${p.skill.name} · ${p.skill.scope.kind === "project" ? "Project" : "Chariox"}${p.also_in_provider ? ` · also in ${providerLabel(p.also_in_provider)}` : ""}`,
             description: p.skill.short_description || p.skill.description,
             selection: { source: "chariox", skill_id: p.skill.id, name: p.skill.name, catalog_revision: revision } as SkillSelection,
         })),
-        ...native.filter(n => n.selection.source === "native" && focus && n.selection.provider === focus.provider && n.selection.account_profile === focus.account && n.selection.execution_id === focus.execution && n.exposure !== "disabled" && !duplicate.has(n.selection.entry_id))
+        ...native.filter(n => n.selection.source === "native" && focus && n.selection.provider === focus.provider && n.selection.account_profile === focus.account && n.selection.execution_id === focus.execution && n.exposure !== "disabled" && !duplicate(n))
             .map(n => ({ id: `native:${n.selection.source === "native" ? n.selection.entry_id : ""}`, label: `$${n.selection.name} · From ${providerLabel(n.selection.source === "native" ? n.selection.provider : "")}`, description: n.description, selection: n.selection })),
     ].filter(r => `${r.label} ${r.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
 }

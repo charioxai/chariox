@@ -1,3 +1,4 @@
+import { SKILLS_MIN_LOCAL_PROTOCOL, SKILLS_V2_RUNTIME_CAPABILITY } from "@chariox/kernel-client/ipc-skills-v2-requests"
 export * from "@chariox/kernel-client/ipc"
 export type * from "@chariox/kernel-client/ipc"
 
@@ -43,6 +44,12 @@ export class LocalIpcClient extends KernelClient {
         if (response.RelayStatus?.status?.capabilities?.includes(exactPromptCancellationCapability)) {
           version = exactPromptCancellationMinimumProtocolVersion
         }
+      }
+      if (version === undefined && feature.feature === "Skills v2") {
+        // The marker was introduced at 533. Unix/relay transports without a
+        // numeric advertisement need this affirmative floor proof as well.
+        const response = await super.send<{RelayStatus?: {status?: {capabilities?: string[]}}}>({RelayStatus: null})
+        if (response.RelayStatus?.status?.capabilities?.includes(SKILLS_V2_RUNTIME_CAPABILITY)) version = SKILLS_MIN_LOCAL_PROTOCOL
       }
       requireKernelFeatureProtocol(request, version)
     }

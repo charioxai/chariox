@@ -223,3 +223,23 @@ test("MP-08 MP-10 main491 exact cancellation crosses the actual CLI transport", 
     capabilities = ["exact_prompt_cancellation_v499"]
   }
 })
+
+// MP-08 / MP-10 / MP-11: actual CLI transport infers the 533 floor only from the new marker.
+test("Skills unknown-version transport requires the runtime capability", async context => {
+  const calls:unknown[]=[];
+  let ready=false;
+  context.mock.method(KernelClient.prototype,"send",async(request:unknown)=>{
+    calls.push(request);
+    return request && typeof request==="object" && "RelayStatus" in request
+      ? {RelayStatus:{status:{capabilities:ready?["skills_v2_runtime"]:[]}}}
+      : {SkillsV2:{result:{kind:"catalog"}}};
+  });
+  const client=new LocalIpcClient("ws+unix:///owned/synthetic-kernel.sock");
+  context.after(()=>client.destroy());
+  const request={SkillsV2:{action:"catalog"}};
+  await assert.rejects(()=>client.send(request),/Skills v2 needs protocol ≥533/);
+  assert.deepEqual(calls,[{RelayStatus:null}]);
+  ready=true;
+  assert.deepEqual(await client.send(request),{SkillsV2:{result:{kind:"catalog"}}});
+  assert.deepEqual(calls.slice(1),[{RelayStatus:null},request]);
+});

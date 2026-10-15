@@ -114,3 +114,10 @@ test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before t
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
   }
 })
+
+// MP-08 / MP-10 / MP-11: unknown Skills support requires a fresh capability proof.
+test("Skills protocol floor rejects old or unproven kernels", () => {
+  const request={SkillsV2:{action:"catalog"}};
+  for (const version of [undefined,0,NaN,532]) assert.throws(()=>requireKernelFeatureProtocol(request,version),/Skills v2 needs protocol ≥533/);
+  assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,533));
+});

@@ -1,6 +1,5 @@
 // MP-08 / MP-10 / MP-11: local and remote TUI share the home Skills v2 authority.
-import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js";
-import { SkillsClient, skillGroups, providerLabel, type SkillsContext } from "@chariox/kernel-client/skills-client";
+import { skillsRuntimeAvailable, requireSkillsRuntime, SkillsClient, skillGroups, providerLabel, type SkillsContext } from "@chariox/kernel-client/skills-client";
 import type { SkillCatalogAction, SkillCatalogMutation, SkillInstallSource, SkillReviewReceipt, SkillScope, SkillState } from "@chariox/kernel-client/kernel-types-skills-v2";
 export class SkillsTuiController {
     readonly client: SkillsClient;
@@ -16,25 +15,11 @@ export class SkillsTuiController {
         notice(text: string): void;
         send(request: any): Promise<unknown>;
     }) { this.client = new SkillsClient(r => deps.send(r)); }
-    // Only a read probe may select the foundation handlers. Errors from a
-    // subsequent review/publication stay on v2 and are never replayed.
     async available(): Promise<boolean> {
-        const context = this.deps.context();
-        try {
-            const result = await this.client.request({ action: "catalog", project_id: context.projectId, agent_id: context.agentId });
-            if (result.kind !== "catalog")
-                throw new Error("Kernel did not return a skills catalog");
-            return true;
-        } catch (error) {
-            const unavailable = "Skills v2 catalog service is not available in this protocol foundation build";
-            if (error instanceof Error && (error.message === unavailable || error.message === `local transport \`skills.v2\` failed: ${unavailable}`))
-                return false;
-            if (error instanceof KernelProtocolMinimumError && /^kernel too old: Skills v2 needs protocol ≥[0-9]+;/.test(error.message))
-                return false;
-            throw error;
-        }
+        return skillsRuntimeAvailable(request => this.deps.send(request));
     }
     async command(args: string[]): Promise<void> {
+        await requireSkillsRuntime(request => this.deps.send(request));
         const [command = "list", ...rest] = args;
         const context = this.deps.context();
         if (command === "confirm") {

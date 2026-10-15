@@ -1,4 +1,4 @@
-import { hasSkillReferences } from "@chariox/kernel-client/skills-client"
+import { hasSkillReferences, skillsRuntimeAvailable } from "@chariox/kernel-client/skills-client"
 import type { SkillSelection, SkillsV2Response } from "@chariox/kernel-client/kernel-types-skills-v2"
 import {
   normalizeRuntimeSession,
@@ -106,7 +106,10 @@ async function submitPrompt(
   selections?: SkillSelection[] | null,
 ): Promise<PromptSubmissionResult> {
   let response:Record<string,unknown>
-  if(selections!==null&&selections!==undefined || hasSkillReferences(prompt)) {
+  const needsSkills = selections !== null && selections !== undefined || hasSkillReferences(prompt)
+  const available = needsSkills && await skillsRuntimeAvailable(request => client.send(request))
+  if (needsSkills && !available && selections?.length) throw new Error("Skills v2 runtime is unavailable. Upgrade the kernel and reselect Skills chips.")
+  if(available) {
     if(!targetAgentId)throw new Error("Focus an agent to submit Skills selections")
     const result=await client.send<{SkillsV2?:{result?:SkillsV2Response}}>({SkillsV2:{action:"submit",session_id:sessionId,attachment_id:attachmentId,target_agent_id:targetAgentId,prompt,attachments,selections:selections??[]}})
     if(result.SkillsV2?.result?.kind!=="submitted")throw new Error("Kernel did not acknowledge the Skills prompt")

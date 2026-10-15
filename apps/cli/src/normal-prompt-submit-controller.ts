@@ -45,6 +45,7 @@ export type NormalPromptSubmitControllerDeps = {
   beginSubmittedPromptUi: (rawPrompt: string) => SubmittedPromptUiSnapshot
   renderPromptTranscript: (prompt: string) => string
   appendUserPrompt: (text: string, agentId?: string | null, metadata?: TranscriptPromptMetadata) => void
+  skillsRuntimeAvailable?: () => Promise<boolean>
   prepareSkillSelections?: (prompt:string,agentId:string)=>{selections:SkillSelection[]|null;restore():void}
   submitPrompt: (
     attachmentId: string,
@@ -128,8 +129,14 @@ export function createNormalPromptSubmitController(
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
         skillsPrompt = deps.prepareSkillSelections?.(rawPrompt, addressedAgent?.id ?? targetAgentId ?? "") ?? null
-        const selections = skillsPrompt?.selections
-        const selectedSkills = selections !== null && selections !== undefined || hasSkillReferences(prompt)
+        let selections = skillsPrompt?.selections
+        const needsSkills = selections !== null && selections !== undefined || hasSkillReferences(prompt)
+        const selectedSkills = needsSkills && await deps.skillsRuntimeAvailable?.() === true
+        if (needsSkills && !selectedSkills) {
+          if (selections?.length) throw new Error("Skills v2 runtime is unavailable. Upgrade the kernel and reselect Skills chips.")
+          selections = null
+          skillsPrompt = null
+        }
         if (aliasRoute && selectedSkills && !addressedAgent) {
           throw new Error(`Agent alias @${aliasRoute.alias} is unavailable. Refresh and choose an agent before sending Skills.`)
         }
