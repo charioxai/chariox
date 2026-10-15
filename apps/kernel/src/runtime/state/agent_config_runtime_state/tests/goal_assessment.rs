@@ -341,6 +341,109 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     assert!(context.contains("Do not invent verification"));
 }
 
+// MP-08/MP-10/MP-11: a privacy projection is never evidence for a native check.
+#[tokio::test]
+async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Complete the approved native insertion without revealing its value.",
+    );
+    request.merge_key = Some("prompt:protected-work".into());
+    runtime
+        .owned
+        .append_operational_history_entry(&request, None, None, None);
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&room, "PRIVATE_CONTEXT_CANARY")
+        .unwrap();
+    let answer = SessionHistoryEntry::provider_output(
+        &room,
+        "run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "PRIVATE_CONTEXT_CANARY PRIVATE_PROVIDER_PROSE",
+    );
+    runtime
+        .owned
+        .append_operational_history_entry(&answer, None, None, None);
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "protected-work".into(),
+            run: Some("run".into()),
+            now: 1,
+        },
+        Operation::EnableCompletionCheck {
+            task: "protected-work".into(),
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "protected-work".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !context.contains("[sensitive Room terminal stream withheld]"),
+        "MP-11 public privacy marker must never be assessment input"
+    );
+    assert!(
+        !context.contains("PRIVATE_CONTEXT_CANARY") && !context.contains("PRIVATE_PROVIDER_PROSE"),
+        "MP-11 private result bytes must never be copied into an agent prompt"
+    );
+    assert!(!context.contains("using only public evidence below"));
+    assert!(context.contains("already available in this same official-provider thread"));
+    assert!(context.contains("Privacy withholding alone is never evidence of success"));
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert!(data["latest_public_answer_tail"].is_null());
+    assert_eq!(data["answer_coverage"]["visibility"], "protected");
+    let mut leased = task.clone();
+    leased
+        .completion_check
+        .as_mut()
+        .unwrap()
+        .evaluation
+        .as_mut()
+        .unwrap()
+        .work_provider_run_id = Some("leased:worker:run".into());
+    let context = runtime
+        .owned
+        .goal_continuation_context(&leased)
+        .unwrap()
+        .unwrap();
+    assert!(!context.contains("already available in this same official-provider thread"));
+    assert!(context.contains(
+        "Protected leased outcomes absent from the home provider context cannot establish success"
+    ));
+    assert!(!context.contains("[sensitive Room terminal stream withheld]"));
+}
+
 // MP-08/MP-10/MP-11: private completion control must survive the public byte fence.
 #[tokio::test]
 async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {

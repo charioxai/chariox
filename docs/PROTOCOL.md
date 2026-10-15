@@ -4124,3 +4124,16 @@ field): the kernel's mirror resolver turns them into the editor's own chords
 under its observed-frame, live-focus and epoch guards (before 530 they were
 document-bound `display_input` chords, which refuse any focused frame). Clients
 feature-detect 530; no client floor moves.
+
+MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
+existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
+metadata enters the same sender-authenticated display decrypt/binding path;
+text chunks remain compatible with peers that do not select that capability.
+No additional resume, input, or relay authority is introduced.
+
+Protected completion checks omit public privacy markers from their evidence.
+A local agent may assess its preceding outcome already held in the same
+official-provider thread; raw private result bytes are never copied into a
+new prompt. Missing native context and protected leased results unavailable
+at home cannot establish success. The existing kernel-private structured
+assessment and public receipt/terminal/history privacy fences still apply.
