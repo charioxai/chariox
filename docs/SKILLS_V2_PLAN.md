@@ -6,8 +6,10 @@ Area: `skills-v2`. Inspected OSS base: `49a65fbdd3963d66fd5d7c1334333fbd1c0aa23b
 `00658b85aa81575b7c144adc11f3904eeecf0170` (`gh/main` on the builder).
 These are source identities, not deployed release identities.
 Revised for Miguel's 2026-10-15 decisions: clean-slate skill reset, universal
-configurable 1% metadata budget, focused-provider native selection and agent
-self-install with hot reload. This revision still changes documentation only.
+configurable 1% metadata budget, focused-provider selection labelled
+`From <Provider>`, agent self-install with hot reload, skill packages and
+Environment Skills management. Skills Web drills use 1440×900 DPR1 plus the TUI,
+per the 18:22 UTC decision. This revision still changes documentation only.
 
 ## 1. Product contract — MP-08 / MP-11
 
@@ -50,9 +52,9 @@ State controls Chariox delivery. Provider-native skills remain independent,
 read-only entries: if a native copy is still exposed, the screen must say so
 rather than imply that Chariox Off disabled it. Plain `$name` never falls through
 to a native same-name copy when its installed record is Off; an explicitly chosen
-Native entry is a separate provider-native selection. Instructions already
-seen in a conversation cannot be erased; Off/remove stop future delivery and
-reloads, while loaded-session history remains truthful.
+`From <Provider>` entry is a separate provider-native selection. Instructions
+already seen in a conversation cannot be erased; Off/remove stop future delivery
+and reloads, while loaded-session history remains truthful.
 
 ## 2. What changes from today — MP-08 / MP-11
 
@@ -84,13 +86,14 @@ All paths are below the **resolved absolute `CHARIOX_HOME`**, defaulting to
 | --- | --- |
 | `state/skills/catalog.json` | Schema version, catalog revision, Chariox skill records. |
 | `state/projects/<project-id>/skills.json` | Project records and Chariox-skill state overrides keyed by stable skill ID. |
+| Package records in those same catalogs | Stable package ID, display name, scope/Project ID, optional source locator + pinned revision and upstream member mapping. |
 | `skills/packages/<skill-id>/<digest>/` | Immutable `SKILL.md` and bundled files for both scopes. |
 | `state/skill-materializations/<home-kernel-id>/<execution-id>/<skill-id>/<digest>/` | Execution-local package paths; execution ID is a local run or authenticated lease. |
 | Existing session durable state | Confirmed load records: skill ID/digest, agent/run, prompt, reason (`explicit`/`model`/confirmed native), context generation and time. |
 
-A skill record holds ID, name, scope/Project ID, description/short description,
-frontmatter default, nullable state override, current digest, optional declared
-version, file manifest, and provenance (installed/content/URL/provider import,
+A skill record holds ID, name, scope/Project ID, nullable package ID, description/
+short description, frontmatter default, nullable state override, current digest,
+optional declared version, file manifest, and provenance (installed/content/URL/provider import,
 source machine + safe locator, provider/profile reference, import/update time).
 Strip URL credentials/query secrets. A content digest is the version identity;
 a declared version is display metadata. Model context gets the execution path,
@@ -109,10 +112,50 @@ cleanup removes only owned, unreferenced materializations.
 Reuse the bounded package format/verification, with explicit schema changes where
 needed. Hash sorted relative paths, exact bytes and executable bits; compare the
 whole package, not only `SKILL.md` or a provider version label. Preserve bundled
-script executability without auto-running it. Retain the existing 512-file/10 MiB
-package limits; validate counts/bytes on receipt too. Reject path traversal,
-duplicate/nonportable paths, escaping symlinks, malformed manifests and digest
+script executability without auto-running it. Retain the existing per-skill
+512-file/10 MiB transfer-payload limits; validate counts/bytes on receipt too.
+Reject path traversal, duplicate/nonportable paths, escaping symlinks, malformed manifests and digest
 mismatches before publication. Do not export adjacent auth/config files as assets.
+
+### Skill packages — MP-08 / MP-11
+
+A **package** groups skills for management: for example, install a multi-skill
+repository such as Pocock skills, Claude skills, pstack or gstack as one package.
+This grouping is distinct from the existing per-skill transfer payload (also
+called a package in today's code). Each skill still has its own ID, content
+digest, state and load record; package membership adds no invocation namespace,
+authority or context overhead. Name uniqueness applies to every member across
+the two scopes, even when package names differ.
+
+A skill belongs to **at most one package** through its nullable package ID.
+Packages and their members share one scope/Project; a scope move rechecks name
+collisions and clears incompatible membership. A repository install with a known
+source groups its reviewed skill set under that source. Unknown provenance means
+**no package**, shown as ordinary ungrouped skills; never infer a package from a
+name or a neighbouring folder. Users may create custom packages and move skills
+into/out of them without copying skill bytes, changing IDs or losing provenance,
+state overrides or session load history. Moving into a package replaces prior
+membership atomically. Keep empty custom packages until explicitly removed.
+
+Install/update/remove/state actions work on a single skill or a whole package.
+Show the affected members and collisions before authorization, and commit the
+reviewed batch atomically with expected catalog revisions. A collision or failed
+member validation publishes nothing. State actions batch-write the existing
+member overrides (including Reset to inherited) for current members; no separate
+package-state precedence layer. New members use their frontmatter defaults, shown
+in the update review with any requested batch state change. Show **Mixed** when
+member states differ. A Project-level batch on a Chariox package writes Project overrides, just like individual actions.
+
+Source-backed update pins a source revision and previews changed/new/removed
+members; keep stable IDs for matched members and explicit overrides. Removing an
+upstream member needs the same reviewed removal action. Regrouping retains each
+skill's original update locator; updating its former package must not pull that
+skill back or overwrite its custom grouping. Custom-package update uses the
+members' recorded sources and reports members without an update source, rather
+than inventing one. **Remove package and skills** removes its current members
+through normal removal; **Ungroup** removes only membership/the group. Confirm
+the affected set through existing ask/yolo policy. Successful batches publish one
+catalog revision and use the same next-turn hot reload and transfer checks.
 
 ## 4. Selection, injection and providers — MP-08 / MP-11
 
@@ -124,8 +167,9 @@ Selections distinguish `chariox` from `native`. Native references bind provider,
 account, execution placement, inventory revision and a kernel-issued entry ID;
 resolve paths on that execution machine, never from a client-supplied path.
 Plain `$name` resolves Chariox first, then an unambiguous enabled native entry of
-the target agent's provider. A labelled Native chip explicitly selects that native
-entry even beside a Chariox namesake; it cannot replace a Chariox chip implicitly.
+the target agent's provider. A chip labelled `From <Provider>` explicitly selects
+that native entry even beside a Chariox namesake; it cannot replace a Chariox chip
+implicitly.
 Revalidate on focus/provider/account/placement changes; a stale native selection
 requires reselection instead of executing another provider's same-name skill.
 Parse standalone `$name` tokens with escaping and code-span/fence exclusions;
@@ -231,14 +275,14 @@ Provider execution continues through official harnesses only:
   normal official server/runtime tool path. Never translate Chariox `$` selection
   into a provider slash command or install a parallel agent runtime.
 
-Explicit Native selections pass to that agent's official harness through its
-supported skill invocation path, under the same kernel prompt/history/permission
+Explicit `From <Provider>` selections pass to that agent's official harness
+through its supported skill invocation path, under the same kernel prompt/history/permission
 ownership: Codex native skill input, Claude native skill command, OpenCode native
 skill loading through its official server/tool path. OpenCode's skill tool is not
 a generic slash-command API. The adapters must prove invocation on pinned harness
 versions; absence of a supported seam blocks that provider dimension. Chariox
 neither imports/copies a native package nor injects its own body for this action.
-Import remains a separate explicit operation. Native selection cannot auto-grant
+Import remains a separate explicit operation. Provider selection cannot auto-grant
 the tools or credentials named by a native skill.
 
 ### Native inventory and dedupe — MP-08 / MP-11
@@ -247,8 +291,8 @@ Discover on the **execution machine with the selected account's resolved launch
 environment and actual cwd**, before adding Chariox materializations. Cache by
 provider version/profile/cwd and invalidate on Project/account/source change,
 catalog publication or explicit refresh. Never inventory the implementation
-agent's profile. Native entries stay read-only with Import; Chariox never modifies
-their source packages.
+agent's profile. `From <Provider>` entries stay read-only with Import; Chariox
+never modifies their source packages.
 
 | Provider | Detection seam |
 | --- | --- |
@@ -270,7 +314,7 @@ content: show both sources/digests as a conflict in Skills; the Chariox revision
 wins for Chariox `$name`, via kernel resolution and hidden delivery. Do not choose
 by mtime or silently import. A native Manual copy cannot replace Chariox Auto
 discovery; a native Auto copy cannot be presented as enforcing Chariox Manual/Off.
-Native settings remain independently visible and read-only.
+Harness settings remain independently visible and read-only.
 
 Official references checked 2026-10-15: [Codex app-server skills](https://learn.chatgpt.com/docs/app-server#skills)
 documents listing, refresh/invalidation and skill input items;
@@ -305,19 +349,32 @@ Use actual target roots in hidden context and retain normal permission checks fo
 bundled script execution. Reconnect must not duplicate loads or provider turns.
 
 Environment export includes the selected Project's skill records, packages,
-overrides, and the required Chariox skill dependencies. Import remaps Project/skill
-IDs consistently, preserves declared state/provenance, and applies the same
-rename/replace checks against destination catalogs. It never writes into copied
-repositories or overwrites provider-native files. An independently imported
+overrides, and the required Chariox skill dependencies, including package groups
+and member bindings for the exported set. Import remaps Project/skill/package
+IDs consistently, preserves declared state/provenance/grouping, and applies the
+same rename/replace checks against destination catalogs. It never writes into
+copied repositories or overwrites provider-native files. An independently imported
 Environment evolves independently; a later export is a new reviewed snapshot.
 Exercise slice save/destroy/recreate and managed restart through normal lifecycle
 paths, preserving pinned package identity and provider-thread continuity. No
 Selkies/noVNC work or new managed-runtime exception is part of Skills v2.
 
+Each **Environment has a Skills section** showing the Project skills it carries,
+grouped by package with state/inheritance, provenance, version/files and transfer
+status. Install/import/update/remove, state changes and custom regrouping there
+use the same Project catalog/service as the main Skills screen. Required Chariox
+dependencies are labelled separately with their scope and Project overrides;
+the section is a projection, not a third scope or independent catalog. Include
+Skills in the Environment move review and transfer manifest. Package membership
+in a snapshot includes only exported skills, never pulls unrelated members into
+an Environment. Destination edits use its imported catalog; disconnected sources
+are not silently changed. Refresh both screens after a successful mutation.
+
 ## 6. Client contract and protocol work — MP-08 / MP-11
 
 The side panel gains **Skills**, opening a main-area screen using the Workflows
-screen pattern. Tabs: Chariox, selected Project, Provider-native. Show state and
+screen pattern. Tabs: Chariox, selected Project, `From <Provider>` (the focused
+agent's provider, e.g. **From Claude** or **From Codex**). Show state and
 inheritance, scope, source, version/digest, files, conflicts/dedupe, and loaded-session
 status. Offer install, update, remove and import, including folder/content/URL
 sources supported today. Provider-native rows are read-only with Import and source
@@ -326,14 +383,23 @@ A Project with no folders still has a complete screen; no selected Project
 means an explicit choose/create action. Existing session access governs viewing;
 host catalog mutations use existing owner/ask/yolo authorization.
 
+Within each Chariox/Project tab group skills by package, with an **Ungrouped**
+section for skills without one. Package headers offer install/update/remove/state
+actions with member previews and a Mixed state when needed. Offer Create package,
+Move to package and Ungroup; keep individual skill actions/details available.
+Show package source/revision separately from each member's version and provenance.
+Provider entries remain read-only until imported; Import may join a Chariox
+package through the explicit source/scope review. Environment Skills uses this
+same grouping and management surface for the carried Project.
+
 `$` at the composer cursor opens the skills command center: list applicable
 Chariox Auto/Manual skills for **every provider**, plus enabled harness-native
 skills **only for the focused agent's provider** and actual execution environment.
-Show Chariox/Project scope badges or **Native · <provider>**; search and select by
+Show Chariox/Project scope badges or `From <Provider>`; search and select by
 click/Enter/Tab, inserting a removable `$name` chip with a typed source identity
-without submitting the prompt. Selecting Native passes to that harness natively
-with no copy; installing requires the separate Import action. Provider focus
-changes refresh native rows and invalidate stale native chips, while Chariox rows
+without submitting the prompt. Choosing `From <Provider>` passes to that harness
+natively with no copy; installing requires the separate Import action. Provider
+focus changes refresh native rows and invalidate stale native chips, while Chariox rows
 stay available. With no focused agent, show applicable Chariox rows and an explicit
 choose-agent action for native skills. Preserve surrounding text, keyboard focus,
 IME and attachments. Off/unknown selections show a fix action.
@@ -350,6 +416,11 @@ Proposed wire changes, to settle in that allocation:
   ID, expected revision and explicit collision action; add state/override mutation,
   native inventory, session load projection and bounded paged discovery/load.
   Agent mutation tools call the same authorization/service path, without grants.
+- Package create/rename/regroup and batch install/update/remove/state requests
+  carry scope, package/member IDs, expected revision and reviewed member actions.
+  Catalog projections expose nullable membership, source revision and aggregate
+  state. Environment schemas/projections carry these same groups and Skills state;
+  no Cloud-owned package registry or new authorization path.
 - Prompt selections carry Chariox skill ID/name/revision or provider-bound native
   entry references; typed names use the same resolution rules. Terminal events
   project catalog/load changes and invalidate client/provider projections. Durable
@@ -411,11 +482,12 @@ explicitly install/import new packages afterward under normal ask/yolo policy.
    discovery/load and agent install/update tools. Repo `.agents/skills`,
    `.claude/skills`, `.codex/skills`, OpenCode and user-authored `.chariox/skills`
    directories remain explicit import sources only. Editing a source cannot
-   change an installed revision. Independent harness discovery is shown as Native.
+   change an installed revision. Independent harness discovery is shown as
+   `From <Provider>`.
 6. Wire provider inventory/dedupe, source-aware `$` selection, Skills screen,
-   next-turn hot reload, universal configurable 1% budget, Environment transfer
-   and compaction recovery. Update the standard-worker skill clauses in
-   `AGENTS.md` and protocol/architecture/M14B docs as explicitly approved; MCP
+   next-turn hot reload, universal configurable 1% budget, package management,
+   Environment Skills section/transfer and compaction recovery. Update the
+   standard-worker skill clauses in `AGENTS.md` and protocol/architecture/M14B docs as explicitly approved; MCP
    behavior stays unchanged. Run focused reset/security/protocol regressions and
    the real scenarios below. OSS/Cloud changes remain coordinated separate
    commits; CI remains off until authorized.
@@ -426,7 +498,8 @@ not recoverable through a v2 compatibility/rollback mode.
 
 ## 8. Real-path validation scenarios — MP-08 / MP-10 / MP-11
 
-All **12 rows below are NOT RUN**; IDs are proposed new `skills-v2` acceptance rows.
+All **13 rows below are NOT RUN**. The approved `skills-v2/SV-01` through `SV-12`
+IDs remain; `SV-13` adds the required package scenario from the 18:22 UTC decision.
 This round delivers a plan, not a feature for owner testing. Implementers register
 these rows with the coordinator and report each required dimension separately.
 
@@ -437,7 +510,8 @@ Common execution rules:
   entry/flags, real CLI/TUI and kernel, hosted `wss` relay, and official providers.
   Use real ordinary and managed/Environment paths; direct IPC and component tests
   supplement user-driven acceptance. Pin binary hashes, harness versions and heads.
-- Web cells use DPR1 at **1920×1080 and 1440×900**, plus DPR2. Drive normal clicks,
+- Skills Web cells use **1440×900 DPR1 only**, plus the TUI; no display-density
+  matrix is required for this area (Miguel, 2026-10-15 18:22 UTC). Drive normal clicks,
   typing, scrolling, banners/popups, tab creation/closing and navigation. Record
   video/screenshots and watch each recording; blank frames, stuck input or confusing
   dead ends fail with a timestamp. No DOM injection, programmatic banner dismissal
@@ -468,18 +542,19 @@ Common execution rules:
 
 | Proposed ID / MP items | User-driven scenario and pass assertions |
 | --- | --- |
-| `skills-v2/SV-01` — MP-08/MP-10 | **Skills management and focused-provider picker.** Fresh hosted Web at all display conditions plus local/remote TUI: install/import/update/remove, inspect source/files/version, select scopes and insert/delete `$name` chips amid text/attachments. Switch focus among real Codex/Claude/OpenCode agents: Chariox rows remain; only the focused provider/account/placement's native skills appear, labelled Native. Select a native-only row and complete a real native load without creating any Chariox package or copying it to another machine. Reject stale native chips after focus/account change; test an explicit Native versus Chariox same-name choice, plain `$` Chariox precedence and no-focused-agent guidance. `/` stays commands; selection never submits prematurely; reconnect preserves focus/state. Base red: grant panel/no source-aware `$` picker. |
+| `skills-v2/SV-01` — MP-08/MP-10 | **Skills management and focused-provider picker.** Fresh hosted Web at 1440×900 DPR1 plus local/remote TUI: install/import/update/remove, inspect source/files/version, select scopes and insert/delete `$name` chips amid text/attachments. Switch focus among real Codex/Claude/OpenCode agents: Chariox rows remain; only the focused provider/account/placement's native skills appear, labelled `From Codex`, `From Claude` or `From OpenCode` (never labelled Native). Select a native-only row and complete a real native load without creating any Chariox package or copying it to another machine. Reject stale native chips after focus/account change; test an explicit `From <Provider>` versus Chariox same-name choice, plain `$` Chariox precedence and no-focused-agent guidance. `/` stays commands; selection never submits prematurely; reconnect preserves focus/state. Base red: grant panel/no source-aware `$` picker. |
 | `skills-v2/SV-02` — MP-08/MP-10 | **Project identity and states.** In two Projects, one spanning two repos/plain folder and one with no folders, verify a Project skill follows the Project across cwd/session changes and stays absent from the other. Exercise Auto/Manual/Off, default true/false frontmatter, explicit overrides, Project override/reset of a Chariox skill and update of inherited defaults. Real Codex and Claude turns demonstrate Auto discovery without `$`, Manual loading only with `$`, and Off rejection; recordings plus load receipts establish the result, not an agent assertion alone. |
 | `skills-v2/SV-03` — MP-08/MP-10/MP-11 | **Collision and import isolation.** Through Web and TUI attempt same/case-only names across both scopes, including an archived Project, concurrent installs and Environment import. Refusal must preserve bytes/catalogs and offer working rename/replace; retry/stale revision cannot overwrite another change. Import each provider/repo source, then edit/delete that source: installed digest stays fixed. Opening a repo alone never installs it. Explicit replacement produces one binding. Base red includes unified import's automatic differing-content update. |
-| `skills-v2/SV-04` — MP-08/MP-10 | **60-skill configurable budget.** Install 60 real reusable packages with bundled references and varied long descriptions; include Auto/Manual/Off controls. Real Codex/Claude tasks over MDN and public GitHub discover a relevant Auto skill, then explicitly load a Manual skill. An OpenCode-specific budget cell verifies its adapter too within the turn cap. For all providers record default 1%, resolved capacity, rendered token count and separate native overhead; repeat with a changed `config.toml` percentage and reject invalid values. Names/descriptions or paged overflow fit the configured ceiling; Manual/Off stay out of discovery; only relevant/selected bodies load and files resolve. Measure picker/echo gates. Base red: no common configurable budget and remote eager bodies. |
+| `skills-v2/SV-04` — MP-08/MP-10 | **60-skill configurable budget.** Install 60 real reusable skills with bundled references and varied long descriptions; include Auto/Manual/Off controls. Real Codex/Claude tasks over MDN and public GitHub discover a relevant Auto skill, then explicitly load a Manual skill. An OpenCode-specific budget cell verifies its adapter too within the turn cap. For all providers record default 1%, resolved capacity, rendered token count and separate native overhead; repeat with a changed `config.toml` percentage and reject invalid values. Names/descriptions or paged overflow fit the configured ceiling; Manual/Off stay out of discovery; only relevant/selected bodies load and files resolve. Measure picker/echo gates. Base red: no common configurable budget and remote eager bodies. |
 | `skills-v2/SV-05` — MP-08/MP-10 | **Compaction and continuity.** A ≥4-hour Codex/Claude research session across the public-site list loads an actual skill and bundled references, then reaches/requests real provider compaction. Continue the task from Web and TUI, reconnect and resume the run. Verify new context generation restores catalog/body/path before continued work, same thread/task, no duplicate action, truthful loaded status and stable resources. Disable/remove a loaded skill and verify no re-attachment; prior delivery remains visible in history. No fake compaction event or short smoke substitutes. |
-| `skills-v2/SV-06` — MP-08/MP-10/MP-11 | **Codex harness dedupe.** With real Codex and its actual app-server catalog, exercise same name/full package, same body/different bundled asset, same name/different body, disabled native copy and changed profile/cwd. Confirm one delivery for equal effective copies, conflict UI for differing bytes, Chariox `$` winner, refresh after native changes and explicit unverified status for unreadable inventory. Native rows remain read-only; Import uses collision rules. Check prompt/load receipts and real task output. |
+| `skills-v2/SV-06` — MP-08/MP-10/MP-11 | **Codex harness dedupe.** With real Codex and its actual app-server catalog, exercise same name/full package, same body/different bundled asset, same name/different body, disabled native copy and changed profile/cwd. Confirm one delivery for equal effective copies, conflict UI for differing bytes, Chariox `$` winner, refresh after native changes and explicit unverified status for unreadable inventory. `From <Provider>` rows remain read-only; Import uses collision rules. Check prompt/load receipts and real task output. |
 | `skills-v2/SV-07` — MP-08/MP-10/MP-11 | **Claude/OpenCode harness dedupe.** Repeat equal/different-content/native-disabled cases on real Claude using an account-profile `CLAUDE_CONFIG_DIR`, additional/plugin roots, and real OpenCode using its scoped config/XDG, compatibility and configured skill paths. Exercise an OpenCode-specific native skill load in ≤3 short turns per cell using the prescribed model. Verify effective native exposure/precedence, one delivery or conflict, `$` winner and native read-only Import; no credential/config payload in evidence. Record unsupported inventory seams as blockers for that dimension. |
 | `skills-v2/SV-08` — MP-08/MP-10/MP-11 | **Standard leased worker and remote self-install.** From real Web + remote TUI run Codex/Claude on an ordinary second kernel without the skill. Home transfers Auto/Manual packages; load body/helper at worker paths under normal permissions. Ask a remote agent to install/update a home-managed skill: observe the home interaction, then both existing local and remote agents use the new revision next turn with unchanged process/thread IDs. Test a missed catalog event, transfer failure, home Off/remove, relay reconnect and lease replacement: fresh state applies, stale/foreign acknowledgements fail, no duplicate task or shadow worker catalog, no generated repo/provider files. Base red: standard-native no-copy rule and grant-based context. |
 | `skills-v2/SV-09` — MP-08/MP-10 | **Slice lifecycle.** Launch a real local Docker slice through the user clients; select a skill with references/helper, use it on a public site with a real provider, save with idle agents, destroy/recreate through supported lifecycle and resume. Verify digest, modes, roots, state and provider thread, plus no leaked generated repo files. Run compatibility mode on the supported default. Restart/reconnect and cleanup must pass; a package-only unit test cannot satisfy persistence. |
 | `skills-v2/SV-10` — MP-08/MP-10 | **Native TUIs and hot reload.** In real `chariox codex`, `chariox claude` and `chariox opencode`, submit Chariox-only `$name` locally, on a standard worker and in a slice; observe the same session from Web/TUI. Install/update from another agent, then select/use the new revision next turn without restarting native TUI/provider. Codex never reports unknown skill; Chariox selection beats a conflicting native copy; Claude uses hidden hook context; OpenCode uses the normal system channel. Also select a provider-native skill through the Chariox picker and verify native pass-through, no copy and one history/run. Typed and Chariox-origin prompts share ordering/permissions. Selected-body delivery failure cannot silently submit empty context. Record process/thread continuity; OpenCode turn caps apply. |
-| `skills-v2/SV-11` — MP-08/MP-10/MP-11 | **Environment portability/parity.** Move a multi-folder Project with Project skills and Chariox overrides through normal Environments into BYOC and managed execution; compare the same user flow on an ordinary kernel. Verify package/state/provenance and collision review, restart/resume, a Project with no repo, and independent evolution after export. Use existing b3 VM/container isolation policy; no isolation-only rental. Signed deployment and mandatory shutdown remain the only managed differences; cleanup covers only this run's targets. |
+| `skills-v2/SV-11` — MP-08/MP-10/MP-11 | **Environment Skills and portability/parity.** Open the Environment Skills section in Web and its TUI equivalent; install/update/remove a Project skill, change state and regroup, and verify the main Skills screen shows the same revision without a second catalog. Inspect the move review and transfer receipts. Move a multi-folder Project with Project skills and Chariox overrides through normal Environments into BYOC and managed execution; compare the same user flow on an ordinary kernel. Verify package groups/membership/state/provenance and collision review in the destination Skills section, restart/resume, a Project with no repo, and independent evolution after export. Use existing b3 VM/container isolation policy; no isolation-only rental. Signed deployment and mandatory shutdown remain the only managed differences; cleanup covers only this run's targets. |
 | `skills-v2/SV-12` — MP-08/MP-10/MP-11 | **Clean slate, self-install and authorization.** Begin with real old installed/granted skills plus workflow definitions/publications, saved slices, queued launches and Environment exports containing references. Upgrade with an interrupted reset/restart: installed skills and every executable old reference disappear, no automatic import/conversion/notice, other grants/data remain; old replay/import/restore cannot resurrect them. No compatibility/rollback path is exercised or retained. Then have a real agent install and update a reusable skill in ask (deny then approve) and yolo. All already-running applicable agents see it next turn: Auto discovery, explicit Manual load, Off exclusion, Project isolation and unchanged provider PIDs/thread IDs; include Codex/Claude and a short OpenCode-specific hot-reload cell. Update a loaded body; the next turn uses the new digest without replay. Denied install changes nothing; requested tools/credentials remain denied, collaborators retain existing mutation limits, and old clients/workers get actionable rejection. Source package/security/reset regressions supplement these real flows. Base red: installed grants/references persist and no scope-wide next-turn contract. |
+| `skills-v2/SV-13` — MP-08/MP-10/MP-11 | **Packages and custom regrouping.** From hosted Web at 1440×900 DPR1 and the real TUI, install a real public multi-skill repository as one source-backed package; inspect source revision, member files and grouping. Load a member with a real Codex/Claude turn. Apply package Auto/Manual/Off/reset actions and a Project override; Mixed reflects an individual change, and hot reload uses member states next turn. Update the source-backed package with a reviewed diff; one colliding/invalid member or stale revision must refuse the entire batch, with no partial install/update. Create a custom package, move members from the source package and ungroup one: each skill has at most one package, stable IDs/digests/provenance/load records; updating the former source package never reclaims a moved member. An import without known package provenance stays ungrouped. Exercise custom member-source update, package removal versus Ungroup, deny/approve under ask and the normal yolo path. Inspect next-turn discovery and transfer to a leased execution place without restarting the provider; SV-11 verifies Environment export/import preserves the resulting groups. Base red: no package grouping/batch/custom-package flow. |
 
 Acceptance requires every required dimension PASS or an explicit Miguel waiver,
 review of recordings and cleanup, plus focused protocol/reset/security
