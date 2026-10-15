@@ -537,6 +537,20 @@ fn claude_profile_auth_status(
     })
 }
 
+/// MP-08/MP-11: first-use admission for a native profile reuses the ordinary
+/// provider probe and observation writer. Registered launch tokens are checked
+/// by the config-aware first-use path, never by this native-login probe.
+pub(crate) fn observe_native_claude_auth_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<(), DaemonError> {
+    let environment = registry.resolve_environment(owner_user_id, provider, account_profile)?;
+    let status = claude_auth_status(provider, account_profile, &environment)?;
+    update_profile_auth_observation(registry, owner_user_id, &status)
+}
+
 pub(crate) fn claude_auth_status(
     provider: &str,
     account_profile: &str,
@@ -1531,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn mp08_auth_status_keeps_a_vault_setup_token_account_authenticated() {
+    fn mp08_automatic_refresh_keeps_a_vault_setup_token_account_authenticated() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
@@ -1571,6 +1585,23 @@ mod tests {
             false,
         )
         .expect("setup token");
+        // MP-08/MP-11: a registered but unobserved token must reach the
+        // config-aware first-use verifier without a native logout projection.
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            let admitted = registry
+                .require_authenticated(
+                    "local",
+                    provider,
+                    &profile.profile_id,
+                    None,
+                    "test token admission",
+                )
+                .expect("registered token reaches first-use verification");
+            assert_eq!(
+                admitted.auth_state,
+                crate::account_profile::ProviderAccountAuthState::Unknown
+            );
+        }
         // Enrollment verified the token with Claude before storing it.
         registry
             .update_observation(
@@ -1585,19 +1616,18 @@ mod tests {
             )
             .expect("enrollment observation");
 
-        let response = provider_auth_status_response(
+        let refreshed = refresh_provider_account_profile_with_config(
             &registry,
             "local",
-            GetProviderAuthStatusRequest {
-                provider: "claude".to_string(),
-                account_profile: profile.profile_id.clone(),
-            },
+            "claude",
+            &profile.profile_id,
+            &config,
         )
-        .expect("auth status");
-        let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
-            panic!("unexpected response: {response:?}");
-        };
-        assert_eq!(status.auth_state, "authenticated");
+        .expect("automatic profile refresh");
+        assert_eq!(
+            refreshed.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
         assert_eq!(
             registry
                 .get("local", "claude", &profile.profile_id)

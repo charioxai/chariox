@@ -446,14 +446,10 @@ mod tests {
                 environment.iter().collect::<Vec<_>>(),
                 vec![(CLAUDE_OAUTH_TOKEN_ENV, "synthetic-token")]
             );
-            assert!(launch_uses_vault_credential(
-                &profiles,
-                "local",
-                provider,
-                &profile.profile_id,
-                crate::provider::ProviderClientInterface::Chariox,
-            )
-            .unwrap());
+            assert!(
+                provider_account_credential_uses_vault("local", provider, &profile.profile_id,)
+                    .unwrap()
+            );
         }
         std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
         std::env::remove_var("CHARIOX_HOME");

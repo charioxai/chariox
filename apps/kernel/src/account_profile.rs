@@ -1191,12 +1191,19 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let mut profile = self.get(owner_user_id, provider, profile_id)?;
-        if profile.provider == "claude" && profile.auth_state == ProviderAccountAuthState::Unknown {
+        if profile.provider == "claude"
+            && profile.auth_state == ProviderAccountAuthState::Unknown
+            && !crate::provider::provider_account_credential_registered(
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?
+        {
             // MP-08 / MP-10 / MP-11: a fresh/imported account has no native
             // auth observation yet. Verify its selected scope before rejecting
             // prompt or utility admission; /provider status must not be required.
             // Confirmed logout/expiry/error observations still require recovery.
-            crate::local::provider_requests::observe_provider_auth_status(
+            crate::local::provider_requests::observe_native_claude_auth_status(
                 self,
                 owner_user_id,
                 provider,
