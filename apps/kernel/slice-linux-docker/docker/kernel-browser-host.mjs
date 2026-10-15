@@ -205,7 +205,7 @@ export class KernelBrowserHost {
   async lockdown(connection) {
     if (this.chromium.policy === "unavailable" && !this.policyWarned) {
       this.policyWarned = true;
-      process.stderr.write("MP-11: kernel browser managed policies unavailable (no private namespace: install the kernel browser's AppArmor profile); only the CDP lockdown applies\n");
+      process.stderr.write("MP-11: kernel browser managed policies unavailable (no private namespace: run the Setup system step install-root.sh, which installs the kernel browser launcher and its AppArmor profile); only the CDP lockdown applies\n");
     }
     await connection.send("Browser.setDownloadBehavior", { behavior: "deny" });
     this.lockdownOff?.();
@@ -309,7 +309,9 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport(), chrome_window: this.chromeWindow() }, this.protection.values);
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:hostViewport(), chrome_window: this.chromeWindow(),
+      // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
+      browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
   // MP-08/MP-10/MP-11 (BROWSER-UX-14): the band's window epoch (for a 519 BrowserChrome
   // subscription) and the Tab Chrome's own strip shows, as last observed by the kernel.

@@ -18,9 +18,11 @@
 #      cgroup of the systemd --user unit chariox-kernel.service
 #      (.../user@UID.service/app.slice/chariox-kernel.service/apps) and the kernel
 #      database ~/.chariox/state/kernel.db. Other owners are kept;
-#   4. loads chariox-app-bwrap when AppArmor exposes the userns restriction. It
-#      lets only an installed runtime's bundled bubblewrap create user namespaces,
-#      which Ubuntu 23.10 and later restrict;
+#   4. installs the kernel browser's namespace launcher
+#      /usr/lib/chariox/browser/chariox-browser-unshare (a root-owned copy of
+#      util-linux unshare) and loads chariox-app-bwrap when AppArmor exposes the
+#      userns restriction. It lets only an installed runtime's bundled bubblewrap
+#      and that launcher create user namespaces, which Ubuntu 23.10 and later restrict;
 #   5. enables lingering, so the user's systemd manager, which delegates the
 #      kernel's cgroup, runs without a login session;
 #   6. starts the helper, or restarts it when its binary, unit or enrollment
@@ -50,6 +52,7 @@ RUNTIME_ENROLLMENT=$R/etc/chariox/apps/runtime-enrollment.json
 RUNTIMES=$R/usr/lib/chariox/app-runtimes
 STORAGE=$R/var/lib/chariox-app-storage
 PROFILE=$R/etc/apparmor.d/chariox-app-bwrap
+BROWSER_LAUNCHER=$R/usr/lib/chariox/browser/chariox-browser-unshare
 APPARMOR_PROFILES=$R/sys/kernel/security/apparmor/profiles
 LINGER=$R/var/lib/systemd/linger
 # Lingering this script enabled, one file per uid, so uninstall reverts only that.
@@ -231,9 +234,10 @@ enrolled_runtime() {
 
 profile_loaded() {
   grep -q '^chariox-app-bwrap ' "$APPARMOR_PROFILES" 2>/dev/null &&
-  grep -q '^chariox-app-domain-entry ' "$APPARMOR_PROFILES" 2>/dev/null
+  grep -q '^chariox-app-domain-entry ' "$APPARMOR_PROFILES" 2>/dev/null &&
+  grep -q '^chariox-browser-unshare ' "$APPARMOR_PROFILES" 2>/dev/null
 }
-profile_any_loaded() { grep -Eq '^chariox-app-(bwrap|domain-entry) ' "$APPARMOR_PROFILES" 2>/dev/null; }
+profile_any_loaded() { grep -Eq '^chariox-(app-bwrap|app-domain-entry|browser-unshare) ' "$APPARMOR_PROFILES" 2>/dev/null; }
 
 install_all() {
   [[ ${#users[@]} -gt 0 ]] || die "name at least one --user"
@@ -317,8 +321,10 @@ install_all() {
   enrollment install "${owner_specs[@]}" || status=$?
   case "$status" in 0) restart=1 ;; 10) ;; *) die "enrollment failed" ;; esac
 
-  # 4. Only kernels exposing the AppArmor userns restriction need the ABI 4
+  # 4. The kernel browser's policy namespace launcher (MP-11 lockdown). Only
+  # kernels exposing the AppArmor userns restriction need the ABI 4
   # exception. Bookworm has neither that restriction nor an ABI 4 parser.
+  put /usr/bin/unshare "$BROWSER_LAUNCHER" 0755 || true
   if (( needs_apparmor )); then
     if put "$here/chariox-app-bwrap.apparmor" "$PROFILE" 0644 || ! profile_loaded; then
       act "load AppArmor profile chariox-app-bwrap" apparmor_parser -r "$PROFILE"
@@ -444,9 +450,9 @@ uninstall_all() {
     ! profile_any_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
     remove "$PROFILE"
   fi
-  remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER"
+  remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER" "$BROWSER_LAUNCHER"
   if [[ -d "$RUNTIMES" ]]; then act "remove $RUNTIMES" rm -rf -- "$RUNTIMES"; fi
-  for dir in "$STORAGE"/u-* "$STORAGE" "$STATE" "$R/etc/chariox/apps" "$R/etc/chariox" "$R/usr/lib/chariox"; do
+  for dir in "$STORAGE"/u-* "$STORAGE" "$STATE" "$R/etc/chariox/apps" "$R/etc/chariox" "$R/usr/lib/chariox/browser" "$R/usr/lib/chariox"; do
     if [[ -d "$dir" && -z "$(ls -A -- "$dir")" ]]; then act "remove $dir" rmdir -- "$dir"; fi
   done
   say "done: no Chariox system component is left"

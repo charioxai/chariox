@@ -1218,6 +1218,16 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   assert.equal((await host.request({ op: 'state' })).chrome_window, null, 'a retired window is not offered');
 }));
 
+// MP-11 (Ubuntu >= 23.10 without the Setup's AppArmor profile): a browser without its
+// managed policies says so to every viewer, not only in the kernel log.
+test('MP-11 state reports whether the managed browser policies apply', () => using(async ({ host }) => {
+  await host.request({ op: 'open', url: 'https://example.com/' });
+  host.chromium.policy = 'managed';
+  assert.equal((await host.request({ op: 'state' })).browser_lockdown, 'managed');
+  host.chromium.policy = 'unavailable';
+  assert.equal((await host.request({ op: 'state' })).browser_lockdown, 'unavailable');
+}));
+
 // MP-08/MP-10/MP-11: error strings must retain a specific safe cause to the Rust/client boundary.
 test('Browser replies distinguish observation timeout from a retired subscription without exposing page data', () => using(async ({host}) => {
   const failures=[

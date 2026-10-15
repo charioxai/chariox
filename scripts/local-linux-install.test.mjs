@@ -78,7 +78,7 @@ esac
   await script(join(bin, "apparmor_parser"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/apparmor"
 profiles="$CHARIOX_LOCAL_INSTALL_ROOT/sys/kernel/security/apparmor/profiles"
-case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
+case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\nchariox-browser-unshare (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
 `)
   // Ownership is the only thing a non-root test cannot give; the rest is real install(1).
   await script(join(bin, "install"), `#!/bin/sh
@@ -190,6 +190,13 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.equal(await readFile(p(h, "etc/systemd/system/chariox-app-storage.service"), "utf8"),
       await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"))
     assert.ok(existsSync(p(h, "var/lib/chariox-local-install/linger-1000")))
+    // MP-11: the kernel browser's private policy namespace launcher, the only
+    // unshare the AppArmor exception admits (Ubuntu >= 23.10 restricts userns).
+    const launcher = p(h, "usr/lib/chariox/browser/chariox-browser-unshare")
+    assert.equal((await stat(launcher)).mode & 0o777, 0o755)
+    assert.ok((await readFile(launcher)).equals(await readFile("/usr/bin/unshare")))
+    assert.match(await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"),
+      /^profile chariox-browser-unshare \/usr\/lib\/chariox\/browser\/chariox-browser-unshare flags=\(unconfined\) \{\n  userns,\n\}$/m)
 
     const admissionLocks = ["memory", "disk"].map((resource) => p(h, `tmp/chariox-docker-${resource}-admission.lock`))
     const admissionInodes = []

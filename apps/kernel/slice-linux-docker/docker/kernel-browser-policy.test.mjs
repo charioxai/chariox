@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { blockedUrl, managedPolicy, writePolicyLayer } from "./kernel-browser-policy.mjs";
-import { policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
+import { browserLauncher, namespaceLauncher, policyLaunch, policyNamespaceAvailable } from "./kernel-browser-linux.mjs";
 
 test("MP-11 the policy layer carries every compiled Chromium policy root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-policy-"));
@@ -38,8 +38,8 @@ test("MP-11 Chromium runs in a private namespace with the caller's own uid", () 
   const launch = policyLaunch("/k/policy-etc", "/opt/chromium/chrome", ["--remote-debugging-pipe", "about:blank"], 1000, 1000);
   assert.equal(launch.command, "/usr/bin/unshare");
   assert.deepEqual(launch.args.slice(0, 4), ["--user", "--map-root-user", "--mount", "--"]);
-  assert.deepEqual(launch.args.slice(-7), ["/k/policy-etc", "1000", "1000", "/opt/chromium/chrome", "--disable-setuid-sandbox", "--remote-debugging-pipe", "about:blank"]);
-  assert.match(launch.args[6], /lowerdir=\$layer:\/etc" \/etc; exec \/usr\/bin\/unshare --user --map-user="\$uid"/);
+  assert.deepEqual(launch.args.slice(-8), ["/usr/bin/unshare", "/k/policy-etc", "1000", "1000", "/opt/chromium/chrome", "--disable-setuid-sandbox", "--remote-debugging-pipe", "about:blank"]);
+  assert.match(launch.args[6], /lowerdir=\$layer:\/etc" \/etc; exec "\$launcher" --user --map-user="\$uid"/);
   assert.throws(() => policyLaunch("/k", "/c", [], 0, 0), /invalid browser user/);
 });
 
@@ -47,9 +47,26 @@ test("MP-11 Chromium runs in a private namespace with the caller's own uid", () 
 // be created but refuses its id map, so the namespaced launch never started Chromium.
 test("MP-11 a refused private namespace is detected before launch", () => {
   const calls = [];
-  assert.equal(policyNamespaceAvailable((command, args) => { calls.push([command, ...args]); return { status: 1 }; }), false);
-  assert.equal(policyNamespaceAvailable(() => ({ status: 0 })), true);
+  assert.equal(policyNamespaceAvailable((command, args) => { calls.push([command, ...args]); return { status: 1 }; }, "/usr/bin/unshare"), false);
+  assert.equal(policyNamespaceAvailable(() => ({ status: 0 }), "/usr/bin/unshare"), true);
   assert.deepEqual(calls, [["/usr/bin/unshare", "--user", "--map-root-user", "--mount", "--", "/bin/true"]]);
+});
+
+// Ubuntu >= 23.10: install-root.sh installs a root-owned launcher that the AppArmor
+// profile chariox-browser-unshare admits; both namespace steps exec that launcher.
+test("MP-11 the Setup-installed launcher creates both namespaces when it is root-owned", () => {
+  const file = (uid, mode) => () => ({ isFile: () => true, uid, mode: 0o100000 | mode });
+  assert.equal(namespaceLauncher(file(0, 0o755)), browserLauncher);
+  assert.equal(namespaceLauncher(file(1000, 0o755)), "/usr/bin/unshare", "a user-owned file is never trusted");
+  assert.equal(namespaceLauncher(file(0, 0o777)), "/usr/bin/unshare", "a writable file is never trusted");
+  assert.equal(namespaceLauncher(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }), "/usr/bin/unshare");
+  const launch = policyLaunch("/k/policy-etc", "/opt/chromium/chrome", ["about:blank"], 1000, 1000, browserLauncher);
+  assert.equal(launch.command, browserLauncher);
+  assert.match(launch.args[6], /exec "\$launcher" --user --map-user="\$uid"/);
+  assert.deepEqual(launch.args.slice(7, 9), ["chariox-browser", browserLauncher]);
+  const calls = [];
+  policyNamespaceAvailable((command, args) => { calls.push(command); return { status: 0 }; }, browserLauncher);
+  assert.deepEqual(calls, [browserLauncher]);
 });
 
 test("MP-11 blocked schemes", () => {
