@@ -1,11 +1,26 @@
 // MD-DISPLAY-04: repeated failed browser recovery settles its real owned Xvfb.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
+import {policyNamespaceAvailable} from './kernel-browser-linux.mjs';
+// MP-08/MP-11 union seam (2026-10-15): the bounded TMPDIR (/proc/<kernel pid>/fd/<n>) cannot be opened
+// from Chromium's private policy namespace, so every managed launch aborted ("Failed to create socket directory").
+const chromium=process.env.CHARIOX_TEST_CHROMIUM;
+test('MP-08/MP-11 managed Chromium starts with its singleton in the held private directory',
+ {skip:!chromium||process.platform!=='linux'||process.getuid()===0||!policyNamespaceAvailable()?'needs CHARIOX_TEST_CHROMIUM, a non-root Linux user and the policy namespace':false},async()=>{
+ const root=await mkdtemp(tmpdir()+'/chariox-managed-launch-');
+ const host=new HostChromium(root,{environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chromium,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
+ try{
+  const connection=await host.start();
+  assert.equal(host.policy,'managed');
+  assert.match((await connection.send('Browser.getVersion')).product,/Chrome/);
+  assert((await readdir(root)).some(name=>/^(com\.google\.Chrome|org\.chromium\.Chromium)\./.test(name)),'singleton socket directory in the private directory');
+ }finally{await host.stop();await rm(root,{recursive:true,force:true});}
+});
 test('MP-08/MP-11 native window ownership selects the CDP browser only from verified descendants',async()=>{
  const {ownedBrowserPid}=await import('./kernel-browser-process.mjs');
  assert.equal(typeof ownedBrowserPid,'function');

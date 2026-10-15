@@ -120,14 +120,15 @@ export class HostChromium {
       try{environment={...environment,...await this.display.start()};}
       catch(error){await this.display.close();this.display=null;throw error;}
     }
+    const temporary = this.desktop?.runtime ?? this.root;
     if (process.platform === 'linux') {
-      this.temporaryDirectory = await open(this.desktop?.runtime ?? this.root, 'r');
+      this.temporaryDirectory = await open(temporary, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
       environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
-    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), binary, args) : { command: binary, args };
+    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
