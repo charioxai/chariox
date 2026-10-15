@@ -57,6 +57,10 @@ enum Assessment {
     },
     Continue {
         reason: String,
+        // Public references are informational on a continuation. They cannot
+        // satisfy an obligation or authorize an achieved outcome.
+        #[serde(default, rename = "evidence")]
+        _evidence: Vec<String>,
     },
     Waiting {
         reason: String,
@@ -312,7 +316,7 @@ pub(super) fn evaluate(
                 else { let c = t.completion_check.as_mut().unwrap(); c.final_answer = Some(final_answer); c.evidence = evidence; }
             }
         }
-        Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
+        Some(Assessment::Continue { reason, .. }) if !reason.trim().is_empty() => {
             again = continue_work(&mut t, &reason);
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {

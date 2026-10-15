@@ -1219,3 +1219,34 @@ fn r16_plain_correction_keeps_real_unresolved_obligations_blocking() {
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11: real Codex supplied a public reference alongside
+// continue. The reference is informational; it cannot turn incomplete work
+// into completion or bypass an open obligation.
+#[test]
+fn r16_continue_with_public_reference_keeps_bounded_correction() {
+    let f = Fixture::new();
+    plain(&f);
+    f.register();
+    f.settle("p", true);
+    let t = check(&f, serde_json::json!({
+        "status":"continue", "reason":"Return the requested findings",
+        "evidence":["history:room:prompt:p"]
+    }));
+    assert_eq!(t.state, ExecutionState::Working, "{}", t.reason);
+    assert!(t.correction_used);
+    assert_eq!(t.obligations[0].status, "open");
+    assert!(t.pending_prompt_id.unwrap().starts_with("task-correction-"));
+}
+
+#[test]
+fn r16_continue_still_rejects_unknown_authority_or_invalid_reference_type() {
+    for extra in [serde_json::json!({"sudo":true}), serde_json::json!({"evidence":true})] {
+        let f = Fixture::new();
+        plain(&f);
+        f.settle("p", true);
+        let mut result = assessment("continue");
+        result.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert_eq!(check(&f, result).state, ExecutionState::Blocked);
+    }
+}
