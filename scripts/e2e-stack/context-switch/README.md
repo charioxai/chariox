@@ -57,6 +57,8 @@ node scripts/e2e-stack/context-switch/default-account.mjs 921 compaction
 
 `CTXVAL_PAIRS=codex-claude-p` narrows pairs; `CTXVAL_SOURCE_TURNS` bounds source audit
 work. Non-model cells use Codex gpt-6-luna low and Claude claude-haiku-5-5.
+Account commands use fresh registered display labels; acknowledgements still
+check immutable profile IDs, including both legs of an account round trip.
 Explicit window/model-change cells may use Sonnet. OpenCode uses
 opencode-go/deepseek-v4.1-flash with documented refusal fallbacks; the driver rejects
 more than three turns in an OpenCode session. Never use OpenCode in a soak.

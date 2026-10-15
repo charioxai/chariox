@@ -23,7 +23,7 @@ await mkdir(parent,{recursive:true,mode:0o700});
 const canonical=await realpath(parent);requireExternal(canonical);
 const temp=await mkdtemp(join(canonical,'self-test-'));
 try{
- const run=spawnSync(process.execPath,['--test',...tests.map(x=>fileURLToPath(new URL(x,root)))],{stdio:'inherit',timeout:30000,env:{...process.env,TMPDIR:temp}});
+ const run=spawnSync(process.execPath,['--test','--test-concurrency=2',...tests.map(x=>fileURLToPath(new URL(x,root)))],{stdio:'inherit',timeout:30000,env:{...process.env,TMPDIR:temp}});
  if(run.status!==0)process.exitCode=1;
  else console.log('MP-08 / MP-10 / MP-11: fresh-checkout supplementary self-test PASS');
 }finally{await rm(temp,{recursive:true,force:true});}
