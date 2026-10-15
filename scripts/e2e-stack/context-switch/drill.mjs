@@ -1,6 +1,7 @@
 // MP-08 / MP-10 / MP-11: actual repository work and faults via compiled TUI/web.
 import {r,init,finish,select,workload,probe,enrollClaude} from './common.mjs';
 import {sleep} from './runtime.mjs';
+import {verifyCancelledPromptRecovery} from './cancellation-validation.mjs';
 import {webClients} from './web-live.mjs';
 import {execFileSync} from 'node:child_process';
 import {readFile,writeFile,access} from 'node:fs/promises';
@@ -39,7 +40,26 @@ try{
  await r.record('workload-manifest',{repository:'https://github.com/charioxai/chariox.git',readOnlyTask:'audit context-handoff cancellation',normalization:'completed semicolon suffix; sha256 label prefix; NFC',providers:['Codex official app-server','Claude official CLI'],models:['gpt-6-luna','claude-haiku-5-5']});
  web=await webClients(r,remote);
  if(mode==='faults'||mode==='worker'){
-  await cell('CX-03-cancel-mid-switch',async()=>{const before=await observe('cancel-before');await select('codex','gpt-6-luna');const marker='CTXVAL_R4_CANCELLED_'+Date.now();await r.tui.send('submit_prompt',{prompt:'Read the source cancellation continuation and explain its ownership check. End with '+marker+'.'});await preparing(marker);await Promise.all(web.map(c=>c.capture('preparing-cancel')));await r.command('stop');const s=await idle();await sleep(8000);const after=await observe('cancel-after');const rows=s.agentPanes[s.session.focusedAgentId]??[];if(rows.some(x=>x.role==='assistant'&&x.text?.includes(marker)))throw Error('Cancelled prompt received a provider answer');if(before.brief?.sha256!==after.brief?.sha256||before.brief?.coveredThroughSequence!==after.brief?.coveredThroughSequence)throw Error('Cancelled fold persisted');try{await probe(facts);for(const c of web)await c.probe(facts)}finally{await observe('cancel-recovery');await Promise.all(web.map(c=>c.capture('cancel-recovery')))}return {cancelledAnswerAbsent:true,cancelledFoldAbsent:true,recoveryRecall:9}});
+  await cell('CX-03-cancel-mid-switch',async()=>{
+   const before=await observe('cancel-before');
+   await select('codex','gpt-6-luna');
+   const marker='CTXVAL_R4_CANCELLED_'+Date.now();
+   await r.tui.send('submit_prompt',{prompt:'Read the source cancellation continuation and explain its ownership check. End with '+marker+'.'});
+   const pending=await preparing(marker);
+   await Promise.all(web.map(c=>c.capture('preparing-cancel')));
+   await r.command('stop');
+   return verifyCancelledPromptRecovery({
+    agentId:pending.session.focusedAgentId,marker,settle:idle,wait:sleep,snapshot:()=>r.tui.send('snapshot'),
+    checkFold:async()=>{
+     const after=await observe('cancel-after');
+     if(before.brief?.sha256!==after.brief?.sha256||before.brief?.coveredThroughSequence!==after.brief?.coveredThroughSequence)throw Error('Cancelled fold persisted');
+    },
+    recover:async()=>{
+     try{await probe(facts);for(const c of web)await c.probe(facts)}
+     finally{await observe('cancel-recovery');await Promise.all(web.map(c=>c.capture('cancel-recovery')))}
+    }
+   });
+  });
   await cell('CX-03-target-model-rejection',async()=>{await select('claude-p','claude-haiku-5-5');await audit(0);await r.command('config set history.handoff.codex_brief_model ctxval-invalid-brief-model-r4');const first=await cycle('codex','gpt-6-luna',{client:web[0]});await select('claude-p','claude-haiku-5-5');await audit(1);const second=await cycle('codex','gpt-6-luna',{client:web[1]});const observed=await observe('rejection-final');const fallback=observed.diagnostics.filter(x=>x.message==='the brief model is unavailable; briefing with the target model');const updates=observed.diagnostics.filter(x=>x.message==="updated the agent's handoff brief");if(fallback.length!==1||!updates.some(x=>x.fields.utility_calls===2))throw Error('Official model rejection/retry-once was not proved');await r.command('config unset history.handoff.codex_brief_model');return {first,second,recoveryRecall:9,fallbackCount:fallback.length,utilityCalls:updates.map(x=>x.fields.utility_calls)}});
   await r.command('config unset history.handoff.codex_brief_model');
   await cell('CX-03-relay-outage-switch',async()=>{if(!remote)throw Error('Owned shaped namespace outage requires a real remote client');const baseline=await observe('outage-baseline');if(!baseline.brief){await select('codex','gpt-6-luna');await r.turn('Continue the read-only audit: inspect apps/kernel/src/runtime/state/context_handoff.rs and explain one dispatch ownership boundary with a source reference. Do not edit files or read credentials/runtime state; preserve our existing audit records unchanged.','CTXVAL_OUTAGE_BASELINE');if(!(await observe('outage-stored-baseline')).brief)throw Error('Outage has no prior stored fold')}await select('claude-p','claude-haiku-5-5');await audit(2);await web[1].select('codex','gpt-6-luna');const marker='CTXVAL_R4_OUTAGE_'+Date.now();const input=web[1].page.locator('[data-terminal-prompt]:not(:disabled)');await input.fill('Without tools recall our existing audit records as JSON with exactly '+Object.keys(facts).join(', ')+'. End with '+marker+'.');await input.press('Enter');await preparing(marker);await remote.outage();const turn=await r.turn('',marker,240000,false);const {scoreContextValidationRecall}=await import('./context-switch-validation-records.mjs');const score=scoreContextValidationRecall(turn.state.agentPanes[turn.state.session.focusedAgentId],marker,facts);await r.record('outage-score',score);if(score.score!==9||score.toolCount)throw Error('Outage recovery recall failed');const after=await observe('outage-after');const ids=after.prompts.map(x=>x.id).filter(Boolean);if(new Set(ids).size!==ids.length)throw Error('Prompt history contains duplicate IDs');await Promise.all(web.map(c=>c.capture('outage-recovered')));return {outageMs:30000,score,promptIdsUnique:true}});

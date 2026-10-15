@@ -149,6 +149,9 @@ node --test scripts/e2e-stack/context-switch/termination.test.mjs scripts/e2e-st
 The source-outage oracle requires the source run/model's timeout record and
 approximately 300 seconds of kernel elapsed time. Account transitions require
 fresh native IDs on both legs; profile labels and recall alone cannot pass.
+The cancellation cell checks a fresh snapshot after its eight-second observation
+window and again after recovery, scoped to the cancelled agent. A late answer in
+either interval fails the cell; a missing agent pane cannot establish absence.
 `enrollment-history.mjs` creates dormant targets only through normal device
 approval, with zero provider turns. The receiving profile in
 `account-read-live.mjs` uses product linking/refresh; a fresh 401 is recorded as
