@@ -266,13 +266,14 @@ run_chromium() {
     --disable-sync \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --force-renderer-accessibility \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
     "${chrome_startup_target_args[@]}" )
   if [[ "$launch_mode" == owned ]]; then
-    "${chrome_launcher[@]}" 2>>"$LOGS/chromium-gui.log"
+    /usr/bin/python3 "$ROOT/room-desktop-environment.py" "${chrome_launcher[@]}" 2>>"$LOGS/chromium-gui.log"
   else
-    exec "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+    exec /usr/bin/python3 "$ROOT/room-desktop-environment.py" "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
   fi
 }
 
@@ -804,7 +805,7 @@ computer_secret_paste_stdin() {
     log "computer credential input requires an approved display target"
     return 2
   fi
-  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
+  /usr/bin/python3 "$ROOT/room-desktop-environment.py" /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
 }
 
 browser_status() {

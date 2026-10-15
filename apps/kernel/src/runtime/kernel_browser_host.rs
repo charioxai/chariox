@@ -106,8 +106,9 @@ impl KernelBrowserAdmission {
                 .is_some_and(|lifetime| !lifetime.is_live())
     }
 
-    pub(crate) fn with_agent_label(mut self, label: &str) -> Self {
-        self.agent_label = Some(label.into());
+    /// The agent's alias names its Tabs' group and its pointer; without one, "(no-name)".
+    pub(crate) fn with_agent_label(mut self, alias: Option<&str>) -> Self {
+        self.agent_label = alias.map(Into::into);
         self
     }
 
@@ -304,7 +305,7 @@ impl KernelBrowserHost {
         Ok(KernelBrowserAdmission {
             user: user.into(),
             agent: Some(agent.into()),
-            agent_label: Some(agent.into()),
+            agent_label: None,
             capability,
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
@@ -1021,7 +1022,7 @@ fn browser_actor(admission: Option<&KernelBrowserAdmission>, params: &Value) -> 
             EnvironmentActorKind::Agent,
             admission
                 .and_then(|a| a.agent_label.as_deref())
-                .unwrap_or(agent),
+                .unwrap_or("(no-name)"),
         )
     } else {
         EnvironmentActor::new(

@@ -239,6 +239,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-owned-deskt
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs \
      apps/kernel/slice-linux-docker/docker/desktop-applications.mjs \
      apps/kernel/slice-linux-docker/docker/desktop-applications.py \
+     apps/kernel/slice-linux-docker/docker/room-desktop-environment.py \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs \
      /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs /opt/chariox-slice/browser-controller-cookie-fence.mjs

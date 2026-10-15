@@ -131,7 +131,8 @@ done
     for result in receipts {
         assert!(result.get("_tab_openers").is_none());
         assert_eq!(result["tabs"][0]["opened_by"]["actor_id"], "agent:mara");
-        assert_eq!(result["tabs"][0]["opened_by"]["display_label"], "mara");
+        // Miguel 2026-10-15: an agent without an alias is "(no-name)", never its id or ref.
+        assert_eq!(result["tabs"][0]["opened_by"]["display_label"], "(no-name)");
         assert_eq!(result["tabs"][0]["title"], "MDN");
         assert_eq!(result["tabs"][0]["url"], "https://developer.mozilla.org");
         assert_eq!(result["agent_activity"]["tab_id"], "host-agent");

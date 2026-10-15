@@ -13,6 +13,36 @@ fill = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fill)
 
 class FillTests(unittest.TestCase):
+    def test_mp11_room_worker_registers_without_host_runtime_environment(self):
+        # Real Docker workers have neither host CHARIOX_HOME nor XDG_RUNTIME_DIR.
+        for managed in (False, True):
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runtime = root / ('runtime' if managed else 'private')
+                runtime.mkdir(mode=0o700)
+                env = {'CHARIOX_SLICE_ID': 'slice-1',
+                       'CHARIOX_SLICE_PRIVATE_ROOT' if managed else 'CHARIOX_SLICE_ROOT': directory}
+                with patch.dict(os.environ, env, clear=True):
+                    fill.update(lambda current: [{'registration': 1, 'length': 24}])
+                    self.assertEqual(fill.read(), [{'registration': 1, 'length': 24}],
+                                     'MP-11: native input and capture must share a durable scoped registration')
+                    self.assertEqual(fill.store_path().parent, runtime / 'native-fill-targets')
+                    self.assertEqual(fill.store_path().stat().st_mode & 0o777, 0o600)
+
+    def test_mp11_room_registration_rejects_exposed_or_symlink_store(self):
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runtime = root / 'private'
+                runtime.mkdir(mode=0o700)
+                store = runtime / 'native-fill-targets'
+                if symlink:
+                    target = root / 'other'; target.mkdir(mode=0o700); store.symlink_to(target)
+                else:
+                    store.mkdir(mode=0o777); store.chmod(0o777)
+                with patch.dict(os.environ, {'CHARIOX_SLICE_ID': 'slice-1', 'CHARIOX_SLICE_ROOT': directory}, clear=True):
+                    with self.assertRaises(ValueError): fill.update(lambda current: [{'registration': 1}])
+
     def test_mp11_plain_replacement_clear_and_password_toggle(self):
         value = 'public-test-canary'
         target = {'pid': 200, 'started': 'one', 'path': '/entry', 'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value)}

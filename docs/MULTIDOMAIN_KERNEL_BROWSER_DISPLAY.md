@@ -608,6 +608,20 @@ it never starts another desktop or Chromium. Room Actions remain the only input
 and takeover authority. The initial Room View target is the complete desktop;
 Browser/Region references do not grant access to an unbound worker host browser.
 
+MP-08/MP-10/MP-11: Room Chromium and approved native credential input inherit
+the same private desktop bus. The launcher checks the bus file's owner, mode,
+type and address before execution and enables the native accessibility bridge;
+Chromium also enables renderer accessibility. An unsafe or unavailable binding
+refuses execution without logging arguments, bus addresses or input contents.
+Native fill registrations also use that private Room runtime when the worker
+has no host `CHARIOX_HOME` or `XDG_RUNTIME_DIR`. Input and capture share the
+same private store; exposed, foreign-owned or symlinked stores are refused.
+For native credential insertion, the agent first focuses the destination with
+the ordinary Room `slice_mouse` action. Browser DOM focus alone does not prove
+physical keyboard focus. This precedes the credential observation: its input
+fence must continue to refuse later agent pointer actions. The shared runtime
+tool description explains that order to every provider.
+
 The worker protects capture under the Room observation and credential-input
 barriers, encodes the ordinary CXD1 event and encrypts it to the admitted viewer
 key. The existing home `kernel_browser_display` subscription/ACK pump carries
