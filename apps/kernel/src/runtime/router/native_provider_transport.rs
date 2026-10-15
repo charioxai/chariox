@@ -292,6 +292,42 @@ impl CommandRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn mp08_connected_peer_send_race_keeps_native_retry_class_on_the_public_wire() {
+        let config = crate::config::DaemonConfig::for_tests();
+        for mode in 0..3 {
+            let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::transport::relay_client::RelayClientState::default(),
+            ));
+            let mut retained_receivers = None;
+            if mode != 0 {
+                let (sender, priority, events) =
+                    crate::transport::relay_client::RelayOutgoingSender::channel(1);
+                state
+                    .write()
+                    .await
+                    .test_set_connected_sender(sender, "wss://relay.example.test");
+                if mode == 1 {
+                    drop((priority, events));
+                } else {
+                    retained_receivers = Some((priority, events));
+                }
+            }
+            let failed = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
+                &config, &state,
+                chariox_relay::protocol::ClientTarget { daemon_id: Some("worker".into()), daemon_alias: None },
+                &config.relay_public_key,
+                RelayPeerRequest::DrainLeasedRuntimeProjection { leased_agent_id: "leased".into(), provider_run_id: "run".into(), pump_output: true },
+                Duration::from_millis(10),
+            ).await.expect_err("missing sender, failed enqueue or silent peer response");
+            let public =
+                crate::transport::kernel_protocol::map_kernel_error(&map_native_relay_gap(failed));
+            assert_eq!(public.code, "native_transport_reconnecting", "mode {mode}");
+            assert!(public.retryable);
+            drop(retained_receivers);
+        }
+    }
+
     #[test]
     fn mp08_native_relay_configuration_gap_is_a_typed_transient_before_forwarding() {
         let mut config = crate::config::DaemonConfig::for_tests();
