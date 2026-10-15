@@ -708,7 +708,8 @@ impl RelayRegistry {
                         .get(&registration.daemon_id)
                         .map(String::as_str)
                         == Some(machine_ref)
-                    || self.machine_alias_in_realm(realm_id, &registration.machine_id) == machine_ref
+                    || self.machine_alias_in_realm(realm_id, &registration.machine_id)
+                        == machine_ref
             })
             .map(|registration| self.kernel_presence(realm_id, registration, &relay_aliases))
             .collect()
@@ -781,7 +782,10 @@ impl RelayRegistry {
         self.daemon_registrations_in_realm(realm_id)
             .filter(|registration| registration.machine_id == machine_id)
             .filter_map(|registration| {
-                registration.machine_alias.as_deref().map(str::trim)
+                registration
+                    .machine_alias
+                    .as_deref()
+                    .map(str::trim)
                     .filter(|alias| !alias.is_empty())
                     .map(|alias| (registration, alias))
             })

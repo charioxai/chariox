@@ -432,10 +432,7 @@ fn relay_aliases_differentiate_kernels_on_same_machine() {
     assert_eq!(machines.len(), 1);
     assert_eq!(machines[0].machine_id, "shared-machine");
     assert_eq!(machines[0].kernel_count, 2);
-    assert_eq!(
-        machines[0].machine_alias.as_deref(),
-        Some("shared-machine")
-    );
+    assert_eq!(machines[0].machine_alias.as_deref(), Some("shared-machine"));
 
     let kernels = registry.live_kernels_for_machine("shared-machine");
     assert_eq!(kernels.len(), 2);
@@ -575,19 +572,42 @@ fn registered_machine_name_is_shared_by_every_presence_projection() {
         insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, registration, port);
     }
     let assert_name = |registry: &RelayRegistry| {
-        assert_eq!(registry.live_machines()[0].machine_alias.as_deref(), Some("omarchy"));
+        assert_eq!(
+            registry.live_machines()[0].machine_alias.as_deref(),
+            Some("omarchy")
+        );
         let kernels = registry.live_kernels_for_machine("machine-omarchy");
         assert_eq!(kernels.len(), 2);
         assert_eq!(registry.live_kernels_for_machine("omarchy").len(), 2);
         for kernel in kernels {
             assert_eq!(kernel.machine_alias.as_deref(), Some("omarchy"));
-            assert_eq!(registry.live_kernel(&kernel.kernel_id).unwrap().machine_alias.as_deref(), Some("omarchy"));
+            assert_eq!(
+                registry
+                    .live_kernel(&kernel.kernel_id)
+                    .unwrap()
+                    .machine_alias
+                    .as_deref(),
+                Some("omarchy")
+            );
         }
     };
     assert_name(&registry);
-    insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID,
-        test_registration("unrelated", "another-machine", "Linux", 1), 11003);
-    assert_eq!(registry.live_machines().iter().find(|machine| machine.machine_id == "machine-omarchy").unwrap().machine_alias.as_deref(), Some("omarchy"));
+    insert_live_registration(
+        &mut registry,
+        DEFAULT_RELAY_REALM_ID,
+        test_registration("unrelated", "another-machine", "Linux", 1),
+        11003,
+    );
+    assert_eq!(
+        registry
+            .live_machines()
+            .iter()
+            .find(|machine| machine.machine_id == "machine-omarchy")
+            .unwrap()
+            .machine_alias
+            .as_deref(),
+        Some("omarchy")
+    );
     for kernel in registry.live_kernels_for_machine("machine-omarchy") {
         assert_eq!(kernel.machine_alias.as_deref(), Some("omarchy"));
     }
@@ -600,6 +620,16 @@ fn unnamed_machine_label_does_not_depend_on_inventory_order() {
     let mut registration = test_registration("kernel-a", "stable-machine-id", "Linux", 20);
     registration.machine_alias = Some("   ".into());
     insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, registration, 11004);
-    assert_eq!(registry.live_machines()[0].machine_alias.as_deref(), Some("stable-machine-id"));
-    assert_eq!(registry.live_kernel("kernel-a").unwrap().machine_alias.as_deref(), Some("stable-machine-id"));
+    assert_eq!(
+        registry.live_machines()[0].machine_alias.as_deref(),
+        Some("stable-machine-id")
+    );
+    assert_eq!(
+        registry
+            .live_kernel("kernel-a")
+            .unwrap()
+            .machine_alias
+            .as_deref(),
+        Some("stable-machine-id")
+    );
 }
