@@ -74,6 +74,29 @@ fn current_starting_workflow_provider_run(
         .filter(|current| current.id() == provider_run_id)
 }
 
+/// MP-08 / MP-11: content-free facts at the actual native-dispatch guard.
+/// There is no content revision guard here: ownership and prompt identity fence writes.
+fn prompt_dispatch_guard_diagnostics(
+    dispatch: &crate::app::KernelPromptDispatch,
+    active: Option<&crate::session::PromptQueueItem>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": dispatch.session_id, "agent_id": dispatch.agent_id,
+        "provider_run_id": dispatch.provider_run_id, "dispatch_prompt_id": dispatch.prompt_id,
+        "target_active_prompt_id": dispatch.target_active_prompt_id, "steering": dispatch.steering,
+        "active_prompt_present": active.is_some(), "active_prompt_id": active.map(|p| p.id()),
+        "ownership_changed": active.map(|p| !p.is_chariox_owned()),
+        "prompt_id_changed": active.map(|p| p.id() != dispatch.target_active_prompt_id.as_deref().unwrap_or(&dispatch.prompt_id)),
+        "text_changed": active.map(|p| p.prompt() != dispatch.prompt),
+        "attachments_changed": active.map(|p| p.attachments() != dispatch.attachments.as_slice()),
+        "source_attachment_changed": active.map(|p| p.source_attachment_id() != dispatch.source_attachment_id),
+        "status": active.map(|p| p.status()), "delivery_phase": active.and_then(|p| p.durable_delivery_phase()),
+        "delivery_provider_run_changed": active.map(|p| p.durable_delivery_provider_run_id() != Some(dispatch.provider_run_id.as_str())),
+        "prompt_updated_at_ms": active.map(|p| p.updated_at_ms()),
+        "content_revision_guard": false,
+    })
+}
+
 impl KernelRuntimeOwnedState {
     fn prompt_dispatch_matches_active_prompt(
         &self,
@@ -94,10 +117,18 @@ impl KernelRuntimeOwnedState {
             }
             prompt.id() == dispatch.prompt_id
         };
-        Ok(self
+        let active = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &dispatch.agent_id)
-            .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
+            .active_prompt_for_agent(&session, &dispatch.agent_id);
+        let matches = active.as_ref().is_some_and(prompt_is_dispatch_prompt);
+        if !matches {
+            crate::logging::warn_with_fields(
+                "runtime.prompt_dispatch",
+                "stale provider dispatch skipped before native write",
+                prompt_dispatch_guard_diagnostics(dispatch, active.as_ref()),
+            );
+        }
+        Ok(matches)
     }
 
     fn ensure_prompt_dispatch_matches_active_prompt(
@@ -1693,6 +1724,50 @@ pub(in crate::runtime::state) mod tests {
                 replace.then_some("replacement-after-edit")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn mp08_native_dispatch_diagnostics_identify_fields_without_content() {
+        crate::test_support::isolated_env_test!();
+        let (_root, runtime, session_id, agent_id, _source, _run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        let mut stale = dispatch.clone();
+        stale.prompt = "private prompt text must not be logged".into();
+        stale
+            .attachments
+            .push(crate::session::PromptAttachment::new(
+                "private-file-url",
+                "text/plain",
+                Some("private-file-name".into()),
+            ));
+        let fields = prompt_dispatch_guard_diagnostics(&stale, Some(&active));
+        assert_eq!(fields["text_changed"], true);
+        assert_eq!(fields["attachments_changed"], true);
+        assert_eq!(fields["prompt_id_changed"], false);
+        assert_eq!(fields["ownership_changed"], false);
+        assert_eq!(fields["content_revision_guard"], false);
+        let output = fields.to_string();
+        for private in [
+            stale.prompt.as_str(),
+            "private-file-url",
+            "private-file-name",
+        ] {
+            assert!(!output.contains(private));
+        }
+        assert_eq!(
+            prompt_dispatch_guard_diagnostics(&dispatch, None)["active_prompt_present"],
+            false
+        );
     }
 
     #[tokio::test]
