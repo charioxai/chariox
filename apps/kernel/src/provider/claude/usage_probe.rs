@@ -107,7 +107,10 @@ pub(super) fn verify_claude_account_credential_with_timeout(
         &[
             "Reply with exactly CHARIOX_AUTH_OK.",
             "--model",
-            "haiku",
+            // MP-08/MP-10: pinned older CLIs resolve `haiku` to 4.5, which
+            // refuses the proof marker. Keep the proof strict and request the
+            // current small model explicitly through the official CLI.
+            "claude-haiku-5-5",
             "--max-turns",
             "1",
             "--system-prompt",
@@ -855,6 +858,30 @@ process.stdout.write(JSON.stringify({
                 assert!(!message.contains("synthetic-private-provider-detail"));
             }
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: model selection must not depend on a pinned CLI's alias.
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_uses_explicit_current_haiku_model() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+            "num_turns":1, "result":"CHARIOX_AUTH_OK", "usage":{"output_tokens":7}});
+        fs::write(&executable, format!("#!/bin/sh\nprevious=\nfound=0\nfor value do\n  if [ \"$previous\" = --model ]; then [ \"$value\" = claude-haiku-5-5 ] || exit 17; found=1; fi\n  previous=$value\ndone\n[ \"$found\" = 1 ] || exit 18\nprintf '%s\\n' '{result}'\n")).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        verify_claude_account_credential_with_timeout(
+            &executable,
+            &environment,
+            Duration::from_secs(2),
+        )
+        .expect("MP-08/MP-10 pinned older CLIs must not resolve an obsolete haiku alias");
         fs::remove_dir_all(root).unwrap();
     }
 
