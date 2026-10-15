@@ -52,14 +52,22 @@ export const managedPolicy = Object.freeze({
 const policyDirectories = ["chromium/policies/managed", "opt/chrome/policies/managed", "opt/chrome_for_testing/policies/managed"];
 
 // Writes the overlay layer that becomes /etc inside the browser's namespace.
-export async function writePolicyLayer(root) {
+// An https home page without credentials may replace the default (drills: DuckDuckGo).
+function homePolicy(environment) {
+  try {
+    const url = new URL(environment.CHARIOX_KERNEL_BROWSER_HOME_URL ?? "");
+    if (url.protocol === "https:" && !url.username && !url.password) return { NewTabPageLocation: url.href, HomepageLocation: url.href };
+  } catch {}
+  return {};
+}
+export async function writePolicyLayer(root, environment = process.env) {
   const layer = path.join(root, "policy-etc");
   // overlayfs options are comma/colon separated: such a path cannot be a layer.
   if (!path.isAbsolute(layer) || /[,:\\\s]/.test(layer)) throw new Error("MP-11: browser policy layer path is not mountable");
   await rm(layer, { recursive: true, force: true });
   for (const directory of policyDirectories) {
     await mkdir(path.join(layer, directory), { recursive: true, mode: 0o755 });
-    await writeFile(path.join(layer, directory, "chariox.json"), JSON.stringify(managedPolicy), { mode: 0o644 });
+    await writeFile(path.join(layer, directory, "chariox.json"), JSON.stringify({ ...managedPolicy, ...homePolicy(environment) }), { mode: 0o644 });
   }
   return layer;
 }

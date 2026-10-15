@@ -69,6 +69,19 @@ test("MP-11 the Setup-installed launcher creates both namespaces when it is root
   assert.deepEqual(calls, [browserLauncher]);
 });
 
+// Automated drills use DuckDuckGo as the home page (coordinator 2026-10-14, Google is
+// manual-only); the product default stays the policy's until Miguel decides.
+test("MP-11 an https home page override sets the native new tab and home page", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-policy-"));
+  try {
+    const read = async env => JSON.parse(await readFile(path.join(await writePolicyLayer(root, env), "chromium/policies/managed/chariox.json"), "utf8"));
+    const home = await read({ CHARIOX_KERNEL_BROWSER_HOME_URL: "https://duckduckgo.com/" });
+    assert.equal(home.NewTabPageLocation, "https://duckduckgo.com/"); assert.equal(home.HomepageLocation, "https://duckduckgo.com/");
+    for (const value of ["http://duckduckgo.com/", "chrome://settings", "https://user:pw@example.com/", "not a url"])
+      assert.equal((await read({ CHARIOX_KERNEL_BROWSER_HOME_URL: value })).NewTabPageLocation, managedPolicy.NewTabPageLocation, value);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("MP-11 blocked schemes", () => {
   for (const url of ["chrome://settings/", "devtools://devtools/x", "file:///etc/passwd", "view-source:https://a.example/", "chrome-extension://abc/x.html", "chrome-untrusted://x/"]) assert(blockedUrl(url), url);
   for (const url of ["https://example.com/", "about:blank", "", null, "not a url"]) assert(!blockedUrl(url), String(url));

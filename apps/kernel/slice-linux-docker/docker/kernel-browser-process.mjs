@@ -101,7 +101,7 @@ export class HostChromium {
     // Without it (macOS; Linux whose AppArmor refuses the namespace) only the host's CDP
     // fail-closed layer applies, and the lockdown is reported unavailable.
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
-    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root), binary, args) : { command: binary, args };
+    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), binary, args) : { command: binary, args };
     const child = spawn(launch.command, launch.args, {
       stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
     });
