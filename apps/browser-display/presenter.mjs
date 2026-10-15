@@ -54,13 +54,14 @@ export async function supportedCodecs() {
   return [...codecs,'chariox-video-dependencies-v1',...(codecs.some(c=>c==='avc1.420033'||c==='vp8')?['chariox-stripes-v1']:[])];
 }
 export class BrowserDisplayPresenter {
-  constructor(canvas, binding, onTiming = () => {}) {
+  constructor(canvas, binding, onTiming = () => {}, warmDecoder = null) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
     this.videoSink=new VideoSink(canvas,onTiming);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
-    if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
+    if(warmDecoder&&!warmDecoder.closed)this.workerDecoder=warmDecoder;
+    else if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
   }
   getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
   validate(frame,sequence) {
@@ -251,10 +252,14 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const hint=options.resumeHint;
   const resume=transport.kernelProtocolVersion>=resumeProtocolVersion&&hint?.targetKey===targetKey&&
     hint.desktop===Boolean(options.desktop)&&hint.device_scale_factor===offer.device_scale_factor&&hint.expiresAt>performance.now();
+  // MP-08/MP-10/MP-11: start code-only worker loading while the existing
+  // authenticated registration is pending. No pixels or binding enter it yet.
+  let warmDecoder;
+  if(globalThis.Worker&&globalThis.VideoDecoder){try{warmDecoder=new WorkerVideoDecoder();}catch{/* Normal presenter admission handles unavailable codecs. */}}
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
     :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer});}
-  catch(error){options.onResumeHint?.(null);throw error;}
+  catch(error){warmDecoder?.close();options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
   const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
@@ -267,15 +272,17 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     finally{await transport.unsubscribeDisplay?.(binding);}
   };
   if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
+    warmDecoder?.close();
     await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
     throw Error('MP-11: invalid desktop subscription binding');
   }
   const actorCommand=op=>op==='actors'?(options.desktop?{op:'computer',command:{op}}:{op:'display_actors'}):options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,tab_id:binding.tab_id,generation:binding.generation};
   if(options.target&&!regionBindingCurrent(binding)){
+    warmDecoder?.close();
     await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: invalid region negotiation');
   }
   const onTiming = options.onTiming ?? (() => {});
-  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
+  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming, warmDecoder);
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();
