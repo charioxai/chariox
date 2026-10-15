@@ -412,6 +412,44 @@ impl KernelRuntimeState {
         )
         .await
     }
+    /// MP-08/MP-10/MP-11:535 registration keeps525 as the sole resume authority.
+    pub(crate) async fn kernel_browser_display_resume_attach(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        subscription_id: String,
+        generation: u64,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if self.is_room_display(&subscription_id) {
+            return self
+                .room_display_control(
+                    &caller.caller,
+                    &subscription_id,
+                    generation,
+                    crate::transport::room_shared_display::RoomDisplayCommand::ResumeAttach {},
+                )
+                .await;
+        }
+        let binding = self
+            .kernel_browser_display_request(
+                caller,
+                KernelBrowserDisplayRequest::Resume {
+                    subscription_id,
+                    generation,
+                },
+            )
+            .await?;
+        let id = binding
+            .get("subscription_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| host_error("MP-11: missing resumed binding".into()))?;
+        let generation = binding
+            .get("generation")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| host_error("MP-11: missing resumed generation".into()))?;
+        self.kernel_browser_display_attach(caller, id.into(), generation)
+            .await?;
+        Ok(binding)
+    }
     pub(crate) fn kernel_browser_terminal_context(
         &self,
         caller: &crate::runtime::command::KernelCommand,

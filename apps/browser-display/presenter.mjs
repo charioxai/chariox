@@ -288,7 +288,13 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
   const closedItem = { presented: Promise.resolve() };
   const receive = () => frames.length ? Promise.resolve((queuedBytes -= frames[0].size, frames.shift())) : stopped ? Promise.resolve(closedItem) : new Promise(resolve => arrivals.push(resolve));
+  const initialEvents=[];let initialBytes=0;
   const off = transport.onEvent(event => {
+    if(pushMode&&event.event==='kernel_browser_frame'&&event.subscription_id===binding.subscription_id){
+      const size=frameBytes(event.frame);
+      if(initialEvents.length>=8||initialBytes+size>8*1024*1024){failure=Error('MD-DISPLAY: registration receive window exceeded');return;}
+      initialBytes+=size;initialEvents.push(event);return;
+    }
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
       try {
@@ -310,7 +316,11 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     await releaseDisplay(true).catch(() => {});
     throw error;
   }
-  if (pushMode) { off(); return pushDisplay(presenter, transport, request, binding, actorCommand, {...options,releaseDisplay}); }
+  if (pushMode) {
+    if(failure){off();presenter.close({preserveFrame:true});await releaseDisplay(true).catch(()=>{});throw failure;}
+    const display=pushDisplay(presenter, transport, request, binding, actorCommand, {...options,releaseDisplay,initialEvents});
+    off();return display;
+  }
   const next = async () => {
     if (stopped || creditOutstanding || running || active.size) throw new Error('MD-DISPLAY: stream stopped or credit outstanding');
     creditOutstanding = true;
@@ -468,7 +478,7 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     // ACK gate may stop sending long before a queue overflow).
     if (held.size) gapTimer = setTimeout(() => { gapTimer = null; if (!closed && held.size && !held.has(nextSequence)) { skip(Math.min(...held.keys())); drain(); } }, gapMs);
   };
-  const off = transport.onEvent(event => {
+  const receiveEvent = event => {
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id || failure || closed || paused) return;
     const frame = event.frame, size = frameBytes(frame);
     if (resync && Number.isSafeInteger(frame.sequence)) { resync = false; nextSequence = frame.sequence; }
@@ -480,7 +490,10 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     if (held.size > 8 || heldBytes > 8 * 1024 * 1024) skip(Math.min(...held.keys()));
     else if (frame.sequence > nextSequence && independent(frame)) skip(frame.sequence);
     drain();
-  });
+  };
+  const off=transport.onEvent(receiveEvent);
+  for(const event of options.initialEvents??[])receiveEvent(event);
+  if(options.initialEvents)options.initialEvents.length=0;
   // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.
   const heartbeat = setInterval(() => { if (!paused && performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
   ack(presenter.sequence);

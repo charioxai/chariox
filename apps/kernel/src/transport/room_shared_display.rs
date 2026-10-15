@@ -11,6 +11,8 @@ pub(crate) enum RoomDisplayCommand {
     },
     Suspend {},
     Resume {},
+    // MP-08/MP-10/MP-11: 535/143 registration invokes525 and attaches locally.
+    ResumeAttach {},
     Close {},
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

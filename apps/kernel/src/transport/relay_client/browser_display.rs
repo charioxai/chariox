@@ -11,6 +11,7 @@ pub(super) struct DisplaySubscription {
     pub(super) identity: Option<RelayCallerIdentity>,
     pub(super) public_key: String,
     pub(super) resume: Option<u64>,
+    pub(super) recover: bool,
 }
 
 // Room admission makes a peer round trip. Queue it in the connection's existing
@@ -44,7 +45,14 @@ pub(super) async fn enqueue_subscribe(
                 subscription.generation,
                 subscription.identity,
                 subscription.public_key,
-                Some("kernel_browser_display".into()),
+                Some(
+                    if subscription.recover {
+                        chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE
+                    } else {
+                        chariox_relay::frame_transport::DISPLAY_EVENT_SCOPE
+                    }
+                    .into(),
+                ),
                 subscription.resume,
             )
             .await
@@ -92,6 +100,7 @@ pub(super) async fn handle_subscribe(
         identity,
         public_key,
         resume,
+        recover,
     } = subscription;
     use crate::runtime::command::{KernelCommand, KernelCommandSource};
     let request =
@@ -108,26 +117,57 @@ pub(super) async fn handle_subscribe(
     );
     let admission = match generation.parse::<u64>() {
         Ok(generation) if resume.is_none() => {
-            router
-                .runtime_state()
-                .kernel_browser_display_attach(&caller, display_id.clone(), generation)
-                .await
+            if recover {
+                router
+                    .runtime_state()
+                    .kernel_browser_display_resume_attach(&caller, display_id.clone(), generation)
+                    .await
+            } else {
+                router
+                    .runtime_state()
+                    .kernel_browser_display_attach(&caller, display_id.clone(), generation)
+                    .await
+            }
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "kernel_browser",
             message: "MD-DISPLAY: fresh generation-bound subscription required".into(),
         }),
     };
-    if let Err(error) = admission {
-        return send_outgoing_envelope(
-            outgoing_tx,
-            RelayEnvelope::DaemonResponse {
-                relay_request_id: request_id,
-                encrypted_response: None,
-                error: Some(super::request_errors::map_relay_error(&error)),
-            },
-        );
-    }
+    let binding = match admission {
+        Ok(binding) => binding,
+        Err(error) => {
+            return send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id: request_id,
+                    encrypted_response: None,
+                    error: Some(super::request_errors::map_relay_error(&error)),
+                },
+            )
+        }
+    };
+    let (display_id, generation) = if recover {
+        match (
+            binding.get("subscription_id").and_then(|v| v.as_str()),
+            binding.get("generation").and_then(|v| v.as_u64()),
+        ) {
+            (Some(id), Some(generation))
+                if id != display_id
+                    && binding.get("resumed").and_then(|v| v.as_bool()) == Some(true) =>
+            {
+                (id.to_string(), generation)
+            }
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "kernel_browser",
+                    message: "MP-11: invalid resumed delivery binding".into(),
+                })
+            }
+        }
+    } else {
+        (display_id, generation.parse::<u64>().unwrap_or_default())
+    };
     let mut guard = tasks.lock().await;
     guard.retain(|_, task| task.display_id.is_none() || !task.handle.is_finished());
     let key = format!("display:{display_id}:{public_key}");
@@ -138,7 +178,6 @@ pub(super) async fn handle_subscribe(
         }
     }
     // MP-08/MP-10: protocol 491 push pump, dormant until the first ack.
-    let generation = generation.parse::<u64>().unwrap_or_default();
     let pump = super::display_pump::DisplayPump::new(generation);
     guard.insert(
         key.clone(),
@@ -167,6 +206,24 @@ pub(super) async fn handle_subscribe(
         None,
         &request,
     );
+    // Queue the authenticated binding response before granting initial credit.
+    // The relay commits its event route on that response; first frames cannot race it.
+    let mut response = serde_json::json!({"ok":true,"display_attached":true});
+    if recover {
+        response["binding"] = binding;
+    }
+    let encrypted = encrypt_json_response(router, &public_key, response).await?;
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonResponse {
+            relay_request_id: request_id,
+            encrypted_response: Some(encrypted),
+            error: None,
+        },
+    )?;
+    if recover {
+        pump.acknowledge(generation, 0, true);
+    }
     tokio::spawn(super::display_pump::run(
         super::display_pump::PumpRoute {
             router: router.clone(),
@@ -176,24 +233,11 @@ pub(super) async fn handle_subscribe(
             caller: pump_caller,
             display_id,
             relay_id,
-            public_key: public_key.clone(),
+            public_key,
         },
         pump,
     ));
-    let encrypted = encrypt_json_response(
-        router,
-        &public_key,
-        serde_json::json!({"ok":true,"display_attached":true}),
-    )
-    .await?;
-    send_outgoing_envelope(
-        outgoing_tx,
-        RelayEnvelope::DaemonResponse {
-            relay_request_id: request_id,
-            encrypted_response: Some(encrypted),
-            error: None,
-        },
-    )
+    Ok(())
 }
 
 pub(super) async fn browser_display_delivery_id(
