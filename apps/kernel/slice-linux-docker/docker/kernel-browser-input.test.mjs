@@ -316,3 +316,19 @@ test('MP-11 protocol498 malformed modifiers are refused before input',async()=>{
   assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
  }
 });
+// Review #1016 @f0ccdb5c2 P2: undo/redo in a mirrored iframe editor. The bare display path refuses any
+// focused iframe; the mirror path (observed frames, live focus) admits an ordinary same-origin editor.
+test('MP-08/MP-11 mirrored undo/redo chords keep the mirror\'s observed-frame admission',async()=>{
+  const element=(fields={})=>({tagName:'TEXTAREA',closest:()=>null,...fields});
+  for(const [modifiers,observedMirror] of [[2,true],[10,true],[2,false]]){
+    const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+    connection.send=async(method,params)=>method==='Runtime.evaluate'
+      ? {result:{value:runInNewContext(params.expression,{document:{activeElement:element({tagName:'IFRAME',contentDocument:{activeElement:element()}})}})}}
+      : send(method,params);
+    const input={kind:'key',key:'z',modifiers};
+    const pending=observedMirror?inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input,guard:async()=>{},observedFrameInput:true})}):inputHostTab(browser,tab,input);
+    if(!observedMirror){await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'});continue;}
+    await pending;
+    assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.code,x.params.modifiers]),[['keyDown','KeyZ',modifiers],['keyUp','KeyZ',modifiers]]);
+  }
+});

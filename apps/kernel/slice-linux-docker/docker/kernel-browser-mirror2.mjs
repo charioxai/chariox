@@ -14,6 +14,8 @@ import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
+// Protocol 530: mirrored undo/redo as named mirror keys (the renderer never sends raw modifiers here).
+const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
@@ -756,7 +758,10 @@ export class Mirror2 {
     if (action.kind === 'key') {
       let checked = false;
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
-      return { input: { kind: 'key', key: action.key }, guard, observedFrameInput: true, frameSensitive };
+      // Protocol 530 (review #1016 P2): undo/redo keep this mirror admission (observed frames, live
+      // focus, epoch) as the editor's own Linux Chromium chords: Control=2, Shift=8.
+      const history = HISTORY_CHORDS.get(action.key);
+      return { input: history ? { kind: 'key', key: 'z', modifiers: history } : { kind: 'key', key: action.key }, guard, observedFrameInput: true, frameSensitive };
     }
     if (action.kind === 'text') {
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };

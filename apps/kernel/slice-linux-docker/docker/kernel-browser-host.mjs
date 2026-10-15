@@ -317,6 +317,9 @@ export class KernelBrowserHost {
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
         const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        // Review #1016 P1: Tab switches outside the browser's own paths (the Computer surface's
+        // Ctrl+Tab) do not reconcile. Every readback is re-admitted against the live active Tab.
+        source.validateCurrent=()=>this.nativeFront(tab);
         try{return await source.start();}
         catch(error){
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
@@ -423,6 +426,11 @@ export class KernelBrowserHost {
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return result;
+  }
+  /** Review #1016 P1: whether `tab` is Chrome's active Tab right now (live, not the last observation). */
+  async nativeFront(tab) {
+    const active = await this.tabGroups?.active?.().catch(() => null);
+    return !!active && active === tab.target_id;
   }
   // MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts, or another actor,
   // can show another Tab in the one window. Whole-page native pixels and input of every other Tab
@@ -781,7 +789,9 @@ export class KernelBrowserHost {
         // admitted human viewer with a live display lease owns the fast path.
         const viewerActive=()=>command._display_input===true&&!command._agent_input&&!command.focused_agent&&
           [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
-        const owned=this.compositors.get(tab.tab_id)?.source;
+        // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
+        const candidate=this.compositors.get(tab.tab_id)?.source;
+        const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>viewerActive()&&owned.click(x,y):null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;

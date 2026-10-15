@@ -1417,6 +1417,38 @@ test('MP-11 an existing-Tab switch retires the previous Tab\'s whole-page native
   assert.deepEqual(events, ['retired']);
 }));
 
+// Review #1016 @f0ccdb5c2 P1: a switch outside the browser's own paths (the Computer surface's Ctrl+Tab)
+// does not reconcile. Before any state poll, A's whole-page readback and native input must already stop.
+test('MP-11 an out-of-band Tab switch stops whole-page native readback and input before any state poll', () => using(async ({ host }) => {
+  const { LinuxCapture } = await import('./kernel-browser-native.mjs');
+  const a = await host.request({ op: 'open', url: 'https://example.com/' });
+  const b = await host.request({ op: 'open', url: 'https://example.org/' });
+  const tabA = host.tabs.get(a.tab_id);
+  let active = tabA.target_id;
+  host.tabGroups = { active: async () => active };
+  await host.request({ op: 'state' });
+  assert.equal(await host.nativeFront(tabA), true);
+  active = host.tabs.get(b.tab_id).target_id; // Ctrl+Tab through the Computer surface: no reconcile
+  assert.equal(await host.nativeFront(tabA), false, 'live authority, not the last observation');
+  host.tabGroups = null;
+  assert.equal(await host.nativeFront(tabA), false, 'no live answer: fail closed');
+  host.tabGroups = { active: async () => active };
+  // The real publish loop refuses the readback before masks, encoder offers or delivery.
+  const published = [];
+  const source = Object.assign(Object.create(LinuxCapture.prototype), { closed: false, attested: true, listeners: new Set([frame => published.push(frame)]),
+    pending: { raw: true, release() {} }, valid: () => true, validateCurrent: () => host.nativeFront(tabA), fence() { this.closed = true; this.pending = null; } });
+  await source.publish();
+  assert.equal(source.closed, true); assert.deepEqual(published, []);
+  // Native input of the retired foreground falls back instead of clicking into Tab B.
+  const clicks = [];
+  const owned = Object.assign(Object.create(LinuxCapture.prototype), { attested: true, closed: false, valid: () => true, click: (x, y) => (clicks.push([x, y]), true) });
+  host.compositors.set(a.tab_id, { ready: Promise.resolve(owned), source: owned, document: tabA.document_id });
+  host.displays.set('whole-a', { subscription_id: 'whole-a', tab_id: a.tab_id, observed_by: 'terminal:test', expires: Date.now() + 60_000, close: async () => {} });
+  await host.handle({ id: 9, method: 'host.browser', params: { op: 'input', tab_id: a.tab_id, generation: a.generation, document_id: tabA.document_id, input: { kind: 'click', x: 5, y: 5 }, _display_input: true, observed_by: 'terminal:test' } });
+  assert.deepEqual(clicks, [], 'no native click while Tab B is in front');
+  host.displays.delete('whole-a'); host.compositors.delete(a.tab_id);
+}));
+
 // MP-11 (Miguel 2026-10-15): the person manages extensions as in any Chrome; an agent cannot open the
 // Web Store or chrome://extensions, nor act on such a Tab (installs come later through /sudo).
 test('MP-11 agents cannot reach extension management; the person can', () => using(async ({ host }) => {
