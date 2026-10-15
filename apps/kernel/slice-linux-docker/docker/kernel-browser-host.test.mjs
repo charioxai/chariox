@@ -1378,6 +1378,39 @@ test('MP-08 state projects the bound Chrome window epoch and its natively active
   } finally { if (display === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = display; }
 }));
 
+// MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts (or any actor) can show another
+// existing Tab in the one window. A whole-page native source of the previous Tab must stop publishing and
+// accepting input before then, or Tab B's pixels (e.g. a Vault-filled field outside A's masks) go out as A's.
+test('MP-11 an existing-Tab switch retires the previous Tab\'s whole-page native capture', () => using(async ({ host }) => {
+  const { LinuxCapture } = await import('./kernel-browser-native.mjs');
+  const a = await host.request({ op: 'open', url: 'https://example.com/' });
+  const b = await host.request({ op: 'open', url: 'https://example.org/' });
+  const target = id => host.tabs.get(id).target_id;
+  let active = target(a.tab_id);
+  host.tabGroups = { active: async () => active };
+  await host.request({ op: 'state' });
+  const stream = () => {
+    const claim = host.foreground.claim(a.tab_id), events = [];
+    const source = Object.assign(Object.create(LinuxCapture.prototype), { closed: false, allowed: () => host.foreground.holds(a.tab_id, claim), close: async () => { events.push('retired'); } });
+    host.compositors.set(a.tab_id, { ready: Promise.resolve(source), source, document: host.tabs.get(a.tab_id).document_id });
+    return { source, events };
+  };
+  // 1. The person clicks Tab B in the band: retired before the click reaches Chrome.
+  let { source, events } = stream();
+  const band = { surface: 'browser_chrome', isCurrent: () => true, click: async () => { events.push(source.allowed() ? 'click while A publishes' : 'click'); active = target(b.tab_id); return true; } };
+  await host.arbiter.input({ stream: { regionSource: band }, command: { tab_id: a.tab_id, document_id: host.tabs.get(a.tab_id).document_id, generation: host.generation, input: { kind: 'click', x: 300, y: 20 } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['click', 'retired']);
+  assert.equal(host.compositors.has(a.tab_id), false);
+  // 2. Another actor activates B (Ctrl+Tab in Chrome, a page's window.focus): the next observation retires A's source.
+  active = target(a.tab_id); await host.request({ op: 'state' });
+  ({ source, events } = stream());
+  active = target(b.tab_id);
+  await host.request({ op: 'state' });
+  assert.equal(source.allowed(), false, 'A\'s claim is gone once B is the active Tab');
+  assert.deepEqual(events, ['retired']);
+}));
+
 // MP-08/MP-10/MP-11 (protocol 528/136): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
 test('MP-08 public Browser state keys match the protocol 528 fixture', () => using(async ({ host }) => {

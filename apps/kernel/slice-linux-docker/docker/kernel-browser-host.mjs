@@ -414,11 +414,23 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    const previous = this.activeTarget;
     this.activeTarget = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return result;
+  }
+  // MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts, or another actor,
+  // can show another Tab in the one window. Whole-page native pixels and input of every other Tab
+  // stop first (the claim is retired synchronously); `keep` is a Tab target known to be in front.
+  retireNativeForeground(keep = null) {
+    const kept = tabId => keep !== null && this.tabs.get(tabId)?.target_id === keep;
+    if (this.foreground.tab && !kept(this.foreground.tab)) this.foreground.reset();
+    return import('./kernel-browser-native.mjs').then(async ({ LinuxCapture }) => {
+      for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
+    });
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
