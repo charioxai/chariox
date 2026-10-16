@@ -89,3 +89,21 @@ test('MP-11 a foreign session, connection, document or invalid world uses fresh 
   assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Page.getFrameTree','Page.createIsolatedWorld','Runtime.evaluate'],kind);assert.equal(sent.at(-1).params.contextId,3);
  }
 });
+
+test('MP-08/MP-10/MP-11 a first preview creates its world through the known document owner without querying its frame tree',async()=>{
+ const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Page.createIsolatedWorld')return {executionContextId:9};if(method==='Runtime.evaluate')return {result:{value:true}};assert.fail('owner already knows the frame: '+method);}};
+ const {owner}=ownedPresentation(connection);owner.focusWorldsByTarget.clear();let created=0;
+ owner.ensureFocusWorld=async(c,s,target,frame)=>{assert.equal(c,connection);assert.equal(s,'session');assert.equal(frame.id,'top');created++;const result=await c.send('Page.createIsolatedWorld',{frameId:frame.id,worldName:'trusted-focus'},s),world={documentId:frame.loaderId,contextId:result.executionContextId};owner.focusWorldsByTarget.set(target,world);return world;};
+ fenceScreenshotPresentation(connection);connection.presentationFence.bindOwner(owner);await connection.send('Page.captureScreenshot',{},'session');
+ assert.equal(created,1);assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Page.createIsolatedWorld','Runtime.evaluate']);assert.equal(sent.at(-1).params.contextId,9);
+ await connection.send('Page.captureScreenshot',{},'session');assert.equal(created,1,'subsequent restoration reuses the exact owner world');
+});
+
+test('MP-11 owner replacement while its first isolated world is created keeps presentation fenced',async()=>{
+ const created=deferred();let evaluated=false;
+ const connection={send:async method=>{if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate')evaluated=true;assert.fail('no evaluation or discovery after replacement');}};
+ const {owner,replace}=ownedPresentation(connection);owner.focusWorldsByTarget.clear();owner.ensureFocusWorld=()=>created.promise;
+ fenceScreenshotPresentation(connection);const fence=connection.presentationFence;fence.bindOwner(owner);
+ const capture=connection.send('Page.captureScreenshot',{},'session');await new Promise(resolve=>setImmediate(resolve));replace();created.resolve({documentId:'doc',contextId:9});
+ await assert.rejects(capture,/presentation owner retired/);assert.equal(evaluated,false);assert.equal(fence.stable(Date.now()+100),false);
+});

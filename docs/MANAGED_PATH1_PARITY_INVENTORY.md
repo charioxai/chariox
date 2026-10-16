@@ -14,7 +14,9 @@ remain excluded. Closing either source cancels its pending readback retry. A war
 restoration reuses the existing CDP owner's live connection/session/loader and
 isolated focus world. The same two-animation-frame proof still runs; replacement
 of either the frame reference or world keeps the fence closed. A retry resolves
-the current owner again. Cold or mismatched bindings retain fresh discovery;
+the current owner again. A first preview may create its isolated world through that same known frame
+owner before the mirror observer starts; owner replacement during creation
+also keeps the fence closed. Unknown or mismatched frame bindings retain fresh discovery;
 there is no parallel document cache or relaxation of the pixel predicate.
 
 Visible-page previews also reuse the mirror's live connection/session/loader

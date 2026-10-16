@@ -51,12 +51,19 @@ export class CapturePresentationFence {
 }
 
 // The existing CDP owner is the authority; no separate session/document cache.
-function presentationWorld(owner, connection, sessionId) {
+async function presentationWorld(owner, connection, sessionId) {
   const target = owner?.targetsBySession?.get(sessionId), frame = target && owner.currentPageFrame?.(target);
-  const world = target && owner.focusWorldsByTarget?.get(target);
   if (owner?.connection !== connection || !frame || frame.connection !== connection || frame.sessionId !== sessionId ||
-      typeof frame.frame.loaderId !== 'string' || !frame.frame.loaderId || !world || world.documentId !== frame.frame.loaderId || !Number.isSafeInteger(world.contextId) || world.contextId <= 0) return null;
-  return { contextId: world.contextId, current: () => owner.connection === connection && owner.currentPageFrame(target) === frame &&
+      typeof frame.frame.loaderId !== 'string' || !frame.frame.loaderId) return null;
+  let world = owner.focusWorldsByTarget?.get(target);
+  const validWorld = () => world?.documentId === frame.frame.loaderId && Number.isSafeInteger(world.contextId) && world.contextId > 0;
+  const cached = validWorld();
+  if (!cached && typeof owner.ensureFocusWorld === 'function') {
+    world = await owner.ensureFocusWorld(connection, sessionId, target, frame.frame);
+    if (owner.connection !== connection || owner.currentPageFrame(target) !== frame) throw Error('MP-11: screenshot presentation owner retired');
+  }
+  if (!validWorld()) return null;
+  return { contextId: world.contextId, cached, current: () => owner.connection === connection && owner.currentPageFrame(target) === frame &&
     owner.focusWorldsByTarget.get(target) === world && world.documentId === frame.frame.loaderId };
 }
 
@@ -65,9 +72,10 @@ export function fenceScreenshotPresentation(connection) {
   connection.presentationFence = fence;
   connection.send = (method, params, sessionId, options) => method !== 'Page.captureScreenshot' ? send(method, params, sessionId, options) :
     fence.run(() => send(method, params, sessionId, options), async () => {
-      const at = performance.timeOrigin + performance.now(), proof = presentationWorld(fence.owner, connection, sessionId);
-      fence.timing?.event?.('capture_presentation_owner', { warm: Number(Boolean(proof)) });
+      const at = performance.timeOrigin + performance.now();
       try {
+        const proof = await presentationWorld(fence.owner, connection, sessionId);
+        fence.timing?.event?.('capture_presentation_owner', { warm: Number(Boolean(proof)), world_cached: Number(Boolean(proof?.cached)) });
         let contextId = proof?.contextId;
         if (!proof) {
           const { frameTree } = await send('Page.getFrameTree', {}, sessionId);
