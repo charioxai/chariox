@@ -113,14 +113,13 @@ Extension grant shape:
 
 ```js
 extensions: [
-  { kind: "skill", name: "workflow-code-skill" },
   { kind: "mcp", name: "repo-tools" },
   { kind: "script", name: "release-script", environment: "node" },
   { kind: "connector", name: "linear", credential: "linear-api", maxSafety: "read" },
 ]
 ```
 
-Supported `kind` values are `"mcp"`, `"skill"`, `"script"`, and `"connector"`. Script grants must include `environment`. Connector grants may include `credential` and `maxSafety`; the kernel rejects unavailable or invalid extension requirements before applying the workflow.
+Supported `kind` values are `"mcp"`, `"script"`, `"connector"`, and `"app"`. Script grants must include `environment`. Connector grants may include `credential` and `maxSafety`; the kernel rejects unavailable or invalid extension requirements before applying the workflow.
 
 ## Existing Agents and Portability
 

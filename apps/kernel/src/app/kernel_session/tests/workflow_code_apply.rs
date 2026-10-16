@@ -8,8 +8,8 @@ fn workflow_code_apply_rejects_missing_node_extension_requirement() {
         .expect("session should create");
     let mut definition = generated_workflow_code_definition();
     definition.nodes[0].extensions.push(ExtensionGrant::new(
-        ExtensionKind::Skill,
-        "missing-workflow-code-skill",
+        ExtensionKind::Mcp,
+        "missing-workflow-code-mcp",
     ));
 
     let error = app
@@ -24,7 +24,7 @@ fn workflow_code_apply_rejects_missing_node_extension_requirement() {
 
     let message = format!("{error}");
     assert!(message.contains(
-        "node `planner` extension requirement `skill:missing-workflow-code-skill` cannot be satisfied"
+        "node `planner` extension requirement `mcp:missing-workflow-code-mcp` cannot be satisfied"
     ));
     let session = app
         .sessions()
@@ -159,90 +159,6 @@ fn workflow_code_apply_allows_direct_user_to_bind_active_meta_task_agent() {
         .expect("session should exist");
     assert_eq!(session.workflows().len(), 1);
     assert!(session.has_active_metaagent_task());
-}
-
-#[test]
-fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
-    let workspace = unique_workflow_code_test_workspace("extension-satisfied");
-    install_test_skill(&workspace, "workflow-code-skill");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            workspace.display().to_string(),
-            "worktree",
-        ))
-        .expect("session should create");
-    let mut definition = generated_workflow_code_definition();
-    definition.nodes[0].extensions.push(ExtensionGrant::new(
-        ExtensionKind::Skill,
-        "workflow-code-skill",
-    ));
-
-    let report = app
-        .apply_workflow_code_definition(
-            session.id(),
-            &definition,
-            &WorkflowCodeLimitsConfig::default(),
-            "local-user".to_string(),
-            None,
-        )
-        .expect("workflow-code should apply when extension requirement exists");
-
-    let planner_agent_id = report.agent_ids.get("planner").expect("planner agent id");
-    let planner = app
-        .agents()
-        .get_agent(planner_agent_id)
-        .expect("planner agent should exist");
-    assert!(planner
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
-    let _ = fs::remove_dir_all(&workspace);
-}
-
-#[test]
-fn workflow_code_apply_grants_extensions_to_authorized_existing_agent() {
-    let workspace = unique_workflow_code_test_workspace("existing-extension-satisfied");
-    install_test_skill(&workspace, "workflow-code-skill");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            workspace.display().to_string(),
-            "worktree",
-        ))
-        .expect("session should create");
-    let existing_agent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
-        .expect("existing worker should spawn");
-    let mut definition = existing_agent_workflow_code_definition(existing_agent.id());
-    definition.nodes[0].extensions.push(ExtensionGrant::new(
-        ExtensionKind::Skill,
-        "workflow-code-skill",
-    ));
-
-    let report = app
-        .apply_workflow_code_definition(
-            session.id(),
-            &definition,
-            &WorkflowCodeLimitsConfig::default(),
-            "local-user".to_string(),
-            None,
-        )
-        .expect("workflow-code should grant extensions to an existing bound agent");
-
-    assert_eq!(
-        report.agent_ids.get("planner").map(String::as_str),
-        Some(existing_agent.id())
-    );
-    let existing_agent = app
-        .agents()
-        .get_agent(existing_agent.id())
-        .expect("existing worker should still exist");
-    assert!(existing_agent
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
-    let _ = fs::remove_dir_all(&workspace);
 }
 
 #[test]

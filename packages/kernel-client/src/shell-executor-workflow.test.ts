@@ -8,7 +8,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   CharioxMcpServerConfig,
-  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"

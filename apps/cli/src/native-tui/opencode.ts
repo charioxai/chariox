@@ -72,7 +72,6 @@ type NativeOpenCodeOptions = {
   permissions: "required" | "yolo"
   serverInKernel: boolean
   grantMcps: string[]
-  grantSkills: string[]
 }
 
 export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
@@ -115,7 +114,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, options.model, undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
-    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
     let upstreamBaseUrl: string
     let run: RuntimeProviderRun | null = null
     if (options.serverInKernel) {
@@ -184,7 +183,6 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run,
       grantedMcps: options.grantMcps,
-      grantedSkills: options.grantSkills,
       providerLines: [
         `  opencode sess:  ${providerSessionId}`,
         `  opencode server:${upstreamBaseUrl}`,
@@ -228,7 +226,6 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
     permissions: "yolo",
     serverInKernel: true,
     grantMcps: [],
-    grantSkills: [],
   }
   let relayTokenSource = false
   const positional: string[] = []
@@ -316,8 +313,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
         options.grantMcps.push(next())
         break
       case "--grant-skill":
-        options.grantSkills.push(next())
-        break
+        throw new Error("--grant-skill is retired: install skills in Skills and select instructions with $name")
       case "--help":
       case "-h":
         printNativeOpenCodeUsage()
@@ -378,7 +374,6 @@ function printNativeOpenCodeUsage() {
     "behavior:",
     "  --model <model>                OpenCode model argument (default default)",
     "  --grant-mcp NAME                Grant an installed Chariox MCP to the native agent before provider launch",
-    "  --grant-skill NAME              Grant an installed Chariox skill to the native agent before provider launch",
     "  creates a new Chariox agent in the selected session and launches native `opencode attach` for it.",
   ].join("\n") + "\n")
 }

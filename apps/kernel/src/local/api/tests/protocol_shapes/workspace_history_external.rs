@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn local_daemon_protocol_history_turn_lifecycles_are_versioned() {
     use crate::local::SessionHistoryOutlineTurnLifecycle::{Cancelled, Completed, Failed, Open};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
     assert_eq!(
         serde_json::to_value([Open, Completed, Cancelled, Failed]).expect("encode lifecycles"),
         serde_json::json!(["open", "completed", "cancelled", "failed"])
@@ -12,7 +12,7 @@ fn local_daemon_protocol_history_turn_lifecycles_are_versioned() {
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -51,7 +51,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -180,7 +180,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -372,7 +372,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -419,7 +419,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -486,7 +486,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -575,7 +575,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -705,7 +705,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -817,7 +817,7 @@ fn relay_home_credential_secret_debug_output_is_redacted() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
@@ -846,12 +846,6 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
             enabled_tools: None,
             disabled_tools: None,
             tools: Default::default(),
-        },
-    });
-    let skill = LocalDaemonRequest::UpsertSkill(crate::local::UpsertSkillRequest {
-        workspace_id: Some("/repo".to_string()),
-        source: crate::local::SkillInstallSource::Url {
-            url: "https://github.com/example/skills/tree/main/review".to_string(),
         },
     });
     let connector = LocalDaemonRequest::UpsertConnector(crate::local::UpsertConnectorRequest {
@@ -883,26 +877,22 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
             limit: Some(10),
         });
 
-    let snapshot = serde_json::json!([mcp, skill, connector, sync, audit]);
+    let snapshot = serde_json::json!([mcp, connector, sync, audit]);
     assert_eq!(
         snapshot
             .pointer("/0/InstallMcpServer/config/transport/credential_env/GITHUB_TOKEN/credential"),
         Some(&serde_json::json!("github-token"))
     );
     assert_eq!(
-        snapshot.pointer("/1/UpsertSkill/source/type"),
-        Some(&serde_json::json!("url"))
-    );
-    assert_eq!(
-        snapshot.pointer("/2/UpsertConnector/connector/operations/0/config/path"),
+        snapshot.pointer("/1/UpsertConnector/connector/operations/0/config/path"),
         Some(&serde_json::json!("/status"))
     );
     assert_eq!(
-        snapshot.pointer("/3/SyncRemoteExtensionManifest/agent_ref"),
+        snapshot.pointer("/2/SyncRemoteExtensionManifest/agent_ref"),
         Some(&serde_json::json!("agent-1"))
     );
     assert_eq!(
-        snapshot.pointer("/4/ListHomeExtensionAudit/limit"),
+        snapshot.pointer("/3/ListHomeExtensionAudit/limit"),
         Some(&serde_json::json!(10))
     );
     let serialized =
@@ -910,6 +900,6 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2409b4d10bab0b296bd880e060b8931116f30f2452e5c9205e7701f9ccbe0108"
+        "f9dd28137e7e3ccc6f12f0eec4c9c9adc6351f3d00bb414ed444e7eec9a1bd2d"
     );
 }

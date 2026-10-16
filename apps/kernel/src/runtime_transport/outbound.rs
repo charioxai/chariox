@@ -178,6 +178,7 @@ public_events! {
     WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
     WaitingRoomRowsChanged => "waiting_room_rows_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
+    SkillsChanged => "skills_changed",
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",
     WorkflowRunUpdated => "workflow_run_updated",

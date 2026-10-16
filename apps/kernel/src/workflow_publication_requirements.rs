@@ -30,7 +30,6 @@ pub(crate) fn capture_workflow_publication_requirements(
             // Apps are packaged in the publication's App plan (`apps.json`).
             crate::extension::ExtensionKind::App => continue,
             crate::extension::ExtensionKind::Mcp => mcp_requirement(&name, &extension_uses)?,
-            crate::extension::ExtensionKind::Skill => skill_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Script => script_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Connector => {
                 connector_requirement(&name, &extension_uses)?
@@ -279,43 +278,6 @@ fn mcp_requirement(
         usage,
         readiness,
         portability(portable, local_reason),
-    )))
-}
-
-fn skill_requirement(
-    name: &str,
-    uses: &[ExtensionUse],
-) -> Result<Option<serde_json::Value>, DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(extension_registry_roots(
-        uses,
-        |workspace| crate::skill::CharioxSkillRegistry::project_root(workspace),
-        crate::skill::CharioxSkillRegistry::user_root(),
-        "skill registry root",
-    )?);
-    let Some(package) = registry.package(name)? else {
-        return Ok(None);
-    };
-    let digest = format!("sha256:{}", package.version_hash);
-    let launch = serde_json::json!({
-        "kind": "skill_package",
-        "package": {
-            "name": package.metadata.name,
-            "description": package.metadata.description,
-            "short_description": package.metadata.short_description,
-            "version_hash": package.version_hash,
-            "files": package.files,
-        },
-    });
-    Ok(Some(extension_requirement(
-        "skill",
-        name,
-        &digest,
-        launch,
-        grant_credential_slots("skill", name, uses),
-        Vec::new(),
-        usage_json(uses),
-        serde_json::json!({ "kind": "skill_materialized" }),
-        portability(true, None),
     )))
 }
 

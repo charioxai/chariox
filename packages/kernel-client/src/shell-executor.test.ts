@@ -7,7 +7,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   CharioxMcpServerConfig,
-  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -488,8 +487,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
               },
               extension_grants: [
                 { kind: "script", name: "deploy" },
-                { kind: "skill", name: "review" },
-              ],
+                              ],
               remote_extension_manifest_sync: {
                 state: "stale",
                 manifest_hash: "abcdef1234567890",
@@ -559,8 +557,8 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(contextResult.message ?? "", /provider run: session=session-run-1, worker=worker-run-1/)
-  assert.match(contextResult.message ?? "", /extensions: 2 grants \(active tools home-proxy; skills snapshot; script=1, skill=1\)/)
-  assert.match(contextResult.message ?? "", /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
+  assert.match(contextResult.message ?? "", /extensions: 1 grant \(active tools home-proxy; script=1\)/)
+  assert.match(contextResult.message ?? "", /extension runtime: home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(contextResult.message ?? "", /extension boundary: home validates every call; credentials never leave home/)
   assert.match(contextResult.message ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker behind/)
   assert.match(contextResult.message ?? "", /remote extension next: home keeps stale home-proxy calls blocked; run \/extension sync-status agent-1; run \/machine kernels slice-machine; use \/extension sync-retry agent-1/)

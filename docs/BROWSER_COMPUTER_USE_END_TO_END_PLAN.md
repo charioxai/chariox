@@ -1750,7 +1750,7 @@ and persistence paths. Every milestone must select and run the relevant rows.
 | Provider-native TUI | parallel authority or missing interaction projection | local, remote, and slice native-TUI drills |
 | Permissions | browser action creates a second approval path | one `RuntimeInteraction` across every terminal |
 | Prompt attachments | uploads and downloads conflict with attachment transport | local, remote, and slice byte-transfer drills |
-| MCP and skills | controller changes capability rendering | agent-scoped grants, revoke, collision, and isolation drills |
+| MCP and skills — MP-08/MP-10/MP-11 | controller changes capability rendering | MCP grant/revoke/isolation; Skills v2 scope/state, source-aware selection, complete-content dedupe, verified transfer, reset and hot-reload drills in `SKILLS_V2_PLAN.md` |
 | Vault | browser controller or traces reveal secrets | full M26 and CHA-29 leak matrix |
 | History and Recall | browser/action events corrupt or overwhelm history | persistence, filtering, replay, and bounded event volume |
 | Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |

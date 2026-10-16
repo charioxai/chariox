@@ -4,7 +4,7 @@ import * as requests from "./ipc-disposable-worker-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("disposable controls bind the expected home and require protocol 367", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 520)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 533)
   assert.equal(requests.disposableWorkerControlMinimumProtocolVersion, 367)
   assert.equal(requests.managedEnvironmentKeepRunningMinimumProtocolVersion, 367)
   const input = { allocationId: "allocation-1", homeKernelId: "home-1", homeRelayRealmId: "realm-1" }
@@ -26,4 +26,21 @@ test("create preserves idempotency and explicit context without forwarding autho
   const contextPlan = { sourceTargetId: null, kernelContext: "empty" as const, developmentSetup: { kind: "empty" as const },
     providerAccounts: { kind: "none" as const }, gitCredentials: { kind: "none" as const } }
   assert.deepEqual(requests.createDisposableWorkerRequest({ ...input, contextPlan }).CreateDisposableWorker.contextPlan, contextPlan)
+})
+
+// MP-08 / MP-10 / MP-11: contract-only 533 kernels reject Skills before dispatch.
+test("Skills V2 controls require the connected runtime capability", async () => {
+  const request = { SkillsV2: { action: "catalog", project_id: null, agent_id: null } }
+  assert.equal(requests.isGuardedKernelControl(request), true)
+  let queries = 0
+  for (const capabilities of [[], ["skills_v2_contract"], ["skills_v2_runtime"]]) {
+    const send = async (query: unknown) => {
+      queries++
+      assert.deepEqual(query, { RelayStatus: null })
+      return { RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities } } }
+    }
+    if (capabilities.includes("skills_v2_runtime")) await requests.requireKernelControlCapability(send, request)
+    else await assert.rejects(requests.requireKernelControlCapability(send, request), /skills_v2_runtime/)
+  }
+  assert.equal(queries, 3)
 })

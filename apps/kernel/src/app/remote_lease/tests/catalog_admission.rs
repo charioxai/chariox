@@ -78,7 +78,6 @@ async fn leased_catalog_change_returns_the_new_run_through_existing_prompt_admis
                 None,
                 None,
                 Vec::new(),
-                None,
                 desired.clone(),
                 None,
             )

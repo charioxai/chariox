@@ -236,7 +236,7 @@ fn remote_native_provider_run_response(
         return Ok(None);
     };
     let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
-    let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
+
     let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
@@ -256,7 +256,6 @@ fn remote_native_provider_run_response(
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
-            required_skills: Some(required_skills),
             remote_extension_manifest,
             provider_launch_credential: None,
         },

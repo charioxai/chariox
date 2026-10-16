@@ -93,6 +93,11 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         polls += 1
         if (mode === "cold" && polls === 2) await startServer()
         return { ProviderRun: { provider_run: { ...run, provider_session_id: running || compacted ? "managed-thread" : null, state: mode === "ended" ? "Ended" : mode === "cold" && polls < 2 ? "Starting" : "Running" } } }
+      case "SkillsV2":
+        if (payload.action === "catalog") return { SkillsV2: { result: {
+          kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1,
+        } } }
+        throw new Error("unexpected v2 submission in an ordinary native turn")
       case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })

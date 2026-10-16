@@ -5,7 +5,7 @@ use crate::local::{
 };
 use crate::runtime::capability_registry::{
     ensure_connector_exists, ensure_credential_exists, ensure_environment_exists,
-    ensure_mcp_exists, ensure_script_exists, ensure_skill_exists,
+    ensure_mcp_exists, ensure_script_exists,
 };
 use crate::runtime::state::KernelRuntimeState;
 
@@ -72,13 +72,6 @@ pub(crate) async fn execute_grant_agent_extension_request(
             ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
             let agent = runtime_state
                 .grant_agent_mcp(&request.agent_ref, request.name, caller_user_id)
-                .await?;
-            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
-        }
-        ExtensionKind::Skill => {
-            ensure_skill_exists(request.workspace_id.as_deref(), &request.name)?;
-            let agent = runtime_state
-                .grant_agent_skill(&request.agent_ref, request.name, caller_user_id)
                 .await?;
             Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
         }
@@ -163,11 +156,6 @@ pub(crate) async fn execute_revoke_agent_extension_request(
         ExtensionKind::Mcp => {
             runtime_state
                 .revoke_agent_mcp(&request.agent_ref, &request.name, caller_user_id)
-                .await?
-        }
-        ExtensionKind::Skill => {
-            runtime_state
-                .revoke_agent_skill(&request.agent_ref, &request.name, caller_user_id)
                 .await?
         }
         ExtensionKind::Script => {

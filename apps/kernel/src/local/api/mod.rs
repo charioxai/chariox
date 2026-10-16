@@ -32,7 +32,6 @@ use crate::session::{
 };
 pub use crate::session::{WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot};
 use crate::session_history_page::SessionHistoryPageEntry;
-use crate::skill::{CharioxSkillMetadata, SkillImportOutcome};
 #[cfg(test)]
 mod tests;
 mod types;

@@ -2,23 +2,44 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+// MP-08 / MP-10 / MP-11: skills are not extension kinds, including on a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionListKind {
+    All,
+    Mcp,
+    Script,
+    Connector,
+    App,
+}
+impl ExtensionListKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mcp => "mcp",
+            Self::Script => "script",
+            Self::Connector => "connector",
+            Self::App => "app",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListExtensionsArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    pub kind: Option<ExtensionListKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestExtensionArgs {
-    pub kind: String,
+    pub kind: crate::extension::ExtensionKind,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub return_body: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,13 +51,6 @@ pub struct RequestExtensionArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterMcpArgs {
     pub config: crate::mcp::CharioxMcpServerConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant_to_current_agent: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegisterSkillPathArgs {
-    pub path: std::path::PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant_to_current_agent: Option<bool>,
 }
@@ -82,7 +96,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector", "app", "all"]
+                        "enum": ["mcp", "script", "connector", "app", "all"]
                     },
                     "apps_cursor": {
                         "type": "string",
@@ -95,18 +109,17 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_EXTENSION_TOOL.to_string(),
-            description: "Request access to a Chariox-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
+            description: "Request access to a Chariox-managed MCP, script, connector, or App for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["mcp", "skill", "script", "connector", "app"]
+                        "enum": ["mcp", "script", "connector", "app"]
                     },
                     "name": {"type": "string"},
                     "reason": {"type": "string"},
-                    "return_body": {"type": "boolean"},
                     "environment": {"type": "string"},
                     "allow": {
                         "type": "string",
@@ -125,19 +138,6 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["config"],
                 "properties": {
                     "config": {"type": "object"},
-                    "grant_to_current_agent": {"type": "boolean"}
-                },
-                "additionalProperties": false
-            }),
-        },
-        RuntimeToolSpec {
-            name: REGISTER_SKILL_PATH_TOOL.to_string(),
-            description: "Register or update a global Chariox skill from a directory containing SKILL.md. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["path"],
-                "properties": {
-                    "path": {"type": "string"},
                     "grant_to_current_agent": {"type": "boolean"}
                 },
                 "additionalProperties": false
@@ -215,10 +215,6 @@ pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_register_mcp"
         | "mcp__chariox__register_mcp"
         | "mcp__chariox__chariox_register_mcp" => Some(REGISTER_MCP_TOOL),
-        REGISTER_SKILL_PATH_TOOL
-        | "chariox_register_skill_path"
-        | "mcp__chariox__register_skill_path"
-        | "mcp__chariox__chariox_register_skill_path" => Some(REGISTER_SKILL_PATH_TOOL),
         REGISTER_ENVIRONMENT_TOOL
         | "chariox_register_environment"
         | "mcp__chariox__register_environment"
@@ -238,5 +234,54 @@ pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
             Some(REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
         }
         _ => None,
+    }
+}
+
+/// Decode before forwarding too: an older home must never turn an instruction
+/// request into a persisted grant merely because its peer protocol still matches.
+pub fn validate_extension_tool_arguments(
+    tool: &str,
+    arguments: &serde_json::Value,
+) -> Result<(), serde_json::Error> {
+    match canonical_extension_tool_name(tool) {
+        Some(REQUEST_EXTENSION_TOOL) => {
+            serde_json::from_value::<RequestExtensionArgs>(arguments.clone()).map(|_| ())
+        }
+        Some(LIST_EXTENSIONS_TOOL) => {
+            serde_json::from_value::<ListExtensionsArgs>(arguments.clone()).map(|_| ())
+        }
+        _ => Ok(()),
+    }
+}
+#[cfg(test)]
+mod skills_v2_extension_admission_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn skills_v2_rejects_instruction_grants_before_local_or_forwarded_dispatch() {
+        for kind in ["skill", "skills"] {
+            assert!(validate_extension_tool_arguments(
+                REQUEST_EXTENSION_TOOL,
+                &json!({"kind":kind,"name":"review"})
+            )
+            .is_err());
+            assert!(
+                validate_extension_tool_arguments(LIST_EXTENSIONS_TOOL, &json!({"kind":kind}))
+                    .is_err()
+            );
+        }
+        assert!(canonical_extension_tool_name("chariox.register_skill_path").is_none());
+    }
+    #[test]
+    fn skills_v2_preserves_existing_mcp_script_connector_app_admission() {
+        for kind in ["mcp", "script", "connector", "app"] {
+            validate_extension_tool_arguments(
+                REQUEST_EXTENSION_TOOL,
+                &json!({"kind":kind,"name":"existing"}),
+            )
+            .unwrap();
+            validate_extension_tool_arguments(LIST_EXTENSIONS_TOOL, &json!({"kind":kind})).unwrap();
+        }
+        validate_extension_tool_arguments(LIST_EXTENSIONS_TOOL, &json!({"kind":"all"})).unwrap();
     }
 }

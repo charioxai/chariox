@@ -208,12 +208,57 @@ fn claude_native_hook_command(
     )
 }
 
-fn claude_native_hook_handler() -> &'static str {
+pub(crate) fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { setTimeout as setCallbackTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
+
+// MP-08 / MP-10 / MP-11: timeout guard only; the kernel owns resolution.
+function hasExplicitSkillMarker(prompt) {
+  let fence = null, span = 0
+  for (const line of String(prompt).split(/(?<=\n)/)) {
+    const trimmed = line.replace(/^ */, ""), indent = line.length - trimmed.length
+    const marker = trimmed[0], count = (trimmed.match(/^(`+|~+)/)?.[0] ?? "").length
+    if (!span && indent <= 3 && count >= 3 && (marker === "`" || marker === "~")) {
+      if (fence) { if (marker === fence[0] && count >= fence[1] && !trimmed.slice(count).trim()) fence = null }
+      else fence = [marker, count]
+      continue
+    }
+    if (fence || (!span && indent >= 4)) continue
+    let i = 0
+    while (i < line.length) {
+      if (span) {
+        if (line[i] === "`") { const start = i; while (line[i] === "`") i++; if (i-start === span) span = 0 }
+        else i++
+        continue
+      }
+      if (line[i] === "[") {
+        const close = line.indexOf("](", i), end = close < 0 ? -1 : line.indexOf(")", close+2)
+        if (end >= 0) { i = end+1; continue }
+      }
+      if (line[i] === "\\") { i += 2; continue }
+      if (line[i] === "`") { const start = i; while (line[i] === "`") i++; span = i-start; continue }
+      if ((line[i] === "'" || line[i] === '"') && !(i > 0 && /[a-zA-Z0-9]/.test(line[i-1]))) {
+        const quote = line[i++]
+        while (i < line.length) { if (line[i] === "\\") i += 2; else if (line[i++] === quote) break }
+        continue
+      }
+      if (line[i] !== "$") { i++; continue }
+      const start = i++
+      if (start > 0 && !/[\s([]/.test(line[start-1])) continue
+      const nameStart = i
+      while (i < line.length && /[a-zA-Z0-9_-]/.test(line[i])) i++
+      const name = line.slice(nameStart, i)
+      if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,127}$/.test(name) || /^[A-Z0-9_]+$/.test(name)) continue
+      if (i < line.length && !/[\s)\],.!?;:]/.test(line[i])) continue
+      if (line[i] === "]" && line[i+1] === "(") continue
+      return true
+    }
+  }
+  return false
+}
 
 const hookWatchdog = setCallbackTimeout(() => {
   try {
@@ -266,7 +311,7 @@ const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "
 if (!contextOnlyHook) {
   appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
     at: new Date().toISOString(),
-    hook_event_name: eventName,
+    hook_event_name: eventName === "UserPromptSubmit" ? "UserPromptContextRequest" : eventName,
     hook_context_request_id: hookContextRequestId,
     native_prompt_id: nativePromptId,
     prompt: input.prompt ?? null,
@@ -278,6 +323,19 @@ if (!contextOnlyHook) {
     error: input.error ?? null,
     error_details: eventName === "StopFailure" ? input.error_details ?? null : null,
     last_assistant_message: eventName === "StopFailure" ? input.last_assistant_message ?? null : null,
+  }) + "\n")
+}
+
+// The primary hook reports admission only after it has resolved context.
+function emitPromptAdmission(blocked) {
+  if (contextOnlyHook) return
+  appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+    at: new Date().toISOString(),
+    hook_event_name: blocked ? "UserPromptSubmitRejected" : "UserPromptSubmit",
+    native_prompt_id: nativePromptId,
+    prompt: input.prompt ?? null,
+    transcript_path: input.transcript_path ?? null,
+    permission_mode: input.permission_mode ?? null
   }) + "\n")
 }
 
@@ -327,6 +385,16 @@ if (eventName === "UserPromptSubmit") {
       await sleep(50)
     }
   }
+  // MP-08 / MP-10 / MP-11: block the primary hook when selected instructions
+  // did not arrive. Sibling chunk hooks may legitimately have an empty chunk.
+  const selectedSkill = hasExplicitSkillMarker(input.prompt ?? "")
+  if (!contextOnlyHook && !additionalContext && selectedSkill) {
+    emitPromptAdmission(true)
+    process.stdout.write(JSON.stringify({ decision: "block",
+      reason: "Chariox skill context was not delivered. Refresh Skills and retry this prompt." }))
+    process.exit(0)
+  }
+  emitPromptAdmission(false)
   additionalContext = utf8ContextChunk(additionalContext, contextChunkIndex ?? 0)
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
@@ -961,6 +1029,11 @@ mod tests {
             fs::read_to_string(&native.events_file)
                 .expect("hook events should read")
                 .lines()
+                .filter(
+                    |line| serde_json::from_str::<serde_json::Value>(line).unwrap()
+                        ["hook_event_name"]
+                        == "UserPromptSubmit"
+                )
                 .count(),
             1,
             "context-only hooks must not duplicate prompt acknowledgements"

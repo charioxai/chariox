@@ -5,7 +5,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 use super::capability_registry::{
     connector_adapter_registry, connector_registry, global_environment_registry,
-    global_mcp_registry, global_script_registry, global_skill_registry, resolve_registration_path,
+    global_mcp_registry, global_script_registry, resolve_registration_path,
 };
 
 impl KernelRuntimeState {
@@ -63,69 +63,6 @@ impl KernelRuntimeState {
             &args.config.name,
             path,
             serde_json::json!({ "mcp": args.config }),
-            grant,
-        ))
-    }
-
-    pub(super) async fn handle_register_skill_path_runtime_tool(
-        &self,
-        session: &crate::session::RuntimeSession,
-        agent: &crate::agent::AgentInstance,
-        arguments: serde_json::Value,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let args =
-            serde_json::from_value::<crate::transport::runtime_tools::RegisterSkillPathArgs>(
-                arguments,
-            )
-            .map_err(invalid_registration_args(
-                "runtime_tool_register_skill_path",
-            ))?;
-        let source_path = resolve_registration_path(session, &args.path);
-        if let Some(result) = self
-            .maybe_gate_extension_registration(
-                session,
-                agent,
-                "skill",
-                None,
-                Some(source_path.as_path()),
-            )
-            .await?
-        {
-            return Ok(result);
-        }
-        let registry = global_skill_registry()?;
-        let (skill, path) =
-            self.with_forwarded_binding_operation(|| registry.upsert_from_path(&source_path))?;
-        self.append_extension_registration_audit_event(
-            "extension.registration.created",
-            session,
-            agent,
-            "skill",
-            Some(&skill.name),
-            Some(&source_path),
-            Some(&path),
-            Some(serde_json::json!({
-                "description": skill.description.as_str(),
-                "short_description": skill.short_description.as_deref(),
-            })),
-        )?;
-        let grant = self
-            .grant_registered_extension_if_requested(
-                session,
-                agent,
-                args.grant_to_current_agent.unwrap_or(false),
-                "skill",
-                &skill.name,
-                None,
-                None,
-                None,
-            )
-            .await?;
-        Ok(registration_result(
-            "skill",
-            &skill.name,
-            path,
-            serde_json::json!({ "skill": skill }),
             grant,
         ))
     }
@@ -543,12 +480,6 @@ impl KernelRuntimeState {
                     .await?;
                 self.remember_registration_mcp_continuation(session.id(), &granted_agent, name);
                 (granted_agent, "after_provider_reload", true)
-            }
-            "skill" => {
-                let granted_agent = self
-                    .grant_agent_skill(agent.id(), name.to_string(), agent.owner_user_id())
-                    .await?;
-                (granted_agent, "now", false)
             }
             "script" => {
                 let environment = environment.ok_or_else(|| DaemonError::LocalTransport {

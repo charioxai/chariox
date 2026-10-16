@@ -117,7 +117,6 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                 prompt_summary: "inspect the Room".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             // The isolated fake CLI still enters through the real cold-launch
             // admission path. Supply only a synthetic, profile-bound token.

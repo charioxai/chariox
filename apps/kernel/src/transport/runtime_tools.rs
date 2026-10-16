@@ -44,7 +44,6 @@ pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "chariox.agent_app_action";
 pub const LIST_EXTENSIONS_TOOL: &str = "chariox.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "chariox.request_extension";
 pub const REGISTER_MCP_TOOL: &str = "chariox.register_mcp";
-pub const REGISTER_SKILL_PATH_TOOL: &str = "chariox.register_skill_path";
 pub const REGISTER_ENVIRONMENT_TOOL: &str = "chariox.register_environment";
 pub const REGISTER_SCRIPT_PATH_TOOL: &str = "chariox.register_script_path";
 pub const REGISTER_CONNECTOR_PATH_TOOL: &str = "chariox.register_connector_path";

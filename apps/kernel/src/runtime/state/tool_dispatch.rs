@@ -37,7 +37,6 @@ mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
 mod script;
-mod skill_package_response;
 mod slice;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
@@ -447,7 +446,6 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
-                    | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL
                     | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL

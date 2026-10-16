@@ -383,20 +383,16 @@ import Testing
     #expect(payload["workspace_id"] as? String == "/repo")
 }
 
-@Test func listSkillsRequestMatchesKernelShape() throws {
-    let data = try KernelProtocolCodec.encodeRequestFrame(
-        KernelRequestFrame(
-            requestID: "request-skill-list",
-            request: .listSkills(workspaceID: nil)
-        )
-    )
-    let object = try #require(
-        JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
+// MP-08 / MP-10 / MP-11: V2 catalog identity belongs to the Project, not a folder.
+@Test func skillsV2CatalogRequestMatchesKernelShape() throws {
+    let frame = KernelRequestFrame(requestID: "skills", request: .skillsV2(.catalog(.init(project_id: "project-empty", agent_id: nil))))
+    let data = try KernelProtocolCodec.encodeRequestFrame(frame)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     let request = try #require(object["request"] as? [String: Any])
-    let payload = try #require(request["ListSkills"] as? [String: Any])
-
-    #expect(payload["workspace_id"] is NSNull)
+    let payload = try #require(request["SkillsV2"] as? [String: Any])
+    #expect(payload["action"] as? String == "catalog")
+    #expect(payload["project_id"] as? String == "project-empty")
+    #expect(request["ListSkills"] == nil)
 }
 
 @Test func respondToInteractionRequestMatchesKernelShape() throws {

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::agent::{AgentInstance, AgentState};
-use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
+use crate::extension::RemoteExtensionManifestSyncState;
 use crate::local::{WaitingRoomPublicItemActivitySummary, WaitingRoomSessionActivitySummary};
 use crate::session::{RuntimeSession, WorkflowRunStatus};
 
@@ -150,10 +150,7 @@ struct HomeProxyExtensionActivity {
 }
 
 fn home_proxy_extension_activity(agent: &AgentInstance) -> Option<HomeProxyExtensionActivity> {
-    let active_home_proxy_grant = agent
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.kind != ExtensionKind::Skill);
+    let active_home_proxy_grant = !agent.extension_grants().is_empty();
     let pending_revoke = agent
         .remote_extension_manifest_sync()
         .and_then(|status| status.pending_revoke)
@@ -569,7 +566,6 @@ mod tests {
             ),
             home_proxy_agent("missing-connector", ExtensionKind::Connector, None),
             home_proxy_agent("stale-mcp", ExtensionKind::Mcp, Some(stale)),
-            home_proxy_agent("skill-only", ExtensionKind::Skill, None),
             {
                 let mut agent =
                     remote_agent("revoked", AgentState::Idle, false, Some("worker-run"));

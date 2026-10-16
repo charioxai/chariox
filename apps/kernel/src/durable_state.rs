@@ -50,8 +50,11 @@ pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 pub(crate) mod browser_import;
+mod event_reader;
 mod owner;
 pub(crate) mod room_environment;
+pub(crate) mod skill_reset;
+pub(crate) mod skill_reset_fence;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
@@ -359,6 +362,12 @@ impl DurableKernelStateStore {
                 operation: "durable_state.open",
                 message: error.to_string(),
             })?;
+        skill_reset_fence::register_writer(&connection).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.skill_writer",
+                message: "cannot configure the Skills v2 durable writer".into(),
+            }
+        })?;
         if initialize_incremental_vacuum {
             connection
                 .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -1360,6 +1369,12 @@ impl DurableStateWriter {
                 operation: "durable_state.writer_wal",
                 message: error.to_string(),
             })?;
+        skill_reset_fence::register_writer(&connection).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.skill_writer",
+                message: "cannot configure the Skills v2 durable writer".into(),
+            }
+        })?;
         configure_durable_write_sync(&connection)?;
         let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
         let health = Arc::new(DurableWriterHealth::default());

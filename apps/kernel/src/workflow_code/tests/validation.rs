@@ -559,7 +559,7 @@ fn validates_node_extension_grant_shape() {
     let mut definition = minimal_definition();
     definition.nodes[0]
         .extensions
-        .push(ExtensionGrant::new(ExtensionKind::Skill, ""));
+        .push(ExtensionGrant::new(ExtensionKind::Mcp, ""));
     definition.nodes[0]
         .extensions
         .push(ExtensionGrant::new(ExtensionKind::Script, "release-script"));

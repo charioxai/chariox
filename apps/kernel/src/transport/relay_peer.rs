@@ -108,7 +108,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 128 binds owner-managed destinations in context import arm/receipt
 /// shapes to local protocol 520 (landing 2026-10-14; branch-only 117 was never
 /// released; MP-08/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 141;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -277,6 +277,7 @@ pub struct RemoteProviderAccountSyncContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSkillMaterialization {
+    pub skill_id: String,
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
@@ -445,12 +446,6 @@ pub struct RequiredRemoteMcp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequiredRemoteSkill {
-    pub name: String,
-    pub version_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpAvailability {
     pub name: String,
     pub expected_hash: String,
@@ -587,7 +582,7 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayPeerRequest {
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -721,8 +716,6 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -757,8 +750,6 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -787,8 +778,6 @@ pub enum RelayPeerRequest {
         hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -966,6 +955,8 @@ pub enum RelayPeerRequest {
         workspace_directories: std::collections::BTreeMap<String, String>,
     },
     EnsureRemoteSkillPackages {
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     },
@@ -1183,8 +1174,6 @@ pub enum RelayPeerResponse {
     WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1240,6 +1229,9 @@ pub enum RelayPeerResponse {
         project_id: String,
     },
     RemoteSkillPackagesEnsured {
+        execution_lease_id: String,
+        context: RemoteSkillSyncContext,
+        manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
     },
     RemoteProviderAccountEnsured {
@@ -1313,7 +1305,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1350,7 +1342,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1372,7 +1364,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1438,7 +1430,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1482,7 +1474,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1657,7 +1649,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1962,7 +1954,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 533);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1989,7 +1981,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2027,7 +2019,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2086,7 +2078,7 @@ mod owner_managed_context_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
@@ -2105,7 +2097,7 @@ mod workflow_notification_128_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_128_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 141);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),

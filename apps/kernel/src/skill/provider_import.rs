@@ -7,18 +7,12 @@ use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
 use super::package::package_skill_directory;
-use super::{parse_skill_metadata, CharioxSkillMetadata, CharioxSkillRegistry};
+use super::CharioxSkillMetadata;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillImportSkip {
     pub name: String,
     pub path: PathBuf,
     pub reason: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillImportOutcome {
-    pub imported: Vec<CharioxSkillMetadata>,
-    pub skipped: Vec<SkillImportSkip>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,30 +31,6 @@ pub struct ProviderSkillImportCandidate {
 pub struct ProviderSkillImportDiscovery {
     pub candidates: Vec<ProviderSkillImportCandidate>,
     pub skipped: Vec<SkillImportSkip>,
-}
-
-pub fn import_codex_skills(
-    registry: &CharioxSkillRegistry,
-    workspace: &Path,
-    requested_name: Option<&str>,
-) -> Result<SkillImportOutcome, DaemonError> {
-    import_skills_from_roots(registry, codex_skill_roots(workspace), requested_name)
-}
-
-pub fn import_opencode_skills(
-    registry: &CharioxSkillRegistry,
-    workspace: &Path,
-    requested_name: Option<&str>,
-) -> Result<SkillImportOutcome, DaemonError> {
-    import_skills_from_roots(registry, opencode_skill_roots(workspace), requested_name)
-}
-
-pub fn import_claude_skills(
-    registry: &CharioxSkillRegistry,
-    workspace: &Path,
-    requested_name: Option<&str>,
-) -> Result<SkillImportOutcome, DaemonError> {
-    import_skills_from_roots(registry, claude_skill_roots(workspace), requested_name)
 }
 
 pub fn discover_provider_skill_import_candidates(
@@ -145,71 +115,6 @@ fn discover_provider_skill_import_candidates_from_roots(
         }
     }
     Ok(discovery)
-}
-
-fn import_skills_from_roots(
-    registry: &CharioxSkillRegistry,
-    roots: Vec<PathBuf>,
-    requested_name: Option<&str>,
-) -> Result<SkillImportOutcome, DaemonError> {
-    if let Some(name) = requested_name {
-        validate_registry_name(name, "skill name")?;
-    }
-    let mut outcome = SkillImportOutcome::default();
-    let mut found_requested = false;
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-        for skill_md in find_skill_markdown_files(&root)? {
-            let source_dir = skill_md.parent().unwrap_or(&root).to_path_buf();
-            let metadata = match parse_skill_metadata(&skill_md) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    outcome.skipped.push(SkillImportSkip {
-                        name: source_dir
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        path: skill_md,
-                        reason: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-            if requested_name.is_some_and(|requested| requested != metadata.name) {
-                continue;
-            }
-            found_requested = true;
-            if registry.get(&metadata.name)?.is_some() {
-                outcome.skipped.push(SkillImportSkip {
-                    name: metadata.name,
-                    path: skill_md,
-                    reason: "already installed in Chariox registry".to_string(),
-                });
-                continue;
-            }
-            match registry.install_from_path(&source_dir) {
-                Ok((installed, _)) => outcome.imported.push(installed),
-                Err(error) => outcome.skipped.push(SkillImportSkip {
-                    name: metadata.name,
-                    path: skill_md,
-                    reason: error.to_string(),
-                }),
-            }
-        }
-    }
-    if let Some(name) = requested_name {
-        if !found_requested {
-            outcome.skipped.push(SkillImportSkip {
-                name: name.to_string(),
-                path: PathBuf::new(),
-                reason: "not found in provider skill roots".to_string(),
-            });
-        }
-    }
-    Ok(outcome)
 }
 
 fn codex_skill_roots(workspace: &Path) -> Vec<PathBuf> {

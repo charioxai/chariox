@@ -2,12 +2,15 @@ import { writeFile } from "node:fs/promises"
 
 import { claudeHookCommand, releaseVersion } from "../release-build.js"
 import { shellQuote } from "./launch-environment.js"
+import { hasExplicitSkillMarker } from "./skill-marker.js"
 
 export async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
+
+${hasExplicitSkillMarker.toString()}
 
 let nativeOrigin = null
 try { nativeOrigin = JSON.parse(readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_ORIGIN, "utf8")) } catch {}
@@ -26,7 +29,7 @@ const hookContextRequestId = eventName === "UserPromptSubmit"
   : null
 appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   at: new Date().toISOString(),
-  hook_event_name: eventName,
+  hook_event_name: eventName === "UserPromptSubmit" ? "UserPromptContextRequest" : eventName,
   hook_context_request_id: hookContextRequestId,
   prompt: input.prompt ?? null,
   transcript_path: input.transcript_path ?? null,
@@ -36,6 +39,17 @@ appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   tool_response: input.tool_response ?? null,
   error: input.error ?? null,
 }) + "\\n")
+
+// MP-08 / MP-10 / MP-11: successful hook admission owns the start event.
+function emitPromptAdmission(blocked) {
+  appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+    at: new Date().toISOString(),
+    hook_event_name: blocked ? "UserPromptSubmitRejected" : "UserPromptSubmit",
+    prompt: input.prompt ?? null,
+    transcript_path: input.transcript_path ?? null,
+    permission_mode: input.permission_mode ?? null
+  }) + "\\n")
+}
 
 if (eventName === "UserPromptSubmit") {
   let additionalContext = ""
@@ -54,6 +68,16 @@ if (eventName === "UserPromptSubmit") {
       await sleep(50)
     }
   }
+  // MP-08 / MP-10 / MP-11: an explicit selection must never run with
+  // empty hidden instructions when the home/context bridge failed.
+  const selectedSkill = hasExplicitSkillMarker(input.prompt ?? "")
+  if (!additionalContext && selectedSkill) {
+    emitPromptAdmission(true)
+    process.stdout.write(JSON.stringify({ decision: "block",
+      reason: "Chariox skill context was not delivered. Refresh Skills and retry this prompt." }))
+    process.exit(0)
+  }
+  emitPromptAdmission(false)
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",

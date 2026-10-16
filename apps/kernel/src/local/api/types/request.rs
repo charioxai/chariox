@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    SkillsV2(crate::skill::v2::SkillsV2Request),
     AddSshMachine(AddSshMachineRequest),
     RemoveSshMachine(RemoveSshMachineRequest),
     RegisterWorkflowNotificationSource(RegisterWorkflowNotificationSourceRequest),
@@ -66,6 +67,7 @@ pub enum LocalDaemonRequest {
     LaunchProviderRun(LaunchProviderRunRequest),
     LaunchProviderRuns(LaunchProviderRunsRequest),
     ListProjects(ListProjectsRequest),
+    CreateProject(CreateProjectRequest),
     GetProjectEnvironment(GetProjectEnvironmentRequest),
     DetectProjectEnvironment(DetectProjectEnvironmentRequest),
     PreviewEnvironmentDiff(PreviewEnvironmentDiffRequest),
@@ -180,13 +182,6 @@ pub enum LocalDaemonRequest {
     GetConnector(GetConnectorRequest),
     ListConnectors(ListConnectorsRequest),
     TestConnector(TestConnectorRequest),
-    UpsertSkill(UpsertSkillRequest),
-    InstallSkill(InstallSkillRequest),
-    UpdateSkill(UpdateSkillRequest),
-    UninstallSkill(UninstallSkillRequest),
-    ImportSkills(ImportSkillsRequest),
-    GetSkill(GetSkillRequest),
-    ListSkills(ListSkillsRequest),
     RelayStatus(RelayStatusRequest),
     ConfigureRelay(ConfigureRelayRequest),
     CloudRelayStatus(CloudRelayStatusRequest),

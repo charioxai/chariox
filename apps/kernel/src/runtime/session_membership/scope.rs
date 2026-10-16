@@ -22,6 +22,18 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::SkillsV2(request) => {
+            use crate::skill::v2::SkillsV2Request;
+            match request {
+                SkillsV2Request::Loads { session_id, .. }
+                | SkillsV2Request::List { session_id, .. }
+                | SkillsV2Request::Load { session_id, .. }
+                | SkillsV2Request::Submit { session_id, .. } => {
+                    Some(SessionMembershipScope::SessionId(session_id.clone()))
+                }
+                _ => None,
+            }
+        }
         LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -631,6 +643,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::CreateProject(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
@@ -691,13 +704,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetConnector(_)
         | LocalDaemonRequest::ListConnectors(_)
         | LocalDaemonRequest::TestConnector(_)
-        | LocalDaemonRequest::UpsertSkill(_)
-        | LocalDaemonRequest::InstallSkill(_)
-        | LocalDaemonRequest::UpdateSkill(_)
-        | LocalDaemonRequest::UninstallSkill(_)
-        | LocalDaemonRequest::ImportSkills(_)
-        | LocalDaemonRequest::GetSkill(_)
-        | LocalDaemonRequest::ListSkills(_)
         | LocalDaemonRequest::RelayStatus(_)
         | LocalDaemonRequest::ConfigureRelay(_)
         | LocalDaemonRequest::CloudRelayStatus(_)

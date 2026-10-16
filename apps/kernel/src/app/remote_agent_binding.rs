@@ -403,25 +403,6 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             .and_then(|config| config.relay_token.clone()),
         relay_peer_protocol_version: Some(relay_peer_protocol_version),
     };
-    if let Err(error) = ensure_remote_skill_packages_off_lock(
-        &plan,
-        &remote_execution,
-        &relay_config,
-        use_connected_relay,
-    )
-    .await
-    {
-        cleanup_remote_binding_setup_off_lock(
-            &relay_config,
-            &plan.relay_state,
-            &target,
-            &lease_id,
-            Some(&leased_agent_id),
-            use_connected_relay,
-        )
-        .await;
-        return Err(error);
-    }
     Ok(RemoteAgentBindingRefreshResult {
         agent_id: plan.agent.id().to_string(),
         expected_binding: plan.expected_binding,
@@ -607,36 +588,6 @@ impl DaemonApp {
             .collect()
     }
 
-    pub(crate) fn required_remote_skills_for_native_provider_launch(
-        &self,
-        agent: &AgentInstance,
-    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteSkill>, DaemonError> {
-        let skill_grants = agent.skill_grants();
-        if skill_grants.is_empty() {
-            return Ok(Vec::new());
-        }
-        let session = self.sessions.get_session(agent.session_id())?;
-        let registry = crate::skill::CharioxSkillRegistry::new(app_skill_registry_roots(
-            session.workspace_id(),
-        ));
-        skill_grants
-            .iter()
-            .map(|grant| {
-                let package =
-                    registry
-                        .package(grant)?
-                        .ok_or_else(|| DaemonError::LocalTransport {
-                            operation: "remote native provider capabilities",
-                            message: format!("skill `{grant}` is granted but is not installed"),
-                        })?;
-                Ok(crate::transport::relay_peer::RequiredRemoteSkill {
-                    name: package.metadata.name,
-                    version_hash: package.version_hash,
-                })
-            })
-            .collect()
-    }
-
     #[cfg(test)]
     pub(crate) fn remote_prompt_capabilities_for_agent(
         &self,
@@ -644,7 +595,6 @@ impl DaemonApp {
     ) -> Result<
         (
             Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-            Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
@@ -657,11 +607,10 @@ impl DaemonApp {
         if native_provider_run {
             return Ok((
                 self.required_remote_mcps_for_native_provider_launch(agent)?,
-                Some(self.required_remote_skills_for_native_provider_launch(agent)?),
                 manifest,
             ));
         }
-        Ok((Vec::new(), None, manifest))
+        Ok((Vec::new(), manifest))
     }
 
     pub(crate) fn kernel_ref_is_local(&self, kernel_ref: &str) -> bool {
@@ -1051,16 +1000,6 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        if let Err(error) = self.ensure_remote_agent_skill_packages(&bound, authorize) {
-            cleanup_remote_setup(
-                self,
-                &relay_config,
-                &target,
-                &lease_id,
-                Some(&leased_agent_id),
-            );
-            return Err(error);
-        }
         Ok(bound)
     }
 
@@ -1495,66 +1434,6 @@ impl DaemonApp {
             Ok(other) => Err(DaemonError::LocalTransport {
                 operation: "destroy remote execution binding",
                 message: format!("unexpected peer cleanup response: {other:?}"),
-            }),
-        }
-    }
-
-    fn ensure_remote_agent_skill_packages(
-        &mut self,
-        agent: &AgentInstance,
-        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
-    ) -> Result<(), DaemonError> {
-        authorize()?;
-        let Some(remote_execution) = agent.remote_execution() else {
-            return Ok(());
-        };
-        let skill_grants = agent.skill_grants();
-        if skill_grants.is_empty() {
-            return Ok(());
-        }
-        let _ = self.sessions.get_session(agent.session_id())?;
-        let roots = crate::skill::CharioxSkillRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
-        let registry = crate::skill::CharioxSkillRegistry::new(roots);
-        let packages = skill_grants
-            .iter()
-            .map(|grant| {
-                registry
-                    .package(grant)?
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "ensure remote agent skill packages",
-                        message: format!("skill `{grant}` is granted but is not installed"),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if packages.is_empty() {
-            return Ok(());
-        }
-        let relay_config = self.relay_config_for_remote_execution(remote_execution);
-        let response = self.send_remote_binding_request_authorized(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::EnsureRemoteSkillPackages {
-                context: crate::transport::relay_peer::RemoteSkillSyncContext {
-                    home_kernel_id: self.config.daemon_id.clone(),
-                    home_session_id: agent.session_id().to_string(),
-                    home_agent_id: agent.id().to_string(),
-                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                },
-                packages,
-            },
-            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id),
-            authorize,
-        )?;
-        match response {
-            RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
-            other => Err(DaemonError::LocalTransport {
-                operation: "ensure remote agent skill packages",
-                message: format!("unexpected remote skill sync response: {other:?}"),
             }),
         }
     }
@@ -1998,63 +1877,6 @@ fn update_remote_binding_materialization_status(
         .map(|_| ())
 }
 
-async fn ensure_remote_skill_packages_off_lock(
-    plan: &RemoteAgentBindingRefreshPlan,
-    remote_execution: &RemoteAgentBinding,
-    relay_config: &DaemonConfig,
-    use_connected_relay: bool,
-) -> Result<(), DaemonError> {
-    let skill_grants = plan.agent.skill_grants();
-    if skill_grants.is_empty() {
-        return Ok(());
-    }
-    let roots = crate::skill::CharioxSkillRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
-    let registry = crate::skill::CharioxSkillRegistry::new(roots);
-    let packages = skill_grants
-        .iter()
-        .map(|grant| {
-            registry.package(grant).and_then(|package| {
-                package.ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "ensure remote agent skill packages",
-                    message: format!("skill `{grant}` is not installed"),
-                })
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if packages.is_empty() {
-        return Ok(());
-    }
-    match send_remote_binding_request_off_lock(
-        relay_config,
-        &plan.relay_state,
-        ClientTarget {
-            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::EnsureRemoteSkillPackages {
-            context: crate::transport::relay_peer::RemoteSkillSyncContext {
-                home_kernel_id: plan.config.daemon_id.clone(),
-                home_session_id: plan.agent.session_id().to_string(),
-                home_agent_id: plan.agent.id().to_string(),
-                leased_agent_id: remote_execution.leased_agent_id.clone(),
-            },
-            packages,
-        },
-        use_connected_relay,
-        plan.authorizer.as_ref(),
-    )
-    .await?
-    {
-        RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
-        other => Err(DaemonError::LocalTransport {
-            operation: "ensure remote agent skill packages",
-            message: format!("unexpected remote skill sync response: {other:?}"),
-        }),
-    }
-}
-
 pub(crate) async fn cleanup_remote_agent_binding_refresh(
     refresh: &RemoteAgentBindingRefreshResult,
 ) {
@@ -2138,22 +1960,6 @@ fn app_script_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
         ));
     }
     if let Some(root) = crate::script::CharioxScriptRegistry::user_root() {
-        roots.push(root);
-    }
-    roots
-}
-
-fn app_skill_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    #[cfg(not(test))]
-    let _ = workspace_id;
-    #[cfg(test)]
-    if !workspace_id.trim().is_empty() {
-        roots.push(crate::skill::CharioxSkillRegistry::project_root(
-            workspace_id,
-        ));
-    }
-    if let Some(root) = crate::skill::CharioxSkillRegistry::user_root() {
         roots.push(root);
     }
     roots
@@ -2456,11 +2262,11 @@ mod tests {
             .grant_mcp(agent.id(), mcp_name.clone())
             .expect("MCP grant should apply");
 
-        let (required_mcps, required_skills, manifest) = app
+        let (required_mcps, manifest) = app
             .remote_prompt_capabilities_for_agent(&agent)
             .expect("Chariox prompt capabilities should resolve");
         assert!(required_mcps.is_empty());
-        assert!(required_skills.is_none());
+
         assert_eq!(
             manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
             vec![mcp_name.as_str()]
@@ -2491,11 +2297,11 @@ mod tests {
             },
         ));
 
-        let (required_mcps, required_skills, manifest) = app
+        let (required_mcps, manifest) = app
             .remote_prompt_capabilities_for_agent(&agent)
             .expect("native prompt capabilities should resolve");
         assert!(required_mcps.is_empty());
-        assert!(required_skills.is_some_and(|skills| skills.is_empty()));
+
         assert_eq!(
             manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
             vec![mcp_name.as_str()]

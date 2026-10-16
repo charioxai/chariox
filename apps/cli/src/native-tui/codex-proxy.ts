@@ -1,3 +1,4 @@
+import { nativeSkillCatalog, projectCodexSkillList } from "./skills-v2.js"
 import { loadCodexPromptSettlements } from "./codex-prompt-settlement.js"
 import http from "node:http"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -55,6 +56,7 @@ type CodexProxyOptions = {
 }
 
 export type CodexProxyServer = WebSocketServer & {
+  refreshSkills: () => Promise<void>
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
   projectKernelActivityToTui: (activity: AgentRuntimeActivity | undefined) => Promise<void>
   projectKernelInteractionsToTui: (interactions: RuntimeInteraction[]) => void
@@ -242,6 +244,26 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     if (sent === 0) options.debug("native_projection_no_tui_downstream", { agentId: options.agentId, downstreams: downstreamCounts() })
   }
 
+  let skillCatalogFingerprint: string | null = null
+  let skillRefreshAt = 0
+  let skillRefreshInFlight = false
+  const refreshSkills = async () => {
+    if (skillRefreshInFlight || Date.now() - skillRefreshAt < 1000 || ![...downstreams].some(d => d.kind === "tui")) return
+    skillRefreshInFlight = true
+    skillRefreshAt = Date.now()
+    try {
+      const catalog = await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
+      const fingerprint = JSON.stringify(catalog)
+      if (skillCatalogFingerprint !== null && skillCatalogFingerprint !== fingerprint) {
+        broadcastToNativeTuis({ method: "skills/changed", params: {} })
+      }
+      skillCatalogFingerprint = fingerprint
+    } catch (error) {
+      skillCatalogFingerprint ??= "unavailable"
+      options.debug("native_skill_refresh_failed", { error: formatError(error) })
+    } finally { skillRefreshInFlight = false }
+  }
+
   const kernelOutputProjection = createCodexKernelOutputProjection({
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
@@ -284,6 +306,22 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
           projectionThreadTracker.bindTuiThread(threadId, pending.ephemeral)
           if (!pending.ephemeral) bindObservedThread(options, threadId)
         }
+      }
+      if (pending.method === "skills/list" && pending.downstream.kind !== "kernel" && message.result) {
+        void nativeSkillCatalog(options.client, options.sessionId, options.agentId).then(catalog => {
+          skillCatalogFingerprint = JSON.stringify(catalog)
+          sendDownstream(pending.downstream, { ...routedMessage,
+            result: projectCodexSkillList(message.result!, catalog) })
+        }).catch(error => {
+          // MP-08 / MP-10 / MP-11: this is an optional completion overlay.
+          // The upstream harness listing succeeded; preserve it even when a
+          // foundation/relay cannot expose the home catalog. Actual selections
+          // still require kernel validation before any provider turn starts.
+          skillCatalogFingerprint ??= "unavailable"
+          options.debug("native_skill_projection_failed", { error: formatError(error) })
+          sendDownstream(pending.downstream, routedMessage)
+        })
+        return
       }
       sendDownstream(pending.downstream, routedMessage)
       return
@@ -467,7 +505,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       httpServer.close((httpError?: Error) => callback?.(error ?? httpError))
     })
   }) as WebSocketServer["close"]
-  return Object.assign(server, { projectKernelOutputToTui: kernelOutputProjection.project,
+  return Object.assign(server, { refreshSkills, projectKernelOutputToTui: kernelOutputProjection.project,
     projectKernelActivityToTui: kernelOutputProjection.projectAgentActivity,
     projectKernelInteractionsToTui: kernelPermissionProjection.project })
 }
