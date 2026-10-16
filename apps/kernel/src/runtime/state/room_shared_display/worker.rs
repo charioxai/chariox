@@ -165,6 +165,7 @@ impl KernelRuntimeState {
             RoomDisplayCommand::Capture { .. } => "screenshot",
             RoomDisplayCommand::Suspend {} => "display_suspend",
             RoomDisplayCommand::Resume {} => "display_resume",
+            RoomDisplayCommand::ResumeAttach {} => "display_resume_attach",
             RoomDisplayCommand::Close {} => "unsubscribe",
         };
         let mut params = serde_json::json!({"op":op,"subscription_id":lease_id,"observed_by":lease_id,"generation":lease.binding.generation,"viewport":lease.viewport});
@@ -180,7 +181,7 @@ impl KernelRuntimeState {
         let mut result = self.room_producer_request(session_id, params).await?;
         lease.used = Instant::now();
         match command {
-            RoomDisplayCommand::Resume {} => {
+            RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {} => {
                 let binding: RoomDisplayBinding =
                     serde_json::from_value(result).map_err(|_| error())?;
                 if binding.subscription_id == lease_id || binding.source != lease.binding.source {

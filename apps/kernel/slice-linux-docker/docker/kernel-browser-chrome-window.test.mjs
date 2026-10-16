@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11 (§2b): native Chrome window binding and input arbiter.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ChromeWindows, InputArbiter, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
+import { ChromeWindows, InputArbiter, OMNIBOX_LIST_HEIGHT, bandChord, refusedChord } from "./kernel-browser-chrome-window.mjs";
 import { OwnedDisplay } from "./kernel-browser-owned-display.mjs";
 
 function fake({ rows, bounds = { left: 0, top: 0, width: 1280, height: 887, windowState: "normal" }, viewport } = {}) {
@@ -300,7 +300,7 @@ test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite up
 // Real Chrome 155 probe (r8/overlay-probe/probe3*.json): the popup WebUI reports
 // ["visible", screenX 113, screenY 35, list 1078x90, widget 1110x178] for a window at (10,10) DIP,
 // list body pixels end 28 DIP above the widget bottom and sit 16 DIP inside its sides (DPR 1 and 2).
-test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup below the band, corners masked", async t => {
+test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup below the band", async t => {
   const { host, windows } = fake();
   const real = new OwnedDisplay((await import("node:os")).tmpdir());
   try { await real.start(); } catch { return t.skip("no Xvfb"); }
@@ -315,21 +315,39 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     const region = windows.auxiliaryRegion(windows.auxiliary(popup.auxiliary_id));
     assert.equal(region.inWindow, true); assert.equal(region.window.id, 0x600001, "a rect of the tabbed window itself");
     assert.deepEqual(region.pageRect, windows.current().tabbed.page_rect, "over the page: its masks use the page origin");
-    assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 176 });
-    // Only the slivers outside the rounded corners (radius 32 px at scale 2), one rect per row: no black squares.
-    assert.deepEqual(region.masks.slice(0, 2), [{ x: 0, y: 144, width: 1, height: 1 }, { x: 2155, y: 144, width: 1, height: 1 }]);
-    assert.deepEqual(region.masks.slice(-2), [{ x: 0, y: 175, width: 27, height: 1 }, { x: 2129, y: 175, width: 27, height: 1 }]);
-    assert(region.masks.every(m => m.y >= 144 && m.y < 176 && m.width <= 32), "within the corner squares");
-    const binding = windows.auxiliary(popup.auxiliary_id);
+    // r11: the list's stream opens at the list's full height (Chrome 155: at most 8 rows of 40 DIP), so a
+    // growing list never replaces it; each new stream left the person without a list for 0.4-1.3 s while typing.
+    assert.deepEqual(region.rect, { left: 238, top: 174, width: 2156, height: 2 * OMNIBOX_LIST_HEIGHT });
+    assert.equal(region.masks, undefined, "around its rounded corners are page pixels under the active Tab's masks");
+    const grown = windows.auxiliary(popup.auxiliary_id);
     windows.omnibox = ["visible", 103, 25, 1078, 130, 1110, 218]; windows.refreshAuxiliary([tabbed]);
-    assert.equal(binding.isCurrent(), false, "more suggestions: a new fixed-size popup");
+    assert.equal(grown.isCurrent(), true, "more suggestions: the same popup");
     assert.equal(windows.auxiliaryState()[0].height, 128);
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    assert.equal(grown.isCurrent(), true, "a shorter list keeps the same popup");
+    // r10final 1920x1080@2: the viewer shows only the live list; its stream keeps its size (no page copy below it).
+    assert.equal(windows.auxiliaryState()[0].height, 88, "the live list's height");
+    assert.equal(windows.auxiliaryRegion(grown).rect.height, 2 * OMNIBOX_LIST_HEIGHT, "the stream keeps its size");
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    const source = { isCurrent: grown.isCurrent, region: { window_region: windows.auxiliaryRegion(grown).rect } };
+    assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 80 }), true, "on the live list");
+    assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 100 }), false, "below it is the page: refused");
+    assert.equal(await windows.inWindowCurrent(source), true, "keys go to Chrome's UI");
+    delete windows.readOmnibox;
     windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.deepEqual(windows.auxiliaryState(), [], "closed");
     for (const state of [["visible", 103, 25, 1078, 90, 1120, 178], ["visible", 103, 100, 1078, 90, 1110, 178], ["visible", 103, 25, 1278, 90, 1310, 178], null]) {
       windows.omnibox = state; windows.refreshAuxiliary([tabbed]);
       assert.deepEqual(windows.auxiliaryState(), [], `not the pinned layout or not over the page: ${JSON.stringify(state)}`);
     }
+    // Review #1016 P1: input re-reads the dropdown; a closed one retires before the next poll.
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    const open = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    assert.equal(await windows.inWindowCurrent(open), true, "still open: admitted");
+    windows.readOmnibox = async () => ["hidden", 103, 25, 1078, 1, 1110, 178];
+    assert.equal(await windows.inWindowCurrent(open), false, "closed: refused");
+    assert.deepEqual(windows.auxiliaryState(), [], "and retired at once");
   } finally { await real.close(); }
 });
 
@@ -406,4 +424,48 @@ test("MP-11 keys on an admitted native popup reach Chrome's UI whatever the page
   open = false;
   await assert.rejects(send(menu, { kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" }, "a closed menu takes nothing");
   assert.deepEqual(keys.map(k => k[0]), ["menu", "menu", "menu"]);
+});
+
+// Review #1016 @53ad3e893 P1: the omnibox dropdown is drawn in the tabbed window and closes without an X event;
+// its rect is then the page itself. Input on it re-reads Chrome's dropdown before dispatch, never the last poll.
+test("MP-11 input on a closed in-window dropdown is refused before the next poll", async () => {
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" } };
+  let live = true, reads = 0;
+  const windows = { inWindowCurrent: async source => (reads++, live && source.isCurrent()) };
+  const arbiter = new InputArbiter(host, windows), sent = [];
+  const dropdown = { surface: "browser_auxiliary", overPage: true, isCurrent: () => true, click: async (x, y) => (sent.push(["click", x, y]), true), chord: async k => (sent.push(["key", k]), true) };
+  const send = input => arbiter.input({ stream: { regionSource: dropdown }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
+  assert.deepEqual(await send({ kind: "click", x: 40, y: 20 }), { dispatched: true }, "an open dropdown takes a click");
+  live = false; // Escape closed it; the 150 ms poll has not run yet
+  await assert.rejects(send({ kind: "click", x: 40, y: 20 }), { code: "user_domain_stale_reference" }, "the page under it takes nothing");
+  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" });
+  assert.deepEqual(sent, [["click", 40, 20]]);
+  assert.equal(reads, 3, "every input re-reads the dropdown");
+});
+
+test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry only", async t => {
+  const { windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    windows.host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const video = { left: 1900, top: 220, width: 500, height: 280 };
+    assert.equal(windows.inWindowOver(video), false, "no dropdown");
+    windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]); // list x 238..2394, y 174..350 (physical)
+    assert.equal(windows.inWindowOver(video), true, "the list covers the video's top rows");
+    assert.equal(windows.inWindowOver({ ...video, top: 360 }), false, "below the list");
+    assert.equal(windows.inWindowOver({ ...video, left: 2400 }), false, "beside it");
+    // r11: the list's stream is taller than a shorter list; the page below the LIVE list keeps streaming.
+    windows.omnibox = ["visible", 103, 25, 1078, 50, 1110, 138]; windows.refreshAuxiliary([tabbed]); // list y 174..270
+    assert.equal(windows.inWindowOver({ ...video, top: 290 }), false, "below a shorter list, inside its stream");
+    assert.equal(windows.inWindowOver({ ...video, top: 250 }), true);
+    windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
+    assert.equal(windows.inWindowOver(video), false, "closed");
+    // r10 union2: Chrome paints the list before the 150 ms poll sees it; a readback checks it live.
+    windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
+    assert.equal(windows.inWindowOver(video), false, "the poll has not seen it");
+    assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
+  } finally { await real.close(); }
 });

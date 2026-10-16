@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
+import { EXTENSIONS_REFUSED } from './kernel-browser-policy.mjs';
 import { fenceBrowserCapture } from './browser-protection-regions.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
@@ -59,6 +60,7 @@ export async function executeNative(request, environment, signal) {
     const code=await exit;
     if(signal?.aborted)throw Object.assign(new Error('MP-11: native input cancelled'),{code:'browser_action_cancelled'});
     if(code!==0 && diagnostic==='NativeInputDenied' && !overflow)throw new UserDomainRefusal('sensitive_requires_focus');
+    if(code!==0 && diagnostic==='NativeExtensionDenied' && !overflow)throw new Error(EXTENSIONS_REFUSED);
     if(code!==0 || overflow) {
       // MP-08/MP-11: fixed private timing classes only; public errors remain generic.
       const codes={NativeProtectionChanged:'NATIVE_PROTECTION_CHANGED',ValueError:'NATIVE_VALUE_ERROR',TimeoutExpired:'NATIVE_HELPER_TIMEOUT',ModuleNotFoundError:'NATIVE_DEPENDENCY_MISSING',ImportError:'NATIVE_DEPENDENCY_MISSING',FileNotFoundError:'NATIVE_FILE_MISSING',OSError:'NATIVE_OS_ERROR'};
@@ -125,7 +127,11 @@ export class NativeComputer {
       if(command._agent_input && (['hold','pointer_hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
       if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       // MP-11: the helper gates every agent key/text/click on the clipboard owner.
-      const admission=command._agent_input ? {agent_input:true,processes:await binding.ownedProcesses?.()??[]} : {};
+      let admission={};
+      if(command._agent_input) {
+        const processes=await binding.ownedProcesses?.()??[],browsers=await binding.browserProcesses?.()??[];
+        admission={agent_input:true,processes:processes.map(item=>({...item,browser:Boolean(item.browser)||browsers.some(browser=>browser.pid===item.pid&&browser.started===item.started)}))};
+      }
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}
         else if(!this.held.has(input.keycode)) throw new Error('MP-11: key release without owned press');

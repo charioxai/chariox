@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const DISPLAY_EVENT_SCOPE: &str = "kernel_browser_display";
+/// MP-08/MP-10/MP-11: allocated535/143, delivery registration invoking525 resume.
+pub const DISPLAY_RESUME_SCOPE: &str = "kernel_browser_display_resume";
+pub fn is_display_scope(scope: Option<&str>) -> bool {
+    matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
+}
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;

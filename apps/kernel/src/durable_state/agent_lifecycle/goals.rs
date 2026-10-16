@@ -48,9 +48,9 @@ pub struct GoalEvaluation {
     pub result: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-enum Assessment {
+pub(crate) enum Assessment {
     Achieved {
         final_answer: String,
         evidence: Vec<String>,

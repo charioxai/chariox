@@ -22,19 +22,36 @@ impl KernelRuntimeOwnedState {
             )?
             .iter()
             .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
-        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
-            owner: self
-                .session_store
-                .get_session(&prepared.session_id)?
-                .owner_user_id()
-                .into(),
-            room: prepared.session_id.clone(),
-            agent: prepared.prompt.target_agent_id().into(),
-            prompt: prepared.prompt.id().into(),
-            run: None,
-            now: crate::session::unix_epoch_ms(),
-        })?
-        else {
+        let continuation_task = prepared
+            .prompt
+            .durable_operation_fingerprint()
+            .and_then(|fingerprint| fingerprint.strip_prefix("task:"))
+            .and_then(|value| value.rsplit_once(':'))
+            .map(|(task, _)| task.to_string());
+        let operation = if let Some(task) = continuation_task {
+            Operation::BeginContinuation {
+                task,
+                room: prepared.session_id.clone(),
+                agent: prepared.prompt.target_agent_id().into(),
+                prompt: prepared.prompt.id().into(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            }
+        } else {
+            Operation::Begin {
+                owner: self
+                    .session_store
+                    .get_session(&prepared.session_id)?
+                    .owner_user_id()
+                    .into(),
+                room: prepared.session_id.clone(),
+                agent: prepared.prompt.target_agent_id().into(),
+                prompt: prepared.prompt.id().into(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            }
+        };
+        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(operation)? else {
             unreachable!()
         };
         // A workflow node turn completes through its validated handoff or final
@@ -153,6 +170,36 @@ impl KernelRuntimeOwnedState {
             })?;
         }
         self.reconcile_workflow_delegation(room, agent, prompt)?;
+        if !cancelled {
+            let catalog_handoff = self
+                .pending_mcp_continuations
+                .write()
+                .get(agent)
+                .is_some_and(|pending| {
+                    pending.session_id == room
+                        && pending.source_prompt_id.as_deref() == Some(prompt.id())
+                });
+            if catalog_handoff {
+                let next_prompt = format!("task-catalog:{}", prompt.id());
+                if let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(
+                    Operation::PrepareCatalogContinuation {
+                        room: room.into(),
+                        agent: agent.into(),
+                        prompt: prompt.id().into(),
+                        run: run.into(),
+                        next_prompt: next_prompt.clone(),
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )? {
+                    if task.state == ExecutionState::Blocked
+                        || (task.state == ExecutionState::Working
+                            && task.pending_prompt_id.as_ref() == Some(&next_prompt))
+                    {
+                        return Ok(Some((task, false)));
+                    }
+                }
+            }
+        }
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
@@ -170,19 +217,7 @@ impl KernelRuntimeOwnedState {
                 .into_iter()
                 .find(|t| ledger::goals::is_check(t, prompt.id()))
             {
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        self.room_secret_observations
-                            .protect_transcript_entry(entry)
-                    })
-                    .collect::<Vec<_>>();
-                let result = super::agent_task_projection::task_public_outputs(
-                    &entries,
-                    prompt.id(),
-                    Some(answer_run),
-                )
-                .concat();
+                let result = self.take_private_assessment(room, agent, prompt.id(), answer_run);
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
@@ -469,6 +504,16 @@ impl KernelRuntimeState {
         attachment: &str,
         text: String,
     ) -> Result<(), DaemonError> {
+        self.dispatch_task_continuation_with_context(task, attachment, text, None)
+            .await
+    }
+    pub(super) async fn dispatch_task_continuation_with_context(
+        &self,
+        task: &AgentTaskExecution,
+        attachment: &str,
+        text: String,
+        hidden_system_context: Option<String>,
+    ) -> Result<(), DaemonError> {
         let id = task
             .pending_prompt_id
             .clone()
@@ -485,6 +530,10 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
+        let prompt = match hidden_system_context {
+            Some(context) => prompt.with_hidden_system_context(context),
+            None => prompt,
+        };
         let prompt = match workflow {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,

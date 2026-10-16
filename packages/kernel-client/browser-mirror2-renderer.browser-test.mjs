@@ -813,3 +813,102 @@ test('MP-10: Notes input settling rejects a document replaced during the wait',a
   assert.equal(await page.evaluate(async()=>{window.releaseInput();return await window.idlePromise}),'MP-08: mirror document changed');
  }finally{await page.close()}
 });
+
+
+// MP-08/MP-10/MP-11 r38: real GitHub's large head spans multiple bounded packets.
+// The first reset must not expose a head-only document between those continuations.
+test('MP-10 navigation keeps the prior page until the continued document has visible content', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},
+      {id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'p'},
+      {id:'n5',parent:'n4',kind:'text',text:'Prior page stays visible'}]));
+    const shown = () => page.evaluate(() => [...document.querySelectorAll('#c > iframe')].filter(f=>getComputedStyle(f).visibility!=='hidden').map(f=>f.contentDocument?.body?.innerText??'').join('|'));
+    assert.match(await shown(),/Prior page stays visible/);
+    await apply(page, {...snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},
+      {id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'body{margin:0}'}]),document_id:'next',sequence:2});
+    await frames();
+    assert.match(await shown(),/Prior page stays visible/,'MP-10: head-only reset is prepared offscreen');
+    await apply(page,delta(3,[{op:'children',id:'n2',children:['n3','n5'],nodes:[
+      {id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:'a',attrs:{style:'position:absolute;width:1px;height:1px;clip:rect(0px,0px,0px,0px);overflow:hidden'}},
+      {id:'n7',parent:'n6',kind:'text',text:'Skip to content'}]}],{document_id:'next'}));
+    await frames();assert.match(await shown(),/Prior page stays visible/,'MP-10: a clipped skip link is not a paint');
+    await apply(page,delta(4,[{op:'children',id:'n5',children:['n6','n8'],nodes:[
+      {id:'n8',parent:'n5',kind:'element',tag:'h1'},{id:'n9',parent:'n8',kind:'text',text:'Sign in to GitHub'}]}],{document_id:'next'}));
+    await frames();assert.match(await shown(),/Sign in to GitHub/);assert.doesNotMatch(await shown(),/Prior page stays visible/);
+    assert.equal(await page.locator('#c > iframe').count(),1,'MP-11: the retired document is released');
+  } finally { await page.close(); }
+});
+
+test('MP-11 navigation retires unpainted replacements, preserves the last paint on failure, and closes both frames', async () => {
+  const page = await viewer();
+  try {
+    const old = [{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},
+      {id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'input',attrs:{id:'old'}}];
+    await apply(page,snapshot(old));await page.locator('#c > iframe').contentFrame().locator('input').click();await page.evaluate(async()=>{await window.r.settleInput();window.sent=[]});
+    const head = [{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'}];
+    await apply(page,{...snapshot(head),sequence:2,document_id:'next'});
+    await page.keyboard.type('must not reach the new document');
+    assert.deepEqual(await page.evaluate(()=>window.sent),[],'MP-11: the held document has no input authority');
+    await apply(page,{...snapshot(head),sequence:3,document_id:'third'});
+    assert.equal(await page.locator('#c > iframe').count(),2,'MP-11: one held paint plus one bounded replacement');
+    await page.evaluate(()=>window.r.close({preserveFrame:true}));
+    assert.equal(await page.locator('#c > iframe').count(),1);
+    assert.equal(await page.locator('#c > iframe').evaluate(f=>f.inert&&!!f.contentDocument.querySelector('#old')),true);
+    await page.evaluate(()=>window.r.close());assert.equal(await page.locator('#c > iframe').count(),0);
+  } finally {await page.close();}
+});
+
+test('MP-11 same-document protection reset replaces the live field immediately', async()=>{
+  const page=await viewer();
+  try{
+    const base=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'}];
+    await apply(page,snapshot([...base,{id:'n4',parent:'n3',kind:'element',tag:'input',attrs:{id:'field'}}]));
+    await apply(page,{...snapshot([...base,{id:'n4',parent:'n3',kind:'mask',tag:'input',size:[100,30]}]),sequence:2});
+    assert.equal(await page.locator('#c > iframe').count(),1,'MP-11: a policy reset cannot retain the unmasked field');
+    assert.equal(await page.locator('#c > iframe').evaluate(f=>f.contentDocument.querySelector('[aria-label="Protected content"]')?.getBoundingClientRect().width),100);
+  }finally{await page.close();}
+});
+
+test('MP-10 a continued page containing only an open shadow root can paint', async()=>{
+ const page=await viewer();
+ try{
+  await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Prior'}]));
+  await apply(page,{...snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
+    {id:'n4',parent:'n3',kind:'element',tag:'div'},{id:'n5',parent:'n4',kind:'shadow'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'Shadow page'}]),sequence:2,document_id:'shadow'});
+  assert.equal(await page.locator('#c > iframe').count(),1);assert.equal(await page.evaluate(()=>window.r.painted),true);
+ }finally{await page.close();}
+});
+
+// MP-08/MP-10/MP-11: an already acknowledged prefix can arrive while a person extends their drag.
+test('MP-10: a selection echo cannot move an in-progress pointer range',async()=>{
+ const page=await viewer();
+ try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The full released selection'}])));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument,p=d.querySelector('p'),t=p.firstChild;p.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1}));d.getSelection().setBaseAndExtent(t,0,t,17)});
+  await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));await page.evaluate(()=>window.r.settleInput());
+  await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','the old kernel prefix must not replace the person’s held range');
+  await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));
+  await apply(page,delta(3,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after release another actor’s selection still projects');
+ }finally{await page.close()}
+});
+
+test('MP-10: a cancelled or externally released drag cannot keep later kernel selections frozen',async()=>{
+ for(const release of ['cancel','outside','blur','navigation']){
+  const page=await viewer();
+  try{
+   const nodes=page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The full released selection'}]);
+   await apply(page,snapshot(nodes));
+   await page.evaluate(()=>{const d=window.r.frame.contentDocument,p=d.querySelector('p'),t=p.firstChild;p.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1}));d.getSelection().setBaseAndExtent(t,0,t,17)});
+   await page.waitForFunction(()=>window.sent.some(a=>a.kind==='selection'));await page.evaluate(()=>window.r.settleInput());
+   if(release==='navigation')await apply(page,{...snapshot(nodes),document_id:'replacement',selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}});
+   else{
+    await page.evaluate(release=>{if(release==='cancel')window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointercancel',{bubbles:true}));else if(release==='outside')document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));else window.dispatchEvent(new Event('blur'))},release);
+    await apply(page,delta(2,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+   }
+   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The',release);
+  }finally{await page.close()}
+ }
+});

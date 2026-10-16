@@ -16,15 +16,9 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
 const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
 export const POPUP_CORNER = 16;
+/** Chrome 155's suggestion list holds at most 8 rows of 40 DIP in an 8 DIP frame (observed 48..288). */
+export const OMNIBOX_LIST_HEIGHT = 344;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
-export function cornerMasks(width, height, r) {
-  const masks = [];
-  for (let row = 0; row < r; row++) {
-    const dy = row + 0.5, w = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
-    if (w > 0) masks.push({x: 0, y: height - r + row, width: w, height: 1}, {x: width - w, y: height - r + row, width: w, height: 1});
-  }
-  return masks;
-}
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
   const [, screenX, screenY, width, height, outerWidth, outerHeight] = state;
@@ -147,15 +141,23 @@ export class ChromeWindows {
       bound.push(Object.freeze({...binding, in_window: true, page_overlay: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
     }
     // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
-    const popup = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
-      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale);
+    const live = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
+      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), held = this.omniboxHeld;
+    // Chrome resizes the list on almost every key and each new stream left the person without a list
+    // for 0.4-1.3 s (r10, r11 profile): the stream opens at the list's full height and keeps it while the
+    // list stays open. Below the live list it shows the page (its masks apply); input there is refused.
+    const full = live && {...live, height: Math.max(live.height, Math.min(OMNIBOX_LIST_HEIGHT, Math.floor((tabbed.bounds.height / tabbed.scale - live.y) / 2) * 2))};
+    const popup = live && held?.window_generation === tabbed.window_generation && held.x === live.x && held.y === live.y
+      && held.width === live.width && live.height <= held.height ? held : full;
+    this.omniboxHeld = popup && {...popup, window_generation: tabbed.window_generation};
+    this.omniboxLive = live;
     if (popup && bound.length < 8) {
       const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
       const key = `${tabbed.window_generation}:${r.id}:in-window:${r.x},${r.y},${r.width}x${r.height}`;
       const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
       ids.set(key, auxiliary_id);
       const binding = bind(r);
-      bound.push(Object.freeze({...binding, in_window: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+      bound.push(Object.freeze({...binding, in_window: true, omnibox: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
     }
     this.auxiliaryIds = ids;
     return bound;
@@ -207,6 +209,33 @@ export class ChromeWindows {
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
   }
+  /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
+   * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
+  async inWindowCurrent(source, point = null) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    if (source.isCurrent() !== true) return false;
+    if (!point) return true;
+    const live = this.omniboxLive, scale = this.bound.tabbed.scale, region = source.region.window_region;
+    const x = region.left / scale + point.x, y = region.top / scale + point.y;
+    return !!live && x >= live.x && x < live.x + live.width && y >= live.y && y < live.y + live.height;
+  }
+  /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
+   * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
+  inWindowOver(rect) {
+    const tabbed = this.bound?.tabbed, live = this.omniboxLive, scale = tabbed?.scale;
+    // The list's stream is taller than a short list: only the live list covers the page.
+    const over = b => !!b && b.x < rect.left + rect.width && rect.left < b.x + b.width && b.y < rect.top + rect.height && rect.top < b.y + b.height;
+    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && over(omnibox
+      ? live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}
+      : {x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height}));
+  }
+  /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
+  async inWindowOverNow(rect) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return this.inWindowOver(rect);
+  }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
   watch(read, interval = 150) {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
@@ -226,9 +255,12 @@ export class ChromeWindows {
   auxiliaryState() {
     const tabbed = this.bound?.tabbed;
     if (!tabbed?.isCurrent()) return [];
-    return this.bound.auxiliary.map(({auxiliary_id, bounds}) => ({auxiliary_id,
+    // The omnibox list's stream keeps its grown size; the viewer shows only the live list (r10).
+    const live = this.omniboxLive;
+    return this.bound.auxiliary.map(({auxiliary_id, bounds, omnibox}) => ({auxiliary_id,
       x: Math.round((bounds.x - tabbed.bounds.x) / tabbed.scale), y: Math.round((bounds.y - tabbed.bounds.y) / tabbed.scale),
-      width: (bounds.width - bounds.width % 2) / tabbed.scale, height: (bounds.height - bounds.height % 2) / tabbed.scale}));
+      width: (bounds.width - bounds.width % 2) / tabbed.scale,
+      height: Math.min((bounds.height - bounds.height % 2) / tabbed.scale, omnibox && live ? Math.floor(live.height / 2) * 2 : Infinity)}));
   }
   auxiliary(auxiliaryId) {
     const binding = this.current().auxiliary.find(a => a.auxiliary_id === auxiliaryId);
@@ -251,13 +283,13 @@ export class ChromeWindows {
         contentHeight: tabbed.bounds.height - (binding.bounds.y - tabbed.bounds.y), isCurrent: binding.isCurrent};
     }
     if (binding.in_window) {
-      // Below the band only (the band streams the rest); its rounded corners show page pixels: masked.
-      // Its rect lies over the page, so the active Tab's masks apply there too (see the page rect).
+      // Below the band only (the band streams the rest). Its rect lies over the page (around its rounded
+      // corners, below a shrunk list): the active Tab's masks apply there on every readback (see the page rect).
       if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
       const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2;
       return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
         rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
-        contentHeight: tabbed.bounds.height - tabbed.content_top, masks: cornerMasks(width, height, POPUP_CORNER * tabbed.scale),
+        contentHeight: tabbed.bounds.height - tabbed.content_top,
         pageRect: tabbed.page_rect, isCurrent: binding.isCurrent};
     }
     return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
@@ -319,6 +351,7 @@ export class InputArbiter {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
       const tab = await this.activeTab();
       if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
     const current = async () => {

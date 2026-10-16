@@ -17,7 +17,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
-import { blockedUrl, extensionManagementUrl } from "./kernel-browser-policy.mjs";
+import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
@@ -56,7 +56,6 @@ const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
-const EXTENSIONS_REFUSED = "MP-11: extensions are the person's own; an agent cannot open the Web Store or chrome://extensions or act on them";
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
@@ -880,6 +879,7 @@ export class KernelBrowserHost {
       if (request.method === "host.computer") {
         const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
         if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
+        await admitComputerMutation(this, request.params);
         const nativeParams={...request.params,observed_by:observer};
         if (request.params.op === 'display_subscribe') {
           if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');

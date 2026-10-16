@@ -7,6 +7,10 @@ import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
 import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
 import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
+// MP-08/MP-10/MP-11: keep the worker's private fixed stage until the public error classifier.
+export function nativeReadbackFailure(capture,message){
+ return Object.assign(Error(message),{nativeStage:capture.helperStage});
+}
 export function startNativeReadback(capture,config){
  if(!ownsDisplay(capture.display)||!capture.valid()||!Number.isSafeInteger(capture.pid)||capture.pid<=1)
   throw Error('MP-11: native readback source not owned');

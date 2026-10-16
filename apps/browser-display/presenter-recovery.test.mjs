@@ -36,3 +36,18 @@ test('MP-08/MP-11 replacement delivery repeats admission instead of replaying an
  try{assert.equal(commands[0].op,'display_resume');assert.equal(commands[0].subscription_id,'old');
  assert.deepEqual(registered,['fresh']);}finally{await display.close()}
 });
+
+test('MP-08/MP-10/MP-11 first independent push during registration reaches the presenter',async()=>{
+ const previous=BrowserDisplayPresenter.prototype.present,seen=[],listeners=new Set();
+ BrowserDisplayPresenter.prototype.present=async function(frame){this.sequence=frame.sequence;return true};
+ const binding={subscription_id:'fresh',generation:7},frame={subscription_id:'fresh',generation:7,sequence:1,kind:'png',width:1280,height:800,data:new Uint8Array([1])};
+ const transport={kernelProtocolVersion:535,displayEventEncoding:'CXD1',onEvent:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},
+  subscribeDisplay:async()=>{for(const listener of listeners)listener({event:'kernel_browser_frame',subscription_id:'fresh',frame})},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>({KernelBrowser:{result:command.op==='display_subscribe'?binding:{push:'running'}}})};
+ let stream;
+ try{
+  stream=await attachBrowserDisplay({width:1280,height:800},transport,{tab_id:'tab',generation:7},{onPresented:frame=>seen.push(frame.sequence)});
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.deepEqual(seen,[1],'MP-10 do not lose the first independently decoded frame in the registration listener gap');
+ }finally{await stream?.close();BrowserDisplayPresenter.prototype.present=previous}
+});

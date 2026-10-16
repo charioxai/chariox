@@ -430,7 +430,7 @@ pub(super) async fn handle_incoming_envelope(
             subscription_scope,
             resume_from_event_id,
         } => {
-            if subscription_scope.as_deref() == Some("kernel_browser_display") {
+            if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
                 return super::browser_display::enqueue_subscribe(
                     router, outgoing_tx, subscription_tasks, event_runtime,
                     super::browser_display::DisplaySubscription {
@@ -438,6 +438,7 @@ pub(super) async fn handle_incoming_envelope(
                         display_id: session_id, generation: attachment_id,
                         identity: caller_identity, public_key: client_public_key,
                         resume: resume_from_event_id,
+                        recover: subscription_scope.as_deref()==Some(chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE),
                     },
                 ).await;
             }

@@ -54,10 +54,7 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], 525);
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
-    assert_eq!(
-        snapshot["peer_protocol"],
-        133
-    );
+    assert_eq!(snapshot["peer_protocol"], 133);
     assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
@@ -77,4 +74,33 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
             serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
+}
+
+// MP-08/MP-10/MP-11:535/143 registration retains525 as sole resume authority.
+#[test]
+fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
+    let bytes = include_bytes!("display-registration-535.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "bd3b96605c2cc8c92f6b1322217abb768aaf62f16a133e6b842e7825d660f45f"
+    );
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(value["local_protocol"], 535);
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 535);
+    assert_eq!(value["peer_protocol"], 143);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 143);
+    let registration: chariox_relay::protocol::RelayEnvelope =
+        serde_json::from_value(value["registration"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(registration).unwrap(),
+        value["registration"]
+    );
+    assert_eq!(
+        value["registration"]["subscription_scope"],
+        chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE
+    );
+    assert!(value["registration"]["resume_from_event_id"].is_null());
+    let peer: crate::transport::relay_peer::RelayPeerRequest =
+        serde_json::from_value(value["worker_request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(peer).unwrap(), value["worker_request"]);
 }

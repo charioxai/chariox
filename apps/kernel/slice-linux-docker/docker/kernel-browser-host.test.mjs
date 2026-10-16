@@ -1727,3 +1727,57 @@ test("MP-08/MP-10/MP-11 native subscription readiness does not hold input", { ti
     assert.equal(polled.ok, true);
   } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
 }));
+
+// MP-08/MP-10/MP-11 review #1001 P1: no App, Vault or clipboard denial can stand in
+// for extension authority on the native Computer path. Inspect live, including unregistered Tabs.
+test('MP-11 native Computer mutations cannot operate owner-only extension surfaces', () => using(async ({ host, chromium, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = host.tabs.get(opened.tab_id);
+  const binding = { surface_id: 'desktop', generation: 'native-1', width: 1280, height: 800, environment: {}, ownedProcesses: async () => [] };
+  chromium.desktop = { binding: () => binding };
+  let native = 0, accessible = 0, launched = 0;
+  host.nativeComputer.channel = null; // Exercise owner admission through the same injected physical helper.
+  host.nativeComputer.execute = async () => { native++; return { applied: true }; };
+  host.nativeAccessibility.action = async () => { accessible++; return { applied: true }; };
+  chromium.desktop.launchApplication = async () => { launched++; return {}; };
+  const params = { surface_id: binding.surface_id, generation: binding.generation, _agent_input: true, observed_by: 'agent:a' };
+  const send = (op, extra = {}) => host.handle({ id: 'native-extension', method: 'host.computer', params: { ...params, op, ...extra } });
+  const click = { input: { kind: 'click', x: 600, y: 300 } };
+  assert.equal((await send('input', click)).ok, true, 'ordinary native input still works');
+  for (const url of ['https://chromewebstore.google.com/detail/x/abc', 'chrome://extensions/', 'chrome-extension://abc/popup.html']) {
+    pages.set(tab.target_id, { url }); // Native navigation has not yet reconciled the host's cached URL.
+    assert.equal(tab.url, 'https://example.com/');
+    for (const [op, extra] of [['input', click], ['input', { input: { kind: 'key', key: 'Enter' } }], ['target_action', {}], ['launch_application', { application_id: 'chrome' }]]) {
+      const before = [native, accessible, launched];
+      const reply = await send(op, extra);
+      assert.equal(reply.ok, false, `${url}: ${op} must refuse Add to Chrome/confirmation`);
+      assert.match(reply.error.message, /extension_management_not_granted/);
+      assert.deepEqual([native, accessible, launched], before, 'no effect before refusal');
+    }
+  }
+  assert.equal((await send('input', { ...click, _agent_input: false, observed_by: 'terminal:owner' })).ok, true, 'the person still manages extensions');
+  pages.set(tab.target_id, { url: 'https://example.com/' });
+  pages.set('unreconciled-popup', { url: 'https://chrome.google.com/webstore/detail/x/abc' });
+  assert.equal((await send('input', click)).ok, false, 'a newly opened extension surface is already fenced');
+  pages.delete('unreconciled-popup');
+  pages.set('extension-side-panel', { type: 'other', url: 'chrome-extension://abc/side-panel.html' });
+  assert.equal((await send('input', click)).ok, false, 'non-page interactive extension surfaces are also owner-only');
+  pages.delete('extension-side-panel');
+  pages.set('tab-group-worker', { type: 'service_worker', url: 'chrome-extension://kernel/background.js' });
+  assert.equal((await send('input', click)).ok, true, 'closing extension management restores ordinary input');
+}));
+
+test('MP-11 native agent mutations fail closed when browser destinations cannot be proved', () => using(async ({ host, chromium, connection }) => {
+  await host.request({ op: 'open', url: 'https://example.com/' });
+  const binding = { surface_id: 'desktop', generation: 'native-1', width: 1280, height: 800, environment: {}, ownedProcesses: async () => [] };
+  chromium.desktop = { binding: () => binding };
+  let calls = 0;
+  host.nativeComputer.execute = async () => { calls++; return { applied: true }; };
+  connection.beforeSend = async method => { if (method === 'Target.getTargets') throw new Error('private CDP detail'); };
+  try {
+    const reply = await host.handle({ id: 'native-unknown', method: 'host.computer', params: { op: 'input', surface_id: binding.surface_id, generation: binding.generation, _agent_input: true, observed_by: 'agent:a', input: { kind: 'click', x: 600, y: 300 } } });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error.message, /extension_management_not_granted/);
+    assert.equal(calls, 0);
+  } finally { connection.beforeSend = null; }
+}));

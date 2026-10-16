@@ -155,6 +155,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/native-x11.py"),
     ),
     (
+        "native-input-destination.py",
+        include_bytes!("../../slice-linux-docker/docker/native-input-destination.py"),
+    ),
+    (
         "native-clipboard.py",
         include_bytes!("../../slice-linux-docker/docker/native-clipboard.py"),
     ),

@@ -260,3 +260,24 @@ for(const retire of ['metadata','document'])test(`MP-08/MP-10/MP-11: ${retire} r
   assert.equal(source.sample(),null);assert.equal(source.publishing,false);
  }finally{await source.close()}
 });
+// r10 (mirror r38 white video regions): Chrome's omnibox dropdown is drawn inside the tabbed window over the page.
+// A page region under it holds its last frame (never Chrome's pixels); a retire while a readback is validated
+// leaves the source running (it threw on the vanished readback and fenced the whole region).
+test('MP-08/MP-10/MP-11 a page region holds its frame under in-window Chrome UI and survives a retire mid-publish',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('no CDP: '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true,timing:()=>{}});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const published=[];source.subscribe(sample=>published.push(sample.serial));
+ const readback=serial=>({width:64,height:32,length:64*32*4,pixels:Buffer.alloc(64*32*4,serial),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now(),release(){}});
+ let covered=false;source.occluded=()=>covered;
+ source.pending=readback(1);await source.publish();
+ covered=true;source.pending=readback(2);await source.publish();
+ assert.deepEqual(published,[1],'the dropdown\'s pixels never leave');assert.equal(source.sample().serial,1,'the last page frame stays');
+ covered=false;source.pending=readback(3);await source.publish();assert.deepEqual(published,[1,3]);
+ source.validateCurrent=async()=>{source.pending=null;return true;};// a protection retire during the await
+ source.pending=readback(4);await source.publish();
+ assert.equal(source.closed,false,'the region keeps running');assert.equal(source.sample().serial,3);
+ await source.close();
+});

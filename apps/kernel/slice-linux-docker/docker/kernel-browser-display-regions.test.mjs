@@ -220,7 +220,7 @@ test('MP-11 the omnibox dropdown over the page binds the active Tab for masks an
  const f=fixture('browser_auxiliary'),active={tab_id:'a',target_id:'target-a',document_id:'doc-a'};
  const popup={auxiliary_id:9,role:'auxiliary',xid:42,parent_xid:42,in_window:true,bounds:{x:238,y:174,width:2156,height:176},isCurrent:()=>true};
  const sessions=[];f.host.browser.resolvePageTarget=async target=>(sessions.push(target),{connection:{},sessionId:'s-'+target});
- Object.assign(f.host.chromeWindows,{auxiliary:()=>popup,auxiliaryRegion:()=>({surface:'browser_auxiliary',inWindow:true,window:{id:42,width:2560,height:1774},rect:{left:238,top:174,width:2156,height:176},contentHeight:1600,masks:[],pageRect:{left:0,top:174,width:2560,height:1600},isCurrent:()=>true})});
+ Object.assign(f.host.chromeWindows,{auxiliary:()=>popup,auxiliaryRegion:()=>({surface:'browser_auxiliary',inWindow:true,window:{id:42,width:2560,height:1774},rect:{left:238,top:174,width:2156,height:176},contentHeight:1600,pageRect:{left:0,top:174,width:2560,height:1600},isCurrent:()=>true})});
  let front=true;f.host.arbiter={activeTab:async()=>active,isActiveTab:async(tab)=>front&&tab===active};
  f.command.target.auxiliary_id=9;
  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});

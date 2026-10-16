@@ -3,7 +3,7 @@
 // geometry. This is not a client API for naming windows, PIDs or policies.
 import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
-import {startNativeReadback} from './kernel-browser-native-readback.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {attestNativeRegion,regionProtection} from './kernel-browser-region-attestation.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
@@ -80,8 +80,9 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,masks,pageOverlay,pageDocument,pageRect,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,pageOverlay,pageDocument,pageRect,occluded,...options}){
   super(options);
+  if(surface==='page'&&typeof occluded==='function')this.occluded=occluded;
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
   this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect,inWindow===true);
@@ -89,8 +90,6 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;
   if(this.pageOverlay&&typeof pageDocument!=='string')throw Error('MP-11: invalid native page overlay');
   if(this.pageOverlay&&this.region.pageTop!==0)throw Error('MP-11: invalid native page overlay');
-  // Owner-fixed masks of an in-window popup (raster px), applied to every readback.
-  this.staticMasks=inWindow===true&&Array.isArray(masks)?Object.freeze(masks.map(m=>Object.freeze({x:m.x,y:m.y,width:m.width,height:m.height}))):[];
   // An in-window popup is drawn over the page and closes without an X event: until the owner retires it,
   // its crop may show page pixels. The active Tab's masks, at the page's native origin, apply to every readback.
   this.overPage=inWindow===true&&!this.pageOverlay;
@@ -100,18 +99,13 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  // Protection of a crop that is not a whole page region.
  protection(){
   if(this.pageOverlay)return regionProtection(this,0,0);
-  const masks=this.staticMasks;
-  if(this.overPage){
-   const {left,top}=this.region.window_region,page=regionProtection(this,left-this.pageRect.left,top-this.pageRect.top),regions=page.regions.bind(page);
-   page.regions=async raw=>[...await regions(raw),...masks];
-   return page;
-  }
+  if(this.overPage){const {left,top}=this.region.window_region;return regionProtection(this,left-this.pageRect.left,top-this.pageRect.top);}
   // The band is proved disjoint from page pixels by its boundary; a separate auxiliary window is
   // selected by the browser owner. The kernel policy/lease still gates every sample and asynchronous commit.
   return {guard:null,beforeAt:-Infinity,
    async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
    retire(){this.guard=null;},tracker(){return {targets:false};},
-   async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [...masks];} };
+   async regions(raw){if(!this.guard||raw.captured_ms<this.beforeAt)throw Error('MP-11: fill-target capture unavailable');return [];} };
  }
  valid(){return super.valid()&&this.isCurrent?.()===true;}
  // Diagnostics for the dialog's page overlay (labels and counts only).
@@ -136,8 +130,12 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
-   if(this.pageOverlay)await this.attestOverlay();
+   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
+   if(this.pageOverlay){
+    await this.attestOverlay();
+    for(let n=0;n<200&&!this.currentSample()&&!this.closed;n++)await delay(10);
+    if(!this.currentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
+   }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;
   }catch(error){if(this.pageOverlay)this.timing(`native_overlay_refused ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,80)}`,performance.timeOrigin+performance.now());await this.close();throw error;}
@@ -158,7 +156,8 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   for(let attempt=0;;attempt++){
    const raw=this.latest?.raw;
    try{const {scrim,inliers,dx,dy}=overlayAttestation(reference,raw,masked,this.scale);
-    this.regions=regionProtection(this,-dx,-dy);await this.regions.refresh();
+    // Review #1016 P1: the readbacks so far were masked at the zero offset; none may be admitted.
+    this.retireFrames();this.regions=regionProtection(this,-dx,-dy);await this.regions.refresh();this.wake(true);
     this.timing(`native_overlay_admitted ${scrim.toFixed(3)} ${inliers.toFixed(3)} ${dx},${dy} ${attempt}`,performance.timeOrigin+performance.now());break;}
    catch(error){this.timing(`native_overlay_attempt ${attempt} ${error.scrim?.toFixed?.(3)} ${error.inliers?.toFixed?.(3)} ${error.dx},${error.dy} ${reference.width}x${reference.height} ${raw?.width}x${raw?.height}`,performance.timeOrigin+performance.now());
     if(attempt>=3||error.scrim===undefined||!this.valid())throw error;await delay(150);}

@@ -137,6 +137,15 @@ test('MP-11 finding 1 native helper uses the same typed Browser/Vault refusal fo
     {...publicDependencies,PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
 });
 
+test('MP-08/MP-10/MP-11 each native agent mutation carries the current browser process identity',async()=>{
+ const sent=[],processes=[{pid:200,started:'1'},{pid:300,started:'2'}];
+ const scoped={...binding,ownedProcesses:async()=>processes,browserProcesses:async()=>[processes[1]]};
+ const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{sent.push(request);return {applied:true}}});
+ await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:10,y:10}},{});
+ assert.deepEqual(sent[0].processes,[{...processes[0],browser:false},{...processes[1],browser:true}]);
+ assert(!processes.some(process=>Object.hasOwn(process,'browser')),'never mutate a shared ownership inventory');
+});
+
 
 test('MP-11 R1 agent pointer holds require the same human admission as keyboard holds',async()=>{
   let calls=0;

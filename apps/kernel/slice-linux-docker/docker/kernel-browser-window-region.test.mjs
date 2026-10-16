@@ -150,7 +150,7 @@ test('MP-11 a dialog page overlay accepts the exact native page rect inside the 
 test('MP-11 an in-window popup over the page masks the active Tab\'s protected fields on every readback',async()=>{
  const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
  const base={surface:'browser_auxiliary',inWindow:true,window:{id:42,width:2560,height:1774},contentHeight:1600,isCurrent:()=>true,
-  rect:{left:238,top:174,width:2156,height:176},masks:[{x:0,y:175,width:27,height:1}],pageRect:{left:8,top:174,width:2544,height:1600},
+  rect:{left:238,top:174,width:2156,height:176},pageRect:{left:8,top:174,width:2544,height:1600},
   display:{},pid:7,connection:{},sessionId:'s-a',tab:{tab_id:'a',target_id:'target-a',document_id:'chrome-window-1-1-9'},scale:2,
   policy:{targets:[{target_id:'target-a'}],values:[]},browser:{},allowed:()=>true,timing:()=>{}};
  assert.throws(()=>new NativeWindowRegionCapture({...base,pageRect:undefined}),/auxiliary region/,'no page origin: refused');
@@ -161,9 +161,65 @@ test('MP-11 an in-window popup over the page masks the active Tab\'s protected f
   assert.equal(regions.tracker().targets,true,'attribute-only protection changes retire its frames');
   await regions.refresh();
   assert.deepEqual(await regions.regions({captured_ms:performance.timeOrigin+performance.now()+1}),
-   [{x:70,y:40,width:200,height:60},{x:0,y:175,width:27,height:1}],'the field at the crop offset, plus the corner slivers');
+   [{x:70,y:40,width:200,height:60}],'the field at the crop offset');
   let fenced=0;source.fence=()=>{fenced++;};
   source.onCdp({sessionId:'s-a',method:'Page.frameNavigated',params:{frame:{}}});
   assert.equal(fenced,1,'the active Tab\'s navigation retires the popup frames');
  }finally{NativeRegionProtection.prototype.measure=measure;}
+});
+
+// Review #1016 @53ad3e893 P1: the overlay's first readbacks are masked at the zero offset. When the attestation finds
+// the page inside Chrome's window frame (here 4 px), none of them may be admitted, nor any readback still in flight.
+test('MP-11 a dialog overlay retires its zero-offset frames when the attestation shifts the masks',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const {encodePng}=await import('./kernel-browser-pixels.mjs');
+ const width=320,height=200,frame=4,W=width+2*frame,reference=Buffer.alloc(width*height*4),native=Buffer.alloc(W*height*4,60);
+ let seed=11;for(let i=0;i<reference.length;i+=4){for(let c=0;c<3;c++){seed=(seed*1103515245+12345)>>>0;reference[i+c]=40+(seed>>>24)%200;}reference[i+3]=255;}
+ for(let y=0;y<height;y++)for(let x=0;x<width;x++)for(let c=0;c<3;c++)native[(y*W+x+frame)*4+2-c]=Math.round(reference[(y*width+x)*4+c]*0.4);
+ const measure=NativeRegionProtection.prototype.measure;
+ NativeRegionProtection.prototype.measure=async()=>[[100,40,80,30]];// a Vault-filled field, page raster px
+ try{
+  const source=new NativeWindowRegionCapture({surface:'browser_auxiliary',inWindow:true,pageOverlay:true,pageDocument:'doc-a',
+   window:{id:42,width:W,height:300},contentHeight:213,rect:{left:0,top:87,width:W,height:200},isCurrent:()=>true,
+   display:{},pid:7,connection:{send:async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'doc-a'}}}:{}},sessionId:'s',
+   tab:{tab_id:'t',target_id:'x',document_id:'chrome-window-1-1'},scale:1,hostScale:1,policy:{targets:[],values:[]},browser:{},allowed:()=>true,timing:()=>{}});
+  source.screenshot=async()=>({data_base64:encodePng(width,height,reference)});
+  source.regions=source.protection();await source.regions.refresh();
+  let released=0;source.latest={raw:{width:W,height,pixels:native,serial:1,captured_ms:0,release(){released++;}},serial:1};
+  const revision=source.regionRevision;
+  await source.attestOverlay();
+  assert.equal(source.sample(),null,'no frame masked at the zero offset is admitted');
+  assert.equal(released,1,'the cached zero-offset raster is released');
+  assert.ok(source.regionRevision>revision,'a readback in flight under the old projection is rejected');
+  assert.deepEqual(await source.regions.regions({captured_ms:performance.timeOrigin+performance.now()+1}),[{x:104,y:40,width:80,height:30}],'the field at the attested offset');
+ }finally{NativeRegionProtection.prototype.measure=measure;}
+});
+
+// Review #1016 @05a700a84 P1: a readback masked under the old projection can be suspended in publication's final
+// lease check while the attestation re-projects the masks; it must not become the latest frame when the check returns.
+test('MP-11 a readback masked before a mask re-projection is not published after the final lease check',async()=>{
+ let release,checks=0,released=0,encoded=0;
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
+  isCurrent:()=>true,validateCurrent:()=>++checks===2?new Promise(resolve=>{release=resolve;}):Promise.resolve(true),policy:{},allowed:()=>true,connection:{},tab:{tab_id:'t',document_id:'d'},timing:()=>{}});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
+ source.pending={width:100,height:50,pixels:Buffer.alloc(100*50*4),captured_ms:1,serial:1,release:()=>{released++;}};
+ source.subscribe(()=>{encoded++;});
+ const publishing=source.publish();
+ for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.ok(release,'publication waits in its final lease check');
+ source.retireFrames();source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};// the attestation's new projection
+ release(true);await publishing;
+ assert.equal(source.latest,null,'the old projection\'s raster is not cached');
+ assert.equal(encoded,0,'nor delivered');assert.equal(released,1,'and is released');
+ await source.close();
+});
+
+test('MP-11 overlay startup admits only a readback of the attested projection',async()=>{
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
+  isCurrent:()=>true,policy:{},allowed:()=>true,connection:{},timing:()=>{}});
+ source.latest={raw:{release(){}},revision:source.regionRevision};
+ assert.equal(source.currentSample(),true);
+ source.regionRevision++;
+ assert.equal(source.currentSample(),false,'a frame of the previous projection does not satisfy startup');
 });
