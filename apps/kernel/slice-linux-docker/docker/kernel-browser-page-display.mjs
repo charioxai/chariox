@@ -30,6 +30,15 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
    args:{window,viewport,validateCurrent:current},window,tab,policy,generation,Capture});
  });
 }
+// MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
+// crop. It grants no input authority; ordinary admission and the final guard run.
+export function visiblePageInputSource(host,stream,tab,scope){
+ if(host.displays.get(stream.subscription_id)!==stream||stream.regionTarget?.kind!=='visible_page'||
+  stream.tab_id!==tab.tab_id||stream.generation!==host.generation||stream.regionLease?.document_id!==tab.document_id||
+  stream.observed_by!==scope||stream.suspended||!(stream.expires>Date.now())||
+  !stream.regionWindow?.isCurrent()||!stream.regionSource?.attested||!stream.regionSource.valid())refuse();
+ return stream.regionSource;
+}
 export async function inputVisiblePage(host,stream,command,scope,signal){
  // The caller already re-admitted this exact source/window/document. Keep all
  // normal page target, focus, cancellation and actor checks in host.request.
@@ -40,10 +49,15 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
   if(!Number.isSafeInteger(x)||!Number.isSafeInteger(y)||x<0||y<0||x>=stream.css_width||y>=stream.css_height)refuse();
  const {binding_id,sequence,region_document_id,...page}=command;
  assertNotCancelled(signal);
- if(!await stream.regionCurrent())refuse();
- return host.request({...page,observed_by:scope},{signal,inputGuard:async()=>{
-  assertNotCancelled(signal);if(!await stream.regionCurrent())refuse();
- }});
+ const inputGuard=async()=>{
+  assertNotCancelled(signal);
+  const tab=host.tabs.get(command.tab_id);if(!tab)refuse();
+  visiblePageInputSource(host,stream,tab,scope);
+  if(!await stream.regionCurrent())refuse();
+  visiblePageInputSource(host,stream,tab,scope);
+ };
+ await inputGuard();
+ return host.request({...page,observed_by:scope},{signal,inputGuard,nativeDisplay:stream});
 }
 
 // MP-08/MP-11: the private frame-size hint may select an existing kernel crop;

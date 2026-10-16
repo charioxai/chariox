@@ -1,4 +1,4 @@
-import {captureVisiblePage,subscribeVisiblePage} from './kernel-browser-page-display.mjs';
+import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -628,7 +628,7 @@ export class KernelBrowserHost {
     for (const id of observed.keys()) if (!this.tabs.has(id)) observed.delete(id);
     return result;
   }
-  async request(command, { signal, inputGuard } = {}) {
+  async request(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
@@ -780,7 +780,7 @@ export class KernelBrowserHost {
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
-        this.compositors.get(tab.tab_id)?.source?.wake?.();
+        (nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
       };
       // MP-08/MP-11: before the page can see it, so every call it causes runs as the agent.
       if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
@@ -793,7 +793,7 @@ export class KernelBrowserHost {
         // Protocol 530: a page drag is the person's, on a page they are watching.
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
-        const candidate=this.compositors.get(tab.tab_id)?.source;
+        const candidate=nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source;
         const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
@@ -803,7 +803,7 @@ export class KernelBrowserHost {
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
         deferred?.ack?.catch(()=>{});
-        if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
+        if(dispatched)(nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
         this.timing('cdp_input', at);
       }
       catch (error) {

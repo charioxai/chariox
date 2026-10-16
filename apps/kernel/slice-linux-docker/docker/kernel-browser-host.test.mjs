@@ -1781,3 +1781,18 @@ test('MP-11 native agent mutations fail closed when browser destinations cannot 
     assert.equal(calls, 0);
   } finally { connection.beforeSend = null; }
 }));
+
+// MP-08/MP-10/MP-11:536's cropped page uses the ordinary admitted input path,
+// and the crop's native wheel instead of an instant CDP scroll fallback.
+test('MP-08/MP-10/MP-11 visible-page wheel reaches its admitted native source',()=>using(async({host,sent})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),wheels=[];
+ const source={attested:true,valid:()=>true,wheel:async(...args)=>{wheels.push(args);return true},wake(){}};
+ const stream={close:async()=>{},subscription_id:'page-crop',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
+ host.displays.set(stream.subscription_id,stream);let fronts=0;host.nativeFront=async()=>{fronts++;return true};
+ await inputVisiblePage(host,stream,{op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}},'terminal:a');
+ assert.deepEqual(wheels,[[10,20,0,1]]);assert(fronts>0,'fresh active Tab remains required');
+ assert.equal(sent.filter(c=>c.method==='Input.dispatchMouseEvent'&&c.params.type==='mouseWheel').length,0);
+ host.displays.delete(stream.subscription_id);
+}));
