@@ -1863,3 +1863,11 @@ test('MP-08/MP-10 a display attach reports the viewer\'s initial push request',(
   assert.deepEqual(await host.request({op:'display_attach',subscription_id:plain.subscription_id,generation:tab.generation}),{attached:true,generation:tab.generation});
  }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
+
+// PERF_AUDIT 4.2.2/4.2.6: the window a Chrome UI input left is read concurrently with later input
+// (never in the host's serial barrier lane, where it queued every following key) and never starts the browser.
+test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>using(async({host})=>{
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
+ await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
+}));

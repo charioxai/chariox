@@ -641,8 +641,8 @@ test("MP-08/MP-10 a Tab click's reply carries the Tab the strip now shows", asyn
   const arbiter = new InputArbiter(followHost(active), {});
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { setTimeout(() => { active.target = "tb"; }, 30); return true; } };
   const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 300, y: 12 } } });
-  assert.equal(reply.dispatched, true);
-  assert.deepEqual(reply.chrome_window, { window_generation: 7, active_tab_id: "host-tab-b", auxiliary: [] });
+  assert.deepEqual(reply, { dispatched: true, _follow: { tab_id: "host-tab-a", switches: true } }, "answered at once: the serial input lane never waits for Chrome");
+  assert.deepEqual((await arbiter.follow(reply._follow)).chrome_window, { window_generation: 7, active_tab_id: "host-tab-b", auxiliary: [] });
 });
 test("MP-08/MP-10 an address-bar key's reply carries the omnibox list it opened", async () => {
   const active = { target: "ta", list: false };
@@ -653,15 +653,15 @@ test("MP-08/MP-10 an address-bar key's reply carries the omnibox list it opened"
   const stream = { regionSource: source }, command = input => ({ tab_id: "host-tab-a", document_id: "da", generation: 3, input });
   await arbiter.input({ stream, command: command({ kind: "click", x: 300, y: 60 }) });
   const reply = await arbiter.input({ stream, command: command({ kind: "text", text: "w" }) });
-  assert.equal(reply.dispatched, true);
-  assert.deepEqual(reply.chrome_window.auxiliary, [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }]);
+  assert.deepEqual(reply, { dispatched: true, _follow: { tab_id: "host-tab-a", switches: false } });
+  assert.deepEqual((await arbiter.follow(reply._follow)).chrome_window.auxiliary, [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }]);
 });
 test("MP-08/MP-10 a click that opens a Tab the kernel has not adopted yet leaves the window to the state read", async () => {
   const active = { target: "ta" };
   const arbiter = new InputArbiter(followHost(active), {});
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { active.target = "t-new"; return true; } };
   const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 600, y: 12 } } });
-  assert.deepEqual(reply, { dispatched: true });
+  assert.deepEqual(await arbiter.follow(reply._follow), {});
 });
 
 // Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed; it must not
@@ -701,4 +701,19 @@ test("MP-08/MP-10 a band input marks each native dispatch after its fences", asy
   assert.deepEqual(order, ["dispatch", "click", "dispatch", "chord"]);
   await assert.rejects(send({ kind: "click", x: 300, y: 12 }, "host-tab-b"), { code: "user_domain_stale_reference" });
   assert.equal(order.length, 4, "a refused input marks nothing");
+});
+
+// The follow-up reads are best effort and never part of the input: the kernel answers inputs in one
+// serial lane, and a follow-up wait there queued every later key (b3 r14union2 / vidlat r20: typed URLs lost
+// keys, "kernel request timed out"). The input answers at once; a stalled follow-up answers empty.
+test("MP-08/MP-10 a stalled follow-up read never holds a band input's reply", async () => {
+  const active = { target: "ta" };
+  const windows = { onOmnibox: () => true, focusOmnibox() {}, refreshWarm: () => new Promise(() => {}) };
+  const arbiter = new InputArbiter(followHost(active), windows);
+  const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
+  const started = performance.now(), alive = setInterval(() => {}, 50); // the host's event loop is never idle
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "key", key: "a" } } });
+  assert(performance.now() - started < 100, "the input itself never waits for the follow-up");
+  assert.deepEqual(await arbiter.follow(reply._follow).finally(() => clearInterval(alive)), {});
+  assert(performance.now() - started < 1000, "answered at the follow bound");
 });
