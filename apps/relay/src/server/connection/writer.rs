@@ -1,6 +1,7 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
 use crate::frame_transport::{
-    TransportFrame, CHUNK_BYTES, MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, WINDOW_BYTES,
+    TransportFrame, CHUNK_BYTES, MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS,
+    SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
@@ -14,40 +15,37 @@ enum Lane {
     Event,
     Ordered,
 }
-fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> Lane {
+/// Display events keep one FIFO per subscription (the stream), not one for all
+/// streams, so a small band frame is never queued behind another stream's bulk.
+fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> (Lane, Option<String>) {
     if let Message::Binary(bytes) = message {
-        return if crate::binary_event::decode(bytes)
-            .ok()
-            .is_some_and(|(header, _)| {
-                header.kind == "client_event" && display_route(&header.subscription_id)
-            }) {
-            Lane::Event
-        } else {
-            Lane::Ordered
+        return match crate::binary_event::decode(bytes) {
+            Ok((header, _))
+                if header.kind == "client_event" && display_route(&header.subscription_id) =>
+            {
+                (Lane::Event, Some(header.subscription_id))
+            }
+            _ => (Lane::Ordered, None),
         };
     }
     let Message::Text(text) = message else {
-        return Lane::Ordered;
+        return (Lane::Ordered, None);
     };
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(_) => return Lane::Ordered,
+        Err(_) => return (Lane::Ordered, None),
     };
     match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
         "client_response"
         | "client_metadata_response"
         | "daemon_peer_response"
-        | "client_connected" => Lane::Reply,
-        "client_event"
-            if value
-                .get("subscription_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(display_route) =>
-        {
-            Lane::Event
-        }
-        kind if kind.ends_with("request") => Lane::Request,
-        _ => Lane::Ordered,
+        | "client_connected" => (Lane::Reply, None),
+        "client_event" => match value.get("subscription_id").and_then(|v| v.as_str()) {
+            Some(id) if display_route(id) => (Lane::Event, Some(id.to_string())),
+            _ => (Lane::Ordered, None),
+        },
+        kind if kind.ends_with("request") => (Lane::Request, None),
+        _ => (Lane::Ordered, None),
     }
 }
 fn control(message: &Message) -> bool {
@@ -59,6 +57,8 @@ fn control(message: &Message) -> bool {
 }
 struct Transfer {
     id: u32,
+    key: Option<String>,
+    small: bool,
     text: String,
     binary: Option<Message>,
     offset: usize,
@@ -173,11 +173,16 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
 struct Queued {
     message: Message,
     lane: Lane,
+    key: Option<String>,
 }
 impl Queued {
     fn new(message: Message, display_route: &impl Fn(&str) -> bool) -> Self {
-        let lane = lane(&message, display_route);
-        Self { message, lane }
+        let (lane, key) = lane(&message, display_route);
+        Self { message, lane, key }
+    }
+    // A single-chunk message: interactive frames, never bulk.
+    fn small(&self) -> bool {
+        self.message.len() <= CHUNK_BYTES
     }
 }
 fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer>) -> bool {
@@ -189,15 +194,15 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
     if current == Lane::Ordered {
         return index == 0 && active.is_empty();
     }
-    // Events and requests retain their own FIFO; unknown lifecycle envelopes
-    // are barriers. Correlated replies may pass them to avoid catalog deadlock.
-    !active
-        .iter()
-        .any(|t| t.lane == current || t.lane == Lane::Ordered)
+    // Requests retain one FIFO and display events one FIFO per subscription;
+    // unknown lifecycle envelopes are barriers. Correlated replies may pass
+    // them to avoid catalog deadlock.
+    let same = |lane: Lane, key: &Option<String>| lane == current && *key == pending[index].key;
+    !active.iter().any(|t| same(t.lane, &t.key) || t.lane == Lane::Ordered)
         && !pending
             .iter()
             .take(index)
-            .any(|m| matches!(m.lane, Lane::Ordered) || m.lane == current)
+            .any(|m| matches!(m.lane, Lane::Ordered) || same(m.lane, &m.key))
 }
 pub(super) async fn run_writer<S, F>(
     mut writer: S,
@@ -268,14 +273,25 @@ where
             }
         } else if active.len() < MAX_TRANSFERS {
             let reserved: usize = active.iter().map(|t| t.text.len()).sum();
-            // Start in enqueue order; replies and the event/request lanes can
-            // pass blocked transfers but never reorder members of their lane.
-            if let Some(index) = (0..pending.len()).find(|&i| {
+            // Start small messages first, otherwise in enqueue order; replies and
+            // the event/request lanes can pass blocked transfers but never
+            // reorder members of their FIFO. A barrier ends the small-first scan.
+            let startable = |i: usize| {
                 eligible(&pending, i, &active)
                     && pending[i].message.len() <= MAX_ASSEMBLY_BYTES - reserved
-            }) {
+            };
+            let barrier = pending
+                .iter()
+                .position(|m| m.lane == Lane::Ordered)
+                .map_or(pending.len(), |i| i + 1);
+            if let Some(index) = (0..barrier)
+                .find(|&i| pending[i].small() && startable(i))
+                .or_else(|| (0..pending.len()).find(|&i| startable(i)))
+            {
                 let queued = pending.remove(index).unwrap();
                 let class = queued.lane;
+                let key = queued.key.clone();
+                let small = queued.small();
                 let message = queued.message;
                 if message.len() > MAX_MESSAGE_BYTES {
                     upgrade(&mut writer).await;
@@ -292,14 +308,21 @@ where
                         continue;
                     }
                 };
-                active.push_back(Transfer {
+                let transfer = Transfer {
                     id,
+                    key,
+                    small,
                     text,
                     binary,
                     offset: 0,
                     lane: class,
                     waiting: 0,
-                });
+                };
+                if small {
+                    active.push_front(transfer);
+                } else {
+                    active.push_back(transfer);
+                }
             }
         }
         let mut sent = false;
@@ -315,7 +338,8 @@ where
             }
             if let Some((message, end)) = transfer.next_chunk() {
                 let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
-                if credit.bytes + bytes <= WINDOW_BYTES {
+                let window = WINDOW_BYTES + if transfer.small { SMALL_RESERVE_BYTES } else { 0 };
+                if credit.bytes + bytes <= window {
                     if starting {
                         next_id = transfer.id;
                     }
@@ -480,6 +504,8 @@ mod tests {
         let mut active = VecDeque::from([
             Transfer {
                 id: 1,
+                key: None,
+                small: true,
                 text: "x".into(),
                 binary: None,
                 offset: 1,
@@ -488,6 +514,8 @@ mod tests {
             },
             Transfer {
                 id: 2,
+                key: None,
+                small: true,
                 text: "y".into(),
                 binary: None,
                 offset: 1,
@@ -508,7 +536,7 @@ mod tests {
     }
     // MP-08/MP-10/MP-11: a fully written small event must not consume an
     // assembly lane until its receipt makes a WAN round trip. Only byte credit
-    // remains outstanding; all events keep wire order and the 64 KiB bound.
+    // remains outstanding; all events keep wire order and the window plus small reserve bound.
     #[tokio::test]
     async fn mp08_mp10_mp11_small_events_fill_wire_window_without_receipt_serialization() {
         let (socket, mut client) = sockets().await;
@@ -534,7 +562,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(150), client.next()).await
         {
             wire += message.len();
-            assert!(wire <= WINDOW_BYTES, "combined byte credit exceeded");
+            assert!(wire <= WINDOW_BYTES + SMALL_RESERVE_BYTES, "combined byte credit exceeded");
             match message {
                 Message::Binary(bytes) => {
                     let (h, _) = crate::binary_event::decode(&bytes).unwrap();
@@ -730,5 +758,92 @@ mod tests {
         }
         task.await.unwrap();
         let _ = client.close(None).await;
+    }
+
+    fn display_event(subscription: &str, event_id: u64, payload: String) -> Message {
+        Message::Text(
+            serde_json::json!({"kind":"client_event","subscription_id":subscription,"event_id":event_id,"payload":payload})
+                .to_string()
+                .into(),
+        )
+    }
+    // MP-08/MP-10/MP-11: a small band frame must not wait for the page stream's
+    // queued bulk frames; each display subscription keeps its own FIFO.
+    #[tokio::test]
+    async fn small_band_event_overtakes_queued_page_frames_of_another_subscription() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(16);
+        let (at, ar) = mpsc::channel(256);
+        let (_ct, cr) = mpsc::channel(8);
+        for id in 1..=3 {
+            tx.send(display_event("page", id, "p".repeat(60_000))).await.unwrap();
+        }
+        tx.send(display_event("band", 1, "band".into())).await.unwrap();
+        drop(tx);
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut done = Vec::new();
+        while done.len() < 4 {
+            let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            else {
+                panic!()
+            };
+            let (complete, ack) = receiver.receive(&text).unwrap();
+            let TransportFrame::TransportAck { transfer_id, offset } =
+                serde_json::from_str(&ack.unwrap()).unwrap()
+            else {
+                panic!()
+            };
+            at.send((transfer_id, offset)).await.unwrap();
+            if let Some(text) = complete {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                done.push(format!("{}{}", value["subscription_id"].as_str().unwrap(), value["event_id"]));
+            }
+        }
+        assert!(done.iter().position(|d| d == "band1").unwrap() <= 1, "band frame waited behind page frames: {done:?}");
+        let pages: Vec<_> = done.iter().filter(|d| d.starts_with("page")).collect();
+        assert_eq!(pages, ["page1", "page2", "page3"], "one subscription stays FIFO");
+        task.await.unwrap();
+        let _ = client.close(None).await;
+    }
+    // MP-08/MP-10/MP-11: a small frame still goes out when bulk data fills the
+    // receipt window, using a bounded reserve instead of waiting a round trip.
+    #[tokio::test]
+    async fn small_event_uses_reserved_credit_when_bulk_fills_the_window() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(16);
+        let (_at, ar) = mpsc::channel(256);
+        let (_ct, cr) = mpsc::channel(8);
+        tx.send(display_event("page", 1, "p".repeat(400_000))).await.unwrap();
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let mut wire = 0;
+        while let Ok(Some(Ok(message))) =
+            tokio::time::timeout(Duration::from_millis(150), client.next()).await
+        {
+            wire += message.len();
+        }
+        assert!(wire >= WINDOW_BYTES - CHUNK_BYTES, "bulk must fill the window first");
+        tx.send(display_event("band", 1, "band".into())).await.unwrap();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let band = loop {
+            let Message::Text(text) = tokio::time::timeout(Duration::from_millis(500), client.next())
+                .await
+                .expect("a small frame must not wait for a receipt round trip")
+                .unwrap()
+                .unwrap()
+            else {
+                panic!()
+            };
+            if let Some(text) = receiver.receive(&text).unwrap().0 {
+                break text;
+            }
+        };
+        assert!(band.contains("band"));
+        task.abort();
+        let _ = task.await;
     }
 }

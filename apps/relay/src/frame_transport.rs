@@ -13,11 +13,14 @@ pub fn is_display_scope(scope: Option<&str>) -> bool {
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;
-/// Smallest chunk frame on the wire. The byte window bounds unacknowledged
-/// frames at WINDOW_BYTES / MIN_FRAME_BYTES, so a receipt queue of that depth
-/// can never overflow for a conforming peer.
+/// Extra credit only single-chunk messages may use, so a small interactive
+/// frame never waits a round trip behind a window full of bulk data.
+pub const SMALL_RESERVE_BYTES: usize = 2 * CHUNK_BYTES;
+/// Smallest chunk frame on the wire. The byte window plus reserve bound
+/// unacknowledged frames at that many bytes / MIN_FRAME_BYTES, so a receipt
+/// queue of that depth can never overflow for a conforming peer.
 pub const MIN_FRAME_BYTES: usize = 64;
-pub const MAX_UNACKED_FRAMES: usize = WINDOW_BYTES / MIN_FRAME_BYTES;
+pub const MAX_UNACKED_FRAMES: usize = (WINDOW_BYTES + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
@@ -231,7 +234,7 @@ mod tests {
         })
         .unwrap();
         assert!(smallest.len() >= MIN_FRAME_BYTES);
-        assert!(MAX_UNACKED_FRAMES * smallest.len() >= WINDOW_BYTES);
+        assert!(MAX_UNACKED_FRAMES * smallest.len() >= WINDOW_BYTES + SMALL_RESERVE_BYTES);
     }
 
     #[test]
