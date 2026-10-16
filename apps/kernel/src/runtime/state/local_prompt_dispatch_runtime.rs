@@ -4304,7 +4304,7 @@ impl KernelRuntimeState {
                         );
                         let _ = sessions.requeue_metaagent_task_front(&session_id, task.clone());
                         drop(sessions);
-                        let _ = state.owned.persist_workflow_runtime_session(
+                        let _ = state.persist_metaagent_task_session_update(
                             &session_id,
                             "metaagent_task_start_failed",
                         );
@@ -4363,6 +4363,8 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_hidden_system_context(Self::meta_mode_entered_hidden_context()?)
+        .with_skill_selections(task.skill_selections().to_vec())
+        .with_user_skill_syntax(task.user_skill_syntax())
         .with_attachments(task.attachments().to_vec());
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {

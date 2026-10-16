@@ -530,6 +530,12 @@ impl DaemonApp {
                 Some("prompt_delivery_acknowledged"),
             )?;
         }
+        self.providers.acknowledge_skill_prompt_delivery(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            &provider_run_id,
+        )?;
         let run = self
             .providers
             .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;

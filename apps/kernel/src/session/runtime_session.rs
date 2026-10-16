@@ -194,7 +194,13 @@ impl RuntimeSession {
     }
 
     pub(crate) fn durable_prompt_private_states(&self) -> Vec<DurablePromptPrivateState> {
-        self.prompt_runtime.durable_private_states(&self.id)
+        let mut states = self.prompt_runtime.durable_private_states(&self.id);
+        states.extend(
+            self.queued_metaagent_tasks
+                .iter()
+                .filter_map(|task| task.durable_skill_intent(&self.id)),
+        );
+        states
     }
 
     pub(crate) fn restore_durable_prompt_private_states(
@@ -202,6 +208,14 @@ impl RuntimeSession {
         states: &[DurablePromptPrivateState],
     ) {
         self.prompt_runtime.restore_durable_private_states(states);
+        for task in &mut self.queued_metaagent_tasks {
+            if let Some(state) = states
+                .iter()
+                .find(|state| state.session_id == self.id && state.prompt_id == task.id())
+            {
+                task.restore_skill_intent(state);
+            }
+        }
         self.prompt_runtime
             .refresh_after_focus_change(self.focused_agent_id.as_deref());
     }

@@ -67,7 +67,7 @@ impl KernelRuntimeState {
                     self.owned.durable_state_store.append_event(
                         "session.updated",
                         Some(session_id.to_string()),
-                        serde_json::json!({"session": &session, "reason": reason}),
+                        serde_json::json!({"session": &session, "reason": reason, "prompt_private_states": session.durable_prompt_private_states()}),
                     )?;
                     Ok(Some((result, session)))
                 })();
@@ -115,6 +115,7 @@ impl KernelRuntimeState {
             serde_json::json!({
                 "session": &session,
                 "reason": reason,
+                "prompt_private_states": session.durable_prompt_private_states(),
             }),
         )?;
         activity_mutation.record();
@@ -140,6 +141,34 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        self.enqueue_metaagent_task_with_skills(
+            session_id,
+            metaagent_id,
+            source_attachment_id,
+            task_markdown,
+            attachments,
+            vec![],
+            false,
+        )
+    }
+
+    // MP-08 / MP-10 / MP-11: preserve Terminal intent without minting model authority.
+    pub(crate) fn enqueue_metaagent_task_with_skills(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        source_attachment_id: &str,
+        task_markdown: &str,
+        attachments: Vec<crate::session::PromptAttachment>,
+        selections: Vec<crate::skill::v2::SkillSelection>,
+        user_syntax: bool,
+    ) -> Result<
+        (
+            crate::session::QueuedMetaagentTask,
+            crate::session::RuntimeSession,
+        ),
+        DaemonError,
+    > {
         let _admission = self.owned.begin_managed_activity_admission()?;
         let (task, session) = self
             .mutate_metaagent_task_session_with_result(
@@ -147,12 +176,14 @@ impl KernelRuntimeState {
                 "metaagent_task_queued",
                 |sessions| {
                     sessions
-                        .enqueue_metaagent_task(
+                        .enqueue_metaagent_task_with_skills(
                             session_id,
                             metaagent_id,
                             source_attachment_id,
                             task_markdown,
                             attachments,
+                            selections,
+                            user_syntax,
                         )
                         .map(Some)
                 },
