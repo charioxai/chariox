@@ -35,7 +35,7 @@ impl KernelRuntimeState {
         id: &str,
         login: &crate::provider::ProviderLoginStart,
     ) -> Result<bool, DaemonError> {
-        self.wait_for_account_login_state(session_id, agent_id, owner, id, login)
+        self.wait_for_account_login_state(session_id, agent_id, owner, id, login, None)
             .await
             .map(|state| state == ProviderLoginProcessState::Succeeded)
     }
@@ -49,9 +49,10 @@ impl KernelRuntimeState {
         owner: &str,
         id: &str,
         login: &crate::provider::ProviderLoginStart,
+        title: Option<&str>,
     ) -> Result<ProviderLoginProcessState, DaemonError> {
         let result = self
-            .drive_account_login(session_id, agent_id, owner, id, login)
+            .drive_account_login(session_id, agent_id, owner, id, login, title)
             .await;
         let _ = self
             .update_provider_login_interaction(session_id, agent_id, id, None)
@@ -80,6 +81,7 @@ impl KernelRuntimeState {
         owner: &str,
         id: &str,
         login: &crate::provider::ProviderLoginStart,
+        title: Option<&str>,
     ) -> Result<ProviderLoginProcessState, DaemonError> {
         let Some(login_id) = login.login_id.as_deref() else {
             return Ok(ProviderLoginProcessState::Failed);
@@ -120,7 +122,8 @@ impl KernelRuntimeState {
             if login.login_kind != "terminal_setup_token" {
                 projection.terminal_output_base64 = status.terminal_output_base64;
             }
-            let next_phase = template.title().map(str::to_string);
+            // A recovery names the machine being signed in on instead of the generic step title.
+            let next_phase = title.or(template.title()).map(str::to_string);
             if receiver.is_none() || next_phase != phase {
                 if receiver.is_some() {
                     self.update_provider_login_interaction(session_id, agent_id, id, None)

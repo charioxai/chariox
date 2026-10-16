@@ -167,6 +167,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       projection,
       interaction.custom_choice?.id,
       deps.accountLabel(projection.login.provider, projection.login.account_profile),
+      interaction.title,
     )
     // Retry and Vault phases belong to the kernel. An old authorization URL
     // must not hide their message, choices or passphrase field.

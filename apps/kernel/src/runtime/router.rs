@@ -212,6 +212,8 @@ mod tests {
     mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
+    #[cfg(unix)]
+    mod provider_login_copy;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;

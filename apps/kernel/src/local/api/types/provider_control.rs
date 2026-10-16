@@ -249,6 +249,10 @@ impl std::fmt::Debug for ProviderLoginStatus {
 pub struct LogoutProviderRequest {
     pub provider: String,
     pub account_profile: String,
+    /// Also revoke the login at the provider. Without it, a login shared with other machines is
+    /// only removed here, because revoking ends the session on every machine holding it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub end_everywhere: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

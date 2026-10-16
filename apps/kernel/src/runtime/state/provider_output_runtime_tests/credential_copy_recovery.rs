@@ -103,6 +103,18 @@ async fn isolated_case(recovery: RecoveryCase) {
     );
 }
 
+fn registry_state(
+    runtime: &KernelRuntimeState,
+    profile_id: &str,
+) -> crate::account_profile::ProviderAccountAuthState {
+    runtime
+        .owned
+        .provider_account_profiles
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", profile_id)
+        .unwrap()
+        .auth_state
+}
+
 async fn run_case(recovery: RecoveryCase) {
     let startup_failure = matches!(recovery, RecoveryCase::Startup);
     let relaunch_failure = matches!(recovery, RecoveryCase::RelaunchFailure);
@@ -267,7 +279,19 @@ async fn run_case(recovery: RecoveryCase) {
                 .get_session(session.id())
                 .unwrap();
             if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
-                assert_eq!(interaction.title(), Some("Log in to Codex on this machine"));
+                let machine = runtime.owned.config_projection.snapshot().host_machine_id;
+                assert_eq!(
+                    interaction.title(),
+                    Some(format!("Sign in again on {machine}").as_str())
+                );
+                assert!(interaction
+                    .message()
+                    .contains("Other machines are not affected"));
+                assert_eq!(
+                    registry_state(&runtime, &copied.profile_id),
+                    crate::account_profile::ProviderAccountAuthState::Expired,
+                    "a dead copy is marked as needing sign-in on this machine"
+                );
                 runtime
                     .resolve_runtime_interaction(session.id(), interaction.id(), "login", None)
                     .await
@@ -286,12 +310,16 @@ async fn run_case(recovery: RecoveryCase) {
                 .session_store
                 .get_session(session.id())
                 .unwrap();
-            if let Some(login) = snapshot
-                .active_interaction_for_agent(agent.id())
-                .and_then(|i| i.provider_login())
-                .cloned()
-            {
-                break login;
+            if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                if let Some(login) = interaction.provider_login().cloned() {
+                    // The link popup keeps naming the machine being signed in.
+                    let machine = runtime.owned.config_projection.snapshot().host_machine_id;
+                    assert_eq!(
+                        interaction.title(),
+                        Some(format!("Sign in again on {machine}").as_str())
+                    );
+                    break login;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -326,6 +354,11 @@ async fn run_case(recovery: RecoveryCase) {
     assert!(target_home
         .join("synthetic-official-login-invoked")
         .exists());
+    assert_eq!(
+        std::fs::read_to_string(target_home.join("synthetic-auth-at-login-start")).unwrap(),
+        "absent",
+        "the dead copy must be deleted before the provider's own sign-in can revoke it"
+    );
     assert!(!source_auth
         .parent()
         .unwrap()

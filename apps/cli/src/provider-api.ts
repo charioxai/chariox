@@ -292,8 +292,9 @@ export async function logoutProvider(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  endEverywhere = false,
 ): Promise<ProviderLogoutOutcome> {
-  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile))
+  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile, endEverywhere))
   if ("ProviderLoggedOut" in response) {
     return { kind: "logged_out", result: response.ProviderLoggedOut as ProviderLogoutResult }
   }

@@ -151,7 +151,17 @@ impl KernelRuntimeState {
             if session.active_interaction_for_agent(agent_id).is_some() {
                 return Ok(false);
             }
-            let provider = provider_label(run.adapter_key());
+            let provider = provider_label(run.adapter_key()).to_string();
+            let machine = machine_label(&self.owned.config_projection.snapshot());
+            let reason = crate::provider::renewal_failure::renewal_failure_reason(message);
+            if !setup_token {
+                // Only this machine's profile: other machines and profiles keep their state.
+                let _ = self.owned.provider_account_profiles.mark_needs_sign_in(
+                    &owner,
+                    run.adapter_key(),
+                    run.account_profile(),
+                );
+            }
             let receiver = if setup_token {
                 // An official authentication refusal is already enough to
                 // start OAuth. The shared popup shows its link directly.
@@ -169,9 +179,9 @@ impl KernelRuntimeState {
             } else {
                 Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
                     &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
-                    Some(format!("Log in to {provider} on this machine")),
-                    "The provider could not renew its login. Credentials will stay on this machine.",
-                    vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary),
+                    Some(format!("Sign in again on {machine}")),
+                    format!("{provider} on {machine}: {reason}. Other machines are not affected. The new sign-in stays on {machine}."),
+                    vec![choice("login", "Sign in", RuntimeInteractionChoiceStyle::Primary),
                         choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
                     None, Some(600), None,
                 )).await?)
@@ -205,15 +215,16 @@ impl KernelRuntimeState {
                 }
                 // Settle through the ordinary failure path without triggering recovery again.
                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
-                let message =
-                    "Provider login did not complete; retry after logging in on this machine.";
+                let message = format!(
+                    "{provider} sign-in on {machine} did not complete ({reason}); sign in again on {machine}, then retry."
+                );
                 if let Some(started) = failed_launch.as_ref() {
                     state
                         .fail_provider_launch_in_lane(
                             started,
                             &DaemonError::LocalTransport {
                                 operation: "provider login recovery",
-                                message: message.into(),
+                                message: message.clone(),
                             },
                         )
                         .await;
@@ -222,7 +233,7 @@ impl KernelRuntimeState {
                         .fail_owned_provider_prompt_with_termination_if_matches(
                             run.session_id(),
                             run.id(),
-                            message,
+                            &message,
                             true,
                             Some(prompt.id()),
                             None,
@@ -448,6 +459,10 @@ impl KernelRuntimeState {
                 &owner,
                 &progress_id,
                 &login,
+                Some(&format!(
+                    "Sign in again on {}",
+                    machine_label(&self.owned.config_projection.snapshot())
+                )),
             )
             .await;
         // MP-08/MP-11: only the execution kernel can read this login store.
@@ -493,6 +508,15 @@ fn provider_login_outcome_notice(
     Some(outcome)
 }
 
+fn machine_label(config: &crate::config::DaemonConfig) -> String {
+    config
+        .host_machine_alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or(&config.host_machine_id)
+        .to_string()
+}
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {
     run.agent_instance_id().unwrap_or_default()
 }

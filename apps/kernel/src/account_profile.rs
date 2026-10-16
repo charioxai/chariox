@@ -921,6 +921,8 @@ struct RegistryDocument {
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copies_issued: Vec<copy_notice::IssuedCredentialCopy>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -940,6 +942,7 @@ impl Default for RegistryDocument {
         Self {
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
+            credential_copies_issued: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
         }
@@ -1371,6 +1374,25 @@ impl ProviderAccountProfileRegistry {
             refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         }
         let result = document.profiles[profile_index].public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
+    /// The provider refused this machine's stored login. Keep who it was and
+    /// what it covered so the user can see which account to sign in to again.
+    pub fn mark_needs_sign_in(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        profile.public.auth_state = ProviderAccountAuthState::Expired;
+        profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
+        let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
     }

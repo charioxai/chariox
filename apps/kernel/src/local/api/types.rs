@@ -282,4 +282,8 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// Version 541 (relay peer 149) adds `ProviderLoggedOut.local_only` and
+/// `LogoutProvider.end_everywhere`: signing out a provider login that other
+/// machines hold removes only the local copy unless the user explicitly ends
+/// the session everywhere (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 541;
