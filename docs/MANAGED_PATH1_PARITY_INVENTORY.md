@@ -11,7 +11,10 @@ and Cloud navigation modules use the same rule; sandbox, masks, native admission
 and serialized fields are unchanged. A real-Chromium regression reduces a batch
 of ten held continuations from nine forced layouts to at most two, while checking
 that prior paint remains and final content and scroll survive. This is a focused
-regression, not hosted usability, quiet timing or full MP-item acceptance.
+regression, not hosted usability, quiet timing or full MP-item acceptance. Handover
+diagnostics report only fixed blocker names (content, resource slices, visible
+image, font, CSS image, decode or retired document), with numeric timings. An
+unchanged blocker emits once, without node, URL, text or resource identity.
 
 
 

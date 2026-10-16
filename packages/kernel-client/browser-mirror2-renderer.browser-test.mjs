@@ -1219,3 +1219,19 @@ test('MP-08/MP-10/MP-11 native-held continuations defer repeated layout and reta
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('staged-scroller').scrollTop),400);
  }finally{await cdp.detach();await page.close()}
 });
+
+// MP-08/MP-10/MP-11: diagnose an actual held-page seam without logging content.
+test('MP-08/MP-10/MP-11 handover reports a visible resource blocker without exposing its identity',async()=>{
+ const page=await viewer();try{
+  await page.evaluate(()=>{window.handoverMarks=[];window.r.onTiming=sample=>window.handoverMarks.push(sample)});
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));
+  await page.evaluate(()=>window.r.holdForHandover());
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'element',tag:'img',attrs:{width:'20',height:'20'},res:'r1'}])),document_id:'new',sequence:2});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false);
+  const marks=await page.evaluate(()=>window.handoverMarks.filter(s=>s.stage.startsWith('handover_')));
+  assert.deepEqual(marks.map(s=>s.stage),['handover_wait_image']);
+  for(const mark of marks){assert.deepEqual(Object.keys(mark).sort(),['duration_ms','ended_ms','stage']);assert(Number.isFinite(mark.duration_ms)&&Number.isFinite(mark.ended_ms))}
+  await page.evaluate(()=>window.r.readyForHandover());
+  assert.equal(await page.evaluate(()=>window.handoverMarks.filter(s=>s.stage==='handover_wait_image').length),1,'unchanged blockers do not flood diagnostics');
+ }finally{await page.close()}
+});

@@ -613,31 +613,42 @@ export class BrowserMirror2Renderer {
   }
   holdForHandover(): void { this.navigation.hold(); this.setInteractive(false) }
   handover(focus = false): void { this.navigation.release(); this.setInteractive(true, focus); this.navigationPaint() }
+  // MP-08/MP-10/MP-11: fixed reasons only, no node/resource identities.
+  private handoverStage = ''
+  private handoverDiagnostic(reason: string): void {
+    if (this.handoverStage === reason) return
+    this.handoverStage = reason; this.timed(`handover_${reason}`, performance.now())
+  }
   async readyForHandover(): Promise<boolean> {
     const doc = this.doc, documentId = this.documentId
-    if (!doc || !this.navigation.readyToPresent || this.slices.size) return false
+    if (!doc || !this.navigation.readyToPresent) { this.handoverDiagnostic('wait_content'); return false }
+    if (this.slices.size) { this.handoverDiagnostic('wait_slices'); return false }
     for (const [id, record] of this.records) {
       if (!record.res || this.resources.has(record.res)) continue
       const element = this.dom.get(id) as Element | undefined
       const box = element?.nodeType === 1 ? element.getBoundingClientRect() : null
-      if (box && box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < this.frame.clientWidth && box.top < this.frame.clientHeight) return false
+      if (box && box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < this.frame.clientWidth && box.top < this.frame.clientHeight) { this.handoverDiagnostic('wait_image'); return false }
     }
     // Fonts and visible CSS imagery must not pop into place after the switch.
+    if (doc.fonts.status === 'loading') this.handoverDiagnostic('wait_fonts')
     await doc.fonts.ready
     const fontFailed = [...doc.fonts].some(font => font.status === 'error')
     for (const styled of fontFailed ? this.styled.values() : []) {
       const raws = styled.kind === 'adopted' ? styled.raw : [styled.raw]
-      for (const raw of raws) for (const rule of raw.match(/@font-face[^{}]*\{[^{}]*\}/gi) ?? []) for (const [,key] of rule.matchAll(resourcePattern)) if (!this.resources.has(key)) return false
+      for (const raw of raws) for (const rule of raw.match(/@font-face[^{}]*\{[^{}]*\}/gi) ?? []) for (const [,key] of rule.matchAll(resourcePattern)) if (!this.resources.has(key)) { this.handoverDiagnostic('wait_fonts'); return false }
     }
     const view = doc.defaultView
     for (const node of this.dom.values()) if (node.nodeType === 1) {
       const element = node as Element, box = element.getBoundingClientRect()
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = view?.getComputedStyle(element)
-      if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) return false
+      if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
+    if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
     await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
-    return !this.disposed && this.doc === doc && this.documentId === documentId && !this.slices.size
+    const ready = !this.disposed && this.doc === doc && this.documentId === documentId && !this.slices.size
+    this.handoverDiagnostic(ready ? 'ready' : 'wait_document')
+    return ready
   }
   knownSheets(): string[] { return this.sheetCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
