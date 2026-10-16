@@ -250,7 +250,11 @@ export function installMirror2(sanitizeMirrorCss) {
         const name = attribute.name, lower = name.toLowerCase(), value = attribute.value;
         if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || value.length > 65536) continue;
         if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
-        if (denied(lower) || !RENDERED.has(lower) && !lower.startsWith('aria-') && value.length > 1024) continue;
+        // MP-08/MP-11: SVG geometry is rendered content, not arbitrary metadata.
+        // Keep the common 64 KiB bound above; HTML and unknown attributes still
+        // use the smaller privacy cap.
+        const geometry = node.namespaceURI === SVG && (lower === 'd' || lower === 'points');
+        if (denied(lower) || !RENDERED.has(lower) && !geometry && !lower.startsWith('aria-') && value.length > 1024) continue;
         // Password and hidden values never leave (form state carries dots / nothing).
         if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
         // Presentation attributes may reference paint servers by fragment only.

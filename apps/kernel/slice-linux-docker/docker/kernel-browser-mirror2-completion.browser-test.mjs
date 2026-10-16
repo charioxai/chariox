@@ -15,6 +15,23 @@ async function install(page) {
   await page.evaluate(() => { window.observer = globalThis.__charioxMirror2.get('completion-test'); });
 }
 
+test('MP-08/MP-11 long SVG geometry survives without admitting long metadata', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    const d = 'M0 0L10 0L10 10L0 10Z'.repeat(80), points = '0,0 10,0 10,10 0,10 '.repeat(80);
+    await page.setContent(`<svg><path id="logo" d="${d}" data-metadata="${d}"/><polygon id="polygon" points="${points}"/><path id="oversized" d="${'M'.repeat(65537)}"/></svg><div id="html" d="${d}"></div>`);
+    await install(page);
+    const packet = await page.evaluate(() => window.observer.snapshot());
+    const attrs = id => packet.nodes.find(node => node.attrs?.id === id)?.attrs;
+    assert.equal(attrs('logo')?.d, d);
+    assert.equal(attrs('polygon')?.points, points);
+    assert.equal(attrs('logo')?.['data-metadata'], undefined);
+    assert.equal(attrs('oversized')?.d, undefined);
+    assert.equal(attrs('html')?.d, undefined);
+  } finally { await browser.close(); }
+});
+
 test('MP-10 completion is false throughout a bounded initial continuation', async () => {
   const browser = await launch();
   try {
