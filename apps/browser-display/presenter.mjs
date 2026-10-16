@@ -64,7 +64,7 @@ export class BrowserDisplayPresenter {
     // MP-08/MP-10/MP-11: request the low-latency compositor path before the
     // first crop/Chrome UI draw. Full-page and desktop streams retain their sink.
     if(videoOptions.direct)canvas.getContext?.('2d',{desynchronized:true});
-    this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();
+    this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();this.deferredVideo=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
     if(warmDecoder&&!warmDecoder.closed)this.workerDecoder=warmDecoder;
     else if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
@@ -92,15 +92,22 @@ export class BrowserDisplayPresenter {
       const result=await decoder.decode(frame,payload,8,true);
       if(this.closed){result.image.close();throw Error('MD-DISPLAY: presenter closed');}
       try{
-        const outcome=await this.videoSink.commit(result,frame);this.outcomes.set(frame,outcome);
-        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,writtenAt:outcome.writtenAt,committedAt:outcome.committedAt});
-        if(outcome.drawn&&outcome.writtenAt===undefined&&outcome.committedAt!==undefined)this.onTiming('client_present',outcome.committedAt,{sequence:frame.sequence,committedAt:outcome.committedAt});
+        // MP-08/MP-10/MP-11: an opaque consumer copies this detached canvas
+        // at the ordered cursor. Decode-ahead must not replace its pixels first.
+        if(this.canvas.isConnected===false)this.deferredVideo.set(frame,{decodedAt:result.decodedAt});
+        else await this.commitVideo(result,frame);
         return result.image;
       }catch(error){result.image.close();throw error;}
     };
     const output=prepare();output.catch(()=>{});this.prepared.set(frame,output);
   }
-  discardPrepared(frame){this.prepared.get(frame)?.then(image=>image?.close(),()=>{});}
+  async commitVideo(result,frame){
+    const outcome=await this.videoSink.commit(result,frame);this.outcomes.set(frame,outcome);
+    this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,writtenAt:outcome.writtenAt,committedAt:outcome.committedAt});
+    if(outcome.drawn&&outcome.writtenAt===undefined&&outcome.committedAt!==undefined)this.onTiming('client_present',outcome.committedAt,{sequence:frame.sequence,committedAt:outcome.committedAt});
+    return outcome;
+  }
+  discardPrepared(frame){this.prepared.get(frame)?.then(image=>{this.deferredVideo.delete(frame);image?.close()},()=>{});}
   wasDrawn(frame){return this.outcomes.get(frame)?.drawn??this.didDraw;}
   async present(frame) {
     if (this.closed) {this.prepared.get(frame)?.then(image=>image?.close(),()=>{});return false;}
@@ -197,8 +204,10 @@ export class BrowserDisplayPresenter {
       } else {
         if(this.canvas.width !== frame.width)this.canvas.width=frame.width;
         if(this.canvas.height !== frame.height)this.canvas.height=frame.height;
-        if(videoFrame&&!globalThis.Worker){
-          const outcome=await this.videoSink.commit(videoFrame,frame);this.outcomes.set(frame,outcome);this.didDraw=outcome.drawn;
+        if(videoFrame&&(!globalThis.Worker||this.deferredVideo.has(frame))){
+          const deferred=this.deferredVideo.get(frame);this.deferredVideo.delete(frame);
+          const outcome=deferred?await this.commitVideo({image:videoFrame,...deferred},frame):await this.videoSink.commit(videoFrame,frame);
+          this.outcomes.set(frame,outcome);this.didDraw=outcome.drawn;
         }
         else if(!videoFrame){this.videoSink.overlay(frame);this.canvas.getContext('2d').drawImage(back, 0, 0);}
       }
