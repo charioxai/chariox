@@ -1344,47 +1344,33 @@ test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still con
  const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
 }));
 
-// MP-08/MP-10/MP-11: hidden payloads follow the visible destination. CSS
-// remains in its original cascade order; every background record still arrives.
-async function finishBackground(next) {
-  for (let n = 0; n < 400; n++) {
-    const packet = await next(); assert(!packet.fallback);
-    assert(JSON.stringify(packet).length < 256 * 1024, 'background records stay in bounded ordinary children packets');
-    if (packet.snapshot_complete === true) return;
-  }
-  assert.fail('hidden initial serialization did not complete');
-}
-test('MP-10 M2: ordinary navigation includes the form after a byte-heavy hidden body header in its first packet',()=>mirrored(
+// MP-08/MP-10/MP-11: ordinary GitHub-sized navigation is one complete reset.
+test('MP-10 M2: ordinary navigation includes the form after a byte-heavy body header atomically',()=>mirrored(
  '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(80)+'</header><form><h1>Sign in to the destination</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Sign in to the destination'),'the complete ordinary document reaches the viewer before replacing its prior paint');
  const world=host.mirror.streams.get(subscription_id).world;
- assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),true,'hidden background is still pending');
- await finishBackground(next);
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation leaves no unfinished body');
  assert(JSON.stringify(first).length<3*1024*1024,'ordinary resets retain a size cap');
 }));
 
 // MP-08/MP-10/MP-11: hosted GitHub's later CSS exceeds the initial 2MiB cap.
-test('MP-10 M2: an ordinary document between two and four MiB defers its hidden payload',()=>mirrored(
+test('MP-10 M2: an ordinary document between two and four MiB fits the eight MiB reset cap',()=>mirrored(
  '<head><style>body{margin:0}</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(300)+'</header><form><h1>Complete destination form</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Complete destination form'),'the ordinary form cannot be deferred behind a partial reset');
  const world=host.mirror.streams.get(subscription_id).world;
- assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),true);
- assert(JSON.stringify(first).length<256*1024,'the ordinary viewport excludes the multi-MiB hidden header');
- await finishBackground(next);
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the eight MiB cap');
  assert(JSON.stringify(first).length<5*1024*1024,'record/message backstop remains bounded');
 }));
 
 // MP-08/MP-10/MP-11: current GitHub styles now exhaust 4 MiB before the file list.
-test('MP-10 M2: an ordinary document between four and eight MiB starts with its destination',()=>mirrored(
+test('MP-10 M2: an ordinary document between four and eight MiB includes its destination in the reset',()=>mirrored(
  '<body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(600)+'</header><main><h1>Complete destination after current site head</h1><input id="destination"></main></body>',async({next,host,subscription_id})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Complete destination after current site head'),'a complete native page cannot be replaced by its header prefix');
  const world=host.mirror.streams.get(subscription_id).world;
- assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),true);
- assert(JSON.stringify(first).length<256*1024);
- await finishBackground(next);
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false);
  assert(JSON.stringify(first).length<9*1024*1024,'the ordinary reset retains a bounded byte cap');
 }));
 
