@@ -48,6 +48,10 @@ impl DaemonApp {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing spawn_user_prompt_history_append_with_prompt_id operation signature and explicit context arguments"
+    )]
     pub(crate) fn spawn_user_prompt_history_append_with_prompt_id(
         &self,
         session_id: &str,
@@ -97,6 +101,10 @@ impl DaemonApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing fan_out_output_for_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn fan_out_output_for_agent(
         &mut self,
         session_id: &str,
@@ -269,6 +277,8 @@ impl DaemonApp {
             self.sessions.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agents.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve(entry)
     }
@@ -375,6 +385,10 @@ impl DaemonApp {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing echo_prompt_to_attachments operation signature and explicit context arguments"
+    )]
     fn echo_prompt_to_attachments(
         &mut self,
         session_id: &str,

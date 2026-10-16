@@ -150,11 +150,22 @@ impl<'a> ProviderPromptDispatcher<'a> {
             return Ok(());
         }
 
-        if self
+        let origin = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .unwrap()
+            .prompt_origin();
+        let structured = self
             .app
             .providers
-            .run_uses_structured_prompt_io(&provider_run)
-        {
+            .run_uses_structured_prompt_io(&provider_run);
+        if origin == crate::session::PromptOrigin::CompletionCheck && !structured {
+            return Err(DaemonError::LocalTransport {
+                operation: "completion assessment",
+                message: "provider has no tool-free structured assessment path".into(),
+            });
+        }
+        if structured {
             let (source_client_id, _source_user_id) = self
                 .app
                 .active_prompt_source_attribution(session_id, &agent_id)?;
@@ -174,7 +185,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 prompt,
                 hidden_system_context,
                 attachments,
-                mode,
+                mode.with_prompt_origin(origin),
                 false,
             )?;
             return Ok(());
@@ -284,6 +295,39 @@ pub(crate) struct KernelPreparedPromptSubmission {
     pub(crate) prompt: PromptQueueItem,
     pub(crate) force_queue: bool,
     pub(crate) refresh_projection: bool,
+}
+
+impl KernelPreparedPromptSubmission {
+    pub(crate) fn prepare_task_prompt_identity(
+        &mut self,
+        allocate: impl FnOnce() -> String,
+    ) -> Result<(), DaemonError> {
+        use sha2::{Digest, Sha256};
+        if self.prompt.id().starts_with("pending-draft:") {
+            self.prompt = self.prompt.clone().with_id(allocate());
+        }
+        // Durable task admission and provider receipts must identify the same
+        // prompt through queueing, promotion and replay. Reuse the existing
+        // durable-operation contract, including its collision check.
+        if self.prompt.durable_operation_id().is_none() {
+            let request = serde_json::to_vec(&(
+                &self.session_id,
+                self.prompt.target_agent_id(),
+                self.prompt.prompt(),
+                self.prompt.attachments(),
+                self.prompt.hidden_system_context(),
+            ))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "prepare task prompt identity",
+                message: error.to_string(),
+            })?;
+            self.prompt = self
+                .prompt
+                .clone()
+                .with_durable_operation(self.prompt.id(), format!("{:x}", Sha256::digest(request)));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct KernelPromptAdmission {
@@ -679,6 +723,32 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state,
+                self.providers.structured_submit_epoch(),
+                &finished,
+            ) {
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            self.attachments
+                                .list_session_attachment_ids(&finished.session_id),
+                            notice,
+                        );
+                    }
+                    if receipt.steered || receipt.stale {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.providers
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
                 &self.durable_state,
                 &self.sessions,

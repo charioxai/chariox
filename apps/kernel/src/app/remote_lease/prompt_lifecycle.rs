@@ -14,6 +14,10 @@ use crate::transport::relay_peer::{
 use super::provider_run::LeasedProviderRunMatch;
 use super::RemoteLeaseRuntime;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing PreparedLeasedProviderRun typed actor payload layout"
+)]
 pub(crate) enum PreparedLeasedProviderRun {
     Ready(String),
     LaunchRequired(LaunchProviderRequest),
@@ -528,6 +532,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_leased_prompt_with_workflow_context operation signature and explicit context arguments"
+    )]
     pub(crate) fn submit_leased_prompt_with_workflow_context(
         &mut self,
         leased_agent_id: &str,
@@ -649,6 +657,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_submission operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,
@@ -736,6 +748,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
+        // MP-08 / MP-10 / MP-11: authenticated home origin is execution policy,
+        // not merely Git observation metadata. Preserve it before admission.
+        let prompt_origin = git_context
+            .as_ref()
+            .and_then(|context| context.prompt_origin)
+            .unwrap_or_default();
         let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
         let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
             .submit_prompt_holding_dispatch(
@@ -744,6 +762,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(&leased_agent.backing_agent_id),
                 &prompt,
                 &hidden_system_context,
+                prompt_origin,
                 materialized_attachments,
             )?;
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
@@ -824,6 +843,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok((provider_run_id, outcome))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_steer operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_steer(
         &mut self,
         leased_agent_id: &str,

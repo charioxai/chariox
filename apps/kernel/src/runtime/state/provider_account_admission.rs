@@ -58,7 +58,10 @@ impl KernelRuntimeOwnedState {
                 return Ok(());
             }
         }
-        self.provider_account_profiles
-            .require_agent_authenticated(&config, agent, operation)
+        self.provider_account_profiles.require_agent_authenticated(
+            &self.provider_account_authority_owner_for_agent(agent)?,
+            agent,
+            operation,
+        )
     }
 }

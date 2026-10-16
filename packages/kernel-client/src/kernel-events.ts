@@ -1,4 +1,5 @@
 import type {
+  AgentTaskExecution,
   PasskeyPrompt,
   ProviderAccountSummary,
   SliceRecord,
@@ -8,6 +9,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
   | {
     event: "terminal_output"
     records: Array<Record<string, unknown>>
@@ -31,6 +33,11 @@ export type KernelEvent =
     provider_run: Record<string, unknown> | null
     agent_activity: Record<string, unknown>
     agent_activity_revision: number
+  }
+  | {
+    event: "agent_task_updated"
+    session_id: string
+    task: AgentTaskExecution
   }
   | {
     event: "room_workflows_changed"

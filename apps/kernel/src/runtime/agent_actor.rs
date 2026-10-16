@@ -134,12 +134,13 @@ impl AgentRuntime {
             self.store
                 .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
                 .await?;
-            self.store
-                .focus_agent(&request.session_id, &agent_id, &caller_user_id)
-                .await?;
-            self.focus_projection
-                .update(&request.session_id, Some(&agent_id))
-                .await;
+            self.focus_alias_target_from_terminal(
+                command,
+                &request.session_id,
+                &agent_id,
+                &caller_user_id,
+            )
+            .await?;
             request.prompt = routed_prompt;
         }
         request.target_agent_id = Some(agent_id.clone());
@@ -147,7 +148,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id,
             command_trace.clone(),
-            command.external_grant_id(),
+            command,
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id: command_trace.trace_id().to_string(),
@@ -223,7 +224,7 @@ impl AgentRuntime {
                         .dispatch_to_agent(
                             agent_id.clone(),
                             command_trace.clone(),
-                            command.external_grant_id(),
+                            &command,
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
                                 trace_id: command_trace.trace_id().to_string(),
@@ -318,7 +319,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -343,7 +344,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::SteerQueuedPrompt { request },
         )
         .await
@@ -364,7 +365,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::SteerActivePrompt { request },
         )
         .await
@@ -386,7 +387,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CancelQueuedPrompt { request },
         )
         .await
@@ -408,7 +409,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::UpdateQueuedPrompt { request },
         )
         .await
@@ -440,7 +441,7 @@ impl AgentRuntime {
         self.dispatch_to_agent(
             agent_id.clone(),
             CommandTrace::from_command(command),
-            command.external_grant_id(),
+            command,
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id: agent_id.clone(),
@@ -607,9 +608,10 @@ impl AgentRuntimeStore {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
-            .focus_agent(session_id, agent_id, caller_user_id)
+            .focus_agent(session_id, agent_id, caller_user_id, terminal_caller)
             .await
     }
 

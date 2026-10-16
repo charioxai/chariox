@@ -17,6 +17,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
 #[derive(Debug, Default)]
 pub(super) struct RelayReconnectGate {
     state: std::sync::Mutex<RelayReconnectGateState>,
+    input_order: super::browser_input_order::BrowserInputOrder,
 }
 
 #[derive(Debug, Default)]
@@ -125,17 +126,78 @@ pub(super) async fn handle_incoming_envelope(
             let outgoing_tx = outgoing_tx.clone();
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
+            let display_subscriptions = Arc::clone(subscription_tasks);
+            // MP-08/MP-10/MP-11: decrypt once in socket order, then reserve
+            // input before spawned tasks can overtake one another. ACK/capture
+            // requests keep the existing independent concurrent path.
+            let display_sender = encrypted_request.sender_public_key.clone();
+            let mut prepared = prepare_daemon_request(&router, caller_identity, encrypted_request);
+            let mut turn = None;
+            if let Some(key) = prepared.as_ref().ok().and_then(|p| p.browser_input_key()) {
+                turn = reconnect_gate.input_order.reserve(key);
+                if turn.is_none() {
+                    prepared = Err(super::daemon_requests::RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::relay_error(
+                            "request_busy",
+                            "MP-08: browser input queue full",
+                            false,
+                        )),
+                    });
+                }
+            }
             let local_browser = Arc::clone(local_browser);
             tokio::spawn(async move {
-                let relay_response = handle_daemon_request(
-                    &router,
-                    &command_sequence,
-                    caller_identity,
-                    encrypted_request,
-                    &command_result_cache,
-                    Some(&local_browser),
-                )
-                .await;
+                if let Some(turn) = turn.as_mut() {
+                    turn.ready().await;
+                }
+                let mut relay_response = match prepared {
+                    Ok(prepared) => {
+                        handle_prepared_daemon_request(
+                            &router,
+                            &command_sequence,
+                            prepared,
+                            &command_result_cache,
+                            &display_subscriptions,
+                            Some(&local_browser),
+                        )
+                        .await
+                    }
+                    Err(outcome) => outcome,
+                };
+                drop(turn);
+                if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
+                {
+                    let display_at = std::time::Instant::now();
+                    if let Some(subscription_id) =
+                        super::browser_display::browser_display_delivery_id(
+                            &display_subscriptions,
+                            &display_id,
+                            &display_sender,
+                        )
+                        .await
+                    {
+                        if outgoing_tx
+                            .send_display_event(RelayEnvelope::DaemonEvent {
+                                subscription_id,
+                                event_id,
+                                encrypted_event,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        crate::transport::kernel_browser_display::timing(
+                            "event_queue_credit",
+                            display_at,
+                        );
+                    } else {
+                        relay_response.encrypted_response = None;
+                        relay_response.error = Some(super::request_errors::relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
+                    }
+                }
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonResponse {
@@ -186,14 +248,15 @@ pub(super) async fn handle_incoming_envelope(
             tokio::spawn(async move {
                 #[cfg(test)]
                 let response_kind = test_peer_response_kind(&router, &encrypted_request);
-                let relay_response = handle_daemon_peer_request(
+                // Keep the large peer request future off the worker stack.
+                let relay_response = Box::pin(handle_daemon_peer_request(
                     &router,
                     &state,
                     &outgoing_tx,
                     &from_daemon_id,
                     caller_identity,
                     encrypted_request,
-                )
+                ))
                 .await;
                 #[cfg(test)]
                 let relay_response = {
@@ -479,6 +542,30 @@ fn test_peer_response_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08/MP-10/MP-11: hosted soaks lost every browser subscription when a
+    // response finished after a Cloud token renewal. Rotation is renewed in-band.
+    #[test]
+    fn token_rotation_after_response_keeps_the_socket_for_in_band_renewal() {
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let reconnect_gate = RelayReconnectGate::default();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("renewed-token".to_string());
+
+        let decision = enqueue_dynamic_relay_reconnect_if_changed(
+            &outgoing_tx,
+            &reconnect_gate,
+            "wss://relay.example.test",
+            "previous-token",
+            &config,
+        )
+        .expect("renewal decision should succeed");
+
+        assert_eq!(decision, RelayReconnectDecision::Unchanged);
+        assert!(priority_rx.try_recv().is_err());
+        assert!(reconnect_gate.begin_daemon_request());
+    }
 
     #[test]
     fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {

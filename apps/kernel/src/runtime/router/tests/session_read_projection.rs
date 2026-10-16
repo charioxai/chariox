@@ -1,5 +1,59 @@
 use super::*;
 
+// MP-08 / MP-10 / MP-11: GetSessionState's production pre-lane path shares trace policy.
+#[tokio::test]
+async fn settled_session_state_hides_foreign_activity_for_private_collaborators() {
+    for level in [
+        crate::session::CollaborationLevel::Private,
+        crate::session::CollaborationLevel::Transparent,
+        crate::session::CollaborationLevel::Full,
+    ] {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, owner) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let foreign = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id("foreign-owner"),
+            )
+            .unwrap();
+        let mut wire =
+            serde_json::to_value(app.sessions().get_session(session.id()).unwrap()).unwrap();
+        wire["members"][0]["collaboration_level"] = serde_json::to_value(level).unwrap();
+        app.sessions_mut()
+            .restore_session(serde_json::from_value(wire).unwrap());
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session.id().into(),
+        });
+        let command =
+            KernelCommand::from_local_request("settled-private-state", None, None, &request);
+        let LocalDaemonResponse::SessionState {
+            session,
+            agent_activity,
+            ..
+        } = router.dispatch(command, request).await.unwrap()
+        else {
+            panic!("expected session state");
+        };
+        assert!(
+            session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == foreign.id()),
+            "roster still includes foreign agent"
+        );
+        assert!(agent_activity.contains_key(owner.id()));
+        assert_eq!(
+            agent_activity.contains_key(foreign.id()),
+            level.can_view_agent_trace(),
+            "MP-11: pre-lane {level:?} GetSessionState must redact foreign activity"
+        );
+    }
+}
+
 #[tokio::test]
 async fn list_sessions_uses_warmed_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

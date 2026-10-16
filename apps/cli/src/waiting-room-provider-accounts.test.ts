@@ -232,10 +232,32 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
   }
 })
 
-// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
-test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+// MP-08 / MP-10 / MP-11: the kernel checks explicit namespaces; missing defaults still need login.
+test("explicit Claude references defer to the kernel while missing defaults need sign-in", () => {
   for (const mode of ["claude", "claude-p", "claude-headless"]) {
-    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
-      /not available on this kernel.*[Cc]opy login/)
+    assert.equal(selectedProviderAccountStartBlockReason([], mode, "claude-miguel"), null)
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "default") ?? "", /needs sign-in/)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: a replica or retained alias is outside home inventory.
+test("explicit accounts outside the home inventory defer authentication to the kernel", () => {
+  const local = account("codex", "local", true)
+  local.auth_state = "not_configured"
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "replica-id", { kind: "local" }), null)
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "retained-home-label"), null)
+  assert.match(selectedProviderAccountStartBlockReason([local], "codex", "local") ?? "", /needs sign-in/)
+  assert.match(selectedProviderAccountStartBlockReason([], "codex", "default") ?? "", /needs sign-in/)
+})
+
+// MP-08 / MP-11 OpenCode owns Go → Zen fallback: show exhaustion, never refuse before the harness runs.
+test("exhausted OpenCode service stays visible but does not block the start", () => {
+  const reset = Date.now() + 3_600_000
+  const go = { ...usageMeter("go/monthly", "rolling_limit", "exhausted", reset), service_id: "opencode-go" }
+  const zen = { ...usageMeter("zen/credits", "credit_balance", "exhausted"), service_id: "opencode" }
+  const openCode = accountWithUsage("opencode", [go, zen])
+  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go \(exhausted\).*resets.*UTC/)
+  for (const model of ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4-flash"]) {
+    assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
   }
 })

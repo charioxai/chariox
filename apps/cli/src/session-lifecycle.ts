@@ -206,17 +206,17 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (!attachment) {
       return
     }
+    // Stop old-Room recovery before awaiting detach; restore only a real failure.
+    deps.setAttachmentState(null)
     try {
       await deps.detachAttachment(attachment.id)
     } catch (error) {
-      // A removed attachment is already detached. Keep real transport and
-      // admission failures visible instead of preventing the next selection.
       if (!formatError(error).includes(`attachment \`${attachment.id}\` was not found`)) {
+        if (!deps.attachmentState() && deps.sessionState().id === attachment.session_id) {
+          deps.setAttachmentState(attachment)
+        }
         throw error
       }
-    }
-    if (deps.attachmentState()?.id === attachment.id) {
-      deps.setAttachmentState(null)
     }
   }
 

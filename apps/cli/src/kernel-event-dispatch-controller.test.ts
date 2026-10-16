@@ -611,6 +611,7 @@ function createHarness(options: {
     applySessionMetadataChanged: (sessionId, metadata) => {
       calls.push(`apply-session-metadata:${sessionId}:${Object.keys(metadata).sort().join(",")}`)
     },
+    applyAgentTaskUpdated: (sessionId, task) => { calls.push(`task:${sessionId}:${task.task_id}:${task.revision}`) },
     applyRuntimeInteractionsChanged: (sessionId, activeInteractions) => {
       calls.push(`apply-runtime-interactions:${sessionId}:${activeInteractions.length}`)
     },
@@ -721,3 +722,10 @@ function sliceRecord(id: string): SliceRecord {
     updated_at_ms: 1,
   }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: no full-room/history refresh for compact task events.
+test("compact task event reaches the projection without history refresh", async () => {
+  const harness=createHarness()
+  await harness.controller.handleKernelEvent({event:"agent_task_updated",session_id:"session-1",task:{task_id:"task",revision:8} as never})
+  assert.deepEqual(harness.calls,["activity:kernel_agent_task_updated","task:session-1:task:8"])
+})

@@ -18,6 +18,7 @@ import {
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
+import { agentTaskStatus, agentWaitCountdown } from "@chariox/tool-display/agent-task-status"
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
@@ -41,6 +42,7 @@ export type SessionFocusedStatusBadge = {
 }
 
 export type SessionAgentPaneStatusBadge = {
+  deadline_ms?: number
   label: string
   tone: SessionStatusBadgeTone
 }
@@ -82,6 +84,8 @@ export function sessionFocusedStatusBadge(options: {
   readonly activeStatusLabel: string | null
   readonly focusedBusy: boolean
   readonly agents?: readonly SessionAgentBusyState[]
+  readonly nowMs?: number
+  readonly taskStatus?: SessionAgentPaneStatusBadge | null
 }): SessionFocusedStatusBadge {
   if (!options.attached) {
     return sessionStatusBadge([])
@@ -91,6 +95,14 @@ export function sessionFocusedStatusBadge(options: {
   }
 
   const agents = options.agents
+  if (options.taskStatus) {
+    const task = options.taskStatus
+    // MP-08/MP-09/MP-10/MP-11 G13: reserve footer space for the actual deadline.
+    const label = task.deadline_ms !== undefined
+      ? `WAITING ${agentWaitCountdown(task.deadline_ms, options.nowMs ?? Date.now())} UNTIL ${new Date(task.deadline_ms).toISOString().slice(11, 19)}Z`
+      : task.label.length > 24 ? `${task.label.slice(0, 23)}…` : task.label
+    return sessionStatusBadge([{ label, tone: task.tone }])
+  }
   if (!agents || agents.length <= 1) {
     if (!options.focusedBusy) {
       return sessionStatusBadge([{ label: "IDLE", tone: "idle" }])
@@ -174,6 +186,8 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
   if (!agent) {
     return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
   }
+  const taskStatus = sessionAgentTaskStatus(options.session, agent.id)
+  if (taskStatus) return taskStatus
   const runtimeState = sessionAgentRuntimeState(options.session, agent)
   return sessionAgentPaneStatusBadge({
     agent: { state: runtimeState, is_processing: false },
@@ -326,4 +340,38 @@ function formatSessionWorkingStatusLabel(activity: string | null): string {
 
 function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | undefined): boolean {
   return Boolean(state?.active_prompt)
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02: older unfinished tasks survive newer answers.
+export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string, nowMs = Date.now()): SessionAgentPaneStatusBadge | null {
+  const tasks = (session?.agent_tasks ?? []).filter((task) => task.agent_id === agentId)
+  if (!tasks.length) return null
+  const unfinished = tasks.filter((task) => task.state !== "done" && task.state !== "cancelled")
+  const goals = tasks.filter((task) => task.goal)
+  const task = goals.find((task) => task.state !== "done" && task.state !== "cancelled")
+    ?? unfinished.find((task) => task.state === "blocked")
+    ?? unfinished.find((task) => task.state === "working")
+    ?? unfinished[0] ?? goals[goals.length - 1] ?? tasks[tasks.length - 1]!
+  const open = (task.goal ? task.obligations : tasks.flatMap((task) => task.obligations)).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
+  const suffix = open ? ` (${open} obligations)` : ""
+  if (task.goal) {
+    const goal = task.goal
+    const phase = goal.paused ? "PAUSED" : task.state === "working" && goal.evaluation?.result === null && goal.evaluation.prompt_id === (task.pending_prompt_id ?? task.prompt_id) ? "EVALUATING" : task.state.toUpperCase()
+    const elapsed = Number.isFinite(goal.state_since_ms) ? Math.max(0, nowMs - goal.state_since_ms) : 0
+    const active = goal.active_elapsed_ms + (task.state === "working" ? elapsed : 0)
+    const waiting = goal.waiting_elapsed_ms + (task.state === "waiting" ? elapsed : 0)
+    const seconds = (ms: number) => `${Math.floor(ms / 1000)}s`
+    const deadline = goal.next_check_in_ms ? `${Math.max(0, Math.ceil((goal.next_check_in_ms - nowMs) / 1000))}s (${new Date(goal.next_check_in_ms).toISOString()})` : "none"
+    const sources = task.wait?.registration_ids.length ?? 0
+    const objective = [...goal.objective.replace(/\s+/g, " ").trim()]
+    const title = objective.length > 160 ? objective.slice(0, 159).join("") + "…" : objective.join("")
+    return { label: `GOAL ${phase}: ${title}\nnext check ${deadline} · active ${seconds(active)} · wait ${seconds(waiting)} · ${goal.check_in_minutes}m · check ${goal.check_count}\nsources ${sources} · progress ${task.progress_sequence ?? 0} at ${task.last_progress_at_ms ? new Date(task.last_progress_at_ms).toISOString() : "none"} · ${open} obligations${task.reason ? ` · ${task.reason}` : ""}\n${goal.id} revision ${task.revision} · /goal pause | resume | cancel | interval <minutes> | edit <objective>`, tone: task.state === "blocked" ? "error" : task.state === "working" ? "working" : "idle" }
+  }
+  const status = agentTaskStatus(session, agentId)
+  return status ? { label: status.label, tone: status.tone, ...(status.deadline_ms !== undefined ? { deadline_ms: status.deadline_ms } : {}) } : null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: client display clock, never scheduling authority.
+export function sessionHasActiveGoalClock(session: RuntimeSession | null | undefined): boolean {
+  return (session?.agent_tasks ?? []).some(task => task.goal && !task.goal.paused && (task.state === "working" || task.state === "waiting"))
 }

@@ -407,7 +407,7 @@ fn queued_prompt_router_fixture_with_options(
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
-            &format!("client-queued-{label}"),
+            format!("client-queued-{label}"),
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");

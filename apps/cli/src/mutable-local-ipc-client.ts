@@ -5,6 +5,7 @@ import type { LocalIpcClient, RelaySubscriptionDiagnostic } from "./ipc.js"
 type KernelEventHandler = (event: KernelEvent) => void
 
 export type MutableLocalIpcClient = LocalIpcClient & {
+  onClientChanged: (handler: () => void) => () => void
   currentClient: () => LocalIpcClient
   replaceClient: (nextClient: LocalIpcClient) => Promise<void>
   swapClient: (nextClient: LocalIpcClient) => LocalIpcClient
@@ -45,6 +46,7 @@ export function beginMutableLocalIpcClientPivot(
 
 export function createMutableLocalIpcClient(initialClient: LocalIpcClient): MutableLocalIpcClient {
   let currentClient = initialClient
+  const clientChangedHandlers = new Set<() => void>()
   const handlers = new Map<KernelEventHandler, () => void>()
   const diagnostics = new Map<(value: RelaySubscriptionDiagnostic) => void, () => void>()
 
@@ -53,6 +55,10 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
   const proxy = {
     get socketPath() {
       return currentClient.socketPath
+    },
+    onClientChanged(handler: () => void) {
+      clientChangedHandlers.add(handler)
+      return () => { clientChangedHandlers.delete(handler) }
     },
     currentClient: () => currentClient,
     async replaceClient(nextClient: LocalIpcClient) {
@@ -76,6 +82,7 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       for (const handler of handlers.keys()) {
         handlers.set(handler, bindHandler(handler))
       }
+      for (const handler of clientChangedHandlers) handler()
       return previousClient
     },
     retainForRelayRenewal() { return currentClient.retainForRelayRenewal() },
@@ -131,6 +138,7 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       currentClient.destroy()
     },
   } satisfies Pick<LocalIpcClient, keyof LocalIpcClient> & {
+    onClientChanged: (handler: () => void) => () => void
     currentClient: () => LocalIpcClient
     replaceClient: (nextClient: LocalIpcClient) => Promise<void>
     swapClient: (nextClient: LocalIpcClient) => LocalIpcClient

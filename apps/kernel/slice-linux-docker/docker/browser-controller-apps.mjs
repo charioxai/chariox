@@ -138,14 +138,17 @@ export class AppTabs {
   async open(params) {
     const origin = appOrigin(params?.origin_label);
     if (typeof params?.installation_id !== "string" || !params.installation_id) throw invalid("missing installation");
+    if (params.instance_id != null && (typeof params.instance_id !== "string"
+      || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.instance_id))) throw invalid("invalid App instance");
+    const instanceId = params.instance_id ?? null;
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
+    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
     // terminal, or a kernel that restarted) shows that Tab with the current
-    // assets instead of a second one.
-    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
+    // assets instead of a second one. User-domain instance keys keep distinct tabs.
+    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
       Object.assign(open, { entry, assets: app.assets, page: app.page });
@@ -164,7 +167,9 @@ export class AppTabs {
     // A restored placeholder has no App script or authority. Only an Open
     // with kernel-verified assets can adopt it, matching the exact origin.
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
-    const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
+    const restored = instanceId === null
+      ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
+      : undefined;
     const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
@@ -185,6 +190,18 @@ export class AppTabs {
       throw error;
     }
     return { target_id: targetId, origin };
+  }
+
+  async close(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    await this.browser.closePageTarget(this.connection, app.targetId);
+    this.apps.delete(sessionId);
+    this.calls = this.calls.filter(call => call.target_id !== app.targetId);
+    this.wakeCalls();
+    return { closed: true };
   }
 
   // An update (or a kernel restart) rebinds an open view: serve the current

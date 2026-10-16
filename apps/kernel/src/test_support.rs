@@ -9,11 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod environment;
 #[cfg(unix)]
 mod pre_exec_child;
+mod room_turn;
 mod runtime_mcp;
+mod task_subscription;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
+pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
+pub(crate) use task_subscription::mixed_task_subscription_updates;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex
 /// around writers cannot protect unlocked readers or children inheriting env.
@@ -247,4 +251,22 @@ pub(crate) fn assert_fifo_rejected(reader: impl FnOnce(PathBuf) -> bool + Send +
     let refused = settled.expect("released FIFO reader should finish");
     assert!(timely, "FIFO open blocked before regular-file validation");
     assert!(refused, "FIFO was admitted as regular input");
+}
+
+// MP-08 / MP-10 / MP-11: one generated snapshot version pin for every shape test.
+pub(crate) fn expected_local_protocol_version() -> u32 {
+    serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../fixtures/protocol-versions.json"
+    ))
+    .unwrap()["local"]
+        .as_u64()
+        .unwrap() as u32
+}
+pub(crate) fn expected_relay_peer_protocol_version() -> u32 {
+    serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../fixtures/protocol-versions.json"
+    ))
+    .unwrap()["relayPeer"]
+        .as_u64()
+        .unwrap() as u32
 }

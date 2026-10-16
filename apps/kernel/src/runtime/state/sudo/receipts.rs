@@ -25,7 +25,6 @@ impl KernelRuntimeState {
             answer.custom_reply.as_deref(),
             Some(&turn.owner_user_id),
             true,
-            Some(&turn),
             None,
             false,
             false,
@@ -53,13 +52,4 @@ impl KernelRuntimeState {
         )?;
         Ok(())
     }
-}
-
-pub(crate) fn sudo_approval_receipt(
-    turn: &KernelSudoTurn,
-    session: &str,
-    interaction: &str,
-    choice: &str,
-) -> serde_json::Value {
-    serde_json::json!({"outcome":"authorized", "turn":turn, "session_id":session, "interaction_id":interaction, "choice_id":choice})
 }

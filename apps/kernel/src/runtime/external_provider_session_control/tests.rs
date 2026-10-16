@@ -168,7 +168,6 @@ pub(super) fn record(
         account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities {
             can_read_history: true,
-            ..ExternalProviderSessionCapabilities::default()
         },
         attached_to_chariox: false,
         attached_session_ids: Vec::new(),

@@ -6,7 +6,14 @@ use futures_util::SinkExt;
 
 use super::*;
 
+mod managed_slice_activation;
 mod writer;
+use managed_slice_activation::ManagedSliceActivationConfirmation;
+#[cfg(test)]
+use managed_slice_activation::{
+    managed_slice_token_confirmation_matches,
+    spawn_pending_managed_slice_activation_confirmation_after_connect,
+};
 use writer::{send_relay_envelope_frame, RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 
 #[cfg(test)]
@@ -79,8 +86,6 @@ struct StaticRelayConfig {
 }
 
 const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
-const MANAGED_SLICE_ACTIVATION_CONFIRMATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const MANAGED_SLICE_ACTIVATION_CONFIRMATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
@@ -344,7 +349,7 @@ fn spawn_managed_slice_token_refresh(
                     relay_peer_protocol_version,
                 } if refreshed_slice_id == slice_id
                     && relay_peer_protocol_version
-                        >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+                        >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION =>
                 {
                     router
                         .install_managed_slice_relay_token(
@@ -407,158 +412,6 @@ fn spawn_managed_slice_token_refresh(
 }
 
 // MP-08/MP-10/MP-11: reject an obsolete home before settling token confirmation.
-fn managed_slice_token_confirmation_matches(
-    slice_id: &str,
-    nonce: &str,
-    peer_version: u32,
-    expected_slice_id: &str,
-    expected_nonce: &str,
-) -> bool {
-    slice_id == expected_slice_id
-        && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-}
-
-fn spawn_managed_slice_activation_confirmation(
-    router: Arc<CommandRouter>,
-    state: Arc<RwLock<RelayClientState>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let Some(pending) = state
-                .write()
-                .await
-                .claim_pending_managed_slice_activation_confirmation()
-            else {
-                return;
-            };
-            let config = router.relay_config_snapshot();
-            let response =
-                super::peer_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
-                    &config,
-                    &state,
-                    chariox_relay::protocol::ClientTarget {
-                        daemon_id: Some(pending.owner_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    &pending.owner_public_key,
-                    crate::transport::relay_peer::RelayPeerRequest::ConfirmManagedSliceRelayToken {
-                        slice_id: pending.slice_id.clone(),
-                        owner_kernel_id: pending.owner_kernel_id.clone(),
-                        worker_kernel_id: pending.worker_kernel_id.clone(),
-                        activation_nonce: pending.activation_nonce.clone(),
-                    },
-                    MANAGED_SLICE_ACTIVATION_CONFIRMATION_REQUEST_TIMEOUT,
-                )
-                .await;
-            let retryable = match response {
-                Ok(
-                    crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
-                        slice_id,
-                        activation_nonce,
-                        relay_peer_protocol_version,
-                    },
-                ) if managed_slice_token_confirmation_matches(
-                    &slice_id, &activation_nonce, relay_peer_protocol_version,
-                    &pending.slice_id, &pending.activation_nonce,
-                ) =>
-                {
-                    state
-                        .write()
-                        .await
-                        .finish_managed_slice_activation_confirmation(
-                            &pending.slice_id,
-                            &pending.activation_nonce,
-                        );
-                    crate::logging::info_with_fields(
-                        "daemon.relay_client",
-                        "managed slice relay token activation confirmed",
-                        serde_json::json!({
-                            "slice_id": pending.slice_id,
-                            "owner_kernel_id": pending.owner_kernel_id,
-                        }),
-                    );
-                    false
-                }
-                Ok(crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
-                    code,
-                    retryable,
-                }) => {
-                    if !retryable {
-                        state
-                            .write()
-                            .await
-                            .finish_managed_slice_activation_confirmation(
-                                &pending.slice_id,
-                                &pending.activation_nonce,
-                            );
-                    }
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "managed slice relay token activation confirmation was rejected",
-                        serde_json::json!({
-                            "slice_id": pending.slice_id,
-                            "owner_kernel_id": pending.owner_kernel_id,
-                            "code": code,
-                            "retryable": retryable,
-                        }),
-                    );
-                    retryable
-                }
-                Ok(response) => {
-                    state
-                        .write()
-                        .await
-                        .finish_managed_slice_activation_confirmation(
-                            &pending.slice_id,
-                            &pending.activation_nonce,
-                        );
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "managed slice relay token activation confirmation returned an incompatible response",
-                        serde_json::json!({
-                            "slice_id": pending.slice_id,
-                            "owner_kernel_id": pending.owner_kernel_id,
-                            "response": format!("{response:?}"),
-                        }),
-                    );
-                    false
-                }
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "managed slice relay token activation confirmation failed",
-                        serde_json::json!({
-                            "slice_id": pending.slice_id,
-                            "owner_kernel_id": pending.owner_kernel_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    true
-                }
-            };
-            if !retryable || !state.read().await.connected() {
-                return;
-            }
-            sleep(MANAGED_SLICE_ACTIVATION_CONFIRMATION_RETRY_DELAY).await;
-            if !state.read().await.connected() {
-                return;
-            }
-        }
-    })
-}
-
-async fn spawn_pending_managed_slice_activation_confirmation_after_connect(
-    router: Arc<CommandRouter>,
-    state: Arc<RwLock<RelayClientState>>,
-) -> Option<JoinHandle<()>> {
-    state
-        .read()
-        .await
-        .pending_managed_slice_activation_confirmation()?;
-    Some(spawn_managed_slice_activation_confirmation(router, state))
-}
-
 fn spawn_leased_projection_pump(
     router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,
@@ -806,7 +659,7 @@ async fn run_daemon_relay_connector_inner(
         let connect_started = Instant::now();
         match timeout(
             RELAY_CONNECT_TIMEOUT,
-            connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+            crate::transport::relay_socket_connect::connect_binary_events(&relay_url),
         )
         .await
         {
@@ -836,7 +689,15 @@ async fn run_daemon_relay_connector_inner(
                 }
                 continue;
             }
-            Ok(Ok((socket, _))) => {
+            Ok(Ok((socket, handshake))) => {
+                let binary_events = handshake
+                    .headers()
+                    .get(chariox_relay::binary_event::VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .is_some_and(|version| {
+                        version >= chariox_relay::binary_event::PROTOCOL_VERSION
+                    });
                 let connect_ms = connect_started.elapsed().as_millis();
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -858,8 +719,17 @@ async fn run_daemon_relay_connector_inner(
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
-                    let mut event_write_coalescer =
-                        RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+                    // MP-08/MP-10: a software display packet can exceed the
+                    // small-event priority threshold even for one typed key.
+                    // Keep its bounded event lane and control priority, but
+                    // don't add a whole33ms frame after capture/encoding.
+                    let event_delay =
+                        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1") {
+                            0
+                        } else {
+                            RELAY_EVENT_WRITE_COALESCE_MS
+                        };
+                    let mut event_write_coalescer = RelayEventWriteCoalescer::new(event_delay);
                     'writer_loop: while priority_open
                         || event_open
                         || !event_write_coalescer.is_empty()
@@ -878,7 +748,7 @@ async fn run_daemon_relay_connector_inner(
                                 envelope = priority_outgoing_rx.recv(), if priority_open => {
                                     match envelope {
                                         Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
                                                 break;
                                             }
                                         }
@@ -889,7 +759,7 @@ async fn run_daemon_relay_connector_inner(
                                     match envelope {
                                         Some(envelope) => {
                                             if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                                if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                                     break;
                                                 }
                                             }
@@ -899,7 +769,7 @@ async fn run_daemon_relay_connector_inner(
                                 }
                                 _ = tokio::time::sleep_until(ready_at) => {
                                     if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                             break 'writer_loop;
                                         }
                                     }
@@ -921,7 +791,7 @@ async fn run_daemon_relay_connector_inner(
                             envelope = priority_outgoing_rx.recv(), if priority_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
                                             break;
                                         }
                                     }
@@ -932,7 +802,7 @@ async fn run_daemon_relay_connector_inner(
                                 match envelope {
                                     Some(envelope) => {
                                         if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
                                                 break;
                                             }
                                         }
@@ -1007,12 +877,9 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .runtime_state()
                     .retry_pending_slice_observation_revocations();
+                let mut slice_activation = ManagedSliceActivationConfirmation::default();
                 if static_relay.is_none() {
-                    let _ = spawn_pending_managed_slice_activation_confirmation_after_connect(
-                        Arc::clone(&router),
-                        Arc::clone(&state),
-                    )
-                    .await;
+                    slice_activation.resume_pending(&router, &state).await;
                 }
                 if replayed_display_tunnel_count > 0 {
                     crate::logging::info_with_fields(
@@ -1055,11 +922,11 @@ async fn run_daemon_relay_connector_inner(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 if static_relay.is_none() {
-                                    let _ = spawn_cloud_presence_publish(
+                                    drop(spawn_cloud_presence_publish(
                                         Arc::clone(&router),
                                         false,
                                         "daemon shutting down",
-                                    );
+                                    ));
                                 }
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
@@ -1312,6 +1179,12 @@ async fn run_daemon_relay_connector_inner(
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
+                            }
+                            // Same-identity token installation reauthenticates in place.
+                            // Its pending confirmation must run after this heartbeat too,
+                            // without waiting for a socket reconnect or duplicating retries.
+                            if static_relay.is_none() {
+                                slice_activation.resume_pending(&router, &state).await;
                             }
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),

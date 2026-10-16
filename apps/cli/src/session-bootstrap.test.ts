@@ -7,6 +7,7 @@ import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
+import { LocalIpcError } from "./ipc.js"
 
 function terminalCatalog() {
   return {
@@ -219,10 +220,12 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "catchup", "session", "outline:agent-a", "prompt-history"])
+  await bootstrap.deferred?.attachedProvider?.load()
+  assert.equal(calls.at(-1), "launch")
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
-  assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
+  assert.equal(bootstrap.binding?.providerRun, null)
   assert.deepEqual(bootstrap.binding?.historyEntries, [])
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
@@ -261,7 +264,7 @@ test("bootstrapSession seeds newly created sessions from the requested provider 
     config_state: { version: 1, values: {} },
   }
 
-  await bootstrapSession(
+  const bootstrap = await bootstrapSession(
     {} as never,
     {
       clientId: "cli-1",
@@ -319,6 +322,7 @@ test("bootstrapSession seeds newly created sessions from the requested provider 
     effort: "high",
     account_profile: "default",
   })
+  await bootstrap.deferred?.attachedProvider?.load()
   assert.deepEqual(launched, [{
     provider: "opencode",
     model: "opencode/gpt-5.4",
@@ -426,7 +430,9 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
     },
   )
 
-  assert.deepEqual(calls, ["attach", "session", "load-run", "catchup", "session"])
+  assert.deepEqual(calls, ["attach", "session", "catchup", "session"])
+  const loaded = (await bootstrap.deferred?.attachedProvider?.load())?.run
+  assert.equal(loaded?.id, "run-1")
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
@@ -505,10 +511,92 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
   )
 
   assert.equal(bootstrap.binding?.providerRun, null)
+  await bootstrap.deferred?.attachedProvider?.load()
   assert.deepEqual(warnings, [{
     session_id: "session-1",
     focused_agent_id: "missing-agent",
   }])
+})
+
+test("bootstrapSession reports a locked credential vault from the deferred attach launch", async () => {
+  const warnings: Array<Record<string, unknown> | undefined> = []
+  const session = {
+    id: "session-1",
+    project_id: "project-default",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Active",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 8,
+    agents: [{
+      id: "agent-a",
+      agent_ref: "agent-a",
+      session_id: "session-1",
+      alias: null,
+      provider: "codex",
+      model: "codex/gpt-5.4-mini",
+      effort: "low",
+      worktree_id: null,
+      state: "Idle" as const,
+      is_processing: false,
+      grid_row: 0,
+      grid_col: 0,
+      grid_row_span: 1,
+      grid_col_span: 1,
+      created_at_ms: 1,
+      last_activity_at_ms: 1,
+    }],
+    config_state: { version: 1, values: {} },
+  }
+
+  const bootstrap = await bootstrapSession(
+    {} as never,
+    {
+      clientId: "cli-1",
+      sessionId: "session-1",
+      model: "gpt-5.4",
+      accountProfile: "default",
+      effort: "high",
+    },
+    "/workspace",
+    "/workspace",
+    {},
+    {
+      logger: {
+        warn: (_message: string, fields?: Record<string, unknown>) => warnings.push(fields),
+      } as never,
+      listSessions: async () => [session],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => session,
+      attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+      getSessionState: async () => session,
+      launchProviderRun: async () => {
+        throw new LocalIpcError(
+          "handle kernel response",
+          "local transport `credential_vault_locked` failed: Chariox vault is locked",
+          "local_transport_error",
+          true,
+        )
+      },
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async () => undefined,
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => null,
+      prepareHistoryOutlineAgent: () => [],
+    },
+  )
+
+  assert.equal(bootstrap.binding?.providerRun, null)
+  // MP-08/MP-10/MP-11: the deferred loader keeps the recovery reason for the mounted TUI.
+  assert.deepEqual(await bootstrap.deferred?.attachedProvider?.load(), { run: null, issue: "credential_vault_locked" })
 })
 
 test("bootstrapSession recovers when the launch target moves remote during attach", async () => {
@@ -607,7 +695,8 @@ test("bootstrapSession recovers when the launch target moves remote during attac
 
   assert.equal(bootstrap.binding?.providerRun, null)
   assert.equal(bootstrap.binding?.session.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
-  assert.equal(catchUpSession.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
+  assert.equal(catchUpSession.agents[0]?.remote_execution, undefined)
+  await bootstrap.deferred?.attachedProvider?.load()
   assert.equal(stateReads, 3)
   assert.deepEqual(info, [{
     message: "recovered attach-time provider launch after agent moved remote",
@@ -738,4 +827,30 @@ test("MP-08 / MP-11 direct session creation checks the default account before cr
     prepareHistoryOutlineAgent: () => [],
   }), /codex-1 needs sign-in/)
   assert.equal(created, false)
+})
+
+// MP-08/MP-10/MP-11 F02: a launch can require a human Vault answer.
+test("scoped bootstrap renders its attachment before a protected provider launch", async () => {
+  const session = { id: "room", agents: [{ id: "agent", provider: "claude-p", model: "claude-haiku-5-5", state: "Idle" }], focused_agent_id: "agent", active_provider_run_id: null }
+  let launched = false
+  const pending = new Promise<never>(() => {})
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "room", provider: "claude-p", model: "claude-haiku-5-5", effort: "low", accountProfile: "selected" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachToSession: async () => ({ id: "attachment", session_id: "room" }),
+    getSessionState: async () => session,
+    launchProviderRun: () => { launched = true; return pending },
+    catchUpAttachedSession: async () => {}, getSessionHistoryOutline: async () => ({ agents: [] }),
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(), resolveVisibleAgentId: () => "agent",
+    prepareHistoryOutlineAgent: () => [],
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(result, "blocked", "Vault input must not depend on an unmounted TUI")
+  assert.equal(launched, false, "only the mounted client starts the protected launch")
+  if (result !== "blocked") {
+    assert.equal(result.binding?.session.id, "room")
+    assert.ok(result.deferred?.attachedProvider)
+    void result.deferred.attachedProvider.load()
+    assert.equal(launched, true)
+  }
 })

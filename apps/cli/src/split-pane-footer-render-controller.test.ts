@@ -57,6 +57,8 @@ test("split-pane footer render controller renders current footer projection", ()
   assert.equal(first.agentLocationLabel(agent("agent-a")), "agent-a")
   assert.equal(first.badgeWidth, 8)
   assert.equal(first.animationFrame, 4)
+  // MP-08/MP-10/MP-11: an unread account projection is not a negative observation.
+  assert.equal(first.providerAccountLabel?.("codex", "replica-only"), "Account status not checked")
   assert.equal(rendered[1]!.showAgentFooters, false)
   assert.equal(rendered[1]!.session?.id, "session-1")
 })

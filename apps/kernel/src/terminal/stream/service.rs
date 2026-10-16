@@ -396,7 +396,19 @@ impl TerminalStreamService {
     }
 
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
-        if record.pending_recipient_attachment_ids.is_empty() {
+        // Assessment turns and kernel instruction echoes are agent-only.
+        // Replies to correction/inbox instructions remain visible.
+        let internal_echo = record.kind == TerminalOutputKind::PromptEcho
+            && record
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::session::is_internal_prompt_echo_id);
+        if record.pending_recipient_attachment_ids.is_empty()
+            || record.prompt_origin == Some(PromptOrigin::CompletionCheck)
+            || internal_echo
+            || (record.kind == TerminalOutputKind::ProviderTool
+                && crate::history::public_history::is_private_history_tool_record(&record.bytes))
+        {
             return;
         }
         let record_id = self.next_output_record_id;

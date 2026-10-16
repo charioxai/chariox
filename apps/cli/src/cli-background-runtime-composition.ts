@@ -1,3 +1,5 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import { sessionHasActiveGoalClock } from "@chariox/kernel-client/session-runtime-status"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
@@ -322,10 +324,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         if (!deps.isAttached()) {
           return
         }
-        const currentSession = deps.sessionState()
-        const latestSession = await deps.getSessionState(currentSession.id)
-        deps.applySessionState(latestSession)
-        await deps.refreshAgentPanes(latestSession)
+        if (!deps.sessionState().agents.some((agent: {id: string}) => agent.id === agentId)) return
+        // Use the shared hydrator's room and attachment checks after its read.
+        const latestSession = await deps.hydrateCurrentAttachedSession("external provider history")
+        if (!latestSession || deps.sessionState().id !== latestSession.id) return
         deps.syncVisibleTranscriptPreview()
         deps.appLogger?.debug?.("refreshed external provider history", {
           session_id: latestSession.id,
@@ -569,6 +571,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyProviderRunChanged,
     applySessionMetadataChanged,
     applyRuntimeInteractionsChanged,
+    applyAgentTaskUpdated: (sessionId, task) => { applyDeltaSessionState(sessionId, session => withAgentTaskUpdate(session, sessionId, task)) },
     applyWorkflowRunUpdated,
     applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
@@ -733,6 +736,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.setWorkingAnimationFrame((value: number) => value + 1)
     },
     sessionStatusMode: deps.sessionStatusMode,
+    hasWaitingDeadline: () => deps.sessionState().agent_tasks?.some((task: { state: string }) => task.state === "waiting") ?? false,
+    hasGoalClock: () => sessionHasActiveGoalClock(deps.sessionState()),
     splitAgentResponseMode: deps.splitAgentResponseMode,
     updateSessionChrome: deps.updateSessionChrome,
     renderSplitPaneFooters: deps.renderSplitPaneFooters,

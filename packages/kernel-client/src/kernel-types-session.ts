@@ -3,6 +3,7 @@ import type {
   AgentInstance,
   AgentPromptState,
   AgentRuntimeActivity,
+  KernelSudoTurn,
   PromptQueueItem,
   RuntimeInteraction,
   SessionInvite,
@@ -47,6 +48,10 @@ export type RuntimeSession = {
   agent_activity?: Record<string, AgentRuntimeActivity>
   agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
+  agent_tasks?: AgentTaskExecution[]
+  // Protocol 460: live sudo windows for every client's status row.
+  sudo_windows?: KernelSudoTurn[]
+  agent_wakes?: AgentWake[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
   agent_prompt_schedules?: AgentPromptSchedule[]
@@ -349,4 +354,45 @@ export type WorkspaceLiveSyncStatus = {
   targets: WorkspaceLiveSyncTargetStatus[]
   conflicts: WorkspaceLiveSyncConflictSummary[]
   ignore: WorkspaceLiveSyncIgnoreStatus
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 452; agent_wakes since 459 (A03).
+// MP-08 / MP-09 / MP-10 / MP-11 A12: home-owned goal projection.
+export type AgentGoal = {
+  schema_version: 1; id: string; owner_user_id: string; room_id: string; agent_id: string
+  objective: string; original_prompt_id: string; objective_revision: number; created_at_ms: number
+  legacy_run_id?: string | null
+  active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
+  check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
+  continuation_sequence: number; check_count: number
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; result: Record<string, unknown> | null } | null
+  final_answer: string | null; evidence: string[]
+}
+// MP-08 / MP-09 / MP-10 / MP-11 A12: same bounded check, no goal mode.
+export type AgentCompletionCheck = {
+  schema_version: 1; original_prompt_id: string; check_count: number
+  evaluation: AgentGoal["evaluation"]; final_answer: string | null; evidence: string[]
+}
+export type AgentTaskExecution = {
+  goal?: AgentGoal | null
+  completion_check?: AgentCompletionCheck | null
+  task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
+  provider_run_id: string | null; revision: number; blocked_revision: number
+  state: "working" | "waiting" | "blocked" | "done" | "cancelled"
+  reason: string
+  obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
+  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
+  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  correction_used: boolean; pending_prompt_id: string | null
+}
+// MP-08 / MP-09 / MP-10 / MP-11 A03: kernel-owned timer or watched process with its receipts.
+export type AgentWake = {
+  id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
+  kind: "timer" | "process"; label: string
+  state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
+  created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
+  command: string[]; match_text: string | null; matched_at_ms: number | null; pid: number | null; exit_code: number | null
+  fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
+  last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
+  alerted_sequence: number | null
 }

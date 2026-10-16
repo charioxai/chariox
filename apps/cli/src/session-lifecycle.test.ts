@@ -1199,3 +1199,24 @@ test("attachBinding adopts the attached session response layout immediately", as
   assert.deepEqual(appliedLayouts, ["split", "split"])
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
 })
+
+// MP-08 / MP-10 / MP-11 G03: user intent must cancel old-room recovery before transport I/O.
+test("detach releases the client binding before the kernel acknowledgement", async () => {
+  let attachment: {id: string; session_id: string} | null = {id: "att-1", session_id: "session-1"}
+  let acknowledge!: () => void
+  const pending = new Promise<void>(resolve => {acknowledge = resolve})
+  const {deps} = createBaseDeps({
+    attachmentState: () => attachment,
+    setAttachmentState: (next: typeof attachment) => {attachment = next},
+    detachAttachment: () => pending,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const detaching = controller.detachCurrentAttachment()
+  const bindingDuringAck = attachment
+  const next = {id: "att-2", session_id: "session-2"}
+  attachment = next
+  acknowledge()
+  await detaching
+  assert.equal(bindingDuringAck, null)
+  assert.equal(attachment, next)
+})

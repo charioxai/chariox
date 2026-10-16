@@ -6,7 +6,7 @@ impl KernelRuntimeState {
     pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
         self.owned.record_notice_for_agent(session_id, None, Some(agent_id),
             self.owned.attachment_store.list_session_attachment_ids(session_id),
-            "/sudo <prompt> replaces /meta. /meta remains delegation-only for one release and needs no passkey. /sudo requires your passkey in the kernel popup and grants authority for exactly one turn.");
+            "/sudo <prompt> replaces /meta. /meta remains delegation-only for one release and needs no passkey. /sudo requires a fresh passkey in the kernel popup and grants a finite window for the same owner-authorized work (one hour by default). Agents cannot answer owner approvals.");
     }
 }
 
@@ -61,6 +61,17 @@ impl KernelRuntimeOwnedState {
         message: impl Into<String>,
     ) {
         let message = message.into();
+        if self.config_projection.snapshot().room_agent_tools
+            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+        {
+            crate::logging::debug_with_fields(
+                "daemon.prompt_delivery",
+                "internal dispatch notice",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
+                    "agent_id": agent_id, "diagnostic": crate::provider::sanitize_provider_diagnostic(&message)}),
+            );
+            return;
+        }
         let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
             session_id,
             agent_id,

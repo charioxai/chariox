@@ -3,6 +3,36 @@ use super::*;
 use crate::runtime::browser_controller_app_view::BrowserAppViewRequest;
 
 impl BrowserControllerProcessStore {
+    /// MD-N2 / MP-08: observations use the existing unlocked CDP response path.
+    pub(crate) fn note_observation(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        quote: Option<&crate::local::NoteTextQuote>,
+    ) -> Result<Option<crate::runtime::notes::observation::BrowserNoteObservation>, String> {
+        if let Some(quote) = quote {
+            crate::runtime::notes::validate_quote(quote)?;
+        }
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let (pending, timeout) = {
+            let mut ownership = ownership
+                .lock()
+                .map_err(|_| "MD-N2: controller lock unavailable")?;
+            ownership.require_lease(session_id)?;
+            let supervisor = &mut ownership.supervisor;
+            supervisor.prepare_unlocked_request()?;
+            (supervisor.backend.begin_observation_request("browser.notes.observe", serde_json::json!({"target_id":target_id,"document_id":document_id,"quote":quote}))?, supervisor.backend.timeout)
+        };
+        let observation: crate::runtime::notes::observation::BrowserNoteObservation = pending
+            .wait(timeout)?
+            .into_result("browser.notes.observe")?;
+        observation.validate(Some(target_id), Some(document_id))?;
+        Ok(Some(observation))
+    }
+
     pub(super) fn app_view_bridge(
         &self,
         session_id: &str,

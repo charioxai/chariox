@@ -852,7 +852,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         connect_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        crate::transport::relay_socket_connect::connect(&relay_url),
     )
     .await
     .map_err(|_| DaemonError::LocalTransport {
@@ -1077,10 +1077,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         None => Ok(read_response.await),
     };
     let result = response.unwrap_or_else(|_| {
-        let message = format!(
-            "timed out waiting for relay peer response after {}ms",
-            response_timeout_ms
-        );
+        let message =
+            format!("timed out waiting for relay peer response after {response_timeout_ms}ms");
         trace.log_completed("timeout", Some(&message), None);
         Err(DaemonError::LocalTransport {
             operation: "read temporary relay peer response",
@@ -1204,6 +1202,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1245,6 +1244,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }
@@ -1346,6 +1346,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1387,6 +1388,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }

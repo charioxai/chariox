@@ -539,13 +539,11 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_i
         .await
         .expect("meta read_event should dispatch");
     assert!(read.ok);
-    assert_eq!(
-        read.payload
-            .pointer("/event/read_at_ms")
-            .and_then(serde_json::Value::as_u64)
-            .is_some(),
-        true
-    );
+    assert!(read
+        .payload
+        .pointer("/event/read_at_ms")
+        .and_then(serde_json::Value::as_u64)
+        .is_some());
     assert!(
         read.payload
             .pointer("/event/prompt_delivery_status")

@@ -30,6 +30,16 @@
       "path": "scripts/mp11-relay-signal-adapters.test.mjs",
       "sha256": "fd73fe3b5e2818e40ef13826bb6528deba6070147e9795eeea472335a97081ef",
       "reason": "MP-11 source-only regression strings and regular expressions identify forbidden signal patterns; these strings are never executed."
+    },
+    {
+      "path": "apps/browser-display/drill-owned-process.mjs",
+      "sha256": "3c0790d96f3d0efdebaf5e1fab292df27c554d5e9abd2c7d8f7355eba91aa949",
+      "reason": "MP-11 MD-DISPLAY drill guard: validPid rejects 0/1/self and non-integers; group signals only detached children it spawned, after re-reading every member's PID/start identity immediately before each send; reused child PIDs are refused."
+    },
+    {
+      "path": "apps/kernel/slice-linux-docker/kernel-browser-macos-drill.mjs",
+      "sha256": "0424488853316a7742842ed42aa845d82448a12dd89e7f84e79bcf07db15366c",
+      "reason": "MP-11 MD-4 macOS drill: signalOwnedProcess asserts a safe integer PID > 1; targets are only the replay's own child and its PID/PPID descendants (or processes naming its private root/temp paths), tracked with PID plus start time; no group signals."
     }
   ],
   "sites": [
@@ -123,6 +133,13 @@
       "text": "self.assertNotIn('pkill ', (ROOT / 'start-runtime.sh').read_text())",
       "count": 1,
       "reason": "MP-11 inert regression assertion that the slice runtime start script no longer signals by process name; the string is never executed."
+    },
+    {
+      "path": "apps/cli/scripts/user-domain-access-live-drill.mjs",
+      "kind": "node-group",
+      "text": "try { process.kill(-kernel.pid, signal); } catch {}",
+      "count": 1,
+      "reason": "MP-11 drill-owned kernel spawned with detached:true (its own process group); the helper refuses non-integer or <=1 PIDs and exited children before signalling that exact group."
     }
   ]
 }

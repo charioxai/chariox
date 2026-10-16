@@ -78,6 +78,10 @@ impl SessionStateProjectionStore {
             .clone()
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "Keep the explicit waiting_room_snapshot state or return type at the existing boundary"
+    )]
     pub(crate) fn waiting_room_snapshot(
         &self,
     ) -> (
@@ -222,6 +226,7 @@ impl SessionStateProjectionStore {
             .remove(session_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_external_observed_active_prompt(
         &self,
         session_id: &str,
@@ -289,10 +294,9 @@ impl SessionStateProjectionStore {
             let projected_prompt = valid_target.then_some(active_prompt).flatten();
             let activity_changed = {
                 let entry = state.external_observed_activity.entry(key).or_default();
-                if entry.latest_observation_generation != observation_generation {
-                    false
-                } else if entry.active_prompt.as_ref().map(PromptQueueItem::id)
-                    == projected_prompt.as_ref().map(PromptQueueItem::id)
+                if entry.latest_observation_generation != observation_generation
+                    || entry.active_prompt.as_ref().map(PromptQueueItem::id)
+                        == projected_prompt.as_ref().map(PromptQueueItem::id)
                 {
                     false
                 } else {
@@ -381,6 +385,7 @@ impl SessionStateProjectionStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn external_observed_working_agents(&self) -> BTreeMap<String, BTreeSet<String>> {
         let state = self
             .state

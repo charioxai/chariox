@@ -116,3 +116,19 @@ test("settleAttachProviderRun still surfaces unrelated provider launch failures"
     (error) => error === launchError,
   )
 })
+
+// MP-08 / MP-10 / MP-11: reconnect preserves the kernel-owned account selection.
+test("cold attach keeps the stored account instead of the CLI default", async () => {
+  let selected = "";
+  const result = await settleAttachProviderRun(session,
+    { provider: "codex", model: "default", effort: "" }, "default", false, {
+      launchProviderRun: async (_room, _provider, accountProfile) => {
+        selected = accountProfile;
+        return { id: "run-reconnected" } as never;
+      },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    });
+  assert.equal(result.action, "launched");
+  assert.equal(selected, "codex-secondary");
+});

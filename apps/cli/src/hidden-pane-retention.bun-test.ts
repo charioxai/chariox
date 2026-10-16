@@ -155,7 +155,7 @@ test("hidden kernel approval dock releases 1,000 App consent cards", async () =>
   surface.assign(dock)
   try {
     for (let index = 0; index < 1_000; index += 1) {
-      const view = { open: true, count: 1, criticalCount: 0, index: 0, selected: null, pending: false,
+      const view = { handoffEntry: null, choices: [{ id: "allow", label: "Allow", reply: "allow" }], open: true, count: 1, criticalCount: 0, index: 0, selected: null, pending: false,
         connected: true, error: null, passkey: null, interaction: {
           id: `install-${index}`, kernel_operation_id: `operation-${index}`, kind: "permission" as const,
           level: "warning" as const, requested_at_ms: index,

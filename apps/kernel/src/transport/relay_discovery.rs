@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
@@ -525,7 +525,26 @@ async fn query_relay_once_with_test_trace(
     query_relay_once_inner(config, query, Some(trace)).await
 }
 
-async fn query_relay_once_inner(
+// MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
+// inline future frame; the body keeps admission, receipts and timeouts deferred.
+type RelayMetadataFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<RelayEnvelope, DaemonError>> + Send + 'a>,
+>;
+
+#[inline(never)]
+fn query_relay_once_inner<'a>(
+    config: &'a DaemonConfig,
+    query: RelayMetadataQuery,
+    #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
+) -> RelayMetadataFuture<'a> {
+    #[cfg(test)]
+    let pending = query_relay_once_body(config, query, trace);
+    #[cfg(not(test))]
+    let pending = query_relay_once_body(config, query);
+    Box::pin(pending)
+}
+
+async fn query_relay_once_body(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
@@ -550,7 +569,7 @@ async fn query_relay_once_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         request_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        crate::transport::relay_socket_connect::connect(&relay_url),
     )
     .await
     .map_err(|_| {

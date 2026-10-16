@@ -200,6 +200,10 @@ impl super::KernelRuntimeOwnedState {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_provider_switch_context_handoff_for_target operation signature and explicit context arguments"
+    )]
     fn prepare_provider_switch_context_handoff_for_target(
         &self,
         source_run: &RuntimeProviderRun,

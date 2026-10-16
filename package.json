@@ -7,7 +7,7 @@
     "build": "pnpm -r --workspace-concurrency=1 run build",
     "start:kernel": "node scripts/start-kernel.mjs",
     "package:managed-kernel-release": "node scripts/package-managed-kernel-release.mjs",
-    "build:kernel-client": "pnpm --filter @chariox/tool-display run build && pnpm --filter @chariox/kernel-client run build",
+    "build:kernel-client": "node scripts/generate-protocol-versions.mjs --check && pnpm --filter @chariox/tool-display run build && pnpm --filter @chariox/kernel-client run build",
     "build:cli": "pnpm --filter @chariox/cli run build",
     "lint": "pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
@@ -24,7 +24,9 @@
     "protocol:conformance": "cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture",
     "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel-harness",
     "start:shell": "pnpm --filter @chariox/shell run start",
-    "test:review-regressions": "node --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs apps/kernel/managed-upgrade-protocol-transitions.test.mjs apps/cli/scripts/lib/drill-turn-admission.test.mjs apps/cli/scripts/lib/native-permission-workspace.test.mjs"
+    "test:review-regressions": "node --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs apps/kernel/managed-upgrade-protocol-transitions.test.mjs apps/cli/scripts/lib/drill-turn-admission.test.mjs apps/cli/scripts/lib/native-permission-workspace.test.mjs",
+    "protocol:generate": "node scripts/generate-protocol-versions.mjs",
+    "protocol:check": "node scripts/generate-protocol-versions.mjs --check"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
