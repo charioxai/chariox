@@ -481,8 +481,14 @@ export class KernelBrowserHost {
     if (!stored) throw new UserDomainRefusal("not_granted");
     if(native)return this.displayDocuments.target(this.browser,stored);
     const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
-    const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-    const document_id = frameTree?.frame?.loaderId;
+    // MP-08/MP-10 (BROWSER-UX-05): the page session's navigation events are ordered with its replies, so the
+    // cached top-level document is never newer than a live read; a lagging one is refused later as stale
+    // (fail closed). A busy renderer (a Tab that just opened) otherwise holds this read for 0.1-0.5 s.
+    let document_id = this.browser.documentIdsByTarget?.get(stored.target_id);
+    if (!document_id) {
+      const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+      document_id = frameTree?.frame?.loaderId;
+    }
     if (typeof document_id !== "string" || !document_id) throw new Error("MD-DISPLAY: document unavailable");
     // Observe this same native target without building an entire accessibility snapshot.
     if (stored.document_id !== document_id) {

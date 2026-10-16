@@ -381,6 +381,19 @@ test('MP-08/MP-10 a v2 subscription reads its own Tab without an all-tab reconci
  assert.ok(sub.subscription_id);assert.equal(reconciles,0);
  await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal(reconciles,1,'wire 1 keeps its reconcile');
 });
+// MP-08/MP-10 (BROWSER-UX-05): a Tab that just opened has a busy renderer; its first subscription must not ask it
+// for the document twice. The page session's navigation events (the cached document) name it.
+test('MP-08/MP-10 a v2 subscription of a document the page session already named asks the renderer nothing', async () => {
+ const {service,host,calls,state}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};
+ host.browser.documentIdsByTarget=new Map([['target','d']]);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
+ assert.equal(calls.filter(call=>call.method==='Page.getFrameTree').length,0,'no renderer round trip');
+ host.browser.documentIdsByTarget=new Map([['target','other']]);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
+ assert.equal(calls.filter(call=>call.method==='Page.getFrameTree').length,2,'MP-11: any other cached document asks the renderer (before and after the render lease)');
+ host.browser.documentIdsByTarget=new Map();state.document='moved';host.displayTarget=async()=>({tab_id:'t',target_id:'target',document_id:'d'});
+ await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a'),/moved away/,'MP-11: a moved document is still refused by the renderer');
+});
 // MP-08/MP-10/MP-11: merge #958's owned desktop with the v2 mirror observer.
 test('MP-08 mirror observes the owned desktop density without changing it for the viewer',async()=>{
  const before=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
