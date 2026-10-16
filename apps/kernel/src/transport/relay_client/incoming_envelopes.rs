@@ -108,6 +108,8 @@ pub(super) async fn handle_incoming_envelope(
             caller_identity,
             encrypted_request,
         } => {
+            let timing_packet = super::request_timing::packet(&encrypted_request);
+            super::request_timing::record("kernel_receive", timing_packet);
             if !reconnect_gate.begin_daemon_request() {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
@@ -132,6 +134,7 @@ pub(super) async fn handle_incoming_envelope(
                     &command_result_cache,
                 )
                 .await;
+                super::request_timing::record("kernel_request_end", timing_packet);
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonResponse {
