@@ -267,7 +267,7 @@ impl KernelRuntimeOwnedState {
                     item.notification_invocation_mut().unwrap().caller["notification_steer"] = serde_json::json!({"prompt_id":active.id(),"provider_run_id":provider_run_id});
                     let dispatch = crate::app::KernelPromptDispatch {
                         session_id: session_id.into(), provider_run_id, agent_id: active.target_agent_id().into(),
-                        prompt_id: id.into(), target_active_prompt_id: Some(active.id().into()),
+                        prompt_id: attempt_prompt_id(&queued), target_active_prompt_id: Some(active.id().into()),
                         source_attachment_id: active.source_attachment_id().into(), prompt: queued.prompt().unwrap_or_default().into(),
                         hidden_system_context: String::new(), attachments: vec![], prompt_origin: active.prompt_origin(),
                         external_provider: None, external_provider_session_id: None, external_provider_turn_id: None, steering: true,
@@ -424,6 +424,10 @@ impl KernelRuntimeOwnedState {
                 item.mark_queued_for_retry();
                 if let Some(caller) = item.notification_invocation_mut().and_then(|i| i.caller.as_object_mut()) {
                     caller.remove("notification_steer");
+                    // The worker refuses to replay the uncertain attempt's steer ID, so an explicit
+                    // retry is a new attempt with its own ID.
+                    let attempt = caller.get("notification_retry").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                    caller.insert("notification_retry".into(), serde_json::json!(attempt + 1));
                 }
             } else {
                 item.mark_cancelled();
@@ -548,6 +552,27 @@ struct RemoteInjectionIdentity {
     target_home_prompt_id: String,
     worker_provider_run_id: String,
 }
+/// The steer ID of the item's current send attempt: the queue ID, or a fresh one after each
+/// explicit user retry so the worker's receipt for an earlier uncertain attempt cannot block it.
+fn attempt_prompt_id(item: &WorkflowQueuedPrompt) -> String {
+    let retry = item
+        .publication_invocation()
+        .and_then(|i| i.caller.get("notification_retry"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    match retry {
+        0 => item.id().to_owned(),
+        n => format!("{}-retry{n}", item.id()),
+    }
+}
+/// True for the item's current or any earlier attempt ID.
+fn is_attempt_of(item: &WorkflowQueuedPrompt, prompt_id: &str) -> bool {
+    prompt_id == item.id()
+        || prompt_id
+            .strip_prefix(item.id())
+            .and_then(|rest| rest.strip_prefix("-retry"))
+            .is_some_and(|n| n.parse::<u64>().is_ok())
+}
 fn notification_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "notification injection",
@@ -594,7 +619,7 @@ impl KernelRuntimeState {
             super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
                 self,
                 &identity.agent_id,
-                id,
+                &attempt_prompt_id(item),
                 &identity.worker_kernel_id,
                 &identity.worker_machine_id,
                 &identity.leased_agent_id,
@@ -646,7 +671,7 @@ impl KernelRuntimeOwnedState {
             || binding.worker_machine_id != identity.worker_machine_id
             || binding.leased_agent_id != identity.leased_agent_id
             || binding.execution_lease_id != identity.execution_lease_id
-            || receipt.home_prompt_id != id
+            || receipt.home_prompt_id != attempt_prompt_id(item)
             || receipt.target_home_prompt_id.as_deref()
                 != Some(identity.target_home_prompt_id.as_str())
             || receipt.worker_provider_run_id != identity.worker_provider_run_id
@@ -676,7 +701,7 @@ impl KernelRuntimeOwnedState {
                 &identity.target_home_prompt_id,
                 source_attachment,
                 &identity.agent_id,
-                id,
+                &attempt_prompt_id(item),
                 item.prompt().unwrap_or_default(),
                 &[],
             )?;
@@ -705,7 +730,7 @@ pub(crate) fn finish_structured_notification_submit(
     let Some(item) = snapshot
         .workflow_queued_prompts()
         .iter()
-        .find(|q| q.id() == finished.prompt_id)
+        .find(|q| is_attempt_of(q, &finished.prompt_id))
     else {
         return Ok(false);
     };
@@ -717,6 +742,10 @@ pub(crate) fn finish_structured_notification_submit(
     };
     if saved.get("submit_epoch").is_none() {
         return Ok(false);
+    }
+    if attempt_prompt_id(item) != finished.prompt_id {
+        // A superseded attempt's late result says nothing about the current one.
+        return Ok(true);
     }
     if saved
         .get("provider_run_id")
@@ -751,7 +780,7 @@ pub(crate) fn finish_structured_notification_submit(
             store,
             sessions,
             &finished.session_id,
-            &finished.prompt_id,
+            item.id(),
             item.workflow_run_id()
                 .ok_or_else(|| notification_error("injection run missing"))?,
             accepted,

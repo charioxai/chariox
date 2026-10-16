@@ -1344,6 +1344,152 @@ async fn retrying_a_held_notification_readmits_it_for_a_fresh_injection() {
     );
 }
 
+// MP-08 / MP-10: a user-authorized retry is a new steer attempt. The worker keeps refusing to
+// replay the uncertain one (its Dispatching receipt is keyed by the steer ID), so the retry must
+// not reuse that ID.
+#[tokio::test]
+async fn retrying_a_held_notification_sends_under_a_fresh_steer_identity() {
+    let (_root, runtime, session, id) = held_notification().await;
+    let mut seen = vec![id.clone()];
+    for _ in 0..2 {
+        runtime.owned.hold_unconfirmed_notification_sends(
+            unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+        );
+        runtime
+            .owned
+            .resolve_held_notification_delivery(&session, &id, true)
+            .unwrap()
+            .expect("a held notification can be retried");
+        let retry = runtime
+            .owned
+            .prepare_notification_injection(&session, &id)
+            .unwrap()
+            .expect("the retried item is admitted again");
+        assert_eq!(retry.queued.id(), id, "the queue item keeps its identity");
+        assert!(
+            !seen.contains(&retry.dispatch.prompt_id),
+            "retry reused steer identity {}",
+            retry.dispatch.prompt_id
+        );
+        seen.push(retry.dispatch.prompt_id.clone());
+        runtime
+            .owned
+            .mark_notification_submit(&session, &retry, None)
+            .unwrap();
+        // A late result of the superseded attempt must not settle the current one.
+        let late = crate::provider::FinishedProviderPromptSubmitJob {
+            session_id: session.clone(),
+            agent_id: retry.dispatch.agent_id.clone(),
+            prompt_id: seen[seen.len() - 2].clone(),
+            provider_run_id: retry.dispatch.provider_run_id.clone(),
+            result: Err(DaemonError::ProviderPromptSteerRejected {
+                source: Box::new(super::notification_error("late result of a superseded attempt")),
+            }),
+            settlement_retry_attempt: 0,
+        };
+        assert!(super::finish_structured_notification_submit(
+            &runtime.owned.durable_state_store,
+            &runtime.owned.session_store,
+            &late,
+        )
+        .unwrap());
+        assert!(queued_item(&runtime, &session, &id).notification_send_unconfirmed());
+    }
+}
+
+// MP-08 / MP-10: the held remote retry correlates only its own attempt's worker receipt.
+#[tokio::test]
+async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt() {
+    use crate::transport::relay_peer::{LeasedPromptReceipt, LeasedPromptReceiptPhase};
+    let (_root, runtime, session, id) = fixture(false, 1).await;
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let agent_id = snapshot.workflow_runs()[0].node_runs()[0].agent_id().to_owned();
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        leased_agent_id: "leased".into(),
+        execution_lease_id: "lease".into(),
+        active_worker_provider_run_id: Some("worker-run".into()),
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(&agent_id, binding.clone())
+        .unwrap();
+    let first = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .mark_notification_submit(&session, &first, Some(&binding))
+        .unwrap();
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime
+        .owned
+        .resolve_held_notification_delivery(&session, &id, true)
+        .unwrap()
+        .expect("a held remote notification can be retried");
+    let retry = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        retry.dispatch.prompt_id, first.dispatch.prompt_id,
+        "the worker's Dispatching receipt for the first attempt would refuse a reused steer ID"
+    );
+    runtime
+        .owned
+        .mark_notification_submit(&session, &retry, Some(&binding))
+        .unwrap();
+    let receipt = |home_prompt_id: &str, phase| LeasedPromptReceipt {
+        home_prompt_id: home_prompt_id.to_owned(),
+        worker_provider_run_id: "worker-run".into(),
+        target_home_prompt_id: retry.dispatch.target_active_prompt_id.clone(),
+        execution_lease_id: Some("lease".into()),
+        phase,
+    };
+    // The superseded attempt's receipt (even an accepted one) is not this attempt's outcome.
+    assert!(runtime
+        .owned
+        .settle_notification_remote_receipt(
+            &session,
+            &id,
+            &receipt(&first.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerAccepted),
+        )
+        .is_err());
+    runtime
+        .owned
+        .settle_notification_remote_receipt(
+            &session,
+            &id,
+            &receipt(&retry.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerDispatching),
+        )
+        .unwrap();
+    assert!(queued_item(&runtime, &session, &id).notification_send_unconfirmed());
+    runtime
+        .owned
+        .settle_notification_remote_receipt(
+            &session,
+            &id,
+            &receipt(&retry.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerAccepted),
+        )
+        .unwrap();
+    assert_eq!(
+        queued_item(&runtime, &session, &id).status(),
+        WorkflowQueuedPromptStatus::Completed
+    );
+}
+
 #[tokio::test]
 async fn discarding_a_held_notification_retires_it_for_good() {
     let (_root, runtime, session, id) = held_notification().await;
