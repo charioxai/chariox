@@ -642,10 +642,15 @@ export class BrowserMirror2Renderer {
   knownSheets(): string[] { return this.sheetCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
+    // MP-08/MP-10/MP-11: attribute reset long tasks before slicing the work.
+    // Numeric phases contain no document, source text or resource identities.
+    let phase = started
+    const mark = (stage: string): void => { if (wire.reset) this.timed(stage, phase); phase = performance.now() }
     if (this.disposed || !this.doc) throw Error('MP-08: mirror unavailable')
     if (!wire.reset && (wire.base_sequence !== this.sequence || wire.document_id !== this.documentId)) throw Error('MP-11: mirror lost base')
     const packet = resolveMirror2Sheets(wire, this.sheets, this.sheetCache.texts)
     validateMirror2Packet(packet, this.records)
+    mark('apply_validate')
     this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
@@ -673,14 +678,18 @@ export class BrowserMirror2Renderer {
     if (packet.reset && packet.document_id !== this.documentId) { this.localRootScrollAt = -Infinity; this.releasePointer() }
     const savedRange = packet.reset && packet.document_id === this.documentId && (this.pointerDown || this.selectionHold) ? rememberMirror2Range(this.doc, node => this.ids.has(node)) : null
     let rangeRestored = false
+    mark('apply_prepare')
     this.applying = true
     const scrolls: Array<[Element, number, number]> = []
     try {
       if (packet.reset) { this.resetSerial++; this.reset(packet, scrolls); this.focusSent = null; this.pointerFocus = null; this.focusHold = null; this.focusWithheld = undefined; this.selectionSent = ''; this.selectionHold = null; this.selectionFailure = false }
+      mark('apply_build')
       for (const op of packet.ops ?? []) this.op(op, scrolls)
+      mark('apply_ops')
       for (const resource of complete) for (const entry of this.styled.values()) if (entry.keys.includes(resource.key)) this.restyle(entry)
       for (const resource of complete) for (const [id, record] of this.records) if (record.res === resource.key) { const node = this.dom.get(id); if (node?.nodeType === 1) this.image(id, node as Element, record.res) }
       for (const tile of packet.tiles) this.tile(tile)
+      mark('apply_resources')
       const states = this.states; this.states = []
       for (const element of states) this.uaState(element)
       this.targets(packet.fragment ?? null)
@@ -727,6 +736,7 @@ export class BrowserMirror2Renderer {
           this.selectionDoc = doc
         }
       }
+      mark('apply_layout')
     } finally { this.applying = false }
     if (rangeRestored) this.syncSelection(this.doc)
     if (rootScroll && (rootScroll[0] !== packet.scroll[0] || rootScroll[1] !== packet.scroll[1])) this.enqueue({kind:'scroll_to',node_id:null,x:rootScroll[0]!,y:rootScroll[1]!})
