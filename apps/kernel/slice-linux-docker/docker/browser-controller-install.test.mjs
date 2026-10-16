@@ -13,7 +13,7 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
   const root = await mkdtemp(path.join(tmpdir(), 'protxform-installed-'));
   let chrome;
   try {
-    const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
+    const dockerfile = (await readFile(new URL('./Dockerfile', import.meta.url), 'utf8')).replace(/\s*\\\n\s*/g, ' ');
     // Source COPY declarations only: --from build-stage binaries have no
     // checkout path and are outside this module-closure regression.
     for (const match of dockerfile.matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/(\S*))$/gm)) {

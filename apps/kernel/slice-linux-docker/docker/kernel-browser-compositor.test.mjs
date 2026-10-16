@@ -72,19 +72,17 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  await f.source.close();
 });
 
-test('MP-11 DOM churn keeps publishing bound captures; only a changed mask set retires frames',async()=>{
- const f=fixture();await f.source.start();let captures=0,release;const held=new Promise(r=>release=r);
+test('MP-11 DOM tree churn retires the bound frame; only a churn-free protected capture republishes',async()=>{
+ const f=fixture();await f.source.start();let captures=0;
  const grey=encodePng(8,8,Buffer.alloc(8*8*4,128)),black=encodePng(8,8,Buffer.alloc(8*8*4,0)),mask=[{x:0,y:0,width:2,height:2}];
  f.source.protect=async()=>{
   if(++captures===1){f.emit('DOM.childNodeInserted',{});return {data_base64:grey,[displayMaskRegions]:[]};}
-  if(captures===2){await held;return {data_base64:black,[displayMaskRegions]:mask};}
   return {data_base64:black,[displayMaskRegions]:mask};
  };
  f.emit('DOM.childNodeInserted',{});await new Promise(r=>setTimeout(r,0));
- assert.equal(f.source.sample()?.data_base64,grey,'a capture bound before/after its own masks survives later tree churn');
- assert.equal(f.source.regionRevision,0);
- release();await new Promise(r=>setTimeout(r,0));
- assert.equal(f.source.sample().data_base64,black);assert.equal(f.source.regionRevision,1,'a changed mask set retires older frames');
+ assert.equal(captures,2,'a capture overtaken by tree churn is discarded and recaptured');
+ assert.equal(f.source.sample().data_base64,black,'the layout-stale capture never publishes');
+ assert.deepEqual(f.source.sample()[displayMaskRegions],mask);assert(f.source.regionRevision>=2,'churn retired older frames');
  await f.source.close();
 });
 
@@ -93,7 +91,7 @@ test('MP-11 style/class churn wakes captures only while protected regions exist'
  f.source.protect=async()=>{captures++;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255)),[displayMaskRegions]:[]};};
  f.emit('DOM.attributeModified',{name:'style'});await new Promise(r=>setTimeout(r,0));
  assert.equal(captures,0);assert.equal(f.source.sample().serial,1);
- f.emit('DOM.attributeModified',{name:'data-chariox-secret'});await new Promise(r=>setTimeout(r,0));
+ f.emit('DOM.attributeModified',{name:'type'});await new Promise(r=>setTimeout(r,0));
  assert.equal(captures,1,'declared protection still recaptures');assert.equal(f.source.regionRevision,1);
  await f.source.close();
 });
