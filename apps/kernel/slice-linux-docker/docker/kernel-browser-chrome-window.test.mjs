@@ -586,3 +586,29 @@ test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
   assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 1);
   assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
 });
+
+// r13 b3 union (browserux-r13union3-mvalvidm, 1440x900@2 -> 1920x1080@1): a page region saw the page geometry
+// change and retired the window without rebinding it; every band subscribe then failed (241 stale references)
+// and the band never painted again. A geometry retirement rebinds at the real geometry.
+test("MP-08/MP-11 a page geometry change rebinds the band window", async t => {
+  let viewport;
+  const { windows } = fake({ viewport: { get width() { return viewport?.width ?? 1280; }, get height() { return viewport?.height ?? 800; } } });
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    windows.host.chromium.display = real;
+    const bound = await windows.resolve();
+    assert.equal(await bound.tabbed.isPageCurrent(), true);
+    viewport = { width: 1280, height: 780 };
+    assert.equal(await bound.tabbed.isPageCurrent(), false, "the old page rect is refused");
+    await windows.resolving;
+    const next = windows.current();
+    assert.equal(next.tabbed.window_generation, bound.tabbed.window_generation + 1, "rebound at once");
+    windows.retire("missed");
+    await windows.heal();
+    assert.equal(windows.current().tabbed.window_generation, next.tabbed.window_generation + 1, "a state read heals a missed rebind");
+    windows.retire("missed");
+    await windows.heal();
+    assert.throws(() => windows.current(), { code: "user_domain_stale_reference" }, "at most once a second");
+  } finally { await real.close(); }
+});
