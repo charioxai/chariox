@@ -63,7 +63,8 @@ test("MP-08/MP-11 canonical signed relay admission is coordinated at local proto
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 520)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 520)
-  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 128)
+  const local = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
+  assert.ok(local >= 520)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), local)
+  assert.ok(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]) >= 128)
 })

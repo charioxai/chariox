@@ -3614,6 +3614,17 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
 
+### Held notification delivery — local 547 / relay peer 155 (MP-08 / MP-10 / MP-11)
+
+A notification injection whose send intent has no proven outcome is held by the kernel
+(never re-sent) until its deadline. Protocol 547 projects that hold on the queued item as
+`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
+`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh
+injection and may arrive twice), or discard with the existing `RemoveQueuedWorkflowPrompt`,
+which now also accepts a held item. At the deadline the kernel retires a held item with a
+notice naming the reason. TUI: `/workflow queue retry|remove <item>`. Relay peer 155 binds
+the embedded local response union to local 547 (coordinator allocation 547/155).
+
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
 Coordinator allocation for the main-merged owner-managed contract. Local 520

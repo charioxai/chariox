@@ -10,6 +10,37 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
+test("MP-08/MP-10 a provider launch starts after mount, once, for the attached session", async () => {
+  let starts = 0
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: { providerLaunch: {
+      sessionId: "session-1", agentId: "agent-1", isPending: () => true,
+      start: async () => { starts++; return { providerRun: null } },
+    } },
+  })
+  assert.equal(starts, 0)
+  harness.controller.apply()
+  harness.controller.apply()
+  await flushPromises()
+  assert.equal(starts, 1)
+  assert.equal(harness.chromeUpdates, 1)
+})
+
+test("MP-08/MP-10 leaving a bootstrap session prevents its deferred provider launch", async () => {
+  let starts = 0
+  const harness = bootstrapHarness({
+    attachmentSessionId: "other-session",
+    deferred: { providerLaunch: {
+      sessionId: "session-1", agentId: "agent-1", isPending: () => true,
+      start: async () => { starts++; return { providerRun: null } },
+    } },
+  })
+  harness.controller.apply()
+  await flushPromises()
+  assert.equal(starts, 0)
+})
+
 test("deferred bootstrap controller applies provider catalog hydration", async () => {
   const providerCatalog = {} as ProviderCatalog
   const providerCommandCatalogs = {} as ProviderCommandCatalogs
