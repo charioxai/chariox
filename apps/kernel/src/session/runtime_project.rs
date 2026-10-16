@@ -42,6 +42,8 @@ pub struct RuntimeProject {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_ids: Vec<String>,
     name: String,
+    #[serde(default)]
+    pinned: bool,
     kind: RuntimeProjectKind,
     status: RuntimeProjectStatus,
     created_at_ms: u64,
@@ -68,6 +70,7 @@ impl RuntimeProject {
             workspace_ids: vec![workspace_id.clone()],
             workspace_id,
             name: name.into(),
+            pinned: false,
             kind,
             status: RuntimeProjectStatus::Active,
             created_at_ms: now,
@@ -117,6 +120,10 @@ impl RuntimeProject {
     pub fn status(&self) -> RuntimeProjectStatus {
         self.status
     }
+
+    pub fn pinned(&self) -> bool { self.pinned }
+
+    pub(crate) fn set_pinned(&mut self, pinned: bool) { self.pinned = pinned; }
 
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms

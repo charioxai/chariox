@@ -174,6 +174,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::ListProjects(request) => {
                 self.store.list_projects(request, caller_user_id).await
             }
+            LocalDaemonRequest::SetProjectPinned(request) => {
+                self.store.set_project_pinned(request, caller_user_id).await
+            }
             LocalDaemonRequest::RenameProject(request) => {
                 self.store.rename_project(request, caller_user_id).await
             }

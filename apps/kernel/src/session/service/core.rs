@@ -500,6 +500,12 @@ impl SessionService {
             .collect()
     }
 
+    pub fn set_project_pinned(&mut self, project_id: &str, pinned: bool, caller_user_id: &str) -> Result<RuntimeProject, DaemonError> {
+        let project = self.project_mut_for_owner(project_id, caller_user_id, "project.pin")?;
+        project.set_pinned(pinned);
+        Ok(project.clone())
+    }
+
     pub fn rename_project(
         &mut self,
         project_id: &str,

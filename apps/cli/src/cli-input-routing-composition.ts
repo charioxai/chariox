@@ -631,6 +631,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.applyWaitingRoomSessionLifecycleAction(action)
     },
     openProjectEnvironment: projectId => { void deps.openProjectEnvironment(projectId) },
+    pinProject: (projectId, pinned) => {
+      void deps.client.send({ SetProjectPinned: { project_id: projectId, pinned } })
+        .then(() => deps.flashFooter(pinned ? "Project pinned" : "Project unpinned", "info"))
+        .catch((error: unknown) => deps.flashFooter(error instanceof Error ? error.message : "Project pin failed", "error"))
+    },
     beginProjectRename: (projectId, currentName) => {
       pendingProjectRenameId = projectId
       deps.promptTextController.setText(currentName)

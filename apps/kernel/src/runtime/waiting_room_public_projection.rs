@@ -1029,6 +1029,7 @@ fn waiting_room_public_project_summaries(
                 workspace_id: project.workspace_id().to_string(),
                 workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
+                pinned: project.pinned(),
                 kind: project.kind(),
                 status: project.status(),
                 created_at_ms: project.created_at_ms(),

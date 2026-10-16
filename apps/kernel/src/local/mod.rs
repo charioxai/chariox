@@ -164,7 +164,7 @@ pub use api::{
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveEventConnectionRequest,
     RemoveQueuedWorkflowPromptRequest, RemoveScriptRequest, RemoveSliceProviderAuthRequest,
     RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, RemoveWorkflowPromptQueueRequest,
-    RemoveWorkflowScheduleRequest, RemoveWorkflowWatchdogRequest, RenameProjectRequest,
+    RemoveWorkflowScheduleRequest, RemoveWorkflowWatchdogRequest, RenameProjectRequest, SetProjectPinnedRequest,
     RenameRemoteMachineRequest, RequestCredentialEnrollmentInteractionRequest,
     RequestManagedEnvironmentLifecycleRequest, RequestManagedEnvironmentReimageRequest,
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,

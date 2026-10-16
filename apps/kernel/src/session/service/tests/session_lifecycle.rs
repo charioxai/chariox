@@ -2052,3 +2052,17 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
         BTreeSet::from([hidden.id().to_string(), ephemeral.id().to_string()])
     );
 }
+
+#[test]
+fn mp08_owner15_project_pins_enforce_owner_and_survive_durable_restore() {
+    let mut service = SessionService::new(&test_config());
+    let session = service.create_session(CreateSessionRequest::new("/workspace/pin", "main")).unwrap();
+    assert!(service.set_project_pinned(session.project_id(), true, "other-user").is_err());
+    let pinned = service.set_project_pinned(session.project_id(), true, DEFAULT_LOCAL_USER_ID).unwrap();
+    assert!(pinned.pinned());
+    let serialized = serde_json::to_vec(&service.durable_projects()).unwrap();
+    let mut restored = SessionService::new(&test_config());
+    restored.restore_projects(serde_json::from_slice(&serialized).unwrap());
+    assert!(restored.get_project(session.project_id()).unwrap().pinned());
+    assert!(!restored.set_project_pinned(session.project_id(), false, DEFAULT_LOCAL_USER_ID).unwrap().pinned());
+}

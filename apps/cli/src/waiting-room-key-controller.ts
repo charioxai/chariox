@@ -36,6 +36,7 @@ export type WaitingRoomKeyControllerDeps = {
   rebuildTranscript: () => void
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
   openProjectEnvironment?: (projectId: string) => void
+  pinProject?: (projectId: string, pinned: boolean) => void
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
@@ -97,6 +98,10 @@ export function createWaitingRoomKeyController(
         const project = state.focus === "project-entry"
           ? waitingRoomProjectsForNavigation(deps.getRemoteState().projects)[state.projectIndex ?? 0]
           : null
+        if (project && event.name === "p") {
+          deps.pinProject?.(project.id, !project.pinned)
+          return true
+        }
         if (project && event.name === "v") {
           deps.openProjectEnvironment?.(project.id)
           return true

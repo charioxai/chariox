@@ -97,6 +97,7 @@ export function activeWaitingRoomProjects(
   return (projects ?? [])
     .filter((project) => project.status === "active")
     .sort((left, right) => (
+      Number(right.pinned === true) - Number(left.pinned === true) ||
       (right.last_session_activity_at_ms ?? right.updated_at_ms)
       - (left.last_session_activity_at_ms ?? left.updated_at_ms)
       || left.name.localeCompare(right.name)
