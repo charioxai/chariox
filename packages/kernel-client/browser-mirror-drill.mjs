@@ -42,10 +42,14 @@ if(process.argv[2]!=='child') {
     sandboxProfile=path.join(root,'chromium.apparmor');
     await writeFile(sandboxProfile,`abi <abi/4.0>,\ninclude <tunables/global>\nprofile chariox-mdmirror-${path.basename(root)} ${chromeDir}/chrome flags=(unconfined) {\n  userns,\n}\n`);
     execFileSync('/usr/sbin/apparmor_parser',['-r',sandboxProfile]);
-    await writeFile(path.join(root,'fonts.conf'),`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir>${process.env.CHARIOX_MIRROR_DRILL_UNHINTED?'<match target="font"><edit name="hinting" mode="assign"><bool>false</bool></edit><edit name="hintstyle" mode="assign"><const>hintnone</const></edit></match>':''}</fontconfig>`);
-    await writeFile(path.join(root,'chromium-launcher'),`#!/bin/sh\nexport LD_LIBRARY_PATH='${root}/sysroot/usr/lib/x86_64-linux-gnu'\nexport FONTCONFIG_FILE='${root}/fonts.conf'\nexec '${chromeDir}/chrome' "$@" 2>>'${root}/evidence/chromium.log'\n`,{mode:0o755});
+    // The viewer is a realistic remote browser (fractional text advances). The kernel's host fontconfig is hinted unless
+    // CHARIOX_MIRROR_DRILL_UNHINTED: the product must not let that hinting decide the owned browser's text layout.
+    const fonts=hinted=>`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir>${hinted?'':'<match target="font"><edit name="hinting" mode="assign"><bool>false</bool></edit><edit name="hintstyle" mode="assign"><const>hintnone</const></edit></match>'}</fontconfig>`;
+    await writeFile(path.join(root,'fonts.conf'),fonts(!process.env.CHARIOX_MIRROR_DRILL_UNHINTED));
+    await writeFile(path.join(root,'viewer-fonts.conf'),fonts(false));
+    await writeFile(path.join(root,'chromium-launcher'),`#!/bin/sh\nexport LD_LIBRARY_PATH='${root}/sysroot/usr/lib/x86_64-linux-gnu'\nexport FONTCONFIG_FILE="\${FONTCONFIG_FILE:-${root}/fonts.conf}"\nexec '${chromeDir}/chrome' "$@" 2>>'${root}/evidence/chromium.log'\n`,{mode:0o755});
     for(const name of ['home','evidence']){await mkdir(path.join(root,name),{mode:0o700});await chown(path.join(root,name),65534,65534);}
-    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_MIRROR_DRILL_REVIEW_ONLY:process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY??'',CHARIOX_MIRROR_DRILL_UNHINTED:process.env.CHARIOX_MIRROR_DRILL_UNHINTED??'',CHARIOX_MIRROR_DRILL_DPRS:process.env.CHARIOX_MIRROR_DRILL_DPRS??'1,2',CHARIOX_MIRROR_DRILL_RENDERER_REVIEW:process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW??''},stdio:['ignore','pipe','pipe']});
+    const child=spawn(process.execPath,[path.join(root,'run.mjs'),'child',root],{uid:65534,gid:65534,cwd:root,env:{PATH:'/usr/bin:/bin',HOME:path.join(root,'home'),TMPDIR:path.join(root,'home'),FONTCONFIG_FILE:path.join(root,'fonts.conf'),CHARIOX_KERNEL_BROWSER_HEADLESS:'1',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_MIRROR_DRILL_REVIEW_ONLY:process.env.CHARIOX_MIRROR_DRILL_REVIEW_ONLY??'',CHARIOX_MIRROR_DRILL_UNHINTED:process.env.CHARIOX_MIRROR_DRILL_UNHINTED??'',CHARIOX_MIRROR_DRILL_DPRS:process.env.CHARIOX_MIRROR_DRILL_DPRS??'1,2',CHARIOX_MIRROR_DRILL_RENDERER_REVIEW:process.env.CHARIOX_MIRROR_DRILL_RENDERER_REVIEW??''},stdio:['ignore','pipe','pipe']});
     let logs='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{logs+=chunk.toString();if(logs.length>65536)logs=logs.slice(-65536)});
     code=await new Promise(resolve=>child.once('exit',exit=>resolve(exit??1)));
     await cp(path.join(root,'evidence'),output,{recursive:true});
@@ -89,7 +93,7 @@ if(process.argv[2]!=='child') {
     await resource();await new Promise(resolve=>origin.listen(0,'127.0.0.1',resolve));await new Promise(resolve=>serve.listen(0,'127.0.0.1',resolve));
     const originUrl=`http://127.0.0.1:${origin.address().port}`,viewerUrl=`http://127.0.0.1:${serve.address().port}`;
     // MP-11: the reference viewer is fixture-owned; product source CDP stays on its private pipe.
-    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,ignoreDefaultArgs:['--hide-scrollbars'],args:['--disable-frame-rate-limit']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
+    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,env:{...process.env,FONTCONFIG_FILE:path.join(root,'viewer-fonts.conf')},ignoreDefaultArgs:['--hide-scrollbars'],args:['--disable-frame-rate-limit']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
     let forbiddenRequests=0;viewer.on('request',req=>{if(req.url().startsWith(originUrl))forbiddenRequests++});
     const viewerCdp=await browser.contexts()[0].newCDPSession(viewer);
     // MP-10: send JSON bytes across the synthetic bridge, as production does.

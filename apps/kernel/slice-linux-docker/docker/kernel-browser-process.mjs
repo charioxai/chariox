@@ -1,7 +1,7 @@
 import {displayGeometry as geometry, chromeBandHeight} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
-import { access, mkdir, readlink, open } from "node:fs/promises";
+import { access, mkdir, readlink, open, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
@@ -48,6 +48,26 @@ export function launchArguments(profile, headless, display = false, nativeAccess
       "--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill"] : []),
     ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
   ];
+}
+
+// MP-08/MP-10: a mirror viewer lays text out with fractional advances (macOS, Windows, every HiDPI browser).
+// Chromium on Linux rounds advances at 1x when fontconfig asks for full hinting, so the owned browser would
+// lay out text wider than its viewer (drift of 1.5-29 CSS px, tiles at 1x). The kernel browser never lets the
+// host's hinting decide: it loads the host's own fontconfig and then turns hinting off.
+export async function writeFontConfig(root, base = "/etc/fonts/fonts.conf") {
+  if (!path.isAbsolute(base) || /["<>&]/.test(base)) base = "/etc/fonts/fonts.conf";
+  const file = path.join(root, "fontconfig.conf");
+  await writeFile(file, `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+<include ignore_missing="yes">${base}</include>
+<match target="font"><edit name="hinting" mode="assign"><bool>false</bool></edit><edit name="hintstyle" mode="assign"><const>hintnone</const></edit></match>
+</fontconfig>
+`, { mode: 0o644 });
+  return file;
+}
+export async function textLayoutEnvironment(root, environment, display, platform = process.platform) {
+  return platform === 'linux' && display ? { ...environment, FONTCONFIG_FILE: await writeFontConfig(root, environment.FONTCONFIG_FILE) } : environment;
 }
 
 // MP-08 / MP-11: Chromium's singleton socket must fit sockaddr_un even when
@@ -125,8 +145,10 @@ export class HostChromium {
       this.temporaryDirectory = await open(temporary, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
+    const display = environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1";
+    environment = await textLayoutEnvironment(this.root, environment, display);
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", display, Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
