@@ -1840,3 +1840,15 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
   assert.deepEqual(keys,[[97,false]]);assert.equal(sent.filter(call=>call.method==='Page.getFrameTree').length,0);
  }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));
+
+// PERF_AUDIT 4.2.3 (protocol 540): a viewer that holds frames pushed before its registration response
+// asks for its first frame at registration (the relay pump then starts without waiting for its first ACK).
+test('MP-08/MP-10 a display attach reports the viewer\'s initial push request',()=>using(async({host})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});
+  const subscribe=extra=>host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1,...extra});
+  const pushed=await subscribe({initial_push:true}),plain=await subscribe({});
+  assert.deepEqual(await host.request({op:'display_attach',subscription_id:pushed.subscription_id,generation:tab.generation}),{attached:true,generation:tab.generation,initial_push:true});
+  assert.deepEqual(await host.request({op:'display_attach',subscription_id:plain.subscription_id,generation:tab.generation}),{attached:true,generation:tab.generation});
+ }finally{if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));

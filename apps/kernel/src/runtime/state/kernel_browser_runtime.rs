@@ -48,6 +48,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
+        initial_push: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -199,6 +200,7 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -206,6 +208,7 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -546,11 +549,15 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)
                         .map_err(|_| host_error("MP-11: invalid display target".into()))?;
+                }
+                if initial_push {
+                    params["initial_push"] = true.into();
                 }
                 params
             }
