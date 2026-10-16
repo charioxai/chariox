@@ -275,3 +275,32 @@ test('MP-08/MP-10/MP-11 one native viewport query proves both page geometry and 
   f.activate('foreign');assert.equal(await stream.regionCurrent(),false,'the same fresh native query refuses a different active Tab');
  }finally{await stream.close()}
 });
+
+// vidlat 07:52Z (C10): band input bumps its stream's input epoch/time and emits a numeric input_dispatch.
+test('MP-08/MP-10 band input marks the band stream input epoch at dispatch',async()=>{
+ const f=fixture('browser_chrome'),events=[];f.host.timing=Object.assign(()=>{},{event:(name,fields)=>events.push([name,fields.kind])});
+ f.host.inputEpochs=new Map();f.host.inputChangedAt=new Map();
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ f.host.arbiter={input:async({onDispatch})=>{onDispatch();return {dispatched:true};}};
+ const command={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'key',key:'a'}};
+ assert.deepEqual(await regionInput(f.host,command,'terminal:a'),{dispatched:true});
+ assert.equal(f.host.inputEpochs.get('t'),1);assert(f.host.inputChangedAt.get('t')>0);assert.deepEqual(events,[['input_dispatch',3]]);
+ await [...f.host.displays.values()][0].close();
+});
+
+test('MP-08/MP-10/MP-11 frame delivery reuses one fresh source lease while input stays fresh',async()=>{
+ const f=fixture();let cached=true,reads=0;const fresh=f.binding.isPageCurrent;
+ f.binding.isPageCurrentCached=target=>cached&&target==='target'&&f.lease.isAlive();
+ f.binding.isPageCurrent=async target=>{reads++;return fresh(target)};
+ await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=[...f.host.displays.values()][0];reads=0;
+ try{
+  assert.equal(await stream.regionSource.options.validateCurrent(),true);
+  assert.equal(await (stream.regionFrameCurrent??stream.regionCurrent)(),true);
+  assert.equal(reads,1,'one fresh native owner query for source publication, none for delivery');
+  cached=false;f.activate('foreign');assert.equal(await stream.regionFrameCurrent(),false);assert.equal(reads,1);
+  await assert.rejects(regionInputTarget(f.host,{op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a'));
+  assert.equal(reads,2,'input never borrows the frame cache');
+  assert.equal('cachedCurrent' in stream.regionSource.options,false,'the delivery cache is separate from fresh source admission');
+ }finally{await stream.close()}
+});

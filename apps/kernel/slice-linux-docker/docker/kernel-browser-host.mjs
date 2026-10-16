@@ -54,12 +54,13 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true)
+    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
+    request.params?.op === 'chrome_window_follow')
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
@@ -164,6 +165,7 @@ export class KernelBrowserHost {
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
+    this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -198,7 +200,7 @@ export class KernelBrowserHost {
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection);
-      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
+      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
@@ -358,6 +360,7 @@ export class KernelBrowserHost {
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear();
+    this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -374,6 +377,14 @@ export class KernelBrowserHost {
       tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
+  }
+  /** PERF_AUDIT 4.2.3 (protocol 540): a viewer that holds frames pushed before its registration
+   * response asks for its first frame at registration; the kernel's relay pump starts there
+   * instead of waiting for the viewer's first acknowledgement (one round trip per stream open). */
+  initialPush(command, result) {
+    const stream = command.initial_push === true && this.displays.get(result?.subscription_id);
+    if (stream) stream.initial_push = true;
+    return result;
   }
   // MP-08/MP-10/MP-11 (BROWSER-UX-14): the band's window epoch (for a 519 BrowserChrome
   // subscription) and the Tab Chrome's own strip shows, as last observed by the kernel.
@@ -610,7 +621,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -621,6 +632,8 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // newest observation, as at a navigation commit
       return this.observe(this.tabState(), tab, scope);
     }
+    // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
+    if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
@@ -637,10 +650,10 @@ export class KernelBrowserHost {
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
-    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return subscribeVisiblePage(this,command,scope,signal);
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
-      return subscribeRegion(this,command,scope,signal);
+      return this.initialPush(command,await subscribeRegion(this,command,scope,signal));
     }
     if(command.op==='display_input_target'||command.op==='input'&&command.binding_id) {
       const {regionInput,regionInputTarget}=await import('./kernel-browser-display-regions.mjs');
@@ -659,7 +672,7 @@ export class KernelBrowserHost {
       stream.lastCreditAt=Date.now();
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
-      if (command.op === "display_attach") return { attached: true, generation: this.generation };
+      if (command.op === "display_attach") return { attached: true, generation: this.generation, ...(stream.initial_push ? { initial_push: true } : {}) };
       const {displayCredit, displayPushCredit} = await import('./kernel-browser-display-credit.mjs');
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
@@ -686,7 +699,7 @@ export class KernelBrowserHost {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
-    if (command.op === "display_subscribe") return reserveDisplay(this,async()=>{
+    if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
@@ -702,7 +715,7 @@ export class KernelBrowserHost {
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
-    });
+    }));
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }

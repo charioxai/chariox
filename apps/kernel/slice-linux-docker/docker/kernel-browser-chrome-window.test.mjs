@@ -777,3 +777,97 @@ test('MP-08/MP-10/MP-11 active target in one fresh viewport query keeps a foreig
   host.tabGroups.viewport=async()=>{throw Error('unavailable')};assert.equal(await b.isPageCurrent('tb'),false);assert.equal(b.isCurrent(),false);
  }finally{await display.close()}
 });
+
+// PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left, so the viewer
+// follows in that round trip instead of at its next 250 ms state read (r12/r13 quiet: Tab click and list
+// first paint waited for the poll and a second round trip).
+const followHost = (active) => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "da" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }], ["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]),
+    tabGroups: { active: async () => active.target }, retireNativeForeground: () => null,
+    chromeWindow: () => ({ window_generation: 7, active_tab_id: "host-tab-a", auxiliary: active.list ? [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }] : [] }),
+    browser: { inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  return host;
+};
+test("MP-08/MP-10 a Tab click's reply carries the Tab the strip now shows", async () => {
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { setTimeout(() => { active.target = "tb"; }, 30); return true; } };
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 300, y: 12 } } });
+  assert.deepEqual(reply, { dispatched: true, _follow: { tab_id: "host-tab-a", switches: true } }, "answered at once: the serial input lane never waits for Chrome");
+  assert.deepEqual((await arbiter.follow(reply._follow)).chrome_window, { window_generation: 7, active_tab_id: "host-tab-b", auxiliary: [] });
+});
+test("MP-08/MP-10 an address-bar key's reply carries the omnibox list it opened", async () => {
+  const active = { target: "ta", list: false };
+  let warm = false;
+  const windows = { onOmnibox: () => true, focusOmnibox: on => { warm = on; }, refreshWarm: async () => { if (warm) active.list = true; } };
+  const arbiter = new InputArbiter(followHost(active), windows);
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => true, chord: async () => true };
+  const stream = { regionSource: source }, command = input => ({ tab_id: "host-tab-a", document_id: "da", generation: 3, input });
+  await arbiter.input({ stream, command: command({ kind: "click", x: 300, y: 60 }) });
+  const reply = await arbiter.input({ stream, command: command({ kind: "text", text: "w" }) });
+  assert.deepEqual(reply, { dispatched: true, _follow: { tab_id: "host-tab-a", switches: false } });
+  assert.deepEqual((await arbiter.follow(reply._follow)).chrome_window.auxiliary, [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }]);
+});
+test("MP-08/MP-10 a click that opens a Tab the kernel has not adopted yet leaves the window to the state read", async () => {
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { active.target = "t-new"; return true; } };
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 600, y: 12 } } });
+  assert.deepEqual(await arbiter.follow(reply._follow), {});
+});
+
+// Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed; it must not
+// carry keys past the page's fences. Closed list + a page field focused through the Computer surface: the
+// retained popup binding's text and chords get the sensitive-field fence; a shown list keeps the keys in Chrome.
+test("MP-11 a closed warm omnibox list does not carry keys past the page's sensitive-field fence", async () => {
+  const evaluated = [];
+  const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "da" } } }
+    : method === "Runtime.evaluate" ? (evaluated.push(params.expression), { result: { value: true } }) : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }]]), tabGroups: { active: async () => "ta" },
+    browser: { inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  let shown = false;
+  const windows = { inWindowCurrent: async source => source.isCurrent(), omniboxShown: async () => shown, focusOmnibox() {} };
+  const arbiter = new InputArbiter(host, windows);
+  const chords = [];
+  const source = { surface: "browser_auxiliary", overPage: true, isCurrent: () => true, chord: async (...args) => (chords.push(args), true) };
+  const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input } });
+  await assert.rejects(send({ kind: "text", text: "s" }), { code: "user_domain_sensitive_requires_focus" });
+  await assert.rejects(send({ kind: "key", key: "a", modifiers: 4 }), { code: "user_domain_sensitive_requires_focus" });
+  assert.equal(chords.length, 0, "no native key reached the page");
+  shown = true; evaluated.length = 0;
+  assert.equal((await send({ kind: "text", text: "w" })).dispatched, true);
+  assert.equal(evaluated.length, 0, "a shown list owns the keys (Chrome's UI)");
+});
+
+// vidlat 07:52Z (C10): a band input marks its dispatch at the final native action boundary (after every
+// fence, before XTest), once per native action, never for a refused one, so band frames can be graded as
+// input-triggered exactly as page frames are.
+test("MP-08/MP-10 a band input marks each native dispatch after its fences", async () => {
+  const order = [];
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (order.push("click"), true), chord: async () => (order.push("chord"), true) };
+  const send = (input, tab_id = "host-tab-a") => arbiter.input({ stream: { regionSource: source }, command: { tab_id, document_id: "da", generation: 3, input }, onDispatch: () => order.push("dispatch") });
+  await send({ kind: "click", x: 300, y: 12 });
+  await send({ kind: "key", key: "t", modifiers: 4 });
+  assert.deepEqual(order, ["dispatch", "click", "dispatch", "chord"]);
+  await assert.rejects(send({ kind: "click", x: 300, y: 12 }, "host-tab-b"), { code: "user_domain_stale_reference" });
+  assert.equal(order.length, 4, "a refused input marks nothing");
+});
+
+// The follow-up reads are best effort and never part of the input: the kernel answers inputs in one
+// serial lane, and a follow-up wait there queued every later key (b3 r14union2 / vidlat r20: typed URLs lost
+// keys, "kernel request timed out"). The input answers at once; a stalled follow-up answers empty.
+test("MP-08/MP-10 a stalled follow-up read never holds a band input's reply", async () => {
+  const active = { target: "ta" };
+  const windows = { onOmnibox: () => true, focusOmnibox() {}, refreshWarm: () => new Promise(() => {}) };
+  const arbiter = new InputArbiter(followHost(active), windows);
+  const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
+  const started = performance.now(), alive = setInterval(() => {}, 50); // the host's event loop is never idle
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "key", key: "a" } } });
+  assert(performance.now() - started < 100, "the input itself never waits for the follow-up");
+  assert.deepEqual(await arbiter.follow(reply._follow).finally(() => clearInterval(alive)), {});
+  assert(performance.now() - started < 1000, "answered at the follow bound");
+});

@@ -44,10 +44,11 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};
   return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,occluded:async()=>{
+   args:{window,viewport,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});
+
  });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live

@@ -4208,7 +4208,20 @@ toolbar button, the strip or another browser shortcut end it; a state read
 while it is warm re-reads Chrome's list first. `browser-omnibox-warm-540.json`
 pins the shape (Rust hash test `mp08_mp10_mp11_browser_omnibox_warm_540_snapshot`).
 Clients feature-detect 540 (a pre-540 viewer shows a zero-height popup box);
-no client floor moves.
+no client floor moves. Within 540, the reply to a person's `display_input` on a
+`browser_chrome` or `browser_auxiliary` binding may also carry `chrome_window`
+(the same shape as the state's): the window the input left, read after a strip
+input had up to 150 ms to show another Tab and after an address-bar key had its
+list re-read. A viewer shows that Tab and those popups in the input's round trip
+instead of at its next state read; a state read issued before it does not undo
+it. The field is omitted when the active Tab is one the kernel has not adopted
+yet (a new Tab), and the viewer then reads the state at once. Older viewers
+ignore it. A 540 `display_subscribe` may also set `initial_push: true` (omitted
+when false): the viewer's relay registration holds frames that arrive before its
+registration response, so the kernel's push pump grants the first frame at
+registration (as a 535 resume does) instead of after the viewer's first
+`display_ack` — one round trip less per stream open. Kernels report it only on
+the kernel-private `display_attach` reply; the relay sees nothing new.
 
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing

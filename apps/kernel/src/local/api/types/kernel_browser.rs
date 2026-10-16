@@ -97,6 +97,10 @@ pub enum KernelBrowserCommand {
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
+        /// MP-08/MP-10 allocated 540 (PERF_AUDIT 4.2.3): the viewer holds frames pushed before its
+        /// relay registration response; the push pump grants the first frame at registration.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        initial_push: bool,
     },
     DisplayNext {
         subscription_id: String,

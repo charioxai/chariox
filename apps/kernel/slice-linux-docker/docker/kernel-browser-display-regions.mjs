@@ -67,6 +67,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
     attestationState:lease.attestationState,
     // The owner's fresh viewport query proves geometry and the active target
     // together; a second active() query repeats the same native admission.
+    cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>lease.isAlive()&&window.isPageCurrentCached(tab.target_id):undefined,
     isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent(tab.target_id)&&await lease.isCurrent()};
    args.occluded=async()=>await host.chromeWindows?.inWindowOverNow?.(args.rect)===true;
   }catch(error){await lease.close();throw error;}
@@ -82,6 +83,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
    const active=await host.arbiter?.activeTab?.();
    if(!active||typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(active,window))refuse();
    overlayTab=active;args.validateCurrent=async()=>current()&&await host.arbiter.isActiveTab(active,window);
+   if(host.tabGroups?.nativeStateSupported?.()===true)args.cachedCurrent=()=>current()&&host.tabGroups.cachedActive()===active.target_id;
   }
   const binding_id=`host-chrome-region-${randomUUID()}`;
   lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}${popup?`-${popup.auxiliary_id}`:''}`,sequence:window.window_generation,
@@ -117,7 +119,15 @@ export async function regionInput(host,command,scope,signal) {
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();
-  return host.arbiter.input({stream,command,scope,signal});
+  // vidlat C10: like page input, a band input marks its stream's input epoch/time and a numeric
+  // input_dispatch at the native action boundary (band frames are then graded as input-triggered).
+  const tab=stream.regionSource.tab?.tab_id??stream.tab_id;
+  const onDispatch=()=>{
+   host.inputChangedAt?.set(tab,performance.now());
+   host.timing.event?.('input_dispatch',{at:performance.timeOrigin+performance.now(),input:host.inputCount=(host.inputCount??0)+1,kind:{click:1,text:2,key:3,scroll:4}[command.input?.kind]??0});
+   host.inputEpochs?.set(tab,(host.inputEpochs.get(tab)??0)+1);
+  };
+  return host.arbiter.input({stream,command,scope,signal,onDispatch});
  }
  const input=command.input;
  if(!['click','scroll'].includes(input?.kind)||input.button!==undefined||!Number.isInteger(input.x)||!Number.isInteger(input.y)||input.x<0||input.y<0||input.x>=stream.css_width||input.y>=stream.css_height)refuse();

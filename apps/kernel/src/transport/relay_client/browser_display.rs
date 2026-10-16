@@ -147,6 +147,7 @@ pub(super) async fn handle_subscribe(
             )
         }
     };
+    let initial_credit = registration_credit(recover, &binding);
     let (display_id, generation) = if recover {
         match resumed_delivery(&binding, &display_id) {
             Some(delivery) => delivery,
@@ -191,7 +192,7 @@ pub(super) async fn handle_subscribe(
             pump.stop();
         }
     }
-    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack.
+    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack (or granted at registration).
     let pump = super::display_pump::DisplayPump::new(generation);
     guard.insert(
         key.clone(),
@@ -235,7 +236,7 @@ pub(super) async fn handle_subscribe(
             error: None,
         },
     )?;
-    if recover {
+    if initial_credit {
         pump.acknowledge(generation, 0, true, None);
     }
     tokio::spawn(super::display_pump::run(
@@ -347,6 +348,12 @@ mod tests {
     }
 }
 
+/// MP-08/MP-10: a 535 resume, and a 540 viewer that holds frames pushed before its registration
+/// response (PERF_AUDIT 4.2.3), get their first frame at registration; others on their first ACK.
+fn registration_credit(recover: bool, binding: &serde_json::Value) -> bool {
+    recover || binding.get("initial_push").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
 // MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
 /// MP-11: a resumed (535) delivery is a new subscription id with its generation, marked resumed.
 fn resumed_delivery(binding: &serde_json::Value, previous: &str) -> Option<(String, u64)> {
@@ -387,8 +394,16 @@ fn display_subscription_caller(
 
 #[cfg(test)]
 mod resumed_delivery_tests {
-    use super::{rejected_delivery_release, resumed_delivery};
+    use super::{registration_credit, rejected_delivery_release, resumed_delivery};
     use serde_json::json;
+    // PERF_AUDIT 4.2.3: the viewer that asked for it is not left waiting one round trip for its first frame.
+    #[test]
+    fn mp08_mp10_an_initial_push_viewer_is_credited_at_registration() {
+        assert!(registration_credit(true, &json!({})));
+        assert!(registration_credit(false, &json!({"attached": true, "initial_push": true})));
+        assert!(!registration_credit(false, &json!({"attached": true})));
+        assert!(!registration_credit(false, &json!({"attached": true, "initial_push": "yes"})));
+    }
     // Review #1016 @52a7bb1ee P3: a rejected binding without a numeric generation (or id) is
     // still released, with the pre-attach id/generation the attach was admitted under.
     #[test]

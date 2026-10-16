@@ -120,10 +120,18 @@ export class ChromeWindows {
       if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
       return false;
     };
+    // MP-11: source publication still calls the fresh check above. Delivery
+    // can reuse its native snapshot until the extension/resize observer retires it.
+    const isPageCurrentCached=host.tabGroups?.nativeStateSupported?.()===true?target_id=>{
+      if(!isCurrent())return false;
+      const cached=host.tabGroups.cachedViewport();
+      if(!cached||(target_id!==undefined&&cached.target_id!==target_id))return false;
+      try{return JSON.stringify(nativePageRect(row,cached,scale))===JSON.stringify(pageRect)&&isCurrent();}catch{return false;}
+    }:undefined;
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent});
+      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -204,6 +212,12 @@ export class ChromeWindows {
       if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > 250) return;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
+  }
+  /** Is Chrome's omnibox list shown right now (re-read, not the last poll)? */
+  async omniboxShown() {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return !!this.omniboxLive;
   }
   /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
   onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
@@ -307,19 +321,27 @@ export class ChromeWindows {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
     watcher.reads.add(read);
     const tick = async () => {
-      const [first] = [...watcher.reads].reverse();
-      try { if (first) {
-        const rows = await first(), binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
-        this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
-        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live: this.omniboxLive};
-      } } catch {}
-        if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
+      await this.observeRows();
+      if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };
     if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
     return () => {
       watcher.reads.delete(read);
       if (!watcher.reads.size) { clearTimeout(watcher.timer); this.watcher = null; }
     };
+  }
+  /** One read of the watched inventory now (a band input's reply sees the menu it opened). */
+  async observeRows() {
+    for (const next of [...this.watcher?.reads ?? []].reverse()) {
+      let rows;
+      try { rows = await next(); } catch { continue; }
+      try {
+        const binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
+        this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
+        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live: this.omniboxLive};
+      } catch {}
+      return;
+    }
   }
   /** Protocol 530 state: popups of the band's window, CSS px from the window's top-left. */
   auxiliaryState() {
@@ -380,6 +402,10 @@ export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'),
 
 // The native tab strip's height in the band (DIP); the toolbar row starts below it.
 const STRIP_HEIGHT = 41;
+// PERF_AUDIT 4.2.6: how long a strip input's reply waits for Chrome to show another Tab.
+const FOLLOW_MS = 150;
+// The whole follow-up (Tab wait, inventory and omnibox reads) is bounded.
+const FOLLOW_LIMIT_MS = 500;
 
 export class InputArbiter {
   constructor(host, windows) { this.host = host; this.windows = windows; }
@@ -420,7 +446,38 @@ export class InputArbiter {
    * the browser shortcuts go to Chrome's UI whatever the focus; every other key, text
    * or chord may land in the page (X focus decides), so it passes the page's own
    * text-target fence first (Vault-only fields, cross-origin frames fail closed). */
-  async input({stream, command, signal}) {
+  async input(args) {
+    const follow = {switches: false};
+    const reply = await this.dispatchInput(args, follow);
+    // The kernel answers each person's input in order (one serial input lane): the window it left is
+    // read by a separate observation (`follow`) after that lane is free, never while later keys wait.
+    return this.host.chromeWindow ? {...reply, _follow: {tab_id: args.command.tab_id, switches: follow.switches}} : reply;
+  }
+  /** `chrome_window_follow`: the window an admitted Chrome UI input left (best effort, bounded; a
+   * stalled Chrome read answers without it and the viewer reads the state). */
+  async follow({tab_id, switches}) {
+    if (typeof tab_id !== 'string' || typeof switches !== 'boolean') throw new Error('MD-2: invalid window follow');
+    const bound = new Promise(resolve => setTimeout(resolve, FOLLOW_LIMIT_MS, {}).unref?.());
+    try { return await Promise.race([this.followed({}, {tab_id}, switches), bound]); } catch { return {}; }
+  }
+  /** PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left: the Tab
+   * the strip now shows and its popups (the omnibox list a key opened, a menu a click opened). The
+   * viewer follows in this round trip instead of at its next state read. A Tab the kernel has not
+   * adopted yet (a new Tab) is left to that state read. */
+  async followed(reply, command, switches) {
+    const before = this.host.tabs.get(command.tab_id)?.target_id;
+    let active = before;
+    if (switches) for (const end = performance.now() + FOLLOW_MS; ;) {
+      active = await this.host.tabGroups?.active?.().catch(() => null) ?? null;
+      if (active !== before || performance.now() >= end) break;
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    if (switches) await this.windows.observeRows?.();
+    await this.windows.refreshWarm?.();
+    const window = this.host.chromeWindow?.(), tab = [...this.host.tabs.values()].find(t => t.target_id === active);
+    return window && tab ? {...reply, chrome_window: {...window, active_tab_id: tab.tab_id}} : reply;
+  }
+  async dispatchInput({stream, command, signal, onDispatch}, follow) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
@@ -475,16 +532,17 @@ export class InputArbiter {
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
+    // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.
     const dispatched = async action => {
       let done;
       const finishUi = ['browser_chrome', 'browser_auxiliary'].includes(source?.surface) ? this.windows.uiInput?.() : null;
-      try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      try { onDispatch?.(); done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
       finally { finishUi?.(); }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
     };
     // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
-    const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
+    const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
     // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
     const omnibox = on => { this.inOmnibox = on; this.windows.focusOmnibox?.(on); };
@@ -493,7 +551,11 @@ export class InputArbiter {
       let tab;
       // Review #1016 P2: an admitted native popup (menu, dropdown, dialog) owns the keys while it is
       // current (rechecked here): Chrome's UI, not the page's remembered field.
-      if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
+      // Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed;
+      // it owns the keys only while Chrome shows the list (re-read now). Otherwise the page's own fences apply.
+      if (bandChord(keysym, modifiers)) tab = await switching();
+      else if (popup && (!source.overPage || await this.windows.omniboxShown?.() === true)) await activeAdmitted();
+      else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? uiFocus(tab) : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;

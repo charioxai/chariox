@@ -48,6 +48,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
+        initial_push: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -199,6 +200,7 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -206,6 +208,7 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -546,11 +549,15 @@ impl KernelRuntimeState {
                 codecs,
                 bitrate,
                 device_scale_factor,
+                initial_push,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)
                         .map_err(|_| host_error("MP-11: invalid display target".into()))?;
+                }
+                if initial_push {
+                    params["initial_push"] = true.into();
                 }
                 params
             }
@@ -646,8 +653,28 @@ impl KernelRuntimeState {
         if let Some(at) = input_at {
             crate::transport::kernel_browser_display::timing("input_admission", at);
         }
-        self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
-            .await
+        let mut result = self
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
+            .await?;
+        // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left is read after the
+        // serial input lane is free (a read inside it queued every later key) and joins this reply.
+        let follow = input_at
+            .and(result.as_object_mut())
+            .and_then(|reply| reply.remove("_follow"));
+        if let Some(follow) = follow {
+            let admission =
+                host.admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
+            let params = serde_json::json!({"op":"chrome_window_follow","tab_id":follow["tab_id"],"switches":follow["switches"],"observed_by":actor});
+            if let Ok(followed) = self
+                .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
+                .await
+            {
+                if let Some(window) = followed.get("chrome_window") {
+                    result["chrome_window"] = window.clone();
+                }
+            }
+        }
+        Ok(result)
     }
     /// MD-2/MD-5: appviews retains admission; observations use the same protection.
     pub(crate) async fn kernel_browser_app_view(

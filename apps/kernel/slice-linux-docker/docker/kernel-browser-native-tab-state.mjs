@@ -1,0 +1,44 @@
+// MP-08/MP-10/MP-11: metadata from fresh native extension reads, reusable only
+// until the owned extension/window changes. Page worlds never supply this state.
+export const nativeWindowChangedBinding='__charioxNativeWindowChanged';
+export class NativeTabState {
+ constructor(connection,onDetached){
+  this.connection=connection;this.onDetached=onDetached;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
+  this.off=null;
+ }
+ invalidate(){this.epoch++;this.active=null;this.viewport=null;}
+ detach(){this.invalidate();this.session=null;this.ready=false;this.onDetached?.();}
+ async attach(session){
+  if(this.closed)throw Error('MP-11: native state observer closed');
+  this.detach();this.session=session;
+  if(!this.supported)return;
+  this.off??=this.connection.subscribe(message=>this.onCdp(message));
+  await this.connection.send('Runtime.addBinding',{name:nativeWindowChangedBinding},session);
+  await this.connection.send('Runtime.enable',{},session);
+  if(this.closed||this.session!==session)throw Error('MP-11: native state observer retired');
+  this.ready=true;
+ }
+ onCdp(message){
+  if(message?.method==='Page.frameResized'){this.invalidate();return;}
+  if(message?.method==='Chariox.browserDisconnected'){this.detach();return;}
+  if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.detach();return;}
+  if(message?.sessionId!==this.session||!this.session)return;
+  if(['Runtime.executionContextsCleared','Runtime.executionContextDestroyed','Inspector.detached'].includes(message.method)){this.detach();return;}
+  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding)this.invalidate();
+ }
+ usable(){return !this.closed&&this.ready&&!!this.session&&this.connection.isOpen?.()!==false;}
+ remember(kind,value,epoch){
+  if(!this.usable()||epoch!==this.epoch)return;
+  if(kind==='active'){
+   this.active=typeof value==='string'&&value.length>0&&value.length<=256?value:null;
+   if(this.viewport?.target_id!==this.active)this.viewport=null;
+  }else if(kind==='viewport'){
+   const valid=value&&typeof value.target_id==='string'&&value.target_id.length>0&&value.target_id.length<=256&&[value.width,value.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=8192);
+   this.viewport=valid?Object.freeze({target_id:value.target_id,width:value.width,height:value.height}):null;
+   this.active=this.viewport?.target_id??null;
+  }
+ }
+ cachedActive(){return this.usable()?this.active:null;}
+ cachedViewport(){return this.usable()?this.viewport:null;}
+ close(){this.closed=true;this.detach();this.off?.();this.off=null;}
+}

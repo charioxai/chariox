@@ -75,3 +75,15 @@ for(const [protocol,capability]of [[491,true],[536,false]])test(`MP-08/MP-10/MP-
   assert(acks.length>=3);assert(acks.every(ack=>!Object.hasOwn(ack,'held_ms')));
  }finally{await stream.close()}
 });
+
+// PERF_AUDIT 4.2.3 (protocol 540): a transport that holds frames pushed before its registration response
+// asks for the first frame at registration (the 535 registration receive window presents it).
+test('MP-08/MP-10 only a 540 holding push transport asks for its first frame at registration',async()=>{
+ const subscribes=[];
+ for(const [protocol,holds,expected]of[[540,true,true],[540,false,false],[536,true,false]]){
+  const transport={kernelProtocolVersion:protocol,displayEventEncoding:'CXD1',initialPush:holds,onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+   request:async({KernelBrowser:{command}})=>{if(command.op==='display_subscribe')subscribes.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'s',generation:1}:command.op==='display_ack'?{acknowledged:true,push:'running'}:{}}}}};
+  const stream=await attachBrowserDisplay({width:1,height:1},transport,{tab_id:'t',generation:1},{idleMs:20});
+  try{assert.equal(subscribes.at(-1).initial_push===true,expected,`protocol ${protocol}, holds ${holds}`)}finally{await stream.close()}
+ }
+});

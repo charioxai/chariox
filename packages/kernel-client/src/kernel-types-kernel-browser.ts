@@ -27,7 +27,7 @@ export type KernelBrowserCommand =
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }
   | { op: "display_actors" }
-  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2 }
+  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2; initial_push?: boolean }
   | { op: "display_next"; subscription_id: string; generation: number; after_sequence: number }
   // MP-08/MP-10/MP-11: fresh admission and delivery identity, same producer.
   | { op: "display_suspend" | "display_resume"; subscription_id: string; generation: number }

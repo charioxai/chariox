@@ -162,7 +162,7 @@ export async function displayCredit(host, stream, command, signal) {
     assertNotCancelled(signal);
     if(!source.motion&&(host.inputEpochs.get(tab.tab_id)??0)!==epoch)compositor?.rejected?.('epoch');
     if(region){
-      if(!await stream.regionCurrent()||!stream.regionWindow.isCurrent()||!compositor.valid())return false;
+      if(!await (stream.regionFrameCurrent??stream.regionCurrent)()||!stream.regionWindow.isCurrent()||!compositor.valid())return false;
     }else if(native){
       if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);

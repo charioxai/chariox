@@ -176,6 +176,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             ],
             bitrate: 2_000_000,
             device_scale_factor: 2,
+            initial_push: false,
         },
         Command::DisplayNext {
             subscription_id: "s".into(),
@@ -451,14 +452,20 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     let bytes = include_bytes!("browser-omnibox-warm-540.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d4b2015e816e29d78230f2e394f9596b964350a26e24d6e40805d5831016063e"
+        "71dc08a7419e1ce576380028c94fab6a9d36c9b08372c884b69948a0c70470bd"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let response: LocalDaemonResponse =
-        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    // PERF_AUDIT 4.2.2/4.2.6: a band input's reply carries the state's `chrome_window` shape.
+    for key in ["response", "band_input_response"] {
+        let response: LocalDaemonResponse = serde_json::from_value(snapshot[key].clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), snapshot[key]);
+    }
+    // PERF_AUDIT 4.2.3: the subscribe asks for its first frame at relay registration.
+    let request: crate::local::LocalDaemonRequest =
+        serde_json::from_value(snapshot["initial_push_request"].clone()).unwrap();
     assert_eq!(
-        serde_json::to_value(response).unwrap(),
-        snapshot["response"]
+        serde_json::to_value(request).unwrap(),
+        snapshot["initial_push_request"]
     );
 }
 
