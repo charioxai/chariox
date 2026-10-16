@@ -1,3 +1,4 @@
+import {resolveDisplayTarget} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
@@ -476,23 +477,8 @@ export class KernelBrowserHost {
     const current = this.browser.currentPageFrame?.(stored.target_id);
     return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
-  async displayTarget(command, native = false) {
-    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
-    const stored = this.tabs.get(command.tab_id);
-    if (!stored) throw new UserDomainRefusal("not_granted");
-    if(native)return this.displayDocuments.target(this.browser,stored);
-    const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
-    const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-    const document_id = frameTree?.frame?.loaderId;
-    if (typeof document_id !== "string" || !document_id) throw new Error("MD-DISPLAY: document unavailable");
-    // Observe this same native target without building an entire accessibility snapshot.
-    if (stored.document_id !== document_id) {
-      const { targetInfo } = await connection.send("Target.getTargetInfo", { targetId: stored.target_id });
-      Object.assign(stored, { document_id, url: targetInfo.url, title: targetInfo.title });
-      await this.save();
-    }
-    return { ...stored, document_id };
-  }
+  displayTarget(command, native = false) { return resolveDisplayTarget(this, command, native); }
+
   sampleLane(tab) {
     let lane=this.sampleLanes.get(tab.tab_id);
     if(!lane){lane=new SampleLane();this.sampleLanes.set(tab.tab_id,lane)}

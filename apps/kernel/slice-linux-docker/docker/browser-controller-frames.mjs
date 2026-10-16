@@ -1,3 +1,4 @@
+import {BrowserActionError} from './browser-controller-actions.mjs';
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
 
 // MP-08/MP-10/MP-11: an asynchronous inspection may populate a cold cache,
@@ -12,6 +13,17 @@ export function pageObservationFence(browser, connection, sessionId, targetId, f
         browser.pageFramesByTarget.get(targetId) !== entry || browser.documentIdsByTarget.get(targetId) !== document) throw stale();
   };
   assertCurrent();return { owner, assertCurrent };
+}
+
+export function captureDocumentOwner(browser, tab, expectedConnection, expectedSession) {
+  const target=tab?.target_id, document=tab?.document_id, frame=target&&browser?.currentPageFrame?.(target);
+  if (!frame) return null;
+  const {connection,sessionId}=frame;
+  const current=()=>browser.connection===connection && frame.connection===connection && frame.sessionId===sessionId &&
+    browser.currentPageFrame(target)===frame && frame.frame.loaderId===document &&
+    (expectedConnection===undefined||expectedConnection===connection) && (expectedSession===undefined||expectedSession===sessionId);
+  const assertCurrent=()=>{if(!current())throw new BrowserActionError('stale_document_reference','browser capture owner retired');};
+  assertCurrent();return {connection,sessionId,assertCurrent};
 }
 
 const MAX_FRAMES = 64;

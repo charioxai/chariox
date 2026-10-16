@@ -30,7 +30,10 @@ even if a loader value returns. The shared region setup reuses that same live
 binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
 policy and mask fences remain mandatory before delivery. Screenshot capture
 and native attestation also reuse that current owner before/after capture;
-unknown owners still query the renderer. Same-loader reference replacement or
+unknown owners still query the renderer. Tab-state preflight also reuses the
+same current owner and reads navigation metadata from the browser process.
+A reference replacement during that metadata read prevents publication or
+saving; unknown bindings retain the renderer query. Same-loader reference replacement or
 session/connection mismatch refuses the image. A delayed page inspection cannot replace an event-owned newer document or
 revive a retired session. Its initial frame and document-map references must
 remain unchanged across focus/frame observations. A cold mismatched cache may

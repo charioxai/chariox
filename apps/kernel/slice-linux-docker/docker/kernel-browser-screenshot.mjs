@@ -1,3 +1,4 @@
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
 // MP-08/MP-10/MP-11: shared screenshot policy and live document ownership.
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import {captureProtectionFence} from './kernel-browser-region-protection.mjs';
@@ -5,16 +6,6 @@ import {captureProtectedPage} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument,BrowserActionError} from './browser-controller-actions.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 const retired=()=>new BrowserActionError('stale_document_reference','browser capture owner retired');
-export function captureDocumentOwner(browser, tab, expectedConnection, expectedSession) {
-  const target=tab?.target_id, document=tab?.document_id, frame=target&&browser?.currentPageFrame?.(target);
-  if (!frame) return null;
-  const {connection,sessionId}=frame;
-  const current=()=>browser.connection===connection && frame.connection===connection && frame.sessionId===sessionId &&
-    browser.currentPageFrame(target)===frame && frame.frame.loaderId===document &&
-    (expectedConnection===undefined||expectedConnection===connection) && (expectedSession===undefined||expectedSession===sessionId);
-  const assertCurrent=()=>{if(!current())throw retired();};
-  assertCurrent();return {connection,sessionId,assertCurrent};
-}
 export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=false,format='png',optimizeForSpeed=true) {
     const started = timestamp();
     const scale = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;

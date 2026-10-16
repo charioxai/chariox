@@ -1,5 +1,7 @@
-// MP-08/MP-10/MP-11: event-bound native display documents. CDP capture/input
-// retain their query barriers; an admitted native source uses this state only.
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
+import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+// MP-08/MP-10/MP-11: event-bound native display documents. Known page
+// captures/state reuse the CDP owner; input admission stays separately guarded.
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 const snapshot=Symbol('native display document');
 export class DisplayDocumentPending extends Error {
@@ -74,4 +76,26 @@ export class DisplayDocuments {
   return false;
  }
  clear(){for(const [target,e] of this.entries)this.retire(e,target);}
+}
+
+// MP-08/MP-10/MP-11: native metadata reads use the same document owner as mirrors/captures.
+export async function resolveDisplayTarget(host, command, native = false) {
+ if(command.generation!==host.generation)throw new UserDomainRefusal('stale_epoch');
+ const stored=host.tabs.get(command.tab_id);if(!stored)throw new UserDomainRefusal('not_granted');
+ if(native)return host.displayDocuments.target(host.browser,stored);
+ const browser=host.browser,target=stored.target_id,generation=host.generation,frame=browser.currentPageFrame?.(target);
+ const owner=frame?captureDocumentOwner(browser,{target_id:target,document_id:frame.frame.loaderId}):null;
+ const {connection,sessionId}=owner??await browser.resolvePageTarget(target);
+ const document_id=frame?.frame.loaderId??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
+ if(typeof document_id!=='string'||!document_id)throw Error('MD-DISPLAY: document unavailable');
+ const current=()=>{
+  if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference');
+  owner?.assertCurrent();
+ };
+ current();
+ if(host.tabs.get(command.tab_id).document_id!==document_id){
+  const {targetInfo}=await connection.send('Target.getTargetInfo',{targetId:target});current();
+  Object.assign(host.tabs.get(command.tab_id),{document_id,url:targetInfo.url,title:targetInfo.title});await host.save();
+ }
+ current();return {...host.tabs.get(command.tab_id),document_id};
 }

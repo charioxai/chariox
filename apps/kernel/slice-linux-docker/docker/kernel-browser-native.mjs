@@ -1,4 +1,4 @@
-import {captureDocumentOwner} from './kernel-browser-screenshot.mjs';
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
 import {resumeAfterCapturePresentation} from './browser-capture-presentation.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: OS-neutral capture interface: start/subscribe/sample/close.
