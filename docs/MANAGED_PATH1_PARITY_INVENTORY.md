@@ -63,6 +63,14 @@ Ready-journal replay also restores the authenticated worker run snapshot and
 rebuilds a dispatch for its exact admitted successor only while delivery is still
 Accepted. Dispatching/Delivered prompts keep normal receipt reconciliation, and
 an older completed page cannot select its run over a newer successor.
+If the old cache entry is absent after restart, historical replay retains an
+ended home projection so snapshot replacement cannot retire the newer live run.
+
+MP-08 / MP-10 / MP-11: active drains retain retry ownership across receipt and
+application-journal write failures, using the existing backoff while their exact
+prompt/run remains current. Admission, authorization and retained-page digest
+rejection remain unchanged. Real acceptance must exercise storage recovery
+without another client action.
 
 Home application now retains an admitted page and its local result until receipt
 commit and queue admission finish. Per-page prompt/output/notice identities and

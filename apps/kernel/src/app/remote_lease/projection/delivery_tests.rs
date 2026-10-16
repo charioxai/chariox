@@ -275,7 +275,13 @@ fn mp08_home_projection_receipt_failure_is_restart_safe() {
 
 #[test]
 fn mp08_home_projection_partial_application_and_queue_boundary_are_restart_safe() {
-    for boundary in ["result", "cleanup", "native", "cleanup-dispatching", "cleanup-delivered"] {
+    for boundary in [
+        "result",
+        "cleanup",
+        "native",
+        "cleanup-dispatching",
+        "cleanup-delivered",
+    ] {
         home_projection_fault_is_restart_safe(boundary);
     }
 }
@@ -509,6 +515,30 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
         }
         drop(app);
         let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        if boundary == "cleanup-delivered" && final_page {
+            // MP-08 / MP-10 / MP-11: after restart the successor's drain
+            // can restore its snapshot before an older ready journal arrives.
+            let old = crate::provider::projected_leased_provider_run_id("leased", "run");
+            assert!(app.provider_run_projection.get(&old).is_none());
+            let id = crate::provider::projected_leased_provider_run_id("leased", "successor-run");
+            let mut run = super::explicit_completion_tests::provider_run(
+                "successor-run",
+                "worker-session",
+                "worker-agent",
+                "claude",
+                "claude",
+                crate::provider::ProviderClientInterface::Chariox,
+            );
+            run.mark_running();
+            app.update_remote_provider_run_projection(run.projected_for_home_agent_with_id(
+                id.clone(),
+                session.id(),
+                agent.id(),
+            ));
+            app.sessions
+                .set_active_provider_run(session.id(), Some(id))
+                .unwrap();
+        }
         let recovered = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker"),
@@ -593,6 +623,21 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 "an old journal cannot select its old run over the successor"
             );
         }
+        if boundary == "cleanup-delivered" && final_page {
+            let id = crate::provider::projected_leased_provider_run_id("leased", "successor-run");
+            assert_eq!(
+                app.provider_run_projection.get(&id).unwrap().state(),
+                crate::provider::ProviderRunState::Running,
+                "MP-08 old ready journal retired the current successor projection"
+            );
+            assert_eq!(
+                app.provider_run_projection
+                    .get_for_agent(session.id(), agent.id())
+                    .unwrap()
+                    .id(),
+                id
+            );
+        }
         if boundary == "native" {
             let run_id = crate::provider::projected_leased_provider_run_id("leased", "run");
             let run = app
@@ -653,4 +698,9 @@ fn mp08_review_f6_cleanup_reemits_the_exact_unsent_successor() {
 #[test]
 fn mp08_review_f6_ready_journal_restores_worker_run_snapshot() {
     home_projection_fault_is_restart_safe("native");
+}
+
+#[test]
+fn mp08_ready_journal_keeps_a_newer_provider_projection_running() {
+    home_projection_fault_is_restart_safe("cleanup-delivered");
 }

@@ -5,25 +5,35 @@ use crate::terminal::TerminalOutputKind;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_completed_receipt_reconciles_history_backlog_without_resubmitting() {
-    completed_history_recovery(false, false, false).await;
+    completed_history_recovery(false, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_completed_receipt_rejects_unadmitted_history_page() {
-    completed_history_recovery(true, false, false).await;
+    completed_history_recovery(true, false, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_completed_receipt_reacks_lost_ack_without_replaying_history() {
-    completed_history_recovery(false, true, false).await;
+    completed_history_recovery(false, true, false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_completed_receipt_reconciles_dispatching_prompt_with_history_backlog() {
-    completed_history_recovery(false, false, true).await;
+    completed_history_recovery(false, false, true, false).await;
 }
 
-async fn completed_history_recovery(future_page: bool, lost_ack: bool, dispatching: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_active_projection_drain_survives_failed_home_receipt() {
+    completed_history_recovery(false, false, false, true).await;
+}
+
+async fn completed_history_recovery(
+    future_page: bool,
+    lost_ack: bool,
+    dispatching: bool,
+    failed_home_receipt: bool,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_url = format!("ws://{}", listener.local_addr().unwrap());
     let mut fixture = make_receipt_reconciliation_fixture(&relay_url, "history-pages").await;
@@ -304,14 +314,96 @@ async fn completed_history_recovery(future_page: bool, lost_ack: bool, dispatchi
             }
         }
     });
-    let mut result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+    let mut result = if failed_home_receipt {
+        // MP-08 / MP-10 / MP-11: the live home restarted while its receipt
+        // writer was unavailable. Its normal active-turn drain must keep
+        // ownership until persistence recovers, without a new client action.
         fixture
             .runtime
-            .reconcile_remote_prompt_worker_receipt(&fixture.dispatch),
-    )
-    .await
-    .expect("completed receipt recovery must be bounded");
+            .owned
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(run.clone()),
+                None,
+            )
+            .unwrap();
+        fixture
+            .runtime
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &fixture.agent_id,
+                Some(run.clone()),
+            )
+            .unwrap();
+        let store = &fixture.runtime.owned.operational_history_store;
+        store.leased_projection_delivery_sequence("schema").unwrap();
+        let db = rusqlite::Connection::open(store.path()).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_active_home_receipt BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'injected active receipt failure'); END;").unwrap();
+        fixture.runtime.spawn_remote_prompt_projection_drain(
+            fixture.session_id.clone(),
+            fixture.agent_id.clone(),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                let ready: i64 = db
+                    .query_row(
+                        "SELECT count(result_json) FROM home_projection_applications",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if ready > 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("active drain must reach the failed receipt after applying history");
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        db.execute_batch("DROP TRIGGER fail_active_home_receipt")
+            .unwrap();
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if fixture
+                    .runtime
+                    .owned
+                    .completed_git_turn_snapshots
+                    .projection_for_prompt(
+                        &fixture.session_id,
+                        &fixture.agent_id,
+                        &fixture.dispatch.prompt_id,
+                    )
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        if recovered.is_err() {
+            server.abort();
+
+            panic!(
+                "MP-08 active drain abandoned the admitted page after its receipt write recovered"
+            );
+        }
+        Ok(run.clone())
+    } else {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            fixture
+                .runtime
+                .reconcile_remote_prompt_worker_receipt(&fixture.dispatch),
+        )
+        .await
+        .expect("completed receipt recovery must be bounded")
+    };
     if lost_ack {
         assert!(
             result.is_err(),

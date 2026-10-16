@@ -1295,11 +1295,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let projected_provider_run_id =
             crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
         if let Some(provider_run) = provider_run {
-            let projected_run = provider_run.projected_for_home_agent_with_id(
+            let mut projected_run = provider_run.projected_for_home_agent_with_id(
                 projected_provider_run_id.clone(),
                 session_id.to_string(),
                 agent_id.to_string(),
             );
+            if !restore_run_selection {
+                // MP-08 / MP-10 / MP-11: this journal describes a retired
+                // home projection. Restoring its metadata must not retire the
+                // newer selected run when the old cache entry is absent.
+                projected_run.mark_ended();
+            }
             let projected_run = self
                 .app
                 .update_remote_provider_run_projection(projected_run);

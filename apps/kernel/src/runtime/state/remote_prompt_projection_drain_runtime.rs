@@ -17,6 +17,19 @@ pub(super) enum RemotePromptRunBindingRecovery {
     Rejected,
 }
 
+fn projection_drain_should_retry(error: &DaemonError) -> bool {
+    remote_prompt_error_should_retry_transport(error)
+        || matches!(error, DaemonError::SessionHistoryFailed { operation, .. }
+            if matches!(*operation,
+                "begin home projection"
+                    | "save home projection result"
+                    | "finish home projection"
+                    | "lock applied projection receipt"
+                    | "begin applied projection receipt"
+                    | "save projection receipt"
+                    | "commit applied projection receipt"))
+}
+
 impl KernelRuntimeState {
     pub(super) async fn drain_completed_remote_prompt_receipt_projection(
         &self,
@@ -201,12 +214,16 @@ impl KernelRuntimeState {
                         }
                         return;
                     }
-                    Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                    // MP-08 / MP-10 / MP-11: the admitted page is repeatable,
+                    // including after restart. A temporarily failed local write
+                    // must not abandon its drain when the storage fault clears.
+                    // Do not retry identity, digest or authorization errors.
+                    Err(error) if projection_drain_should_retry(&error) => {
                         transport_retry_attempt = transport_retry_attempt.saturating_add(1);
                         if transport_retry_attempt == 1 || transport_retry_attempt % 12 == 0 {
                             crate::logging::warn_with_fields(
                                 "daemon.remote_prompt_dispatch",
-                                "remote projection transport unavailable; retrying active prompt",
+                                "remote projection temporarily unavailable; retrying active prompt",
                                 serde_json::json!({
                                     "session_id": session_id,
                                     "agent_id": agent_id,

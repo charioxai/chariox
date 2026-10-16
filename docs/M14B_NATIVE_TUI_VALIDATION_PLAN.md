@@ -580,3 +580,16 @@ restarting and require that successor to reach the worker exactly once. Also
 restart with that admitted successor still Accepted; the normal restart sweep
 must recover its dispatch. A ready native journal must restore its worker-run
 snapshot and runtime profile without selecting an old run over a newer turn.
+After restart, restore the successor's live provider snapshot before replaying
+the older ready journal. Require the successor's cached run to remain Running
+and selected, with the older home projection retired; checking only the remote
+binding ID misses a stale snapshot that retires the live replacement.
+
+MP-08 / MP-10 / MP-11 drain ownership repeat: keep the receipt-write fault
+active through home restart, then remove it without another prompt, reload or
+reattach. The active drain must resume its admitted page and finish both turns;
+deduplication alone is insufficient. In the separate completed-backlog ACK cell,
+require worker completion and at least64 retained history records before home
+reconnects. Delaying an ACK with netem requires replacing the loss queue to flush
+already queued bytes; changing its loss percentage alone does not prove the
+fault armed.
