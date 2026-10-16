@@ -16,7 +16,8 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
   const region=stream.regionLease;
-  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await stream.regionCurrent()))throw Error('MP-11: region lease retired');
+  const regionAlive=()=>!region||(command.generation===host.generation&&stream.regionSource.valid()&&region.isAlive()&&stream.regionWindow.isCurrent());
+  if(!regionAlive())throw Error('MP-11: region lease retired');
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;
   const empty=()=>nativeCreditEmpty(stream,cachedSource,host.protection,host.inputEpochs.get(stream.tab_id)??0,
       host.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
@@ -28,8 +29,12 @@ export async function displayCredit(host, stream, command, signal) {
     // wait in displayPushCredit instead, on every readiness source.
     if(!command.push)await stream.producer.waitReady(20,signal);
     assertNotCancelled(signal);
+    if(!regionAlive())throw Error('MP-11: region lease retired');
     if(empty())return {generation:host.generation,frame_sent:false,display_frame:null};
   }
+  // MP-08/MP-10/MP-11: empty-only scheduling never reads or grants pixels.
+  // A possible frame still re-admits its live region before any capture/encode.
+  if(region&&!await stream.regionCurrent())throw Error('MP-11: region lease retired');
   const native = cachedSource?.native===true&&cachedSource.attested;
   let tab;
   try { tab = region ? stream.regionSource.tab : await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }

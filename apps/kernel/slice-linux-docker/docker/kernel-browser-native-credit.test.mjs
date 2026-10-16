@@ -79,3 +79,36 @@ test('MP-08/MP-10/MP-11 attested CDP fallback cannot enter native region reuse o
  source.latest={tab_id:'t',document_id:'d',raw:{nativeExact(){},base_serial:1}};stream.compositorSerial=1;
  assert.equal(nativeRegionBaseCurrent(stream,source,'d',policy),false,'native proof is mandatory even with otherwise matching bookkeeping');
 });
+
+test('MP-08/MP-10/MP-11 empty region credits keep cheap fences without querying or reading pixels',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture();let queries=0,reads=0;
+ Object.defineProperty(f.sample.raw,'pixels',{get(){reads++;throw Error('empty credit read pixels')}});
+ Object.assign(f.source,{native:true,closed:false,changedAt:performance.now(),regionRevision:0});
+ Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>{queries++;return true}});
+ const host={generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map()};
+ const command={generation:1,after_sequence:1,push:{}};
+ const result=await displayCredit(host,f.stream,command);assert.equal(result.frame_sent,false);assert.equal(queries,0);assert.equal(reads,0);
+ f.source.valid=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.source.valid=()=>true;
+ f.stream.regionLease.isAlive=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.stream.regionLease.isAlive=()=>true;
+ await assert.rejects(displayCredit(host,f.stream,{...command,generation:0}),/region lease retired/);
+ f.stream.previous=null;f.stream.regionCurrent=async()=>{queries++;return false};
+ await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);assert.equal(queries,1,'a possible frame still requires fresh live admission');assert.equal(reads,0);
+});
+
+test('MP-08/MP-10/MP-11 an empty wait becoming ready admits only after waiting and before pixels',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture();let waited=false,queries=0;
+ Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});
+ f.stream.producer.waitReady=async()=>{waited=true;f.stream.previous=null};
+ Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>{queries++;assert(waited);return false}});
+ const host={generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map()};
+ await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1}),/region lease retired/);assert.equal(queries,1);assert(waited);
+});
+
+for(const change of ['generation','window','cancellation'])test(`MP-08/MP-10/MP-11 an empty wait still refuses ${change} retirement`,async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture(),abort=new AbortController();let window=true;
+ const host={generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map()};
+ Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});
+ Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>window},regionCurrent:async()=>assert.fail('empty retired credit must not query a page')});
+ f.stream.producer.waitReady=async()=>{if(change==='generation')host.generation++;else if(change==='window')window=false;else abort.abort()};
+ await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1},abort.signal),change==='cancellation'?{code:'browser_action_cancelled'}:/region lease retired/);
+});
