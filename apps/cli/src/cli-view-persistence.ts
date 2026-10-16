@@ -21,7 +21,7 @@ export function createCliViewPersistence(deps: {
   let previous = "", revision = 0, latestBuffer: OptimizedBuffer | undefined
   const sample = (buffer: OptimizedBuffer) => {
     latestBuffer = buffer
-    if (!save || deps.covered() || timer) return
+    if (!save || timer || deps.covered()) return
     const requestedRevision = revision
     timer = setTimeout(() => {
       timer = undefined
