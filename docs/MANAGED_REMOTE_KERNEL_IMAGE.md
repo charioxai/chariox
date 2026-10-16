@@ -276,8 +276,8 @@ the Cargo build path. The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
 from the same signed lock. Provider CLI policy lives in
-`deploy/managed-kernel/provider-versions.env`: Codex 0.159.3, OpenCode 1.18.23
-and Claude Code 2.1.212. Headed slice and publication builds verify their
+`deploy/managed-kernel/provider-versions.env`: Codex 0.159.3, OpenCode 1.19.0
+and Claude Code 2.1.296. Headed slice and publication builds verify their
 installed CLIs against that policy. Update both toolchain manifests and npm
 integrity locks together; `scripts/provider-cli-pins.test.mjs` rejects drift
 in the manifests, resolved lock entries, build checks and publication labels.

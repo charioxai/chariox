@@ -467,7 +467,7 @@ test("managed image and publication runtimes pin the same provider releases", as
   assert.deepEqual(versions, {
     CHARIOX_CODEX_VERSION: "0.159.3",
     CHARIOX_OPENCODE_VERSION: "1.19.0",
-    CHARIOX_CLAUDE_VERSION: "2.1.212",
+    CHARIOX_CLAUDE_VERSION: "2.1.296",
   })
   for (const [name, version] of Object.entries(versions)) {
     assert.match(dockerfile, new RegExp(`ARG ${name}=${version.replaceAll(".", "\\.")}`))
@@ -521,7 +521,7 @@ test("managed slice image locks every network and compiler input", async () => {
   )
   assert.doesNotMatch(dockerfile, /npm install|rustup\.rs|deb\.nodesource\.com/)
   assert.deepEqual(toolchainPackage.dependencies, {
-    "@anthropic-ai/claude-code": "2.1.212",
+    "@anthropic-ai/claude-code": "2.1.296",
     "@openai/codex": "0.159.3",
     "opencode-ai": "1.19.0",
     pnpm: "11.22.0",

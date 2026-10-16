@@ -21,6 +21,18 @@ This correction changes no serialized contract or protocol version. Router and
 binding regressions are supplementary. Signed-successor, real managed-machine,
 provider, shutdown and cleanup evidence remain separate MP-10 acceptance gates.
 
+## MP-08 / MP-10 / MP-11 official Claude catalog parity
+
+The shared managed, slice and publication policy pins Claude Code 2.1.296,
+including the native platform packages in both npm integrity locks. The earlier
+2.1.212 managed catalog omitted Haiku 5.5 even when an explicit Haiku 5.5
+provider turn succeeded; returning to the waiting room therefore could not
+select that model. Ordinary controls using 2.1.296 expose the current native
+model IDs. The installed official harness supplies model IDs and names for every
+placement. Updating the policy requires a newly verified signed image and real managed menu/selection
+drills; source consistency checks and ordinary controls do not establish that
+live acceptance.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

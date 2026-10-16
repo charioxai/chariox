@@ -119,7 +119,7 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.match(dockerfile, /ARG CHARIOX_CLAUDE_VERSION=\d+\.\d+\.\d+/)
   assert.equal(toolchainPackage.dependencies["@openai/codex"], "0.159.3")
   assert.equal(toolchainPackage.dependencies["opencode-ai"], "1.19.0")
-  assert.equal(toolchainPackage.dependencies["@anthropic-ai/claude-code"], "2.1.212")
+  assert.equal(toolchainPackage.dependencies["@anthropic-ai/claude-code"], "2.1.296")
   assert.equal(toolchainPackage.dependencies.pnpm, "9.15.0")
   assert.match(dockerfile, /npm ci --omit=dev/)
   assert.match(dockerfile, /npm sbom --sbom-format cyclonedx/)
