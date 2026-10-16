@@ -520,8 +520,21 @@ async fn sudo_busy_authorization_is_memory_only_and_revoke_all_prevents_dispatch
             .await
     });
     let prompt = popup(&f.state).await;
-    assert!(prompt.message.contains("protected task"));
-    assert!(prompt.message.contains(&running_turn.agent_id));
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed sudo presentation");
+    assert_eq!(presentation.task, "protected task");
+    let target = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(&running_turn.agent_id)
+        .unwrap();
+    assert_eq!(
+        presentation.agent_name,
+        target.alias().unwrap_or(target.agent_ref())
+    );
     assert!(f
         .state
         .answer_terminal_runtime_interaction(
@@ -988,10 +1001,12 @@ async fn external_sudo_submit_prompt_whitespace_is_refusable(text: &str) {
     let router = f.router.clone();
     let task = tokio::spawn(async move { router.dispatch(command, request).await });
     let prompt = popup(&f.state).await;
-    assert!(prompt
-        .message
-        .ends_with("Requester-supplied prompt:\nprotected task\nfull second line"));
-    assert!(prompt.message.contains("External agent"));
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed external sudo presentation");
+    assert_eq!(presentation.task, "protected task\nfull second line");
+    assert_eq!(presentation.requester_name, "An external agent");
     f.state
         .answer_sudo_entry_from_terminal(
             "local",
@@ -1060,23 +1075,29 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
     let id = grant_id.clone();
     let task = tokio::spawn(async move { state.request_kernel_sudo(&id, request).await });
     let prompt = popup(&f.state).await;
-    assert!(prompt.message.contains("External agent"));
-    assert!(prompt
-        .message
-        .contains(&format!("OS pid {}", std::process::id())));
-    assert!(prompt.message.contains(
-        &crate::runtime::kernel_access::process::inspect(std::process::id())
-            .unwrap()
-            .0
-            .executable
-    ));
-    assert!(prompt
-        .message
-        .contains(f.request.target_agent_id.as_deref().unwrap()));
-    assert!(prompt.message.contains(&f.request.session_id));
-    assert!(prompt
-        .message
-        .ends_with("Requester-supplied prompt:\n  external first line\nfull second line\t  \n"));
+    // MP-08 / MP-10 / MP-11: no technical wall in the default question.
+    let value = serde_json::to_value(&prompt).unwrap();
+    assert_eq!(
+        value["sudo_request"]["task"],
+        "  external first line\nfull second line\t  \n"
+    );
+    assert_eq!(
+        value["sudo_request"]["task_summary"],
+        "external first line full second line"
+    );
+    assert!(!value["sudo_request"]["agent_name"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(!value["sudo_request"]["session_name"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert_eq!(value["sudo_request"]["grant_id"], grant_id);
+    assert_eq!(value["requester"]["pid"], std::process::id());
+    assert!(!prompt.message.contains(&f.request.session_id));
+    assert!(!prompt.message.contains("OS pid"));
+    assert!(!prompt.message.contains("external first line"));
     assert!(f.state.passkey_prompts_for("guest").is_empty());
     let mut answer = RespondToInteractionRequest {
         session_id: prompt.session_id.clone(),

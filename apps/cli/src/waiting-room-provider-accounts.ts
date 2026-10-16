@@ -83,7 +83,7 @@ export function defaultProviderAccountProfileId(
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
   const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
-  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
+  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""}${profile.auth_state === "authenticated" || profile.auth_state === "unknown" ? "" : " · needs sign-in"}`
 }
 
 export function selectedProviderAccountStartBlockReason(

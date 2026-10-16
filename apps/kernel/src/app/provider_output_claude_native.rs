@@ -19,11 +19,13 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod permission;
+mod startup_exit;
 #[cfg(test)]
 mod tests;
 mod transcript;
 
 pub(crate) use permission::format_claude_permission_message;
+pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
@@ -81,9 +83,6 @@ fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
         None
     }
 }
-
-const CLAUDE_HEADLESS_EARLY_EXIT: &str =
-    "Claude Code exited before acknowledging the queued task; no task text was dispatched.";
 
 /// Delay between writing a prompt's visible text into the provider PTY and
 /// sending the Enter keystroke, giving the terminal time to register the
@@ -1214,17 +1213,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 message: message.to_string(),
             });
         }
-        if provider_run.provider() == "claude-headless"
-            && provider_run.pty_target().is_some()
-            && crate::app::ProviderLaunchProcessRuntime::new(self.app)
+        if provider_run.provider() == "claude-headless" && provider_run.pty_target().is_some() {
+            if let Some(exit) = crate::app::ProviderLaunchProcessRuntime::new(self.app)
                 .poll_exit(provider_run_id)?
-                .is_some()
-        {
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "submit Claude headless prompt",
-                message: CLAUDE_HEADLESS_EARLY_EXIT.to_string(),
-            });
+            {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "submit Claude headless prompt",
+                    message: crate::provider::provider_exit_before_delivery_message(
+                        &exit.termination_at(unix_epoch_ms()),
+                        exit.terminal_diagnostic.as_deref(),
+                    ),
+                });
+            }
         }
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?

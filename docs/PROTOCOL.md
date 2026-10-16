@@ -2928,6 +2928,22 @@ Workflow trigger and deployment direction:
   on the Unix socket gets `kernel_access_human_only`, EXT-UX-05): it is not
   audited and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
+- MP-08 / MP-10 / MP-11, protocol 538 (peer 146): every
+  `passkey_prompts_changed` projection also includes `kernel_now_ms` and
+  `closed`. Each closure identifies a previously projected `session_id`,
+  `interaction_id`, `kind`, and `expires_at_ms`, with the kernel's explicit
+  `reason`: `expired`, `answered`, or `revoked`. Closures are scoped to the
+  subscription's authenticated owner and never replayed. Clients anchor
+  countdowns to kernel time plus monotonic elapsed time, and show expiry
+  notices from the authoritative closure rather than inferring why a request
+  disappeared. Reconnect starts with the current set and no historical toasts.
+  Sudo interactions and their passkey prompts carry optional `sudo_request`:
+  `requester_name`, `agent_name`, `session_name`, `task_summary`, full `task`,
+  optional `grant_id`, and `terminal_id`. These are presentation facts, never
+  authority. The default view shows names and the short quoted task; full task
+  text and identifiers stay inside bounded, scrollable Details. External sudo
+  also projects the OS-established `requester`. Authority and answers remain
+  on the existing pending interaction and fresh-passkey path.
 - protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
   It is projected as a popup to every terminal connected as its owner,

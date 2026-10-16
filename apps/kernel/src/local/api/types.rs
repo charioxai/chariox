@@ -282,4 +282,5 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// MP-08 / MP-11: version 538 adds typed sudo presentation and authoritative approval closure/time.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 538;
