@@ -4,63 +4,30 @@ use crate::durable_state::agent_lifecycle::{
     goals::{self, Assessment},
     ExecutionState,
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
-#[derive(Clone, Default)]
-pub(super) struct AssessmentResults(Arc<std::sync::Mutex<BTreeMap<(String, String), ResultCell>>>);
-struct ResultCell {
-    prompt: String,
-    run: String,
-    expires: Instant,
-    bytes: Zeroizing<Vec<u8>>,
-    overflow: bool,
-}
-impl AssessmentResults {
-    fn append(&self, room: &str, agent: &str, prompt: &str, run: &str, bytes: &[u8]) {
-        let mut cells = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        cells.retain(|_, cell| cell.expires > Instant::now());
-        let key = (room.to_string(), agent.to_string());
-        if !cells.contains_key(&key) && cells.len() >= 128 {
-            return;
-        }
-        let cell = cells.entry(key).or_insert_with(|| ResultCell {
-            prompt: prompt.into(),
-            run: run.into(),
-            expires: Instant::now() + Duration::from_secs(60),
-            bytes: Zeroizing::new(Vec::new()),
-            overflow: false,
-        });
-        if cell.prompt != prompt || cell.run != run {
-            *cell = ResultCell {
-                prompt: prompt.into(),
-                run: run.into(),
-                expires: Instant::now() + Duration::from_secs(60),
-                bytes: Zeroizing::new(Vec::new()),
-                overflow: false,
-            };
-        }
-        if cell.overflow {
-            return;
-        }
-        if cell.bytes.len().saturating_add(bytes.len()) > goals::RESULT_LIMIT {
-            cell.bytes = Zeroizing::new(Vec::new());
-            cell.overflow = true;
-        } else {
-            cell.bytes.extend_from_slice(bytes);
-        }
-    }
-    fn take(&self, room: &str, agent: &str, prompt: &str, run: &str) -> Option<Zeroizing<Vec<u8>>> {
-        let mut cells = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let key = (room.into(), agent.into());
-        let cell = cells.get(&key)?;
-        if cell.prompt != prompt || cell.run != run {
-            return None;
-        }
-        let cell = cells.remove(&key)?;
-        (!cell.overflow && cell.expires > Instant::now()).then_some(cell.bytes)
-    }
-}
+mod cache;
+pub(super) use cache::AssessmentResults;
 impl KernelRuntimeOwnedState {
+    pub(super) fn private_evidence_for_dispatch(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+        origin: crate::session::PromptOrigin,
+        steering: bool,
+    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
+        if origin == crate::session::PromptOrigin::CompletionCheck {
+            self.take_private_assessment_evidence(room, agent, prompt, run)
+        } else {
+            if !steering && self.config_projection.snapshot().room_agent_tools {
+                self.private_work_results
+                    .begin_work(room, agent, prompt, run);
+            }
+            None
+        }
+    }
     pub(super) fn collect_private_assessment(
         &self,
         room: &str,
@@ -81,15 +48,28 @@ impl KernelRuntimeOwnedState {
         else {
             return;
         };
-        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
-            return;
-        }
         let Ok(tasks) = self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
         else {
             return;
         };
+        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
+            if tasks.iter().any(|t| {
+                t.state == ExecutionState::Working
+                    && t.prompt_id == prompt.id()
+                    && t.provider_run_id.as_deref() == Some(&output.provider_run_id)
+            }) {
+                self.private_work_results.append_work(
+                    room,
+                    agent,
+                    prompt.id(),
+                    &output.provider_run_id,
+                    &output.bytes,
+                );
+            }
+            return;
+        }
         if !tasks.iter().any(|task| {
             task.state == ExecutionState::Working
                 && task.prompt_id == prompt.id()
@@ -105,6 +85,46 @@ impl KernelRuntimeOwnedState {
             &output.provider_run_id,
             &output.bytes,
         );
+    }
+    pub(super) fn take_private_assessment_evidence(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
+        let task = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))
+            .ok()?
+            .into_iter()
+            .find(|t| {
+                t.state == ExecutionState::Working
+                    && t.prompt_id == prompt
+                    && t.provider_run_id.as_deref() == Some(run)
+                    && goals::is_check(t, prompt)
+            })?;
+        let check = crate::durable_state::agent_lifecycle::completion::evaluation(&task)?;
+        let work_run = check.work_provider_run_id.as_deref()?;
+        if work_run != run || work_run.starts_with("leased:") {
+            return None;
+        }
+        let bytes = self
+            .private_work_results
+            .take(room, agent, &check.work_prompt_id, work_run)?;
+        if !self.room_secret_observations.protects_bytes(room) {
+            return None;
+        }
+        let text = std::str::from_utf8(&bytes).ok()?.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let text = self
+            .room_secret_observations
+            .scrub(room, text.to_string())
+            .ok()?;
+        let text = crate::secret_redaction::redact_secrets(&text);
+        crate::prompt_assembly::AssessmentEvidence::new(serde_json::json!({"task_id":task.task_id,"work_prompt_id":check.work_prompt_id,"provider_run_id":work_run,"complete":true,"provider_assistant_result":text}).to_string())
     }
     pub(super) fn take_private_assessment(
         &self,

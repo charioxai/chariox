@@ -27,6 +27,10 @@ pub(super) fn execute_assessment(
         crate::durable_state::agent_lifecycle::goals::CHECK_BOUND_MS,
     );
     let policy = ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery;
+    let private_prompt = envelope.private_assessment_prompt();
+    let input = private_prompt
+        .as_ref()
+        .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let output = if assessment.adapter_key() == "claude" {
         super::command_execution::execute_utility_command(
             registry, assessment, envelope, timeout, policy,
@@ -34,7 +38,7 @@ pub(super) fn execute_assessment(
     } else {
         crate::provider::run_blocking_provider_utility_prompt(
             &assessment,
-            &envelope.visible_user_prompt,
+            input,
             &envelope.hidden_system_context,
             timeout,
             "completion assessment",
