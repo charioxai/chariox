@@ -10,7 +10,12 @@ successful restoration, instead of immediately forcing another readback while
 the same fence is active. Overlapping captures must all restore; a failed
 restoration keeps the fence closed. A later source start may repeat the original
 restoration proof; only its success closes that failed interval, and old pixels
-remain excluded. Closing either source cancels its pending readback retry.
+remain excluded. Closing either source cancels its pending readback retry. A warm screenshot
+restoration reuses the existing CDP owner's live connection/session/loader and
+isolated focus world. The same two-animation-frame proof still runs; replacement
+of either the frame reference or world keeps the fence closed. A retry resolves
+the current owner again. Cold or mismatched bindings retain fresh discovery;
+there is no parallel document cache or relaxation of the pixel predicate.
 
 Visible-page previews also reuse the mirror's live connection/session/loader
 reference before native admission. Replacing that reference retires the lease,

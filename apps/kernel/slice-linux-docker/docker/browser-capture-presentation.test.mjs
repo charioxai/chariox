@@ -58,3 +58,34 @@ test('MP-08/MP-10/MP-11 a failed restoration recovers only after repeating its o
  const cancel=fence.whenStable(()=>{wakes++});clock=200;await assert.rejects(fence.recoverFailed(),/temporarily busy/);assert.equal(fence.stable(1000),false);assert.equal(wakes,0);
  restored=true;clock=300;await Promise.all([fence.recoverFailed(),fence.recoverFailed()]);clock=302;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(proofs,3,'concurrent starts share one proof');assert.equal(wakes,1);assert.equal(fence.stable(302),true);assert.equal(fence.stable(250),false,'pixels from the failed interval remain excluded');cancel();
 });
+
+// MP-08/MP-10/MP-11: restoration reuses the same event-owned document, never a stale context.
+function ownedPresentation(connection) {
+ let frame={connection,sessionId:'session',frame:{id:'top',loaderId:'doc'}};
+ const owner={connection,targetsBySession:new Map([['session','target']]),focusWorldsByTarget:new Map([['target',{documentId:'doc',contextId:7}]]),currentPageFrame:()=>frame};
+ return {owner,replace:()=>{frame={...frame};owner.focusWorldsByTarget.set('target',{documentId:'doc',contextId:8});}};
+}
+test('MP-08/MP-10/MP-11 warm screenshot restoration uses the live owner world without renderer discovery',async()=>{
+ const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate')return {result:{value:true}};assert.fail('no renderer discovery: '+method);}};
+ fenceScreenshotPresentation(connection);const {owner}=ownedPresentation(connection);connection.presentationFence.bindOwner(owner);
+ assert.deepEqual(await connection.send('Page.captureScreenshot',{},'session'),{data:'png'});
+ assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Runtime.evaluate']);assert.equal(sent[1].params.contextId,7);
+});
+test('MP-11 same-loader owner replacement cannot prove restoration; recovery resolves the new trusted world',async()=>{
+ const proof=deferred(),contexts=[];let first=true;
+ const connection={send:async(method,params)=>{if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate'){contexts.push(params.contextId);if(first){first=false;return proof.promise;}return {result:{value:true}};}assert.fail('no renderer discovery: '+method);}};
+ fenceScreenshotPresentation(connection);const {owner,replace}=ownedPresentation(connection),fence=connection.presentationFence;fence.bindOwner(owner);
+ const capture=connection.send('Page.captureScreenshot',{},'session');await new Promise(resolve=>setImmediate(resolve));replace();proof.resolve({result:{value:true}});
+ await assert.rejects(capture,/presentation owner retired/);const old=fence.intervals[0].start;assert.equal(fence.stable(Date.now()+100),false);
+ await fence.recoverFailed();assert.deepEqual(contexts,[7,8]);assert.equal(fence.stable(old),false);assert.equal(fence.stable(Date.now()+100),true);
+});
+
+test('MP-11 a foreign session, connection, document or invalid world uses fresh isolated discovery',async()=>{
+ for(const kind of ['session','connection','document','context']){
+  const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'top'}}};if(method==='Page.createIsolatedWorld')return {executionContextId:3};if(method==='Runtime.evaluate')return {result:{value:true}};return {data:'png'};}};
+  const {owner}=ownedPresentation(connection),frame=owner.currentPageFrame(),world=owner.focusWorldsByTarget.get('target');
+  if(kind==='session')frame.sessionId='foreign';if(kind==='connection')frame.connection={};if(kind==='document')world.documentId='old';if(kind==='context')world.contextId=0;
+  fenceScreenshotPresentation(connection);connection.presentationFence.bindOwner(owner);await connection.send('Page.captureScreenshot',{},'session');
+  assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Page.getFrameTree','Page.createIsolatedWorld','Runtime.evaluate'],kind);assert.equal(sent.at(-1).params.contextId,3);
+ }
+});

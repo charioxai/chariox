@@ -2,6 +2,7 @@
 // window. Admit native pixels only outside capture and compositor restoration.
 export class CapturePresentationFence {
   constructor(now = Date.now) { this.now = now; this.intervals = []; this.floor = -Infinity; this.waiters = new Set(); }
+  bindOwner(owner, timing) { this.owner = owner; this.timing = timing; }
   stable(start, end = start) {
     return Number.isFinite(start) && Number.isFinite(end) && end >= start && start > this.floor &&
       this.intervals.every(interval => end < interval.start || start > interval.end);
@@ -49,19 +50,38 @@ export class CapturePresentationFence {
   }
 }
 
+// The existing CDP owner is the authority; no separate session/document cache.
+function presentationWorld(owner, connection, sessionId) {
+  const target = owner?.targetsBySession?.get(sessionId), frame = target && owner.currentPageFrame?.(target);
+  const world = target && owner.focusWorldsByTarget?.get(target);
+  if (owner?.connection !== connection || !frame || frame.connection !== connection || frame.sessionId !== sessionId ||
+      typeof frame.frame.loaderId !== 'string' || !frame.frame.loaderId || !world || world.documentId !== frame.frame.loaderId || !Number.isSafeInteger(world.contextId) || world.contextId <= 0) return null;
+  return { contextId: world.contextId, current: () => owner.connection === connection && owner.currentPageFrame(target) === frame &&
+    owner.focusWorldsByTarget.get(target) === world && world.documentId === frame.frame.loaderId };
+}
+
 export function fenceScreenshotPresentation(connection) {
   const send = connection.send.bind(connection), fence = new CapturePresentationFence();
   connection.presentationFence = fence;
   connection.send = (method, params, sessionId, options) => method !== 'Page.captureScreenshot' ? send(method, params, sessionId, options) :
     fence.run(() => send(method, params, sessionId, options), async () => {
-      const { frameTree } = await send('Page.getFrameTree', {}, sessionId);
-      const { executionContextId } = await send('Page.createIsolatedWorld', {
-        frameId: frameTree.frame.id, worldName: 'chariox-capture-presentation',
-      }, sessionId);
-      const { result } = await send('Runtime.evaluate', { contextId: executionContextId, awaitPromise: true, returnByValue: true,
-        expression: 'new Promise(resolve => { setTimeout(() => resolve(false), 1000); requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))); })',
-      }, sessionId);
-      if (result?.value !== true) throw Error('MP-08/MP-10: screenshot presentation did not restore');
+      const at = performance.timeOrigin + performance.now(), proof = presentationWorld(fence.owner, connection, sessionId);
+      fence.timing?.event?.('capture_presentation_owner', { warm: Number(Boolean(proof)) });
+      try {
+        let contextId = proof?.contextId;
+        if (!proof) {
+          const { frameTree } = await send('Page.getFrameTree', {}, sessionId);
+          const { executionContextId } = await send('Page.createIsolatedWorld', {
+            frameId: frameTree.frame.id, worldName: 'chariox-capture-presentation',
+          }, sessionId);
+          contextId = executionContextId;
+        }
+        const { result } = await send('Runtime.evaluate', { contextId, awaitPromise: true, returnByValue: true,
+          expression: 'new Promise(resolve => { setTimeout(() => resolve(false), 1000); requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))); })',
+        }, sessionId);
+        if (proof && !proof.current()) throw Error('MP-11: screenshot presentation owner retired');
+        if (result?.value !== true) throw Error('MP-08/MP-10: screenshot presentation did not restore');
+      } finally { fence.timing?.('capture_presentation_restore', at); }
     });
 }
 

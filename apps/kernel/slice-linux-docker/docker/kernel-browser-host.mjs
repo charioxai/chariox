@@ -185,6 +185,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
