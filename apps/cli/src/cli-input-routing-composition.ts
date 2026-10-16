@@ -460,33 +460,35 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
     isAttached: deps.isAttached,
-    startSessionFromWaitingRoomDefaults: async () => {
-      if (pendingNewProjectName) {
-        const name = deps.promptTextController.currentText().trim()
-        if (!name) { deps.flashFooter("Enter a project name", "error"); return false }
-        pendingNewProjectName = false
-        deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
-        deps.promptTextController.setText("")
-        deps.promptInputRefController.blur?.()
-        deps.rebuildTranscript()
-        return false
-      }
-      if (pendingProjectRenameId) {
-        const projectId = pendingProjectRenameId
-        pendingProjectRenameId = null
-        const name = deps.promptTextController.currentText().trim()
-        await deps.renameWaitingRoomProject(projectId, name)
-        deps.promptTextController.setText("")
-        return false
-      }
-      return deps.startSessionFromWaitingRoomDefaults()
-    },
+    startSessionFromWaitingRoomDefaults: deps.startSessionFromWaitingRoomDefaults,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
   })
 
+  const submitProjectNameEntry = async (rawPrompt: string) => {
+    if (pendingNewProjectName) {
+      const name = rawPrompt.trim()
+      if (!name) { deps.flashFooter("Enter a project name", "error"); return true }
+      pendingNewProjectName = false
+      deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
+      deps.promptTextController.setText("")
+      deps.promptInputRefController.blur?.()
+      deps.rebuildTranscript()
+      return true
+    }
+    if (pendingProjectRenameId) {
+      const projectId = pendingProjectRenameId
+      pendingProjectRenameId = null
+      await deps.renameWaitingRoomProject(projectId, rawPrompt.trim())
+      deps.promptTextController.setText("")
+      return true
+    }
+    return false
+  }
+
   const promptSubmitCoordinator = createPromptSubmitCoordinator({
+    submitProjectNameEntry,
     getPromptText: deps.promptInputRefController.plainText,
     ensureBackgroundPollersStarted: () => deps.ensureBackgroundPollersStarted(),
     getPendingAttachmentCount: () => deps.pendingAttachments().length,

@@ -71,6 +71,14 @@ test("prompt submit coordinator lets handled slash commands stop routing", async
   assert.deepEqual(harness.calls(), ["ensure", "slash:/session list"])
 })
 
+test("prompt submit coordinator lets an active project-name entry consume slash-looking text first", async () => {
+  const harness = createHarness({ promptText: "/stop", attached: false, nameEntryHandled: true, slashHandled: true, detachedSlashHandled: true })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "name-entry:/stop"])
+})
+
 test("prompt submit coordinator allows slash commands on workflow screen", async () => {
   const harness = createHarness({ promptText: "/session list", workflowScreen: true, slashHandled: true })
 
@@ -170,6 +178,7 @@ function createHarness(options: {
   workflowScreen?: boolean
   instructionsEditorOpen?: boolean
   slashHandled?: boolean
+  nameEntryHandled?: boolean
   providerHandled?: boolean
   attached?: boolean | (() => boolean)
   detachedSlashHandled?: boolean
@@ -197,6 +206,11 @@ function createHarness(options: {
       clearCount += 1
     },
     workflowScreenShowing: () => options.workflowScreen ?? false,
+    submitProjectNameEntry: async (rawPrompt) => {
+      if (!options.nameEntryHandled) return false
+      calls.push(`name-entry:${rawPrompt}`)
+      return true
+    },
     submitWorkspaceShellCommand: async (rawPrompt) => {
       calls.push(`workspace:${rawPrompt}`)
       if (options.submitWorkspaceShellCommand) {
