@@ -12,7 +12,7 @@ for(const mode of ['next','window','push'])test(`MP-08/MP-10 ${mode} publishes h
  };
  const document=Object.assign(new EventTarget(),{hidden:true}),canvas={width:1,height:1,ownerDocument:document,getContext:()=>({drawImage(){}})};
  let listener,first=true;const accepted=[],shown=[],ops=[];
- const transport={kernelProtocolVersion:mode==='push'?475:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},
+ const transport={kernelProtocolVersion:mode==='push'?491:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{}},
   ...(mode==='push'?{subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{}}:{}),
   request:async({KernelBrowser:{command}})=>{
    ops.push(command);

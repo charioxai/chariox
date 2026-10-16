@@ -1121,7 +1121,11 @@ chunks; the ciphertext is never decrypted or inspected by the relay.
 
 A socket admits at most four active transfers and 128 MiB of aggregate declared
 assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
-bytes. IDs increase in first-wire-write order, not completion order; an earlier
+bytes. Completed wire writes release their assembly/lane slots immediately;
+their exact outstanding receipts retain byte credit in the shared window. A
+completed message awaiting its receipt is not an unfinished assembly. This
+keeps small events and replies pipelined across the RTT within the same limits.
+IDs increase in first-wire-write order, not completion order; an earlier
 active stream may finish after a later one. Unknown/reused IDs, changed totals,
 overlapping offsets, unknown fields, nested transport frames and invalid
 checkpoints close the connection without including payloads in errors.
@@ -4156,3 +4160,41 @@ durable hidden context never receive it. Missing, expired, oversized or unbound
 results fail closed; protected leased results unavailable at home cannot establish
 success. No native-thread/workspace/tool authority is inherited. The kernel-private
 structured response and public receipt/terminal/history privacy fences still apply.
+
+### MP-08 / MP-10 / MP-11: visible-page default display (536 / peer 144)
+
+On the kernel-owned desktop, a default Browser `display_subscribe` (without
+`target`) returns the existing region binding for the visible page content.
+The kernel intersects its current Chrome page rectangle with trusted live CDP
+content bounds and rounds inward to even device pixels, excluding native
+scrollbars. It never resizes Chrome or the shared desktop. The response's
+`css_width`, `css_height` and `device_scale_factor` are authoritative, including
+when the issued density differs from the viewer's offer. Input carries the
+returned `binding_id` and `sequence` through the ordinary display input ledger.
+CaptureVisibleRegion uses the same observer's current protected crop.
+All live active-Tab, document, window, Vault and exact-RGB checks still apply.
+Explicit region and Chrome UI targets retain their existing contract.
+This default-crop activation requires local536 / peer144; full-viewport
+producers on hosts without the owned desktop retain their negotiated geometry.
+
+### MP-08 / MP-10 / MP-11: timed display acknowledgements (536 / peer 144)
+
+The same unreleased allocation additively admits optional `held_ms` on
+`display_ack`: an integer receipt-to-ACK hold time in milliseconds (bounded by
+60000 by the viewer). A successful ACK advertises `ack_timing: true`. The
+viewer requires that capability and local protocol >=536 before sending the
+optional field; older kernels retain their original ACK shape. The receiver
+clock starts before local CXR1 conversion/decryption, and holds include time
+waiting to decode, present or send a bounded outstanding ACK. Frame clocks
+stay local and never become relay or session authority.
+
+The kernel subtracts a valid hold from the matching frame's send-to-ACK age
+when estimating ACK transport RTT. This still includes transport processing;
+the latency acceptance gate uses its separately measured wire RTT. A hold
+larger than the frame age cannot create a zero RTT sample. Untimed clients retain their existing allowance; timed clients
+use one observed frame interval plus recent RTT jitter. ACK requests pipeline
+within an eight-request bound and retain the newest pending sequence and any
+recovery request. Sender/generation admission, lease renewal and protected
+frame publication keep their existing paths. `browser-visible-page-536.json`
+pins the additive request and ACK capability response. See the display region
+drill for required real-path checks; source regressions do not close acceptance.

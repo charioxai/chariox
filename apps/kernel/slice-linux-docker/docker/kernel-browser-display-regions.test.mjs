@@ -4,21 +4,21 @@ import {subscribeRegion, regionInput, regionInputTarget} from './kernel-browser-
 
 function fixture(kind='region') {
  const tab={tab_id:'t',target_id:'target',document_id:'doc'},calls=[];
- let alive=true;
+ let alive=true,front='target';
  const lease={binding_id:'opaque',tab_id:'t',generation:2,document_id:'doc',sequence:3,input_epoch:3,
   rect:{x:10,y:20,width:100,height:50},element_offset:{x:0,y:0},device_scale_factor:2,
   isAlive:()=>alive,isCurrent:async()=>{calls.push('live');return alive;},close:async()=>{alive=false;},
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
- const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,page_rect:{left:0,top:174,width:2560,height:1600},scale:2,isCurrent:()=>alive,isPageCurrent:async()=>alive};
+ const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,page_rect:{left:0,top:174,width:2560,height:1600},scale:2,isCurrent:()=>alive,isPageCurrent:async target=>alive&&(target===undefined||target===front)};
  const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
   chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
   mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
-  arbiter:{isActiveTab:async()=>true},chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),resolve:async()=>{throw Error("MP-11 viewer must not mutate the window binding")},band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
+  arbiter:{isActiveTab:async tab=>tab.target_id===front},chromeWindows:{current:()=>({tabbed:binding,auxiliary:[]}),resolve:async()=>{throw Error("MP-11 viewer must not mutate the window binding")},band:()=>({surface:'browser_chrome',window:{id:42,width:2560,height:1774},rect:{left:0,top:0,width:2560,height:174},contentHeight:1600,isCurrent:()=>alive})}};
  class Capture {constructor(options){this.options=options;this.region={css_width:options.rect.width/2,css_height:options.rect.height/2};calls.push(options);}async start(){return this;}async close(){calls.push('close');} valid(){return alive;}}
  const command={op:'display_subscribe',tab_id:'t',generation:2,codecs:['png','avc1.420033'],bitrate:2_000_000,device_scale_factor:1,
   target:kind==='region'?{kind,mirror_subscription_id:'mirror',document_id:'doc',sequence:3,region_id:'n1'}:{kind,window_generation:7}};
- return {host,tab,lease,binding,calls,command,Capture,retire:()=>{alive=false;}};
+ return {host,tab,lease,binding,calls,command,Capture,activate:target=>{front=target;},retire:()=>{alive=false;}};
 }
 test('MP-08/MP-11 §2a lease supplies crop; viewer density never selects geometry',async()=>{
  const f=fixture();f.command.codecs.push('chariox-stripes-v1');const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
@@ -90,19 +90,22 @@ test('MP-11 capture rejected after async geometry retirement leaves no display',
 test('MP-08/MP-11 actual credit and frame path uses crop/window lifetime; retires before delivery',async()=>{
  const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
  const {DisplayStream}=await import('./kernel-browser-display.mjs');
- let current=true,checks=0;
+ let current=true,admitted=true,checks=0;
  const tab={tab_id:'t',target_id:'target',document_id:'window-2-7'},policy={unknown:false};
  const sample={serial:1,tab_id:'t',document_id:tab.document_id,raw:{},width:200,height:100,motion:true,data_base64:'signature',encoded:{key:true,data_base64:'YWJj'}};
  const source={native:true,attested:true,regionRevision:0,policy,tab,closed:false,valid:()=>true,allowed:()=>true,sample:()=>sample};
  const stream=new DisplayStream({subscription_id:'s',tab_id:'t',codec:'avc1.420033',bitrate:2_000_000,device_scale_factor:2,css_width:100,css_height:50,dependencies:true},{encoder:{close:async()=>{}},wait:async()=>{}});
- const producer={source,feedback(){},retireUnsent(){},invalidate(){},take:()=>sample,close:async()=>{}};
- Object.assign(stream,{regionSource:source,regionLease:{isAlive:()=>current},regionCurrent:async()=>{checks++;return current;},regionWindow:{isCurrent:()=>current},compositorRegionRevision:0,producer,
+ const producer={source,frames:[],feedback(){},retireUnsent(){},invalidate(){},take:()=>sample,close:async()=>{}};
+ Object.assign(stream,{regionSource:source,regionLease:{isAlive:()=>current},regionCurrent:async()=>{checks++;return current&&admitted;},regionWindow:{isCurrent:()=>current},compositorRegionRevision:0,producer,
   refinerDocument:tab.document_id,refiner:{request:()=>null,invalidate(){},close:async()=>{}}});
  const host={generation:2,protection:policy,compositors:new Map(),inputEpochs:new Map(),inputChangedAt:new Map(),timing:()=>{},compositorFor:async()=>source,
   displayTarget:()=>{throw Error('band must not acquire a page document');}};
  try {
   const result=await displayCredit(host,stream,{generation:2,after_sequence:0,push:{congested:false}});
-  assert.equal(result.frame_sent,true);assert.equal(result.display_frame.document_id,tab.document_id);assert.equal(result.display_frame.width,200);assert.equal(result.display_frame.css_width,100);assert(checks>=2);
+  assert.equal(result.frame_sent,true);assert.equal(result.display_frame.document_id,tab.document_id);assert.equal(result.display_frame.width,200);assert.equal(result.display_frame.css_width,100);assert.equal(checks,1,'MP-08/MP-10/MP-11 one final fresh region query per delivered credit');
+  sample.serial=2;host.compositorFor=async()=>{admitted=false;return source};
+  const retired=await displayCredit(host,stream,{generation:2,after_sequence:1,push:{congested:false}});
+  assert.equal(retired.frame_sent,false);assert.equal(stream.sequence,1);assert.equal(checks,2,'retirement during preparation is checked fresh before delivery');
   current=false;await assert.rejects(displayCredit(host,stream,{generation:2,after_sequence:1}));assert.equal(stream.sequence,1);
  }finally{await stream.close();}
 });
@@ -110,7 +113,7 @@ test('MP-11 page region refuses a missing or changed owner native active-tab fen
  const f=fixture();delete f.host.arbiter;
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}));assert.equal(f.host.displays.size,0);
  const g=fixture();await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture});
- const s=[...g.host.displays.values()][0];g.host.arbiter.isActiveTab=async()=>false;
+ const s=[...g.host.displays.values()][0];g.activate('foreign');
  assert.equal(await s.regionCurrent(),false);await assert.rejects(regionInput(g.host,{op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}},'terminal:a'));await s.close();
 });
 
@@ -231,4 +234,44 @@ test('MP-11 the omnibox dropdown over the page binds the active Tab for masks an
  await s.close();
  const g=fixture('browser_auxiliary');Object.assign(g.host.chromeWindows,f.host.chromeWindows);g.host.arbiter={activeTab:async()=>null,isActiveTab:async()=>false};g.command.target.auxiliary_id=9;
  await assert.rejects(subscribeRegion(g.host,g.command,'terminal:a',undefined,{Capture:g.Capture}),'no confirmed active Tab: refused');
+});
+
+test('MP-08/MP-10/MP-11 concurrent native starts reserve the bounded display capacity',async()=>{
+ const f=fixture('browser_chrome'),release=Promise.withResolvers(),entered=Promise.withResolvers();let starting=0;
+ class Capture extends f.Capture {async start(){if(++starting===8)entered.resolve();await release.promise;return this;}}
+ const pending=Array.from({length:8},()=>subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}));
+ try{
+  await entered.promise;
+  const ninth=subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}).then(()=>null,e=>e);
+  const result=await Promise.race([ninth,new Promise(r=>setTimeout(()=>r(null),100))]);
+  assert(result instanceof Error,'pending native starts must count against the eight-display limit');
+ }finally{
+  release.resolve();await Promise.allSettled(pending);await new Promise(r=>setImmediate(r));
+  for(const s of [...f.host.displays.values()])await s.close();
+ }
+ const next=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ assert(next.subscription_id);for(const s of [...f.host.displays.values()])await s.close();
+});
+
+for(const change of ['cancel','policy','active-tab'])test(`MP-11 pending native readiness retires on ${change} before registration`,async()=>{
+ const f=fixture(),entered=Promise.withResolvers(),release=Promise.withResolvers(),abort=new AbortController();
+ class Capture extends f.Capture {async start(){entered.resolve();await release.promise;return this;}}
+ const ready=subscribeRegion(f.host,f.command,'terminal:a',abort.signal,{Capture});
+ await entered.promise;
+ if(change==='cancel')abort.abort();
+ if(change==='policy')f.host.protection={unknown:false};
+ if(change==='active-tab')f.activate('foreign');
+ release.resolve();await assert.rejects(ready);assert.equal(f.host.displays.size,0);assert(f.calls.includes('close'));
+});
+
+test('MP-08/MP-10/MP-11 one native viewport query proves both page geometry and active target',async()=>{
+ const f=fixture();await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=[...f.host.displays.values()][0],query=f.binding.isPageCurrent,active=f.host.arbiter.isActiveTab;
+ let reads=0,activeReads=0,requested;
+ f.binding.isPageCurrent=async target=>{reads++;requested=target;return query(target)};
+ f.host.arbiter.isActiveTab=async(...args)=>{activeReads++;return active(...args)};
+ try{
+  assert.equal(await stream.regionCurrent(),true);assert.equal(reads,1);assert.equal(requested,'target');assert.equal(activeReads,0);
+  f.activate('foreign');assert.equal(await stream.regionCurrent(),false,'the same fresh native query refuses a different active Tab');
+ }finally{await stream.close()}
 });

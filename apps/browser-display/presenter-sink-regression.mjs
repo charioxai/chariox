@@ -46,7 +46,7 @@ try{
     }
     await encoder.flush();encoder.close();
     let nextFrame;
-    const transport={kernelProtocolVersion:push?475:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{};},
+    const transport={kernelProtocolVersion:push?491:466,displayEventEncoding:'CXD1',onEvent:fn=>{listener=fn;return()=>{};},
      ...(push?{subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{}}:{}),
      request:async({KernelBrowser:{command}})=>{
       ops.push(command);

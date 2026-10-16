@@ -33,21 +33,25 @@ const fold = async (id, tries = 100) => {
 };
 chrome.tabs.onCreated.addListener(tab => fold(tab.id).catch(() => {}));
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
+// MP-08/MP-10/MP-11: one fresh native query supplies active identity and
+// dimensions. Parallel read-only inventory never caches admission authority;
+// a newly created Tab absent from this inventory is refused until the next read.
+const activeViewport = async () => {
+  const [[normal], ids] = await Promise.all([chrome.windows.getAll({ windowTypes: ["normal"] }), targetTabs()]);
+  if (!normal) return null;
+  const [tab] = await chrome.tabs.query({ active: true, windowId: normal.id });
+  for (const [target, id] of ids) if (id === tab?.id) return {target_id: target, width: tab.width, height: tab.height};
+  return null;
+};
 globalThis.charioxTabs = {
   async viewport(target) {
-    if (target === undefined) target = await this.active();
+    if (target === undefined) return activeViewport();
     const id = (await targetTabs()).get(target);
     if (id === undefined) return null;
     const tab = await chrome.tabs.get(id);
     return {target_id: target, width: tab.width, height: tab.height};
   },
-  async active() {
-    const [normal] = await chrome.windows.getAll({ windowTypes: ["normal"] });
-    if (!normal) return null;
-    const [tab] = await chrome.tabs.query({ active: true, windowId: normal.id });
-    for (const [target, id] of await targetTabs()) if (id === tab?.id) return target;
-    return null;
-  },
+  async active() { return (await activeViewport())?.target_id ?? null; },
   async sync(groups) {
     const ids = await targetTabs(), grouped = new Set();
     for (const { target_ids, title, color } of groups) {

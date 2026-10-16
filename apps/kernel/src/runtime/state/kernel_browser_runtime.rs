@@ -12,6 +12,8 @@ pub(crate) enum KernelBrowserDisplayRequest {
     CaptureRegion {
         tab_id: String,
         generation: u64,
+        frame_width: u32,
+        frame_height: u32,
     },
     // Keep the protected legacy native stream seam for display adapters.
     #[allow(dead_code)]
@@ -586,8 +588,13 @@ impl KernelRuntimeState {
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
-            KernelBrowserDisplayRequest::CaptureRegion { tab_id, generation } => {
-                serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true})
+            KernelBrowserDisplayRequest::CaptureRegion {
+                tab_id,
+                generation,
+                frame_width,
+                frame_height,
+            } => {
+                serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true,"_capture_viewport":{"width":frame_width,"height":frame_height}})
             }
             KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
                 serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})

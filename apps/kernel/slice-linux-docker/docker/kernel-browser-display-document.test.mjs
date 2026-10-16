@@ -101,3 +101,12 @@ test('MP-11 clearing during target resolution cannot leak a late subscription',a
  const pending=f.cache.target(browser,f.stored);f.cache.clear();finish();
  await assert.rejects(pending,/unavailable/);assert.equal(f.observers.size,0);assert.equal(f.cache.entries.size,0);
 });
+
+test('MP-08/MP-10/MP-11 native input guard never promotes a different requested document',async()=>{
+ const f=fixture();try{
+  const valid=await f.cache.guard(f.browser,f.stored);assert.equal(valid(),true);
+  const stale=await f.cache.guard(f.browser,{...f.stored,document_id:'other'});assert.equal(stale(),false);
+  f.stored.document_id='promoted';assert.equal(valid(),false,'caller mutation cannot change the pinned request');
+  f.stored.document_id='a';f.event('Page.frameStartedLoading',{frameId:'root'});assert.equal(valid(),false);
+ }finally{f.cache.clear()}
+});

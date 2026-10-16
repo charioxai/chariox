@@ -93,7 +93,7 @@ export class ChromeWindows {
     const measure = async () => {
       const next = await host.tabGroups?.viewport();
       if (!next || ![...host.tabs.values()].some(tab => tab.target_id === next.target_id)) throw new UserDomainRefusal('stale_reference');
-      return nativePageRect(row, next, scale);
+      return {rect:nativePageRect(row, next, scale),target_id:next.target_id};
     };
     const pageRect = nativePageRect(row, viewport, scale);
     // The page origin remains exact, including odd rows and GTK side insets.
@@ -105,9 +105,10 @@ export class ChromeWindows {
     if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
     const windowGeneration = this.windowGeneration;
     const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
-    const isPageCurrent = async () => {
+    // MP-08/MP-10/MP-11: identity and geometry share one fresh native query.
+    const isPageCurrent = async target_id => {
       if (!isCurrent()) return false;
-      try { if (JSON.stringify(await measure()) === JSON.stringify(pageRect)) return isCurrent(); } catch {}
+      try { const next=await measure();if (JSON.stringify(next.rect) === JSON.stringify(pageRect)) return (target_id===undefined||next.target_id===target_id)&&isCurrent(); } catch {}
       // Rebind at the real geometry: no other path may notice (r13 union3: the band never came back).
       if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
       return false;

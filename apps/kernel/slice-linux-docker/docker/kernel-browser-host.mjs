@@ -1,3 +1,5 @@
+import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
+import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
@@ -47,7 +49,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport())
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    request.params?.op === 'state' && browser?.canReconcileConcurrently?.(viewport) === true)
+    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && request.params.target) && browser?.canReconcileConcurrently?.(viewport) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -629,7 +631,7 @@ export class KernelBrowserHost {
     for (const id of observed.keys()) if (!this.tabs.has(id)) observed.delete(id);
     return result;
   }
-  async request(command, { signal } = {}) {
+  async request(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
@@ -662,6 +664,8 @@ export class KernelBrowserHost {
         ?this.displaySessions.resume(command.subscription_id,scope,command.generation,binding)
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
+    // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return subscribeVisiblePage(this,command,scope,signal);
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
       return subscribeRegion(this,command,scope,signal);
@@ -701,7 +705,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
-      ? await this.displayTarget(command) : await this.target(command);
+      ? await this.displayTarget(command,nativeKeyDocumentTarget(this,command,scope,nativeDisplay)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
@@ -710,7 +714,7 @@ export class KernelBrowserHost {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
-    if (command.op === "display_subscribe") {
+    if (command.op === "display_subscribe") return reserveDisplay(this,async()=>{
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
@@ -726,7 +730,7 @@ export class KernelBrowserHost {
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
-    }
+    });
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
@@ -782,7 +786,7 @@ export class KernelBrowserHost {
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
-        this.compositors.get(tab.tab_id)?.source?.wake?.();
+        (nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
       };
       // MP-08/MP-11: before the page can see it, so every call it causes runs as the agent.
       if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
@@ -790,22 +794,22 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
         // admitted human viewer with a live display lease owns the fast path.
-        const viewerActive=()=>command._display_input===true&&!command._agent_input&&!command.focused_agent&&
-          [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
+        const viewerActive=()=>viewerPageInputActive(this,command,scope);
         // Protocol 530: a page drag is the person's, on a page they are watching.
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
-        const candidate=this.compositors.get(tab.tab_id)?.source;
+        const candidate=nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source;
         const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const documentCurrent=nativeKey&&command.input?.kind==='key'?await this.displayDocuments.guard(this.browser,tab):undefined;
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
         deferred?.ack?.catch(()=>{});
-        if(dispatched)this.compositors.get(tab.tab_id)?.source?.wake?.();
+        if(dispatched)(nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
         this.timing('cdp_input', at);
       }
       catch (error) {
@@ -823,7 +827,9 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const frame = command._capture_protection===true?await this.screenshot(tab,null,true):await this.displayScreenshot(tab);
+      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor;
+      const crop=hint&&(hint.width!==geometry.width*scale||hint.height!==geometry.height*scale);
+      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

@@ -87,12 +87,28 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-region-attestation.mjs"),
     ),
     (
+        "kernel-browser-display-admission.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-admission.mjs"),
+    ),
+    (
+        "kernel-browser-region-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-region-display.mjs"),
+    ),
+    (
         "kernel-browser-display-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-regions.mjs"),
     ),
     (
         "kernel-browser-native-readback.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-readback.mjs"),
+    ),
+    (
+        "kernel-browser-visible-page.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-visible-page.mjs"),
+    ),
+    (
+        "kernel-browser-page-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-page-display.mjs"),
     ),
     (
         "kernel-browser-native.mjs",
@@ -409,10 +425,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "browser-controller-input.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-input.mjs"),
-    ),
-    (
-        "browser-controller-image.mjs",
-        include_bytes!("../../slice-linux-docker/docker/browser-controller-image.mjs"),
     ),
     (
         "browser-controller-permissions.mjs",

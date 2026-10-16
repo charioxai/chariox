@@ -99,7 +99,10 @@ impl Transfer {
         }
     }
     fn finished(&self) -> bool {
-        self.binary.is_none() && self.offset == self.text.len() && self.waiting == 0
+        // MP-08/MP-10/MP-11: assembly/lane occupancy ends when all bytes are
+        // written in FIFO order, not a WAN receipt later. WireCredit retains
+        // every unacknowledged byte independently, including binary checkpoints.
+        self.binary.is_none() && self.offset == self.text.len()
     }
 }
 // Receipts follow wire order, including across transfer IDs. A later transfer's
@@ -117,15 +120,16 @@ impl WireCredit {
         if (id, offset) != (expected_id, expected_offset) {
             return false;
         }
-        let Some(transfer) = active.iter_mut().find(|t| t.id == id) else {
-            return false;
-        };
-        if transfer.waiting == 0 {
-            return false;
+        // A fully written transfer already released its assembly/lane slot.
+        // Only an exact receipt for the oldest written chunk can release credit.
+        if let Some(transfer) = active.iter_mut().find(|t| t.id == id) {
+            if transfer.waiting == 0 {
+                return false;
+            }
+            transfer.waiting -= 1;
         }
         self.pending.pop_front();
         self.bytes -= bytes;
-        transfer.waiting -= 1;
         true
     }
 }
@@ -341,7 +345,7 @@ pub(super) async fn run_writer<S, F>(
             tokio::task::yield_now().await;
             continue;
         }
-        if !open && pending.is_empty() && active.is_empty() {
+        if !open && pending.is_empty() && active.is_empty() && credit.pending.is_empty() {
             return;
         }
         // A closed receipt lane can no longer drain credit. Do not spin forever.
@@ -500,6 +504,77 @@ mod tests {
         assert!(!credit.receipt(1, 1, &mut active));
         assert!(credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 0);
+    }
+    // MP-08/MP-10/MP-11: a fully written small event must not consume an
+    // assembly lane until its receipt makes a WAN round trip. Only byte credit
+    // remains outstanding; all events keep wire order and the 64 KiB bound.
+    #[tokio::test]
+    async fn mp08_mp10_mp11_small_events_fill_wire_window_without_receipt_serialization() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(32);
+        let (_ack_tx, ack_rx) = mpsc::channel(32);
+        let (_ct, cr) = mpsc::channel(8);
+        for event_id in 1..=24 {
+            let header = crate::binary_event::EventHeader {
+                kind: "client_event".into(),
+                subscription_id: "display".into(),
+                event_id,
+                sender_public_key: "opaque".into(),
+                nonce: "abcdefghijklmnop".into(),
+            };
+            let bytes = crate::binary_event::encode(&header, &[7; 4096]).unwrap();
+            tx.send(Message::Binary(bytes.into())).await.unwrap();
+        }
+        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let mut wire = 0;
+        let mut ids = Vec::new();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        while let Ok(Some(Ok(message))) =
+            tokio::time::timeout(Duration::from_millis(150), client.next()).await
+        {
+            wire += message.len();
+            assert!(wire <= WINDOW_BYTES, "combined byte credit exceeded");
+            match message {
+                Message::Binary(bytes) => {
+                    let (h, _) = crate::binary_event::decode(&bytes).unwrap();
+                    ids.push(h.event_id);
+                }
+                Message::Text(text) => {
+                    receiver.receive(&text).unwrap();
+                }
+                _ => panic!("unexpected control"),
+            }
+        }
+        task.abort();
+        let _ = task.await;
+        assert!(
+            ids.len() > MAX_TRANSFERS,
+            "small messages stalled on receipt/assembly slots: {ids:?}"
+        );
+        assert!(
+            ids.len() < 24,
+            "byte window must stop an unacknowledged stream"
+        );
+        assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
+    }
+    #[test]
+    fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
+        let mut active = VecDeque::new();
+        let mut credit = WireCredit {
+            pending: VecDeque::from([(1, 10, 100), (2, 0, 200)]),
+            bytes: 300,
+        };
+        assert!(!credit.receipt(2, 0, &mut active));
+        assert_eq!(credit.bytes, 300);
+        assert!(!credit.receipt(1, 11, &mut active));
+        assert_eq!(credit.bytes, 300);
+        assert!(credit.receipt(1, 10, &mut active));
+        assert_eq!(credit.bytes, 200);
+        assert!(!credit.receipt(1, 10, &mut active));
+        assert_eq!(credit.bytes, 200);
+        assert!(credit.receipt(2, 0, &mut active));
+        assert_eq!(credit.bytes, 0);
+        assert!(!credit.receipt(3, 0, &mut active));
     }
     #[tokio::test]
     async fn mp08_mp10_mp11_small_binary_event_checkpoint_and_window_stop() {

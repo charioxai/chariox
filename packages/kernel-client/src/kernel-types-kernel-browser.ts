@@ -32,7 +32,7 @@ export type KernelBrowserCommand =
   // MP-08/MP-10/MP-11: fresh admission and delivery identity, same producer.
   | { op: "display_suspend" | "display_resume"; subscription_id: string; generation: number }
   // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
-  | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean }
+  | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean; held_ms?: number }
   | { op: "display_input"; binding_id?: string; sequence?: number; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }

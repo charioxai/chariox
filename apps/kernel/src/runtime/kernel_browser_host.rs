@@ -694,8 +694,14 @@ impl KernelBrowserHost {
         // MP-08/MP-10: an implicit/zero-wait credit can still wait for a
         // reset snapshot or CDP. It must leave the same input lane free.
         let mirror_credit = method == "host.browser" && params["op"] == "mirror_next";
+        // MP-08/MP-10/MP-11: native admission may wait for its first frame.
+        // Keep the same response/cancellation identity while input resolves
+        // its live target through this controller. Lease/policy checks remain
+        // before dispatch and after readiness, as for other observations.
+        let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
         let mut result = if display
             || mirror_credit
+            || display_subscribe
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")

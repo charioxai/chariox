@@ -558,13 +558,16 @@ test("MD-3 b220: cancelled pending input never inserts text", () => using(async 
   assert(!sent.some(call => call.method === "Input.insertText"));
 }));
 
-test("MD-3 b220: revocation between key transitions prevents further physical input", () => using(async ({ host, sent, connection }) => {
+test("MP-08/MP-11: revocation after a key press permits only its non-text release", () => using(async ({ host, sent, connection }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const cancel = new AbortController();
   connection.beforeSend = async (method, params) => { if (method === "Input.dispatchKeyEvent" && params.type === "keyDown") cancel.abort(); };
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "key", key: "Enter" } }, { signal: cancel.signal }), error => error.code === "browser_action_cancelled");
-  assert.equal(sent.filter(call => call.method === "Input.dispatchKeyEvent").length, 1);
+  const keys=sent.filter(call => call.method === "Input.dispatchKeyEvent");
+  assert.deepEqual(keys.map(call=>call.params.type),["keyDown","keyUp"]);
+  assert.equal(keys[1].params.text,undefined);
+  assert.equal(keys[1].params.unmodifiedText,undefined);
 }));
 
 test("MD-3 b220: input rejects replacement documents and missing observation binding", () => using(async ({ host, sent, pages }) => {
@@ -1440,7 +1443,8 @@ test('MP-11 an out-of-band Tab switch stops whole-page native readback and input
   // The real publish loop refuses the readback before masks, encoder offers or delivery.
   const published = [];
   const source = Object.assign(Object.create(LinuxCapture.prototype), { closed: false, attested: true, listeners: new Set([frame => published.push(frame)]),
-    pending: { raw: true, release() {} }, valid: () => true, validateCurrent: () => host.nativeFront(tabA), fence() { this.closed = true; this.pending = null; } });
+    connection:{},timing:()=>{},regionRevision:0,regions:{guard:{},beforeAt:0,regions:async()=>[],retire(){}},
+    pending: { captured_ms:1,get pixels(){assert.fail('inactive Tab pixels must not be read');},release() {} }, valid: () => !source.closed, validateCurrent: () => host.nativeFront(tabA), fence() { this.closed = true; this.pending = null; } });
   await source.publish();
   assert.equal(source.closed, true); assert.deepEqual(published, []);
   // Native input of the retired foreground falls back instead of clicking into Tab B.
@@ -1687,6 +1691,43 @@ test('Browser replies distinguish observation timeout from a retired subscriptio
   }
 }));
 
+test("MP-08/MP-10/MP-11 native subscription readiness does not hold input", { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: "open", url: "about:blank" });
+  host.browser.canReconcileConcurrently = () => true;
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, method, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method, params })}\n`);
+    return result.promise;
+  };
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const handle = host.handle.bind(host);
+  host.handle = async (request,options) => {
+    if(request.method==='host.browser'&&request.params?.op==='display_subscribe'){
+      entered.resolve();await release.promise;return {id:request.id,ok:true,result:{}};
+    }
+    return handle(request,options);
+  };
+  try {
+    const state = rpc(1, "host.browser", { op: "display_subscribe", target:{kind:"browser_auxiliary"} });
+    await entered.promise;
+    const typed = await Promise.race([
+      rpc(2, "host.browser", { op: "input", tab_id: opened.tab_id, generation: opened.generation,
+        document_id: opened.tabs[0].document_id, input: { kind: "text", text: "a" } }),
+      new Promise(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    assert.ok(typed?.ok, "input waited behind native subscription readiness");
+    assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
+    release.resolve();
+    const polled = await state;
+    assert.equal(polled.ok, true);
+  } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }
+}));
 
 // MP-08/MP-10/MP-11 review #1001 P1: no App, Vault or clipboard denial can stand in
 // for extension authority on the native Computer path. Inspect live, including unregistered Tabs.
@@ -1763,4 +1804,39 @@ test('MP-08/MP-11 a native page start re-resolves the band window it may have re
     assert.equal(source instanceof LinuxCapture, false, 'the refused native start falls back');
     assert.equal(resolves, 1, 'the window binding is re-resolved after the start');
   } finally { LinuxCapture.prototype.start = start; await host.closeCompositors(); await real.close(); }
+}));
+
+// MP-08/MP-10/MP-11:536's cropped page uses the ordinary admitted input path,
+// and the crop's native wheel instead of an instant CDP scroll fallback.
+test('MP-08/MP-10/MP-11 visible-page wheel reaches its admitted native source',()=>using(async({host,sent})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),wheels=[];
+ const source={attested:true,valid:()=>true,wheel:async(...args)=>{wheels.push(args);return true},wake(){}};
+ const stream={close:async()=>{},subscription_id:'page-crop',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
+ host.displays.set(stream.subscription_id,stream);let fronts=0;host.nativeFront=async()=>{fronts++;return true};
+ await inputVisiblePage(host,stream,{op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}},'terminal:a');
+ assert.deepEqual(wheels,[[10,20,0,1]]);assert(fronts>0,'fresh active Tab remains required');
+ assert.equal(sent.filter(c=>c.method==='Input.dispatchMouseEvent'&&c.params.type==='mouseWheel').length,0);
+ host.displays.delete(stream.subscription_id);
+}));
+
+// MP-08/MP-10/MP-11: the real host wiring reuses event-bound loader state.
+test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in host and input helper',()=>using(async({host,sent,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),keys=[];
+ const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},wake(){}};
+ const stream={close:async()=>{},subscription_id:'key-crop',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
+ host.displays.set(stream.subscription_id,stream);host.nativeFront=async()=>true;
+ const original=connection.send;connection.send=async(method,params,session)=>{
+  if(method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")){sent.push({method,params,session});return {result:{value:true}}}
+  return original(method,params,session);
+ };
+ const command={op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'key',key:'a'}};
+ try{
+  await inputVisiblePage(host,stream,command,'terminal:a');sent.length=0;keys.length=0;
+  await inputVisiblePage(host,stream,command,'terminal:a');
+  assert.deepEqual(keys,[[97,false]]);assert.equal(sent.filter(call=>call.method==='Page.getFrameTree').length,0);
+ }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));

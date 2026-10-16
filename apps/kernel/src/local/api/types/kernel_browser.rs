@@ -111,6 +111,10 @@ pub enum KernelBrowserCommand {
         generation: u64,
         sequence: u64,
         lost: bool,
+        /// MP-08/MP-10/MP-11: protocol 536 receiver hold time, excluded from
+        /// the pump's wire RTT. Absent keeps legacy gate semantics.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held_ms: Option<u32>,
     },
     DisplayInput {
         tab_id: String,

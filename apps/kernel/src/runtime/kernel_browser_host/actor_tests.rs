@@ -1485,3 +1485,74 @@ done
     );
     assert_eq!(note["observation"], json!({"text":"quote"}));
 }
+
+// MP-08/MP-10/MP-11: waiting for a native first frame must not hold the controller mutex.
+#[test]
+fn mp08_display_subscribe_in_flight_does_not_hold_input() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-subscribe-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"display_subscribe"'*)
+   printf 'started\n' > "$root/state"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"subscription_id":"native-crop"}}\n' "$id") & ;;
+ *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let state = || {
+        host.protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+    };
+    state().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let read = scope.spawn(|| host.protected_request("alice", None, "host.browser", json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1}), policy.clone()));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("state").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("state").exists());
+        let input = scope.spawn(|| {
+            tx.send(host.protected_request("alice", None, "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"key","key":"a"}}),
+                policy.clone())).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(500));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert!(read.join().unwrap().is_ok());
+        input.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        early.expect("input waited behind native subscription readiness").unwrap()["input_completed"],
+        true
+    );
+}

@@ -40,7 +40,7 @@ test('MP-11 only a kernel-resolved exact X window may disambiguate owned equal-s
 test('MP-11 async mirror geometry retirement precedes raster publication',async()=>{
  let checks=0,releases=0,encoded=0;
  const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
-  isCurrent:()=>true,validateCurrent:async()=>{checks++;return false;},policy:{},allowed:()=>true});
+  isCurrent:()=>true,validateCurrent:async()=>{checks++;return false;},connection:{},policy:{},allowed:()=>true});
  source.valid=()=>!source.closed;source.attested=true;
  source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
  source.pending={width:100,height:50,pixels:Buffer.alloc(100*50*4),captured_ms:1,serial:1,release:()=>{releases++;}};
@@ -195,15 +195,15 @@ test('MP-11 a dialog overlay retires its zero-offset frames when the attestation
  }finally{NativeRegionProtection.prototype.measure=measure;}
 });
 
-// Review #1016 @05a700a84 P1: a readback masked under the old projection can be suspended in publication's final
-// lease check while the attestation re-projects the masks; it must not become the latest frame when the check returns.
-test('MP-11 a readback masked before a mask re-projection is not published after the final lease check',async()=>{
- let release,checks=0,released=0,encoded=0;
+// MP-08/MP-10/MP-11 review #1016 P1: metadata completes before the one final
+// lease query. Re-projection during that query retires pixels before any mask read.
+test('MP-11 mask re-projection during the single final lease check retires held pixels before reading',async()=>{
+ let release,checks=0,released=0,encoded=0,pixelReads=0;
  const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
-  isCurrent:()=>true,validateCurrent:()=>++checks===2?new Promise(resolve=>{release=resolve;}):Promise.resolve(true),policy:{},allowed:()=>true,connection:{},tab:{tab_id:'t',document_id:'d'},timing:()=>{}});
+  isCurrent:()=>true,validateCurrent:()=>{checks++;return new Promise(resolve=>{release=resolve;})},policy:{},allowed:()=>true,connection:{},tab:{tab_id:'t',document_id:'d'},timing:()=>{}});
  source.valid=()=>!source.closed;source.attested=true;
  source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
- source.pending={width:100,height:50,pixels:Buffer.alloc(100*50*4),captured_ms:1,serial:1,release:()=>{released++;}};
+ source.pending={width:100,height:50,get pixels(){pixelReads++;return Buffer.alloc(100*50*4)},captured_ms:1,serial:1,release:()=>{released++;}};
  source.subscribe(()=>{encoded++;});
  const publishing=source.publish();
  for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setImmediate(resolve));
@@ -211,7 +211,7 @@ test('MP-11 a readback masked before a mask re-projection is not published after
  source.retireFrames();source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};// the attestation's new projection
  release(true);await publishing;
  assert.equal(source.latest,null,'the old projection\'s raster is not cached');
- assert.equal(encoded,0,'nor delivered');assert.equal(released,1,'and is released');
+ assert.equal(encoded,0,'nor delivered');assert.equal(released,1,'and is released');assert.equal(checks,1);assert.equal(pixelReads,0,'retired readback bytes never enter the masker');
  await source.close();
 });
 
