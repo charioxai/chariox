@@ -19,7 +19,7 @@ export function startNativeReadback(capture,config){
  config=Object.freeze({...config,...(config.window_region?{window_region:Object.freeze({...config.window_region})}:{})});
    capture.phase='readback';const executable=nativeWorkerResource()?.executable;
    const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...capture.display.environment},stdio:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
-   const fail=()=>capture.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
+   const fail=()=>{if(!capture.closed)capture.timing?.(`native_readback_ended ${capture.surface??'page'}`,performance.timeOrigin+performance.now());capture.fence()};child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
    let stderr='';child.stderr.on('data',b=>{stderr+=b.toString();const lines=stderr.split('\n');stderr=lines.pop();if(stderr.length>8192)stderr='';for(const line of lines){
     if(/^MD-DISPLAY: native stage [a-z_]+$/.test(line))capture.helperStage=line.split(' ').at(-1);

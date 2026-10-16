@@ -16,7 +16,12 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
   const region=stream.regionLease;
-  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await stream.regionCurrent()))throw Error('MP-11: region lease retired');
+  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await stream.regionCurrent())){
+    // Diagnostics (labels only): which fence retired this region's capture.
+    const source=stream.regionSource;
+    host.timing(`region_retired ${stream.regionTarget?.kind} ${command.generation!==host.generation?'generation':source.closed?'closed':!source.allowed(source.policy)?'policy':'lease'}`,timestamp());
+    throw Error('MP-11: region lease retired');
+  }
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;
   const empty=()=>nativeCreditEmpty(stream,cachedSource,host.protection,host.inputEpochs.get(stream.tab_id)??0,
       host.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);

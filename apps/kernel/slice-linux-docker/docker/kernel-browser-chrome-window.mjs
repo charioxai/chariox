@@ -55,6 +55,7 @@ export class ChromeWindows {
   retire(reason) {
     if (!this.bound) return;
     const {window_generation} = this.bound.tabbed; this.bound = null;
+    this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
   }
   current() {
@@ -236,13 +237,18 @@ export class ChromeWindows {
     this.refreshAuxiliary(this.rows);
     return this.inWindowOver(rect);
   }
-  /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
+  /** While a band is watched, follow its popups (one poller per host, shared by viewers). The newest
+   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes. */
   watch(read, interval = 150) {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
     watcher.reads.add(read);
     const tick = async () => {
-      const [first] = watcher.reads;
-      try { if (first) { const rows = await first(); this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } } catch {}
+      for (const next of [...watcher.reads].reverse()) {
+        let rows;
+        try { rows = await next(); } catch { continue; }
+        try { this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } catch {}
+        break;
+      }
         if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };
     if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();

@@ -280,6 +280,31 @@ test("MP-08/MP-11 popups of the band's window get kernel ids, follow the band's 
   } finally { await real.close(); }
 });
 
+// r12 quiet host: the band's native capture retired (a transient window size change) while the window
+// stayed bound; the viewer subscribed a new band, but the poll kept reading the dead first band, so a
+// closed Tab menu stayed listed and the omnibox dropdown never appeared.
+test("MP-08/MP-11 popups follow a live band when an earlier band's reader has died", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const menu = { id: 0x600070, x: 2000, y: 140, width: 497, height: 801, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+    let rows = [tabbed, menu];
+    const stopDead = windows.watch(async () => { throw Error("MP-11: native window inventory lease"); }, 5);
+    const stopLive = windows.watch(async () => rows, 5);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.deepEqual(windows.auxiliaryState().map(({x, y}) => [x, y]), [[1000, 70]], "the live band's menu is listed");
+      rows = [tabbed];
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.deepEqual(windows.auxiliaryState(), [], "the closed menu is retired");
+    } finally { stopDead(); stopLive(); }
+  } finally { await real.close(); }
+});
+
 // MP-08/MP-10/MP-11: Caps Lock/automation can report upper-case key labels
 // without Shift. Native X11 must receive the caller's explicit modifier chord.
 test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite upper-case labels', async () => {
