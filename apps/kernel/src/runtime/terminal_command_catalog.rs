@@ -191,6 +191,29 @@ mod tests {
         }
     }
 
+    // MP-08 / MP-10 / MP-11: SV-01 must not complete Skills to Extensions.
+    #[test]
+    fn terminal_command_catalog_separates_skills_from_extensions() {
+        let catalog = terminal_command_catalog().unwrap();
+        let skills = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "skills")
+            .unwrap();
+        assert_eq!(skills.value, "/skills ");
+        assert!(skills
+            .children
+            .iter()
+            .any(|node| node.value == "/skills from "));
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+        assert!(!nodes.iter().any(|node| node.value.starts_with("/skill ")
+            || node.value.starts_with("/extension grants skill")));
+        assert!(nodes
+            .iter()
+            .any(|node| node.value == "/extension grants mcp "));
+    }
+
     #[test]
     fn terminal_command_catalog_includes_meta_prompt_prefix() {
         let catalog = terminal_command_catalog().expect("catalog should load");
@@ -647,11 +670,6 @@ mod tests {
                 "mcp-install",
                 "mcp-import",
                 "mcp-show",
-                "skill",
-                "skill-list",
-                "skill-install",
-                "skill-import",
-                "skill-show",
                 "env",
                 "env-list",
                 "env-register",
