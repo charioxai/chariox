@@ -95,6 +95,8 @@ Native provider permission prompts are surfaced to the user out-of-band through 
 
 ## Claude credential transfer for Linux runners
 
+Provider login copies across machines (all providers) follow docs/PROVIDER_LOGIN_COPIES.md, decided 2026-10-16: never revoke from a copy before a re-login, and ask for a new sign-in only on the machine whose copy died. Read it before changing provider login transfer.
+
 Claude Code on macOS stores a live login in a profile-scoped Keychain service named `Claude Code-credentials-<hash>`, where `<hash>` is the first eight hexadecimal characters of SHA-256 over `CLAUDE_CONFIG_DIR`. Older default profiles may use `Claude Code-credentials`. Linux runners and containers expect the credential at `~/.claude/.credentials.json`.
 
 Chariox must export the exact profile-scoped Keychain item automatically when materializing a linked or managed Claude account. It may use the legacy unscoped item only for the default profile. Reject empty or non-refreshable credentials before provisioning instead of copying them. For a manual runner drill outside the managed-context path, export the matching scoped item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
