@@ -86,10 +86,14 @@ export async function resolveDisplayTarget(host, command, native = false) {
  const browser=host.browser,target=stored.target_id,generation=host.generation,frame=browser.currentPageFrame?.(target);
  const owner=frame?captureDocumentOwner(browser,{target_id:target,document_id:frame.frame.loaderId}):null;
  const {connection,sessionId}=owner??await browser.resolvePageTarget(target);
- const document_id=frame?.frame.loaderId??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
+ // BROWSER-UX-05: a newly attached page may have a loader event before its
+ // full frame owner exists. Reuse that event only in this live session.
+ const cachedDocument=frame?null:browser.documentIdsByTarget?.get(target);
+ const document_id=frame?.frame.loaderId??cachedDocument??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
  if(typeof document_id!=='string'||!document_id)throw Error('MD-DISPLAY: document unavailable');
  const current=()=>{
   if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference');
+  if(cachedDocument&&(connection.isOpen?.()===false||'connection' in browser&&browser.connection!==connection||browser.sessionsByTarget&&browser.sessionsByTarget.get(target)!==sessionId||browser.documentIdsByTarget?.get(target)!==document_id))throw new UserDomainRefusal('stale_reference');
   owner?.assertCurrent();
  };
  current();

@@ -1872,3 +1872,26 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
+
+// MP-08/MP-10 (BROWSER-UX-05): a Tab that just opened has a busy renderer; its own-Tab read (the subscribe
+// preflight) is answered from the page session's navigation events, and asks the renderer only when none named it.
+test("MP-08/MP-10 a Tab's own read uses the document the page session named and asks the renderer otherwise", async () => {
+  const calls = [], saved = [];
+  const connection = { send: async method => { calls.push(method);
+    if (method === "Page.getFrameTree") return { frameTree: { frame: { loaderId: "LIVE" } } };
+    if (method === "Target.getTargetInfo") return { targetInfo: { url: "https://home.example/", title: "Home" } };
+    throw new Error("unexpected " + method); } };
+  const read = cached => {
+    const stored = { tab_id: "t", target_id: "T", document_id: "NTP", url: "chrome://newtab/", title: "" };
+    const host = { generation: 1, tabs: new Map([["t", stored]]), save: async () => { saved.push(stored.document_id); },
+      browser: { documentIdsByTarget: new Map(cached ? [["T", cached]] : []), resolvePageTarget: async () => ({ connection, sessionId: "S" }) } };
+    return KernelBrowserHost.prototype.displayTarget.call(host, { tab_id: "t", generation: 1 });
+  };
+  calls.length = 0;
+  const named = await read("HOME");
+  assert.deepEqual([named.document_id, named.url, named.title, calls], ["HOME", "https://home.example/", "Home", ["Target.getTargetInfo"]]);
+  calls.length = 0;
+  const live = await read(undefined);
+  assert.deepEqual([live.document_id, calls], ["LIVE", ["Page.getFrameTree", "Target.getTargetInfo"]]);
+  assert.deepEqual(saved, ["HOME", "LIVE"]);
+});

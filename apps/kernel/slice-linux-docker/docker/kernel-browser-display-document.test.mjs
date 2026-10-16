@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11 supplementary event-order and loader fence regressions.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {DisplayDocuments} from './kernel-browser-display-document.mjs';
+import {DisplayDocuments,resolveDisplayTarget} from './kernel-browser-display-document.mjs';
 function fixture(){
  const observers=new Set(),calls=[];let document='a',blocked;
  const connection={subscribe:fn=>(observers.add(fn),()=>observers.delete(fn)),isOpen:()=>true,send:async method=>{calls.push(method);await blocked;return {frameTree:{frame:{id:'root',loaderId:document}}}}};
@@ -109,4 +109,19 @@ test('MP-08/MP-10/MP-11 native input guard never promotes a different requested 
   f.stored.document_id='promoted';assert.equal(valid(),false,'caller mutation cannot change the pinned request');
   f.stored.document_id='a';f.event('Page.frameStartedLoading',{frameId:'root'});assert.equal(valid(),false);
  }finally{f.cache.clear()}
+});
+
+for(const retirement of ['loader','session','connection'])test(`MP-08/MP-10/MP-11 cached metadata refuses ${retirement} retirement during its read`,async()=>{
+ const stored={tab_id:'t',target_id:'T',document_id:'old'},saved=[];
+ const connection={isOpen:()=>true,async send(method){
+  assert.equal(method,'Target.getTargetInfo','a named loader needs no renderer query');
+  if(retirement==='loader')browser.documentIdsByTarget.set('T','next');
+  if(retirement==='session')browser.sessionsByTarget.set('T','replacement');
+  if(retirement==='connection')browser.connection={};
+  return {targetInfo:{url:'https://public.example/',title:'Public'}};
+ }};
+ const browser={connection,sessionsByTarget:new Map([['T','S']]),documentIdsByTarget:new Map([['T','current']]),resolvePageTarget:async()=>({connection,sessionId:'S'})};
+ const host={generation:1,tabs:new Map([['t',stored]]),browser,save:async()=>saved.push(true)};
+ await assert.rejects(resolveDisplayTarget(host,{tab_id:'t',generation:1}),error=>error.code==='user_domain_stale_reference');
+ assert.equal(stored.document_id,'old');assert.deepEqual(saved,[]);
 });
