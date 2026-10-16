@@ -1,7 +1,7 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
-import { assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
+import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
@@ -51,15 +51,19 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
     let observedFrameInput = false;
-    const check = async () => {
+    const cachedDocument = () => {
+      if (!documentCurrent()) throw new BrowserActionError("stale_document_reference", "browser document retired before native input");
+    };
+    const check = async (fresh = false) => {
       assertNotCancelled(signal);
-      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      if (documentCurrent && !fresh) cachedDocument();
+      else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       assertNotCancelled(signal);
     };
     // MP-11: all text-producing paths share the Vault-only target fence.
@@ -71,6 +75,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       const cached = cache.get(tab.target_id);
       if (!fresh && cached?.document === tab.document_id) return cached.contextId;
       const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+      if (frameTree?.frame?.loaderId !== tab.document_id) throw new BrowserActionError("stale_document_reference", "browser document retired before focus world creation");
       const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
         frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
       }, sessionId);
@@ -84,7 +89,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     const evaluateText = async expression => {
       const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression, returnByValue: true }, sessionId)).result?.value;
       try { return await evaluate(await textWorld()); }
-      catch { return await evaluate(await textWorld(true)); }
+      catch (error) { if (error?.code === "stale_document_reference") throw error; return await evaluate(await textWorld(true)); }
     };
     const checkTextTarget = async () => {
       let verdict = await evaluateText(sensitive());
@@ -95,13 +100,14 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     };
     let mirrorGuard=inputGuard;
     const admitInput = async (method, params) => {
-      await check();
+      // CDP fallbacks retain their fresh document barriers.
+      await check(true);
       if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && (params.text || (params.modifiers & 7)))) {
         await checkTextTarget();
         // MP-11: a fenced mirror guard below checks the live document and
         // focused ancestry after this shared secret preflight. No mutation or
         // await separates a duplicate document read from that final guard.
-        if (!resolved?.fenced) await check();
+        if (!resolved?.fenced) await check(true);
       }
       // MP-11: live mirror focus is the final fence, after every text preflight.
       await mirrorGuard?.();
@@ -157,10 +163,16 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         const keysym = printable ? (/^[\x20-\x7e]$/.test(input.key) ? input.key.charCodeAt(0) : null) : keysyms[name];
         if (nativeKey && !resolved && !chord && keysym != null) {
           await check();
+          await mirrorGuard?.();
+          assertNotCancelled(signal);
+          if (documentCurrent) cachedDocument();
           const text = printable || ["Enter", "Space"].includes(input.key);
+          // MP-08/MP-10/MP-11: all asynchronous owner/region admission precedes
+          // the final live sensitive/focus check; no later await on the fast path.
           const focused = await evaluateText(text ? `${sensitive()} ? 'sensitive' : document.hasFocus()` : "document.hasFocus()");
           if (focused === "sensitive") throw new UserDomainRefusal("sensitive_requires_focus");
-          await check(); await mirrorGuard?.();
+          assertNotCancelled(signal);
+          if (documentCurrent) cachedDocument(); else await check();
           if (focused === true && nativeKey(keysym, Boolean(modifiers & 8))) { onDispatch?.(); return; }
         }
         const down = { type: "keyDown", ...key,

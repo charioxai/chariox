@@ -8,6 +8,17 @@ import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+// MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
+// selecting cached document metadata. It grants no input by itself.
+export function viewerPageInputActive(host,command,scope){
+ return command._display_input===true&&!command._agent_input&&!command.focused_agent&&
+  [...host.displays.values()].some(s=>s.tab_id===command.tab_id&&s.observed_by===scope&&s.expires>Date.now());
+}
+export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
+ if(command.op!=='input'||command.input?.kind!=='key'||!viewerPageInputActive(host,command,scope))return false;
+ const source=nativeDisplay?.regionSource??host.compositors.get(command.tab_id)?.source;
+ return source?.native===true&&source.attested===true&&source.valid?.()===true;
+}
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);

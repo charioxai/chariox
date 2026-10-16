@@ -1797,3 +1797,23 @@ test('MP-08/MP-10/MP-11 visible-page wheel reaches its admitted native source',(
  assert.equal(sent.filter(c=>c.method==='Input.dispatchMouseEvent'&&c.params.type==='mouseWheel').length,0);
  host.displays.delete(stream.subscription_id);
 }));
+
+// MP-08/MP-10/MP-11: the real host wiring reuses event-bound loader state.
+test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in host and input helper',()=>using(async({host,sent,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),keys=[];
+ const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},wake(){}};
+ const stream={close:async()=>{},subscription_id:'key-crop',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
+ host.displays.set(stream.subscription_id,stream);host.nativeFront=async()=>true;
+ const original=connection.send;connection.send=async(method,params,session)=>{
+  if(method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")){sent.push({method,params,session});return {result:{value:true}}}
+  return original(method,params,session);
+ };
+ const command={op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'key',key:'a'}};
+ try{
+  await inputVisiblePage(host,stream,command,'terminal:a');sent.length=0;keys.length=0;
+  await inputVisiblePage(host,stream,command,'terminal:a');
+  assert.deepEqual(keys,[[97,false]]);assert.equal(sent.filter(call=>call.method==='Page.getFrameTree').length,0);
+ }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
+}));

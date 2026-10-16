@@ -1,4 +1,4 @@
-import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource} from './kernel-browser-page-display.mjs';
+import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -699,7 +699,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
-      ? await this.displayTarget(command) : await this.target(command);
+      ? await this.displayTarget(command,nativeKeyDocumentTarget(this,command,scope,nativeDisplay)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
@@ -788,8 +788,7 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
         // admitted human viewer with a live display lease owns the fast path.
-        const viewerActive=()=>command._display_input===true&&!command._agent_input&&!command.focused_agent&&
-          [...this.displays.values()].some(s=>s.tab_id===tab.tab_id&&s.observed_by===scope&&s.expires>Date.now());
+        const viewerActive=()=>viewerPageInputActive(this,command,scope);
         // Protocol 530: a page drag is the person's, on a page they are watching.
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
@@ -798,7 +797,8 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const documentCurrent=nativeKey&&command.input?.kind==='key'?await this.displayDocuments.guard(this.browser,tab):undefined;
+        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
