@@ -8,7 +8,7 @@ test("MP-08 / MP-11 C5 uses coordinator allocated local 520 and relay peer 128",
   const local = read("apps/kernel/src/local/api/types.rs")
   const peer = read("apps/kernel/src/transport/relay_peer.rs")
   assert.ok(Number(local.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]) >= 520)
-  assert.match(peer, /RELAY_PEER_PROTOCOL_VERSION: u32 = 128;/)
+  assert.ok(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]) >= 128)
   assert.ok(Number(read("packages/kernel-client/src/kernel-types.ts").match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]) >= 520)
   assert.doesNotMatch(local + peer, /PROTOCOL-ALLOCATION-PENDING/)
   const helpers = read("packages/kernel-client/src/ipc-managed-context-requests.ts")

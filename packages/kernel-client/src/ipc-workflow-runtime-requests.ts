@@ -4,7 +4,7 @@ import type {
 } from "./kernel-types.js"
 
 /** Retrying a held notification delivery needs a kernel that tracks uncertain sends. */
-export const queuedNotificationRetryMinimumProtocolVersion = 521
+export const queuedNotificationRetryMinimumProtocolVersion = 547
 
 export type CreateWorkflowPublicationOptions = {
   expectedWorkflowRevision?: number | null

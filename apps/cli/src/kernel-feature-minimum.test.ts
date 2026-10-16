@@ -76,10 +76,10 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
-test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 521", () => {
+test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 547", () => {
   const request = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true } }
-  assert.throws(() => requireKernelFeatureProtocol(request, 520), /Held notification retry needs protocol ≥521/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 521))
+  assert.throws(() => requireKernelFeatureProtocol(request, 520), /Held notification retry needs protocol ≥547/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 547))
   const edit = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null } }
   assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
 })
