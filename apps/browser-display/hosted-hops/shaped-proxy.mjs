@@ -7,10 +7,10 @@ import {performance} from 'node:perf_hooks'
 export async function startShapedProxy({targets,uplinkMbps=8,oneWayDelayMs=30,maxQueuedBytes=8*1024*1024}) {
   if(!Number.isFinite(uplinkMbps)||uplinkMbps<=0||!Number.isFinite(oneWayDelayMs)||oneWayDelayMs<30||!Number.isSafeInteger(maxQueuedBytes)||maxQueuedBytes<2)
     throw Error('Shaping requires a positive Mbps rate, >=30ms each way and a queue of at least two bytes')
-  const allowed=new Set(targets),sockets=new Set(),queues={up:[],down:[]},readers={up:new Set(),down:new Set()},queued={up:0,down:0},timers={}
+  const allowed=new Set(targets),endings=new Set(),sockets=new Set(),queues={up:[],down:[]},readers={up:new Set(),down:new Set()},queued={up:0,down:0},timers={}
   // Reserve capacity for both directions so a full uplink never stops replies.
   const limits={up:Math.floor(maxQueuedBytes/2),down:Math.ceil(maxQueuedBytes/2)}
-  const stats={uplinkMbps,oneWayDelayMs,connections:[],upBytes:0,downBytes:0,failures:0,readBackpressure:0,peakQueuedBytes:0,failureReasons:{backpressureTimeout:0,socketErrors:{}}}
+  const stats={uplinkMbps,oneWayDelayMs,connections:[],upBytes:0,downBytes:0,failures:0,readBackpressure:0,peakQueuedBytes:0,failureReasons:{backpressureTimeout:0,socketErrors:{}},endings:[]}
   let freeAt=0,closed=false
   const pump=direction=>{
     if(closed||timers[direction]||!queues[direction].length)return
@@ -69,6 +69,12 @@ export async function startShapedProxy({targets,uplinkMbps=8,oneWayDelayMs=30,ma
     client.pause()
     const url=new URL('http://'+req.url),start=performance.now(),remote=connect({port:Number(url.port),host:url.hostname,allowHalfOpen:true})
     sockets.add(client);sockets.add(remote)
+    // Which side ended this tunnel first, so a 1006 close can be attributed to the browser, the shaper or the server.
+    const ending={authority:req.url,openedAt:Date.now()},first=(side,how)=>{if(ending.first)return;Object.assign(ending,{first:side,how,at:Date.now(),queuedUp:queued.up,queuedDown:queued.down});stats.endings.push(ending)}
+    endings.add(first)
+    for(const [side,socket] of [['client',client],['remote',remote]]){
+      socket.once('close',()=>endings.delete(first));socket.once('end',()=>first(side,'end'));socket.once('error',error=>first(side,'error:'+String(error.code||'UNKNOWN')));socket.once('close',()=>first(side,'close'))
+    }
     for(const socket of [client,remote]){
       socket.setNoDelay(true)
       socket.on('error',error=>{if(!closed){stats.failures++;const code=String(error.code||'UNKNOWN');stats.failureReasons.socketErrors[code]=(stats.failureReasons.socketErrors[code]||0)+1}client.destroy();remote.destroy()})
@@ -83,6 +89,6 @@ export async function startShapedProxy({targets,uplinkMbps=8,oneWayDelayMs=30,ma
   })
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)})
   return {url:'http://127.0.0.1:'+server.address().port,stats,
-    interrupt(){for(const socket of sockets)socket.destroy();for(const timer of Object.values(timers))clearTimeout(timer);for(const key of Object.keys(timers))delete timers[key];queues.up.length=queues.down.length=0;queued.up=queued.down=0;readers.up.clear();readers.down.clear();freeAt=performance.now();},
-    async close(){closed=true;for(const timer of Object.values(timers))clearTimeout(timer);for(const socket of sockets)socket.destroy();queues.up.length=queues.down.length=0;readers.up.clear();readers.down.clear();await new Promise(resolve=>server.close(resolve));return stats}}
+    interrupt(){for(const first of endings)first('shaper','interrupt');for(const socket of sockets)socket.destroy();for(const timer of Object.values(timers))clearTimeout(timer);for(const key of Object.keys(timers))delete timers[key];queues.up.length=queues.down.length=0;queued.up=queued.down=0;readers.up.clear();readers.down.clear();freeAt=performance.now();},
+    async close(){for(const first of endings)first('shaper','close');closed=true;for(const timer of Object.values(timers))clearTimeout(timer);for(const socket of sockets)socket.destroy();queues.up.length=queues.down.length=0;readers.up.clear();readers.down.clear();await new Promise(resolve=>server.close(resolve));return stats}}
 }

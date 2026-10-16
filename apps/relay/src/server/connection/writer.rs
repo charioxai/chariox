@@ -207,7 +207,8 @@ pub(super) async fn run_writer<S, F>(
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
     display_route: F,
-) where
+) -> &'static str
+where
     S: Sink<Message> + Unpin,
     F: Fn(&str) -> bool,
 {
@@ -223,12 +224,12 @@ pub(super) async fn run_writer<S, F>(
         while let Ok(message) = controls.try_recv() {
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
-                return;
+                return "control_write";
             }
         }
         while let Ok((id, offset)) = receipts.try_recv() {
             if !credit.receipt(id, offset, &mut active) {
-                return;
+                return "bad_receipt";
             }
         }
         active.retain(|t| !t.finished());
@@ -236,7 +237,7 @@ pub(super) async fn run_writer<S, F>(
             match outgoing.try_recv() {
                 Ok(message) => match receiver_message(message, binary_events) {
                     Some(m) => pending.push_back(Queued::new(m, &display_route)),
-                    None => return,
+                    None => return "bad_outgoing_message",
                 },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     open = false;
@@ -249,7 +250,7 @@ pub(super) async fn run_writer<S, F>(
             let message = pending.remove(index).unwrap().message;
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
-                return;
+                return "control_write";
             }
             continue;
         }
@@ -258,10 +259,10 @@ pub(super) async fn run_writer<S, F>(
                 let message = queued.message;
                 if message.len() > CHUNK_BYTES {
                     upgrade(&mut writer).await;
-                    return;
+                    return "unchunked_oversize";
                 }
                 if !write(&mut writer, message).await {
-                    return;
+                    return "write_failed";
                 }
                 continue;
             }
@@ -278,7 +279,7 @@ pub(super) async fn run_writer<S, F>(
                 let message = queued.message;
                 if message.len() > MAX_MESSAGE_BYTES {
                     upgrade(&mut writer).await;
-                    return;
+                    return "message_too_large";
                 }
                 let id = 0; // Assigned on the first wire write, not queue admission.
                 let (text, binary) = match message {
@@ -286,7 +287,7 @@ pub(super) async fn run_writer<S, F>(
                     Message::Binary(_) => (String::new(), Some(message)),
                     _ => {
                         if !write(&mut writer, message).await {
-                            return;
+                            return "write_failed";
                         }
                         continue;
                     }
@@ -308,7 +309,7 @@ pub(super) async fn run_writer<S, F>(
             let starting = transfer.id == 0;
             if starting {
                 let Some(id) = next_id.checked_add(1) else {
-                    return;
+                    return "transfer_id_exhausted";
                 };
                 transfer.id = id;
             }
@@ -326,11 +327,11 @@ pub(super) async fn run_writer<S, F>(
                     active.push_back(transfer);
                     if let Some(binary) = binary {
                         if !write(&mut writer, binary).await {
-                            return;
+                            return "write_failed";
                         }
                     }
                     if !write(&mut writer, message).await {
-                        return;
+                        return "write_failed";
                     }
                     sent = true;
                     break;
@@ -346,22 +347,22 @@ pub(super) async fn run_writer<S, F>(
             continue;
         }
         if !open && pending.is_empty() && active.is_empty() && credit.pending.is_empty() {
-            return;
+            return "drained";
         }
         // A closed receipt lane can no longer drain credit. Do not spin forever.
         if chunks && !receipts_open && !active.is_empty() {
-            return;
+            return "receipts_closed";
         }
         tokio::select! {
             message=controls.recv(),if controls_open=>{
-                if let Some(message)=message {let terminal=matches!(message,Message::Close(_));if !write(&mut writer,message).await||terminal{return;}}else{controls_open=false;}
+                if let Some(message)=message {let terminal=matches!(message,Message::Close(_));if !write(&mut writer,message).await||terminal{return "control_write";}}else{controls_open=false;}
             }
             receipt=receipts.recv(),if receipts_open=>{
                 let Some((id,offset))=receipt else{receipts_open=false;continue;};
-                if !credit.receipt(id,offset,&mut active){return;}
+                if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route)),None=>return},None=>open=false}
+                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route)),None=>return "bad_outgoing_message"},None=>open=false}
             }
         }
     }

@@ -1465,6 +1465,99 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
     drop(client);
 }
 
+// MP-08 / MP-10 / MP-11: a healthy peer acknowledging many small frames in one
+// read must never lose its connection (browser control WebSocket 1006).
+#[tokio::test]
+async fn burst_of_small_frame_receipts_keeps_the_connection() {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let registry_for_connection = registry.clone();
+    let mut task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            registry_for_connection,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
+            .await
+            .unwrap();
+    let mut registration = daemon_registration("burst-peer");
+    registration.auth_token = "public-fixture".to_string();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let sender = loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if let Some(peer) = registry.read().await.peers.values().next() {
+            break peer.sender.clone();
+        }
+    };
+    const FRAMES: usize = 400;
+    for n in 0..FRAMES {
+        let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
+        sender.send(Message::Text(request.into())).await.unwrap();
+    }
+    let mut receiver = crate::frame_transport::FrameReceiver::default();
+    let mut receipts = Vec::new();
+    let mut delivered = 0;
+    while delivered < FRAMES {
+        let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
+            .await
+            .expect("small frames must be delivered")
+            .unwrap()
+            .unwrap()
+        else {
+            continue;
+        };
+        let (complete, receipt) = receiver.receive(&text).unwrap();
+        receipts.extend(receipt);
+        delivered += complete
+            .is_some_and(|text| text.contains("small-"))
+            .then_some(1)
+            .unwrap_or(0);
+    }
+    // One flush: the relay reads the whole receipt burst before its writer can drain it.
+    for receipt in receipts {
+        client.feed(Message::Text(receipt.into())).await.unwrap();
+    }
+    client.flush().await.unwrap();
+    sender
+        .send(Message::Text(
+            r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
+            .await
+            .expect("the connection must survive a receipt burst")
+            .expect("the relay must not end the stream")
+            .expect("the relay must not drop the socket")
+        else {
+            continue;
+        };
+        if receiver.receive(&text).unwrap().0.is_some_and(|text| text.contains("after-burst")) {
+            break;
+        }
+    }
+    assert!(!task.is_finished());
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(3), &mut task).await;
+}
+
 #[tokio::test]
 async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     let registry = Arc::new(RwLock::new(RelayRegistry::default()));

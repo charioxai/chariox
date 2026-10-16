@@ -190,6 +190,8 @@ pub(crate) async fn handle_connection(
     let mut auth_expiry_deadline: Option<Instant> = None;
     let mut revocation_updates = auth_verifier.revocation_updates();
     let mut first_message_received = false;
+    let mut end_reason: &'static str = "message_handling";
+    let mut peer_close_code: Option<u16> = None;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
     let mut connection_check = tokio::time::interval(RELAY_CONNECTION_CHECK_INTERVAL);
@@ -214,6 +216,7 @@ pub(crate) async fn handle_connection(
                         }),
                     );
                     send_close(&outgoing_tx, "relay token expired".to_string());
+                    end_reason = "token_expired";
                     break;
                 }
                 _ = wait_for_revocation_update(&mut revocation_updates) => {
@@ -228,6 +231,7 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay token revoked".to_string());
+                        end_reason = "token_revoked";
                         break;
                     }
                     continue;
@@ -247,6 +251,7 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay connection idle timeout".to_string());
+                        end_reason = "idle_timeout";
                         break;
                     }
                     if last_ping_at > last_read_at && last_ping_at.elapsed() >= RELAY_PONG_TIMEOUT {
@@ -260,29 +265,31 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay heartbeat timeout".to_string());
+                        end_reason = "heartbeat_timeout";
                         break;
                     }
                     if last_ping_at.elapsed() >= RELAY_HEARTBEAT_INTERVAL {
                         if control_tx.try_send(Message::Ping(Vec::new().into())).is_err() {
+                            end_reason = "control_queue_full";
                             break;
                         }
                         last_ping_at = Instant::now();
                     }
                     continue;
                 }
-                _ = async {
+                writer_end = async {
                     match writer_task.as_mut() {
-                        Some(task) => {
-                            let _ = task.await;
-                        }
+                        Some(task) => task.await.unwrap_or("writer_panicked"),
                         None => pending().await,
                     }
                 }, if writer_task.is_some() => {
                     writer_task = None;
+                    end_reason = writer_end;
                     break;
                 }
             };
             let Some(message) = message else {
+                end_reason = "peer_stream_ended";
                 break;
             };
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -294,10 +301,10 @@ pub(crate) async fn handle_connection(
                         .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
                         match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
                             Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
-                                if receipt_tx.try_send((transfer_id, offset)).is_err() { break; }
+                                if receipt_tx.try_send((transfer_id, offset)).is_err() { end_reason = "receipt_queue_full"; break; }
                                 continue;
                             }
-                            _ => break,
+                            _ => { end_reason = "invalid_receipt"; break; }
                         }
                     }
                     first_message_received = true;
@@ -1050,11 +1057,14 @@ pub(crate) async fn handle_connection(
                 }
                 Message::Ping(payload) => {
                     if control_tx.try_send(Message::Pong(payload)).is_err() {
+                        end_reason = "control_queue_full";
                         break;
                     }
                 }
                 Message::Pong(_) => {}
                 Message::Close(frame) => {
+                    peer_close_code = frame.as_ref().map(|frame| u16::from(frame.code));
+                    end_reason = "peer_closed";
                     let _ = control_tx.try_send(Message::Close(frame));
                     break;
                 }
@@ -1090,6 +1100,7 @@ pub(crate) async fn handle_connection(
     )
     .await;
     if connection_result.is_err()
+        || !matches!(end_reason, "peer_closed" | "peer_stream_ended" | "message_handling")
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()
@@ -1115,6 +1126,8 @@ pub(crate) async fn handle_connection(
                 "daemon_subscription_cleanups": daemon_subscription_cleanups,
                 "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
+                "end_reason": end_reason,
+                "peer_close_code": peer_close_code,
             }),
         );
     }
