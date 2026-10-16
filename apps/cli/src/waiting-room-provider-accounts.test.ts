@@ -65,35 +65,36 @@ test("provider account display uses the public alias and sign-in state", () => {
   profile.label = "codex-1"
   profile.identity_summary = "owner@example.com"
 
-  assert.equal(providerAccountDisplayLabel(profile), "codex-1 · signed in")
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
 })
 
 test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed by credits", () => {
   const resetsAtMs = Date.now() + 60_000
-  const resetLabel = "resets " + new Date(resetsAtMs).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+  const untilLabel = "usage limit until " + new Date(resetsAtMs).getUTCDate() + " " +
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][new Date(resetsAtMs).getUTCMonth()]
   const allowance = usageMeter("allowance", "rolling_limit", "exhausted", resetsAtMs)
   const credits = usageMeter("credits", "credit_balance", "exhausted")
 
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [allowance])),
-    "Account · signed in",
+    "Account",
     "unscoped exhaustion must not mark every OpenCode service exhausted",
   )
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [
       { ...allowance, service_id: "opencode-go" },
     ]), "opencode-go/test-model"),
-    `Account · OpenCode Go (exhausted) · ${resetLabel} · signed in`,
+    `Account · OpenCode Go · ${untilLabel}`,
   )
   for (const provider of ["claude", "claude-headless", "claude-p", "codex"]) {
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance])),
-      "Account · signed in",
+      "Account",
       `${provider} allowance exhaustion alone must remain selectable in the TUI`,
     )
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance, credits])),
-      `Account (exhausted) · ${resetLabel} · signed in`,
+      `Account · ${untilLabel}`,
       `${provider} must be marked exhausted when allowance and credits are exhausted`,
     )
     assert.equal(
@@ -104,7 +105,7 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
         state: "healthy",
         observed_at_ms: Date.now() - 86_400_001,
       }])),
-      "Account · signed in",
+      "Account",
       `${provider} must not discard a stale credit meter to claim total exhaustion`,
     )
   }
@@ -210,12 +211,36 @@ test("MP-08 / MP-11 home inventory does not decide worker account authentication
   assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "worker-account", { worker_kernel_id: "worker" }), null)
 })
 
+// OWNER-17: every registered account is listed; problems show inline, healthy accounts show nothing.
+test("every registered Codex account is listed with its own inline status", () => {
+  const resetsAtMs = Date.UTC(2026, 9, 22, 6, 13)
+  const exhausted = accountWithUsage("codex", [
+    { ...usageMeter("rolling/10080/codex", "rolling_limit", "exhausted", resetsAtMs), observed_at_ms: resetsAtMs - 1_000 },
+    { ...usageMeter("credits", "credit_balance", "exhausted"), observed_at_ms: resetsAtMs - 1_000 },
+  ])
+  exhausted.label = "miguel"
+  const signedOut = account("codex", "codex-secondary")
+  signedOut.auth_state = "error"
+  const usable = account("codex", "codex-independent-2")
+  const registered = [exhausted, signedOut, usable, account("claude", "claude-1", true)]
+  const realNow = Date.now
+  Date.now = () => resetsAtMs - 1_000
+  try {
+    assert.deepEqual(
+      providerAccountsForProvider(registered, "codex").map((profile) => providerAccountDisplayLabel(profile)),
+      ["miguel · usage limit until 22 Oct", "codex-secondary · sign in again", "codex-independent-2"],
+    )
+  } finally {
+    Date.now = realNow
+  }
+})
+
 // MP-08 / MP-11 known exhausted quota must be visible before work starts.
 test("exhausted selected account exposes reset and a usable alternative", () => {
   const reset = Date.now() + 3_600_000
   const exhausted = accountWithUsage("codex", [usageMeter("rolling/300/codex", "rolling_limit", "exhausted", reset), usageMeter("credits", "credit_balance", "exhausted")])
   const good = account("codex", "available")
-  assert.match(providerAccountDisplayLabel(exhausted, "codex/gpt-6.1-sol"), /exhausted.*resets.*UTC/)
+  assert.match(providerAccountDisplayLabel(exhausted, "codex/gpt-6.1-sol"), /· usage limit until \d+ \w{3}$/)
   assert.match(selectedProviderAccountStartBlockReason([exhausted, good], "codex", exhausted.profile_id, null, "codex/gpt-6.1-sol") ?? "", /exhausted.*resets.*available/)
   assert.equal(selectedProviderAccountStartBlockReason([exhausted], "codex", exhausted.profile_id, null, "codex/gpt-5.3-codex-spark"), null)
 })
@@ -226,7 +251,7 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
   const go = { ...usageMeter("go/monthly", "rolling_limit", "exhausted", reset), service_id: "opencode-go" }
   const zen = { ...usageMeter("zen/credits", "credit_balance", "exhausted"), service_id: "opencode" }
   const openCode = accountWithUsage("opencode", [go, zen])
-  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go \(exhausted\).*resets.*UTC/)
+  assert.match(providerAccountDisplayLabel(openCode, "opencode-go/glm-5.3-flash"), /OpenCode Go · usage limit until \d+ \w{3}$/)
   for (const model of ["opencode-go/glm-5.3-flash", "opencode/deepseek-v4-flash"]) {
     assert.equal(selectedProviderAccountStartBlockReason([openCode], "opencode", openCode.profile_id, null, model), null, model)
   }

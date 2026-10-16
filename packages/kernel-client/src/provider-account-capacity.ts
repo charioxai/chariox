@@ -85,15 +85,33 @@ export function providerAccountAdmissionBlocked(profile: ProviderAccountProfile,
   return profile.provider !== "opencode" && providerAccountCapacity(profile, nowMs, model).state === "exhausted"
 }
 
-export function providerAccountCapacityLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string {
+/** The account name, qualified by the OpenCode service when the selected model fixes one. */
+export function providerAccountName(profile: ProviderAccountProfile, model?: string | null): string {
   const serviceId = profile.provider === "opencode" ? openCodeServiceFromModel(model) : null
   const serviceLabel = serviceId ? openCodeServiceLabel(profile, serviceId) : null
-  const base = serviceLabel && profile.label.localeCompare(serviceLabel, "en", { sensitivity: "base" }) !== 0
+  return serviceLabel && profile.label.localeCompare(serviceLabel, "en", { sensitivity: "base" }) !== 0
     ? `${profile.label} · ${serviceLabel}`
     : profile.label
-  return providerAccountCapacity(profile, nowMs, model).state === "exhausted"
-    ? `${base} (exhausted)`
-    : base
+}
+
+/**
+ * The one short reason an account cannot take work right now, shown inline
+ * after its name. Healthy accounts have no status.
+ */
+export function providerAccountStatusLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
+  if (profile.auth_state === "unknown") return "sign-in not checked"
+  if (profile.auth_state === "not_configured") return "sign in"
+  if (profile.auth_state !== "authenticated") return "sign in again"
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  const until = providerAccountExhaustedResets(profile, nowMs, model).at(-1)
+  return until === undefined ? "usage limit reached" : `usage limit until ${utcDayMonth(until)}`
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+function utcDayMonth(ms: number): string {
+  const date = new Date(ms)
+  return `${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`
 }
 
 function openCodeServiceFromModel(model?: string | null): string | null {
@@ -118,14 +136,19 @@ function openCodeServiceLabel(profile: ProviderAccountProfile, serviceId: string
 }
 
 export function providerAccountCapacityResetLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
-  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  const times = providerAccountExhaustedResets(profile, nowMs, model)
+    .map(reset => new Date(reset).toISOString().slice(0, 16).replace("T", " ") + " UTC")
+  return times.length ? `resets ${times.join(", ")}` : null
+}
+
+/** Ascending distinct reset times of the exhausted meters; empty unless the account is exhausted. */
+function providerAccountExhaustedResets(profile: ProviderAccountProfile, nowMs: number, model?: string | null): number[] {
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return []
   const resets = providerAccountModelMeters(profile, model)
     .filter(meter => meter.state === "exhausted" && meter.resets_at_ms != null && meter.resets_at_ms > nowMs
       && (meter.observed_at_ms == null || nowMs - meter.observed_at_ms <= 24 * 60 * 60 * 1000))
     .map(meter => meter.resets_at_ms!)
-  const times = [...new Set(resets)].sort((a, b) => a - b)
-    .map(reset => new Date(reset).toISOString().slice(0, 16).replace("T", " ") + " UTC")
-  return times.length ? `resets ${times.join(", ")}` : null
+  return [...new Set(resets)].sort((a, b) => a - b)
 }
 
 function providerAccountModelMeters(profile: ProviderAccountProfile, model?: string | null) {

@@ -291,7 +291,7 @@ test("waiting room account row shows the public alias and sign-in state", () => 
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2 · signed in")
+  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2")
 })
 
 test("waiting room start rows do not conflate worker auth with the selected account", () => {
