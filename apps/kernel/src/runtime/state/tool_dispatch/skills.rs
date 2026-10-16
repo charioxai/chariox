@@ -50,7 +50,7 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
                 let args: ManageSkillsArgs = serde_json::from_value(arguments)
-                    .map_err(|_| failure("invalid manage_skills arguments: mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
+                    .map_err(|_| failure("invalid manage_skills arguments: action, mutation and origin_prompt_id are required at the top level; use the current prompt_id as origin_prompt_id on BOTH preview and publish. mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
                 match args {
                     ManageSkillsArgs::Preview {
                         mutation,

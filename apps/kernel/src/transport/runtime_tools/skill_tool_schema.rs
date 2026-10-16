@@ -59,10 +59,17 @@ pub(super) fn manage() -> Value {
         &["action", "mutation", "origin_prompt_id"],
         json!({
         "action":{"type":"string","enum":["preview","publish"]},"mutation":mutation,
-        "origin_prompt_id":text,"review_receipt_id":text}),
+        "origin_prompt_id":{"type":"string","minLength":1,"description":"Required on preview AND publish: the current prompt_id from this turn context; never a previous turn."},"review_receipt_id":text}),
     );
     schema["oneOf"] = json!([
         {"properties":{"action":{"enum":["preview"]}},"not":{"required":["review_receipt_id"]}},
         {"properties":{"action":{"enum":["publish"]}},"required":["review_receipt_id"]}]);
+    schema["examples"] = json!([{
+        "action":"preview", "origin_prompt_id":"current_prompt_id",
+        "mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[{
+            "action":"install","source":{"kind":"folder","path":"skills/example"},
+            "collision":{"action":"reject"}
+        }]}
+    }]);
     schema
 }

@@ -148,7 +148,7 @@ impl PromptEnvelope {
 
 pub(crate) fn agent_message_origin_context(prompt_id: &str) -> String {
     format!(
-        "<chariox-agent-message-origin>For chariox.send_agent_message in this turn, set origin_prompt_id to `{prompt_id}`. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
+        "<chariox-agent-message-origin>For chariox.send_agent_message and any Chariox runtime tool requiring origin_prompt_id, use `{prompt_id}` in this turn. Use this same origin_prompt_id for both preview and publish of a reviewed mutation. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
     )
 }
 

@@ -74,7 +74,7 @@ pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_SKILLS_TOOL.into(),
-            description: "Review and atomically publish a Skills catalog batch through the home catalog. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope ({kind:chariox} or {kind:project,project_id}), expected_revision, and actions. Each mutation action has its own action tag: {action:install,source:{kind:folder,path:skills/example},collision:{action:reject}}. Use the exact typed action schema for updates, state and packages. Omit review_receipt_id during preview. Install source is {kind:folder,path}, {kind:content,skill_md} or {kind:url,url}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
+            description: "Review and atomically publish a Skills catalog batch through the home catalog. In BOTH preview and publish, use the current prompt_id as origin_prompt_id (top-level, beside action and mutation). Never omit it or reuse a previous turn identity. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope ({kind:chariox} or {kind:project,project_id}), expected_revision, and actions. Each mutation action has its own action tag: {action:install,source:{kind:folder,path:skills/example},collision:{action:reject}}. Use the exact typed action schema for updates, state and packages. Omit review_receipt_id during preview. Install source is {kind:folder,path}, {kind:content,skill_md} or {kind:url,url}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
             input_schema: schema::manage(),
         },
     ]
@@ -82,6 +82,33 @@ pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // MP-08 / MP-10 / MP-11: SV-14's real install omitted the turn binding.
+    // The advertised example must be executable by the actual tool decoder.
+    #[test]
+    fn skill_manage_guidance_carries_current_prompt_identity() {
+        let spec = skill_runtime_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == MANAGE_SKILLS_TOOL)
+            .unwrap();
+        assert!(spec
+            .description
+            .contains("current prompt_id as origin_prompt_id"));
+        let origin_context = crate::prompt_assembly::agent_message_origin_context("prompt-1");
+        assert!(origin_context.contains("runtime tool requiring origin_prompt_id"));
+        assert!(origin_context.contains("preview and publish"));
+        assert!(origin_context.contains("`prompt-1`"));
+        let example = spec.input_schema["examples"][0].clone();
+        assert!(serde_json::from_value::<ManageSkillsArgs>(example.clone()).is_ok());
+        let schema = jsonschema::JSONSchema::compile(&spec.input_schema).unwrap();
+        assert!(schema.is_valid(&example));
+        let mut missing_origin = example;
+        missing_origin
+            .as_object_mut()
+            .unwrap()
+            .remove("origin_prompt_id");
+        assert!(!schema.is_valid(&missing_origin));
+        assert!(serde_json::from_value::<ManageSkillsArgs>(missing_origin).is_err());
+    }
     #[test]
     fn skill_tools_do_not_accept_model_supplied_explicit_or_target_authority() {
         assert!(serde_json::from_value::<LoadSkillArgs>(serde_json::json!({
