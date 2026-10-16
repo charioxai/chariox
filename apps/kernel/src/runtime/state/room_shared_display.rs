@@ -1,4 +1,6 @@
 //! MP-08/MP-10/MP-11: home owns leases; worker owns the exact Room producer.
+#[cfg(test)]
+mod admission_tests;
 mod worker;
 use super::*;
 use crate::runtime::command::KernelCaller;
@@ -74,14 +76,14 @@ impl KernelRuntimeState {
         if let Some(hint) = &offer.resume_hint {
             let lease = self.home_display_lease(hint)?;
             let mut lease = lease.lock().await;
-            let (slice, _guard) = self
+            let (slice, mut guard) = self
                 .admit_room_display(
                     caller,
                     session,
                     attachment,
                     viewer,
                     &request.slice_ref,
-                    false,
+                    true,
                 )
                 .await?;
             if lease.session_id != session
@@ -97,11 +99,12 @@ impl KernelRuntimeState {
             if lease.viewer_public_key != viewer {
                 return Err(error());
             }
+            guard.release_queue();
             self.resume_room_display(&mut lease, hint, &slice, false)
                 .await?;
             return self.room_display_endpoint(&slice, &lease);
         }
-        let (slice, _guard) = self
+        let (slice, mut guard) = self
             .admit_room_display(
                 caller,
                 session,
@@ -111,6 +114,7 @@ impl KernelRuntimeState {
                 false,
             )
             .await?;
+        guard.release_queue();
         let id = format!("room-display-{:032x}", rand::random::<u128>());
         let room = self
             .room_environment_snapshot(session)
@@ -360,16 +364,20 @@ impl KernelRuntimeState {
         {
             return Err(error());
         }
-        let (slice, _guard) = self
+        let (slice, mut guard) = self
             .admit_room_display(
                 caller,
                 &lease.session_id,
                 &lease.attachment_id,
                 &lease.viewer_public_key,
                 &lease.slice_id,
-                false,
+                matches!(
+                    command,
+                    RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
+                ),
             )
             .await?;
+        guard.release_queue();
         if matches!(
             command,
             RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}

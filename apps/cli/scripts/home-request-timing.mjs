@@ -21,6 +21,19 @@ export function homeRequestTimingRow(line) {
   } catch { return null; }
 }
 
+export function homeRequestTimingSummary(text) {
+  // A live collector can be midway through its last write when the viewer
+  // finishes. Inspect complete records only; never parse or copy the tail.
+  const complete = text.slice(0, text.lastIndexOf('\n') + 1);
+  const rows = complete.split('\n').filter(Boolean).map(line => homeRequestTimingRow(PREFIX + line));
+  if (!rows.length || rows.some(row => !row)) throw new Error('MP-11: invalid home timing evidence');
+  const starts = new Map(rows.filter(row => row.stage === 'kernel_receive').map(row => [row.packet, row.at_ms]));
+  const ends = rows.filter(row => row.stage === 'kernel_request_end' && starts.has(row.packet));
+  if (!ends.length || ends.some(row => row.at_ms < starts.get(row.packet)))
+    throw new Error('MP-10: missing or invalid home receive/end span');
+  return {rows: rows.length, completed: ends.length, partial_tail_ignored: complete.length !== text.length};
+}
+
 // A pipe can contain credentials in unrelated diagnostics. Never retain raw
 // lines, prefixes, exception messages, commands, identities or authentication.
 export async function captureHomeRequestTiming(input, directory, {maxBytes = MAX_OUTPUT} = {}) {

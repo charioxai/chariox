@@ -61,9 +61,23 @@ pub struct SliceOperationGuard {
 }
 
 pub(crate) struct SliceEnvironmentUseGuard {
-    // Release the operation marker before admitting the next queued caller.
+    // Retain lifecycle/input ordering after releasing queue ownership for I/O.
     _operation: SliceOperationGuard,
     _queue: Option<SliceEnvironmentQueueGuard>,
+}
+
+impl SliceEnvironmentUseGuard {
+    /// Admission checks have completed. Keep the use/route marker until peer
+    /// I/O settles, without retaining a fair-queue write lock over that RTT.
+    pub(crate) fn release_queue(&mut self) {
+        drop(self._queue.take());
+    }
+}
+
+#[derive(Debug, Default)]
+struct SliceEnvironmentUseQueue {
+    admission: Arc<tokio::sync::RwLock<()>>,
+    changed: tokio::sync::Notify,
 }
 
 enum SliceEnvironmentQueueGuard {
@@ -104,6 +118,9 @@ impl Drop for SliceOperationGuard {
                 }
             }
         }
+        if let Some(queue) = state.environment_use_queues.get(&self.slice_id) {
+            queue.changed.notify_waiters();
+        }
     }
 }
 
@@ -127,7 +144,7 @@ struct SliceStoreState {
     active_operations: BTreeMap<String, String>,
     environment_uses: BTreeMap<String, usize>,
     environment_route_uses: BTreeMap<String, usize>,
-    environment_use_queues: BTreeMap<String, Arc<tokio::sync::RwLock<()>>>,
+    environment_use_queues: BTreeMap<String, Arc<SliceEnvironmentUseQueue>>,
 }
 
 impl SliceStore {
@@ -878,6 +895,16 @@ impl SliceStore {
         operation: &'static str,
         environment_use: bool,
     ) -> Result<SliceOperationGuard, DaemonError> {
+        self.begin_operation_with_route_admission(slice_ref, operation, environment_use, false)
+    }
+
+    fn begin_operation_with_route_admission(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        environment_use: bool,
+        require_route_idle: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
         let slice_ref = slice_ref.trim();
         if slice_ref.is_empty() {
             return Err(DaemonError::LocalTransport {
@@ -931,6 +958,9 @@ impl SliceStore {
             Some(existing) => Some(format!("an active `{existing}` operation")),
             None if !environment_use && state.environment_uses.contains_key(&slice_id) => {
                 Some("an active Room or agent use".to_string())
+            }
+            None if require_route_idle && state.environment_route_uses.contains_key(&slice_id) => {
+                Some("an active browser controller route".to_string())
             }
             None => None,
         };

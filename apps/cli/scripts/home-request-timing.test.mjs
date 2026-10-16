@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import {mkdtemp, readFile, rm, stat, symlink} from 'node:fs/promises';
 import path from 'node:path';
 import {Readable} from 'node:stream';
-import {captureHomeRequestTiming, homeRequestTimingRow} from './home-request-timing.mjs';
+import {captureHomeRequestTiming, homeRequestTimingRow, homeRequestTimingSummary} from './home-request-timing.mjs';
 const mark = (stage, packet = 123, at_ms = 1000) => `MP-10-PACKET-TIMING ${JSON.stringify({stage, packet, at_ms})}`;
 async function scratch(fn) {
   assert(process.env.TMPDIR && path.isAbsolute(process.env.TMPDIR));
@@ -44,3 +44,12 @@ test('bounds output and never overwrites existing files or follows a leaf symlin
   await symlink(path.join(root, 'home-request-timing.jsonl'), path.join(other, 'home-request-timing.jsonl'));
   await assert.rejects(captureHomeRequestTiming(Readable.from([]), other), {code: 'EEXIST'});
 }));
+
+test('MP-10 a viewer finishing during a collector write uses complete joined spans', () => {
+  const rows = [mark('kernel_receive'), mark('kernel_request_end', 123, 1234)]
+    .map(line => JSON.stringify(homeRequestTimingRow(line))).join('\n') + '\n';
+  assert.deepEqual(homeRequestTimingSummary(rows + '{"stage":"kernel_'), {rows: 2, completed: 1, partial_tail_ignored: true});
+  assert.equal(homeRequestTimingSummary(rows).partial_tail_ignored, false);
+  assert.throws(() => homeRequestTimingSummary(rows + '{"private":"synthetic"}\n'), /invalid home timing evidence/);
+  assert.throws(() => homeRequestTimingSummary(JSON.stringify(homeRequestTimingRow(mark('kernel_receive'))) + '\n'), /missing or invalid/);
+});

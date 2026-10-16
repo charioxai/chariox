@@ -188,3 +188,49 @@ async fn environment_queue_refuses_quarantine_even_with_a_controller_route_activ
     }
     drop(route);
 }
+
+// MP-08/MP-10/MP-11: source regression for marker wakeup, not a wall-clock gate.
+#[tokio::test(start_paused = true)]
+async fn mp10_environment_marker_release_wakes_without_advancing_a_poll_timer() {
+    let (store, id) = store();
+    let route = store
+        .guard_environment_use(&id, None, "browser_controller.route")
+        .unwrap();
+    let waiting = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
+    tokio::pin!(waiting);
+    assert!(poll!(&mut waiting).is_pending());
+    drop(route);
+    assert!(
+        poll!(&mut waiting).is_ready(),
+        "MP-10: a settled route must notify its admitted waiter without a 10ms timer"
+    );
+}
+
+#[tokio::test]
+async fn mp11_queue_release_retains_route_ordering_and_lifecycle_exclusion() {
+    let (store, id) = store();
+    let mut route = store
+        .queue_environment_use(&id, None, "browser_controller.route")
+        .await
+        .unwrap();
+    route.release_queue();
+    let queue = store.inner.lock().unwrap().environment_use_queues[&id].clone();
+    drop(
+        queue
+            .admission
+            .try_read()
+            .expect("MP-10: peer I/O must not retain the slice write lock"),
+    );
+    let read = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
+    tokio::pin!(read);
+    assert!(
+        poll!(&mut read).is_pending(),
+        "MP-11: input marker still orders later observation"
+    );
+    assert!(store.try_begin_operation(&id, "slice.stop").is_err());
+    drop(route);
+    let read = read.await.unwrap();
+    assert!(store.try_begin_operation(&id, "slice.stop").is_err());
+    drop(read);
+    store.try_begin_operation(&id, "slice.stop").unwrap();
+}

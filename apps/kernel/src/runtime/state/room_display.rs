@@ -13,7 +13,7 @@ impl KernelRuntimeState {
         let attachment_id = required_request_field(request.attachment_id, "attachment_id")?;
         let viewer_public_key =
             required_request_field(request.viewer_public_key, "viewer_public_key")?;
-        let (slice, _guard) = self
+        let (slice, mut guard) = self
             .admit_room_display(
                 caller,
                 &session_id,
@@ -32,6 +32,7 @@ impl KernelRuntimeState {
                 "Room Environment Selkies display is not running",
             ));
         }
+        guard.release_queue();
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let target = ClientTarget {
@@ -72,7 +73,7 @@ impl KernelRuntimeState {
         attachment_id: &str,
         viewer_public_key: &str,
         slice_ref: &str,
-        frame_read: bool,
+        shared_read: bool,
     ) -> Result<
         (
             crate::slice::SliceRecord,
@@ -134,7 +135,7 @@ impl KernelRuntimeState {
             .queue_environment_use(
                 &slice.id,
                 Some(&session_id),
-                if frame_read {
+                if shared_read {
                     crate::slice::SHARED_DISPLAY_READ_OPERATION
                 } else {
                     "environment.display.open"

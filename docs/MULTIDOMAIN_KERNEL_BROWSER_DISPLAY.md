@@ -684,6 +684,19 @@ worker phase timings too. Preserve exact home/worker/relay/client source and
 binary receipts with every run. Source collector tests establish neither
 timing acceptance nor a completed live drill.
 
+MP-08/MP-10/MP-11 home admission does not hold a per-slice write lock across
+the worker round trip. Exact-lease resume shares display-read admission, then
+releases the queue guard after caller, attachment, key, Room, slice and Running
+checks. Open/control routes also release their queue guard after admission.
+Their use markers remain until I/O finishes, excluding lifecycle changes;
+controller route markers still order later observation/input. Marker admission
+is atomic under the slice store lock, and registered `Notify` waiters replace
+timer polling. Inventory reconciliation uses the existing health-probe checks
+instead of queueing an exclusive controller route. Worker lease serialization,
+observation barriers, Room Actions input authority and 525 resume authority
+remain in their existing services. Focused checks do not establish the real
+one-, two- or four-viewer recovery gate.
+
 MP-08/MP-10/MP-11 519→525 integration: region and native Chrome streams use
 the same `DisplaySessions` lifetime. Resume rechecks the owner lease, native
 source, current geometry/window epoch and protection, retains the encoder, and

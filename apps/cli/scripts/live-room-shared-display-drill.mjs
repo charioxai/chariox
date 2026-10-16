@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import {spawn,execFileSync} from 'node:child_process';
 import {mkdir,writeFile,readFile,stat} from 'node:fs/promises';
-import {homeRequestTimingRow} from './home-request-timing.mjs';
+import {homeRequestTimingSummary} from './home-request-timing.mjs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 const required=name=>{const value=process.env[name];assert(value,`MP-08/MP-10: set ${name}`);return value};
@@ -93,12 +93,7 @@ finally{
  try{
   const file=path.join(evidence,'home-request-timing.jsonl');
   assert((await stat(file)).size<=64*1024*1024,'MP-11: home timing evidence exceeds bound');
-  const rows=(await readFile(file,'utf8')).trim().split('\n').filter(Boolean).map(line=>homeRequestTimingRow('MP-10-PACKET-TIMING '+line));
-  assert(rows.length&&rows.every(Boolean),'MP-11: home timing evidence must contain only allowlisted opaque marks');
-  const starts=new Set(rows.filter(row=>row.stage==='kernel_receive').map(row=>row.packet));
-  const completed=rows.filter(row=>row.stage==='kernel_request_end'&&starts.has(row.packet)).length;
-  assert(completed>0,'MP-10: missing home receive-to-request-end spans');
-  report.home_request_timing={file:'home-request-timing.jsonl',rows:rows.length,completed};
+  report.home_request_timing={file:'home-request-timing.jsonl',...homeRequestTimingSummary(await readFile(file,'utf8'))};
  }catch{
   report.instrumentation_failure='MP-10: missing or invalid home receive/end capture';process.exitCode=1;
  }

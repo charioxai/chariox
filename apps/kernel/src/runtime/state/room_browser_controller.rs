@@ -282,7 +282,7 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        let (slice, _guard) = self
+        let (slice, mut guard) = self
             .admit_room_browser_controller_route(
                 session_id,
                 &slice.id,
@@ -291,6 +291,11 @@ impl KernelRuntimeState {
                 admission_deadline,
             )
             .await?;
+        // MP-08/MP-10/MP-11: release queue ownership before peer I/O; the
+        // retained operation marker still orders input and excludes lifecycle.
+        if let Some(guard) = guard.as_mut() {
+            guard.release_queue();
+        }
         if matches!(command, Command::ClearSecretObservation { .. }) {
             self.settle_slice_observation_revocations(&slice.id).await?;
             return Ok(Response::SecretObservationCleared);
