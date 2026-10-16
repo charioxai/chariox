@@ -212,7 +212,7 @@ export function installMirror2(sanitizeMirrorCss) {
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
-    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false;
+    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false, deferredHidden = [];
     const spend = (bytes) => { if (bytes > 1024 * 1024) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
     const forget = id => {
       const node = nodes.get(id);
@@ -339,7 +339,7 @@ export function installMirror2(sanitizeMirrorCss) {
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
     };
     // Pre-order records; a record's children are the following records naming it.
-    const serializeTree = function* (node, parent, depth = 0) {
+    const serializeTree = function* (node, parent, depth = 0, viewportFirst = false) {
       yield null; // even dropped nodes consume a bounded amount of this task
       if (parent && (!nodes.has(parent) || ['tile', 'mask'].includes(kindOf.get(parent)))) return null;
       const type = node.nodeType;
@@ -358,7 +358,7 @@ export function installMirror2(sanitizeMirrorCss) {
         spend(32); remember(record, node); yield record;
         if (nodes.get(id) !== node) return null;
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; yield* serializeTree(child, id, depth + 1); }
+        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; yield* serializeTree(child, id, depth + 1, viewportFirst); }
         return id;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
@@ -383,7 +383,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
         record.kind = 'frame'; record.tag = 'iframe';
         spend(64); remember(record, node); yield record;
-        yield* serializeTree(nested, id, depth + 1);
+        yield* serializeTree(nested, id, depth + 1, viewportFirst);
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
@@ -396,9 +396,27 @@ export function installMirror2(sanitizeMirrorCss) {
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       yield record;
       if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      for (const child of node.childNodes) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; yield* serializeTree(child, id, depth + 1); }
-      if (node.shadowRoot) yield* serializeTree(node.shadowRoot, id, depth + 1);
+      // MP-08/MP-10/MP-11: a hidden menu/template tree must not precede the
+      // viewport. Keep its native shell in order, then serialize every descendant
+      // on later credits. Global stylesheet owners are never deferred with it.
+      if (viewportFirst && ns === HTML && !['html', 'head', 'body'].includes(tag) && !node.shadowRoot && node.childNodes.length
+          && getComputedStyle(node).display === 'none' && !node.querySelector('style,link[rel~="stylesheet"]')) {
+        deferredHidden.push({ node, id, depth }); progressive = true; return id;
+      }
+      for (const child of node.childNodes) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; yield* serializeTree(child, id, depth + 1, viewportFirst); }
+      if (node.shadowRoot) yield* serializeTree(node.shadowRoot, id, depth + 1, viewportFirst);
       return id;
+    };
+    const serializeSnapshot = function* () {
+      yield* serializeTree(document, null, 0, true);
+      // A packet boundary keeps background bytes off the initial viewport, even
+      // for an ordinary document that would fit the 8 MiB atomic fallback.
+      if (deferredHidden.length) yield false;
+      for (const { node, id, depth } of deferredHidden) {
+        if (nodes.get(id) !== node || kindOf.get(id) !== 'element') continue;
+        for (const child of node.childNodes) yield* serializeTree(child, id, depth + 1);
+      }
+      deferredHidden = [];
     };
     const serialize = (node, parent, out, depth = 0) => {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
@@ -414,6 +432,7 @@ export function installMirror2(sanitizeMirrorCss) {
       for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
+        if (item.value === false) break; // the viewport/background boundary
         if (item.value) out.push(item.value);
         // Carry bounded head CSS with the first large-document viewport prefix
         // (browserux 91599e472); ordinary resets count it inside their 8 MiB cap.
@@ -479,7 +498,7 @@ export function installMirror2(sanitizeMirrorCss) {
       nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      continuation?.return(); continuation = serializeTree(document, null);
+      continuation?.return(); deferredHidden = []; continuation = serializeSnapshot();
       progressive = document.getElementsByTagName('*').length > 10000;
       // A slow task must not publish only half a detailed viewport header.
       // The first prefix has a fixed 1024-visit ceiling; later credits yield

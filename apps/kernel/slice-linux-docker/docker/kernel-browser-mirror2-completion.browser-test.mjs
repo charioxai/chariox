@@ -68,3 +68,37 @@ for (const betweenCredits of [false, true]) test(`MP-10 native completion wakes 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+// MP-08/MP-10/MP-11 PERF4.3.5: hidden headers must not displace the real viewport.
+test('MP-10 viewport prefix precedes hidden header descendants and the continuation keeps every node', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body><header hidden>' + '<span>hidden prefix</span>'.repeat(12000) + '</header><main><h1>Visible destination</h1><input id="login"></main>');
+    await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    assert(first.nodes.some(r => r.kind === 'text' && r.text === 'Visible destination'), 'the first packet includes the visible destination after the hidden header');
+    assert(Buffer.byteLength(JSON.stringify(first)) < 256 * 1024, 'viewport DOM stays within its prefix budget');
+    assert.equal(first.snapshot_complete, false);
+    const seen = new Set(first.nodes.map(r => r.id)); let drained = 0;
+    while (await page.evaluate(() => window.observer.pending())) {
+      const more = await page.evaluate(() => window.observer.drain());
+      assert(!more.resync, 'stable hidden content continues without a reset');
+      for (const op of more.ops) if (op.op === 'children') for (const node of op.nodes) { assert(!seen.has(node.id)); seen.add(node.id); }
+      assert(++drained < 100);
+    }
+    assert(seen.size > 24000, 'all hidden nodes still arrive');
+  } finally { await browser.close(); }
+});
+
+test('MP-11 hidden subtree stylesheet owners stay in the initial cascade', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body><header hidden><style>main{color:rgb(12,34,56)}</style><span>Hidden</span></header><main>Visible destination</main>');
+    await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    assert(first.nodes.some(r => r.tag === 'style' && r.css.includes('12, 34, 56')), 'global CSS remains available before the destination paints');
+    assert(first.nodes.some(r => r.text === 'Visible destination'));
+  } finally { await browser.close(); }
+});
