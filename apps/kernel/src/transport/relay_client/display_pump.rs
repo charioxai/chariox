@@ -62,6 +62,9 @@ impl PumpState {
             if age > STALL {
                 // A stalled gate is sent nothing; reopen on an independent
                 // frame after the reprobe interval (Selkies semantics).
+                if self.gated_at.is_none() {
+                    crate::transport::kernel_browser_display::timing("push_gate_closed", oldest);
+                }
                 let gated = *self.gated_at.get_or_insert(now);
                 if now.saturating_duration_since(gated) < REPROBE {
                     return Gate::Closed;
@@ -71,11 +74,15 @@ impl PumpState {
             } else if age > self.rtt_floor() + GATE_ALLOWANCE {
                 crate::transport::kernel_browser_display::timing("push_oldest_unacked", oldest);
                 if self.gated_at.is_none() {
+                    crate::transport::kernel_browser_display::timing("push_gate_closed", oldest);
                     self.gated_at = Some(now);
                     self.closes.push_back(now);
                 }
                 return Gate::Closed;
             }
+        }
+        if let Some(closed_at) = self.gated_at {
+            crate::transport::kernel_browser_display::timing("push_gate_reopened", closed_at);
         }
         self.gated_at = None;
         while self
@@ -205,6 +212,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         }
         let _ = timeout(Duration::from_secs(1), pump.wake.notified()).await;
     }
+    crate::transport::kernel_browser_display::timing("push_gate_started", Instant::now());
     let daemon_private_key = route.router.relay_private_key();
     let mut last_sent = pump.with(|state| state.acked);
     let (mut idle, mut failures) = (Duration::ZERO, 0u32);
@@ -337,6 +345,23 @@ async fn capture_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08/MP-10/MP-11: real gate state and opt-in trace. The evidence parser
+    // distinguishes closure transitions from repeated closed polling.
+    #[test]
+    fn mp10_gate_trace_observation() {
+        let now = Instant::now();
+        let mut state = PumpState::default();
+        state.acknowledge(0, false, now);
+        assert!(matches!(state.admit(now), Gate::Open(_)));
+        state.sent.push_back((1, now - Duration::from_millis(200)));
+        assert_eq!(state.admit(now), Gate::Closed);
+        assert_eq!(state.admit(now), Gate::Closed);
+        state.acknowledge(1, false, now);
+        assert!(matches!(state.admit(now), Gate::Open(_)));
+        state.sent.push_back((2, now - Duration::from_millis(400)));
+        assert_eq!(state.admit(now), Gate::Closed);
+    }
 
     #[test]
     fn mp10_ack_gate_closes_on_lag_and_lifts_after_ack() {

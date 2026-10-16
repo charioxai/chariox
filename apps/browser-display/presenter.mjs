@@ -84,12 +84,14 @@ export class BrowserDisplayPresenter {
       if(!globalThis.Worker)return null;
       this.prediction?.restore();
       const decoder=this.getWorkerDecoder();this.videoSink.setup(decoder);
-      const result=await decoder.decode(frame,bytes(frame.data),8,true);
+      const payload=bytes(frame.data),receivedAt=frame[Symbol.for('chariox.display.receivedAt')];
+      if(Number.isFinite(receivedAt))this.onTiming('client_receive',receivedAt,{sequence:frame.sequence,receivedAt,decodeSubmittedAt:performance.timeOrigin+performance.now()});
+      const result=await decoder.decode(frame,payload,8,true);
       if(this.closed){result.image.close();throw Error('MD-DISPLAY: presenter closed');}
       try{
         const outcome=await this.videoSink.commit(result,frame);this.outcomes.set(frame,outcome);
-        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,committedAt:outcome.committedAt});
-        if(outcome.drawn)this.onTiming('client_present',outcome.committedAt);
+        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,writtenAt:outcome.writtenAt,committedAt:outcome.committedAt});
+        if(outcome.drawn&&outcome.writtenAt===undefined&&outcome.committedAt!==undefined)this.onTiming('client_present',outcome.committedAt,{sequence:frame.sequence,committedAt:outcome.committedAt});
         return result.image;
       }catch(error){result.image.close();throw error;}
     };

@@ -28,12 +28,12 @@ if(inWorker){
      if(job.sink&&!((frame.displayWidth===job.width&&frame.displayHeight===job.height)||(frame.displayWidth===job.cssWidth&&frame.displayHeight===job.cssHeight)||(job.cssWidth===1920&&job.cssHeight===1080&&frame.displayWidth===1280&&frame.displayHeight===720))){frame.close();fail(channel);return;}
      const deliver=async()=>{
       if(channels.get(channel)!==current){frame.close();return;}
-      let image=frame,committedAt;
+      let image=frame,writtenAt;
       try{
-       if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);committedAt=now();}
+       if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);writtenAt=now();}
        if(channels.get(channel)!==current){image.close();return;}
        current.pending.delete(timestamp);
-       self.postMessage({id:job.id,frame:image,decodedAt,committedAt},[image]);
+       self.postMessage({id:job.id,frame:image,decodedAt,writtenAt},[image]);
       }catch{image.close();fail(channel);}
       finally{if(image!==frame)frame.close();}
      };
@@ -55,7 +55,7 @@ export class WorkerVideoDecoder {
  constructor(WorkerClass=globalThis.Worker){
   this.jobs=new Map();this.channels=new Map();this.next=0;this.closed=false;
   this.worker=new WorkerClass(new URL('./decoder-worker.mjs',import.meta.url),{type:'module',name:'MD-DISPLAY decoder'});
-  this.worker.onmessage=({data})=>{const p=this.jobs.get(data.id);if(!p){data.frame?.close();return}clearTimeout(p.timer);this.jobs.delete(data.id);this.channels.set(p.channel,(this.channels.get(p.channel)??1)-1);if(data.error)p.reject(Error(data.error));else p.resolve(p.sink?{image:data.frame,decodedAt:data.decodedAt,committedAt:data.committedAt}:data.frame)};
+  this.worker.onmessage=({data})=>{const p=this.jobs.get(data.id);if(!p){data.frame?.close();return}clearTimeout(p.timer);this.jobs.delete(data.id);this.channels.set(p.channel,(this.channels.get(p.channel)??1)-1);if(data.error)p.reject(Error(data.error));else p.resolve(p.sink?{image:data.frame,decodedAt:data.decodedAt,writtenAt:data.writtenAt}:data.frame)};
   this.worker.onerror=()=>this.close();
  }
  setSink(writable){this.worker.postMessage({op:'sink',writable},[writable]);}

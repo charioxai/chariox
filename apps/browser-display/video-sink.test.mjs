@@ -13,9 +13,9 @@ test('MP-08/MP-10 native repairs cover only their pixels and retire on the next 
  const sink=new VideoSink(canvas,()=>{});sink.track={stop(){}};sink.canvasOpacity='';sink.canvasPosition='';sink.last={n:1,close(){}};
  try{
   sink.overlay({width:2560,height:1600});assert.deepEqual(drawn,['clear']);assert.equal(canvas.style.opacity,'');
-  await sink.commit({image:{n:2,close(){},clone(){return {n:2,close(){}}}},decodedAt:0,committedAt:1},{key:false});assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);
+  await sink.commit({image:{n:2,close(){},clone(){return {n:2,close(){}}}},decodedAt:0,writtenAt:1},{key:false});assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);
   sink.snapshot(canvas.getContext('2d'));assert.deepEqual(drawn,['clear','clear',2]);
-  await sink.commit({image:{n:3,close(){},clone(){return {n:3,close(){}}}},decodedAt:0,committedAt:1},{key:true});assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);
+  await sink.commit({image:{n:3,close(){},clone(){return {n:3,close(){}}}},decodedAt:0,writtenAt:1},{key:true});assert.equal(canvas.style.opacity,'0');assert.equal(sink.overlayActive,false);
   sink.close({preserveFrame:true});assert.deepEqual(drawn,['clear','clear',2,'clear',3,'flattened']);assert.equal(canvas.style.opacity,'');
  }finally{globalThis.OffscreenCanvas=prior;}
 });

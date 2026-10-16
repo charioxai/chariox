@@ -25,7 +25,7 @@ import {sourceIdentity} from './source-identity.mjs';
 import {memoryFloorGiB} from './drill-resources.mjs';
 import { summarizeStages } from './drill-stages.mjs';
 import {stressProtection} from './drill-protection.mjs';
-import {KernelLogCapture} from './drill-kernel-log.mjs';
+import {KernelLogCapture,summarizePushGate} from './drill-kernel-log.mjs';
 import {collectRelayDiagnostics} from './drill-teardown.mjs';
 import { launchOwned, waitChild, stopGroup, checkChild } from './drill-owned-process.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -535,6 +535,7 @@ finally {
   if(/^(CPU\.[\w.-]+\.cpuprofile|(?:encoder|capture)\.\d+\.prof)$/.test(name))await cp(path.join(root,'profiles',name),path.join(output,name));
  }
  receipt.host_timings=traces;receipt.kernel_timings=log.timings();
+ receipt.ack_gate=summarizePushGate(receipt.kernel_timings);
  receipt.diagnostic_errors=log.diagnosticErrors;
  if(receipt.diagnostic_errors.length){receipt.status='RED';receipt.error='MP-10: invalid kernel timing JSON';process.exitCode=1}
  receipt.actual_encoders=[...new Set(traces.filter(t=>t.stage.startsWith('motion_backend_')).map(t=>t.stage.slice('motion_backend_'.length)))];

@@ -25,3 +25,14 @@ export class KernelLogCapture {
    await writeFile(path.join(directory,`kernel.${stream}.log`),Buffer.concat(this.#streams[stream]));
  }
 }
+
+// MP-08/MP-10/MP-11: polling a closed gate is not another closure. Older
+// builds/disabled diagnostics have unknown closure counts, never a false zero.
+export function summarizePushGate(records) {
+ const samples=stage=>records.filter(row=>row.stage===stage&&Number.isFinite(row.duration_ms)).map(row=>row.duration_ms);
+ const observed=records.some(row=>['push_gate_started','push_gate_closed','push_gate_reopened'].includes(row.stage));
+ return {observed,closures:observed?samples('push_gate_closed').length:null,
+  reopened:observed?samples('push_gate_reopened').length:null,
+  closed_at_age_ms:samples('push_gate_closed'),closed_duration_ms:samples('push_gate_reopened'),
+  oldest_unacked_poll_age_ms:samples('push_oldest_unacked'),frame_ack_age_ms:samples('push_frame_ack')};
+}

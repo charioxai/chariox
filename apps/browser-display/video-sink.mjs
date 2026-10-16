@@ -3,7 +3,7 @@
 // No producer or protection-policy changes.
 export class VideoSink {
  constructor(canvas,onTiming,{direct=false}={}){
-  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;
+  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
   this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
@@ -21,6 +21,7 @@ export class VideoSink {
   // MP-08/MP-10/MP-11: video pixels use this sibling, not the repair overlay.
   if(this.direct&&!track)video.getContext?.('2d',{desynchronized:true});
   this.track=track;this.video=video;
+  if(this.canvas.dataset){delete this.canvas.dataset.displayPresentedSequence;delete this.canvas.dataset.displayCommittedAt;}
   if(track){video.muted=true;video.autoplay=true;video.playsInline=true;video.srcObject=new MediaStream([track]);}
   video.setAttribute?.('aria-hidden','true');
   if(this.canvas.dataset)this.canvas.dataset.displaySink=track?'track':'canvas';
@@ -37,7 +38,7 @@ export class VideoSink {
   sync();
   if(globalThis.ResizeObserver){this.resize=new ResizeObserver(sync);this.resize.observe(this.canvas);this.resize.observe(parent);}
   if(globalThis.MutationObserver){this.mutation=new MutationObserver(sync);this.mutation.observe(this.canvas,{attributes:true,attributeFilter:['style','hidden','class']});}
-  if(track)video.play().catch(()=>{});
+  if(track){this.observePresentation(video);video.play().catch(()=>{});}
   return Boolean(track);
  }
  restoreStyle(){
@@ -46,16 +47,48 @@ export class VideoSink {
   if(this.canvasBackground!==undefined)this.canvas.style.background=this.canvasBackground;
   if(this.parent){this.parent.style.position=this.parentPosition;this.parent=null;}
  }
- stopTrack(){this.resize?.disconnect();this.mutation?.disconnect();this.resize=null;this.mutation=null;this.track?.stop();this.track=null;if(this.video){this.video.pause?.();this.video.srcObject=null;this.video.remove();this.video=null;}this.restoreStyle();}
+ // MP-08/MP-10/MP-11: writer completion only queues pixels. Join rVFC's
+ // exact media timestamp to the decoded image, including callbacks arriving
+ // before the worker reply. These bounded maps hold numeric metadata only.
+ observePresentation(video){
+  if(this.closed||this.video!==video||!video.requestVideoFrameCallback)return;
+  this.videoCallback=video.requestVideoFrameCallback((_now,metadata)=>{
+   if(this.closed||this.video!==video)return;
+   const timestamp=Math.round(metadata.mediaTime*1000000);
+   if(Number.isSafeInteger(timestamp)&&Number.isFinite(metadata.presentationTime)){
+    const mark={committedAt:performance.timeOrigin+metadata.presentationTime,expectedDisplayAt:performance.timeOrigin+metadata.expectedDisplayTime,presentedFrames:metadata.presentedFrames};
+    this.presentationMarks.set(timestamp,mark);
+    this.publishPresentation(timestamp);
+    while(this.presentationMarks.size>32)this.presentationMarks.delete(this.presentationMarks.keys().next().value);
+   }
+   this.observePresentation(video);
+  });
+ }
+ publishPresentation(timestamp){
+  const job=this.presentationJobs.get(timestamp),mark=this.presentationMarks.get(timestamp);
+  if(!job||!mark)return;
+  this.presentationJobs.delete(timestamp);this.presentationMarks.delete(timestamp);
+  Object.assign(job.outcome,mark);
+  if(timestamp>this.lastPresentedTimestamp&&this.canvas.dataset){this.lastPresentedTimestamp=timestamp;this.canvas.dataset.displayPresentedSequence=String(job.sequence);this.canvas.dataset.displayCommittedAt=String(mark.committedAt);}
+  this.onTiming('client_present',job.outcome.writtenAt,{sequence:job.sequence,...mark,decodedAt:job.outcome.decodedAt,writtenAt:job.outcome.writtenAt,mediaTimestamp:timestamp});
+  for(const [older,pending]of this.presentationJobs)if(older<timestamp){this.presentationJobs.delete(older);this.onTiming('client_present_drop',pending.outcome.decodedAt,{sequence:pending.sequence});}
+ }
+ stopTrack(){if(this.videoCallback!==undefined)this.video?.cancelVideoFrameCallback?.(this.videoCallback);this.videoCallback=undefined;this.presentationJobs.clear();this.presentationMarks.clear();this.lastPresentedTimestamp=-Infinity;this.resize?.disconnect();this.mutation?.disconnect();this.resize=null;this.mutation=null;this.track?.stop();this.track=null;if(this.video){this.video.pause?.();this.video.srcObject=null;this.video.remove();this.video=null;}this.restoreStyle();}
  // Called only after the ordered video job passed the worker geometry check.
  async commit(result,frame){
   const image=result.image??result;
   if(this.closed)return {drawn:false};
   const decodedAt=result.decodedAt??performance.timeOrigin+performance.now();
-  if(result.committedAt!==undefined){
+  if(result.writtenAt!==undefined){
    this.remember(image);
    this.retireOverlay();
-   return {...result,drawn:true};
+   const outcome={decodedAt,writtenAt:result.writtenAt,drawn:true};
+   if(Number.isSafeInteger(image.timestamp)&&this.video?.requestVideoFrameCallback){
+    this.presentationJobs.set(image.timestamp,{sequence:frame.sequence,outcome});
+    this.publishPresentation(image.timestamp);
+    while(this.presentationJobs.size>32)this.presentationJobs.delete(this.presentationJobs.keys().next().value);
+   }
+   return outcome;
   }
   return new Promise(resolve=>{
    this.pending.push({image,frame,decodedAt,resolve});
