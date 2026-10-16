@@ -391,14 +391,14 @@ export class InputArbiter {
       const tab = await activeAdmitted();
       if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      return {connection, sessionId, tab};
+      const {frameTree} = await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      return {connection, sessionId, tab, frameTree};
     };
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      const {connection, sessionId, tab} = await current();
-      const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
+      // PERF_AUDIT 4.2.7: the frame tree that just fenced the document (one CDP read per key).
+      const {connection, sessionId, tab, frameTree} = await current();
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
       const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.

@@ -571,3 +571,18 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
   } finally { await real.close(); }
 });
+
+// PERF_AUDIT 4.2.7 (C2): a key for the page reads the document's frame tree once; the fence that asserted the
+// document already holds it (the focus world and the sensitive-field check still run on every key).
+test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
+  const sent = [];
+  const connection = { send: async (method) => (sent.push(method), method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {}) };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const arbiter = new InputArbiter(host, {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
+  assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "text", text: "a" } } }), { dispatched: true });
+  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 1);
+  assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
+});
