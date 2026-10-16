@@ -1315,3 +1315,16 @@ test('MP-08/MP-10/MP-11 negotiated font requirements cannot silently use legacy 
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true);
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: a standalone transparent canvas does not expose the web app theme.
+for (const [name, css] of [['transparent', ''], ['dark', 'html{color-scheme:dark}'], ['author', 'html{background:rgb(231,17,51)}']]) test('MP-08/MP-10/MP-11 standalone canvas background ' + name, async () => {
+  const page = await viewer(), native = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await native.setContent('<!doctype html><style>' + css + '</style><p>Visible text</p>');
+    await page.evaluate(() => { document.body.style.cssText = 'margin:0;background:#ebebeb'; });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'head' }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'style', css }, { id: 'n5', parent: 'n2', kind: 'element', tag: 'body' }, { id: 'n6', parent: 'n5', kind: 'element', tag: 'p' }, { id: 'n7', parent: 'n6', kind: 'text', text: 'Visible text' }]));
+    const { decodePng } = await import('../../apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs');
+    const pixel = async page => Array.from(decodePng((await page.screenshot({ clip: { x: 500, y: 100, width: 1, height: 1 } })).toString('base64')).pixels.slice(0, 3));
+    assert.deepEqual(await pixel(page), await pixel(native), 'the viewer preserves the standalone source canvas, including source color-scheme and author backgrounds');
+  } finally { await page.close(); await native.close(); }
+});

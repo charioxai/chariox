@@ -1,5 +1,27 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 standalone canvas fidelity (2026-10-16)
+
+Real BBC source-versus-viewer screenshots show a white native canvas becoming
+viewer-theme gray through the transparent outer sandbox. Give only that outer
+iframe a white backing, preserving author backgrounds and the source document's
+own dark color scheme. Child iframe transparency and the script-free sandbox do
+not change. A real-Chromium pixel regression fails for the transparent canvas on
+the base and passes for transparent, dark and author-colored documents after.
+This is supplementary evidence; fresh real-site/full-DPR handover and recordings
+remain required before acceptance.
+
+## MP-08 / MP-10 / MP-11 stale mirror credit retirement (2026-10-16)
+
+A navigation can retire a pending observer drain before it returns an eviction.
+The old credit must refuse before resnapshotting, resource work or another
+renderer identity query; the ordered document event already proves retirement.
+The next credit takes the existing native-preview/new-document path. Unknown
+document state retains the fresh renderer check. This tightens the existing
+observation fence and adds no wire or input authority. Supplementary fail-first
+races cover evicted, ordinary and rejected drains; real hosted handover remains
+an acceptance obligation.
+
 ## MP-08 / MP-10 / MP-11 native document font requirements (2026-10-16)
 
 The real BBC article can have an extra failed viewer fallback that the native
