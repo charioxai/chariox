@@ -20,8 +20,9 @@ mod projection;
 #[cfg(test)]
 #[allow(unused_imports)]
 use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
+use projection::MAX_OUTLINE_INLINE_CHARS;
 #[cfg(test)]
-use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS};
+use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB};
 use projection::{
     event_needs_outline_blob, event_projects_as_outline_entry, has_content,
     outline_blob_content_events, outline_blobs_from_events, outline_page_entry_from_event,
@@ -576,6 +577,75 @@ fn ensure_unique_outline_turn_id(
     }
 }
 
+/// Consecutive fragments of one streamed provider message (same run and merge
+/// key, whitespace-only ones included) project as one inline entry, so a
+/// token-streamed answer neither floods the inline budget nor loses a lone
+/// space between words. A message too long to inline stays per fragment.
+fn outline_inline_entry_groups<'a>(
+    events: &'a [HistoryEvent],
+    prompt_sequence: u64,
+    summary_sequences: &BTreeSet<u64>,
+) -> Vec<Vec<&'a HistoryEvent>> {
+    let continues_message = |last: &HistoryEvent, event: &HistoryEvent| {
+        last.kind == HistoryEventKind::ProviderOutput
+            && event.kind == HistoryEventKind::ProviderOutput
+            && last.provider_run_id == event.provider_run_id
+            && history_event_merge_key(event).is_some()
+            && history_event_merge_key(last) == history_event_merge_key(event)
+    };
+    let mut groups = Vec::<Vec<&HistoryEvent>>::new();
+    let mut open = false;
+    for event in events {
+        if event.sequence == prompt_sequence || summary_sequences.contains(&event.sequence) {
+            continue;
+        }
+        if !event_projects_as_outline_entry(event) || event_needs_outline_blob(event) {
+            open = false;
+            continue;
+        }
+        let continues = open
+            && groups
+                .last()
+                .and_then(|group| group.last())
+                .is_some_and(|last| continues_message(last, event));
+        if continues
+            && event
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.is_empty())
+        {
+            if let Some(group) = groups.last_mut() {
+                group.push(event);
+            }
+        } else if has_content(event) {
+            groups.push(vec![event]);
+            open = true;
+        }
+    }
+    groups
+        .into_iter()
+        .flat_map(|group| {
+            let chars = group
+                .iter()
+                .map(|event| {
+                    event
+                        .content
+                        .as_deref()
+                        .map_or(0, |content| content.chars().count())
+                })
+                .sum::<usize>();
+            if chars > MAX_OUTLINE_INLINE_CHARS {
+                group
+                    .into_iter()
+                    .map(|event| vec![event])
+                    .collect::<Vec<_>>()
+            } else {
+                vec![group]
+            }
+        })
+        .collect()
+}
+
 fn outline_turn_from_events(
     prompt: &HistoryEvent,
     events: Vec<HistoryEvent>,
@@ -610,20 +680,15 @@ fn outline_turn_from_events_with_lifecycle(
         .map(|event| event.sequence)
         .collect::<BTreeSet<_>>();
     let summary = outline_page_entry_from_event_group(&summary_events);
-    let inline_entry_candidates = events
-        .iter()
-        .filter(|event| event.sequence != prompt.sequence)
-        .filter(|event| !summary_sequences.contains(&event.sequence))
-        .filter(|event| has_content(event))
-        .filter(|event| event_projects_as_outline_entry(event))
-        .filter(|event| !event_needs_outline_blob(event))
-        .collect::<Vec<_>>();
-    let overflow_entry_count = inline_entry_candidates
+    let inline_entry_groups =
+        outline_inline_entry_groups(&events, prompt.sequence, &summary_sequences);
+    let overflow_entry_count = inline_entry_groups
         .len()
         .saturating_sub(MAX_OUTLINE_INLINE_ENTRIES_PER_TURN);
-    let mut forced_blob_sequences = inline_entry_candidates
+    let mut forced_blob_sequences = inline_entry_groups
         .iter()
         .take(overflow_entry_count)
+        .flatten()
         .map(|event| event.sequence)
         .collect::<BTreeSet<_>>();
     if summary
@@ -632,11 +697,10 @@ fn outline_turn_from_events_with_lifecycle(
     {
         forced_blob_sequences.extend(summary_sequences.iter().copied());
     }
-    let entries = inline_entry_candidates
-        .into_iter()
+    let entries = inline_entry_groups
+        .iter()
         .skip(overflow_entry_count)
-        .cloned()
-        .filter_map(outline_page_entry_from_event)
+        .filter_map(|group| outline_page_entry_from_event_group(group))
         .collect::<Vec<_>>();
     let blobs = outline_blobs_from_events(
         &events,
