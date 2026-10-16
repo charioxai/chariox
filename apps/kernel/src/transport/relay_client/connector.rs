@@ -851,7 +851,8 @@ async fn run_daemon_relay_connector_inner(
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
-                let (transport_receipt_tx, mut transport_receipt_rx) = mpsc::channel::<String>(8);
+                let (transport_receipt_tx, mut transport_receipt_rx) =
+                    mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);

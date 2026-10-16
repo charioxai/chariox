@@ -1131,12 +1131,19 @@ overlapping offsets, unknown fields, nested transport frames and invalid
 checkpoints close the connection without including payloads in errors.
 
 All data shares one 64 KiB unacknowledged wire window, including frame metadata,
-small replies, binary envelopes and checkpoints. Receipts must match the oldest
-outstanding wire frame, across IDs; a receipt for another stream cannot release
-credit. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
+small replies, binary envelopes and checkpoints. A single-chunk message (at most
+16 KiB) may additionally use a 32 KiB reserve, so an interactive frame never
+waits a round trip behind a window full of bulk data. Receipts must match the
+oldest outstanding wire frame, across IDs; a receipt for another stream cannot
+release credit. Each side queues receipts for at most the frames that window
+plus reserve admits (`MAX_UNACKED_FRAMES`); a conforming peer acknowledging a
+whole window in one burst never overflows the queue, and an overflow closes the
+connection with a logged `receipt_queue_full` end reason. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
 can progress concurrently (e.g. catalog plus first viewport), with one lane each
-reserved for requests and events. Requests and display events retain FIFO within their
-respective lanes. Only events of this socket's acknowledged `kernel_browser_display`
+reserved for requests and events. Requests retain FIFO within their lane and
+display events retain FIFO per subscription, so a small frame of one display
+stream (the browser band) never queues behind another stream's bulk frames;
+when several messages can start, a single-chunk message starts first. Only events of this socket's acknowledged `kernel_browser_display`
 route may pass an unfinished correlated response; ordinary terminal/peer events
 still wait behind the earlier snapshot. The relay uses its existing route scope
 and sender binding, never decrypted payloads, to choose the scheduling lane. Unknown
