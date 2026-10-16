@@ -41,30 +41,35 @@ impl CommandRouter {
         let LocalDaemonResponse::SessionAttached { attachment } = attached else {
             return Err(unexpected_response());
         };
-        let selected = match self
-            .runtime_state
-            .session_snapshot(&request.session_id)
-            .await
-        {
-            Ok(session) => {
-                session.redacted_for_user(&crate::runtime::command::command_caller_user_id(command))
-            }
-            Err(error) => {
-                return Err(self
-                    .cleanup_failed_session_view(command, attachment.id(), error)
-                    .await)
-            }
-        };
-        let agent_ids = initial_view_agent_ids(&selected, request.preferred_agent_id.as_deref());
-        let (state_result, history_result) = tokio::join!(
-            self.session_view_component(
+        // Read the ordinary caller-protected state once. Use that SAME state
+        // to select the six-pane history group and return it to the client.
+        let state = match self
+            .session_view_component(
                 command,
                 "state",
                 LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
                     session_id: request.session_id.clone(),
-                })
-            ),
-            self.session_view_component(
+                }),
+            )
+            .await
+        {
+            Ok(state @ LocalDaemonResponse::SessionState { .. }) => state,
+            result => {
+                let error = result.err().unwrap_or_else(unexpected_response);
+                return Err(self
+                    .cleanup_failed_session_view(command, attachment.id(), error)
+                    .await);
+            }
+        };
+        let LocalDaemonResponse::SessionState {
+            session: selected, ..
+        } = &state
+        else {
+            unreachable!()
+        };
+        let agent_ids = initial_view_agent_ids(selected, request.preferred_agent_id.as_deref());
+        let mut history = match self
+            .session_view_component(
                 command,
                 "history",
                 LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
@@ -73,19 +78,13 @@ impl CommandRouter {
                     latest_prompt_count: Some(1),
                     cursor: None,
                     include_prefetched_content: false,
-                })
-            ),
-        );
-        let (state, mut history) = match (state_result, history_result) {
-            (
-                Ok(state @ LocalDaemonResponse::SessionState { .. }),
-                Ok(history @ LocalDaemonResponse::SessionHistoryOutline { .. }),
-            ) => (state, history),
-            (state, history) => {
-                let error = state
-                    .err()
-                    .or_else(|| history.err())
-                    .unwrap_or_else(unexpected_response);
+                }),
+            )
+            .await
+        {
+            Ok(history @ LocalDaemonResponse::SessionHistoryOutline { .. }) => history,
+            result => {
+                let error = result.err().unwrap_or_else(unexpected_response);
                 return Err(self
                     .cleanup_failed_session_view(command, attachment.id(), error)
                     .await);
