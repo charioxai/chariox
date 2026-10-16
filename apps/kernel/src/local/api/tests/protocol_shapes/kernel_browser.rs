@@ -514,3 +514,20 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     let ack: LocalDaemonResponse = serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(ack).unwrap(), snapshot["ack_response"]);
 }
+
+// MP-08/MP-10/MP-11: allocated 546/154 advertises page video independently of the band.
+#[test]
+fn mp08_mp10_mp11_browser_page_display_546_154_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 546);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 154);
+    let bytes = include_bytes!("browser-page-display-546.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "dff67a5c7b0c89e10792975333966c391faa0ff95a4d0acb2e5cef3a1f0e68e1"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for value in snapshot["responses"].as_array().unwrap() {
+        let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), *value);
+    }
+}

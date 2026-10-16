@@ -17,12 +17,8 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
         "dd49c2d3f1da05dceb925d3389022f4a1c52eadd9add9c7b1e2e4044eb099bc2"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(snapshot["local"], 532);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 532);
-    assert_eq!(
-        snapshot["peer"],
-        140
-    );
+    assert!(snapshot["local"].as_u64().unwrap() <= u64::from(LOCAL_DAEMON_PROTOCOL_VERSION));
+    assert!(snapshot["peer"].as_u64().unwrap() <= u64::from(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION));
     assert_eq!(snapshot["capability"], TRANSPORT_QUERY);
     assert_eq!(snapshot["bypass_scope"], DISPLAY_EVENT_SCOPE);
     for (name, value) in [
