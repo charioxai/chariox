@@ -60,29 +60,36 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     // Only replayable kernel-owned stores. No App data, credentials, Vault,
     // provider history or transcript database is traversed.
-    for table in [
-        "durable_state_events",
-        "durable_state_snapshots",
-        "durable_state_checkpoint_entities",
-        "durable_state_owner_checkpoint_entities",
-        "durable_workflow_hot_entities",
+    for (table, kind_column) in [
+        ("durable_state_events", "kind"),
+        ("durable_state_snapshots", "''"),
+        ("durable_state_checkpoint_entities", "entity_kind"),
+        ("durable_state_owner_checkpoint_entities", "entity_kind"),
+        ("durable_workflow_hot_entities", "entity_kind"),
     ] {
         let mut cursor = i64::MIN;
         loop {
             let query = format!(
-                "SELECT rowid,payload_json FROM {table} WHERE rowid>?1 ORDER BY rowid LIMIT 128"
+                "SELECT rowid,{kind_column},payload_json FROM {table} WHERE rowid>?1 ORDER BY rowid LIMIT 128"
             );
             let rows = tx
                 .prepare(&query)?
                 .query_map([cursor], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             if rows.is_empty() {
                 break;
             }
-            for (id, encoded) in rows {
+            for (id, kind, encoded) in rows {
                 cursor = id;
+                if !is_replay_authority(table, &kind) {
+                    continue;
+                }
                 // Decode JSON syntax only, never a retired Skill/Grant type.
                 let mut value: Value =
                     serde_json::from_str(&encoded).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -101,6 +108,87 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2','authority_reset','complete',0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value='complete'", [])?;
     tx.commit()
+}
+
+// Do not interpret arbitrary event/App data merely because its JSON has an
+// extension-shaped field. Only record kinds consumed by runtime restoration
+// participate in the destructive reset; unknown payloads stay byte-identical.
+fn is_replay_authority(table: &str, kind: &str) -> bool {
+    match table {
+        "durable_state_events" => matches!(
+            kind,
+            "session.created"
+                | "session.updated"
+                | "session.ended"
+                | "session.deleted"
+                | "sessions.updated"
+                | "agents.created"
+                | "workflow.publication.materialized"
+                | "workflow.publication.reconfigured"
+                | "session.prompt_state.updated"
+                | "workflow.runtime.updated"
+                | "agent.created"
+                | "agent.deleted"
+                | "agent.updated"
+                | "agent.mcp_granted"
+                | "agent.mcp_revoked"
+                | "agent.skill_granted"
+                | "agent.skill_revoked"
+                | "agent.extension_granted"
+                | "agent.extension_revoked"
+                | "agent.runtime_profile_updated"
+                | "slice.created"
+                | "slice.updated"
+                | "slice.deleted"
+                | "slice.state.saved"
+                | "slice.state.deleted"
+                | "slice.backup.created"
+                | "slice.backup.restore.started"
+                | "slice.backup.restore.committed"
+                | "slice.backup.restore.rolled_back"
+                | "slice.backup.restore.acknowledged"
+        ),
+        "durable_state_snapshots" => true,
+        "durable_workflow_hot_entities" => matches!(
+            kind,
+            "workflow" | "queued_prompt" | "publication" | "publication_snapshot" | "schedule"
+        ),
+        "durable_state_checkpoint_entities" | "durable_state_owner_checkpoint_entities" => {
+            matches!(
+                kind,
+                "sessions"
+                    | "agents"
+                    | "prompt_private_states"
+                    | "slices"
+                    | "slice_saved_states"
+                    | "slice_backups"
+                    | "pending_slice_backup_restores"
+                    | "pending_slice_backup_restore_acknowledgements"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn retire_hidden_context(context: &str) -> String {
+    let mut cleaned = context.to_owned();
+    for (open, close) in [
+        (
+            "<skill-context-instructions>",
+            "</skill-context-instructions>",
+        ),
+        ("<chariox_skill", "</chariox_skill>"),
+    ] {
+        while let Some(start) = cleaned.find(open) {
+            let Some(end) = cleaned[start..].find(close) else {
+                // A partial component must not leave a replayable instruction
+                // body behind. This is hidden execution state, never history.
+                return String::new();
+            };
+            cleaned.replace_range(start..start + end + close.len(), "");
+        }
+    }
+    cleaned
 }
 
 fn legacy_grant(value: &Value) -> bool {
@@ -135,6 +223,11 @@ fn retire(value: &mut Value) {
                             grants.retain(|grant| !legacy_grant(grant));
                         }
                     }
+                    "hidden_system_context" => {
+                        if let Some(context) = field.as_str() {
+                            *field = Value::String(retire_hidden_context(context));
+                        }
+                    }
                     "skill_grants" | "required_skills" | "skill_selections" => {
                         *field = Value::Array(vec![])
                     }
@@ -147,11 +240,23 @@ fn retire(value: &mut Value) {
                     "active_prompt" if queued_selection(field) => *field = Value::Null,
                     // Typed structural edges only: user JSON, schemas, output and
                     // historical text must never be treated as replay authority.
-                    "agent" | "default_agent" | "agents" | "session" | "sessions" | "snapshot"
-                    | "requirements" | "workflow" | "workflows" | "nodes" | "definition"
-                    | "prompt_runtime" | "active_prompt" | "prompt_state" | "state" => {
-                        retire(field)
-                    }
+                    "agent"
+                    | "default_agent"
+                    | "agents"
+                    | "session"
+                    | "sessions"
+                    | "snapshot"
+                    | "requirements"
+                    | "workflow"
+                    | "workflows"
+                    | "nodes"
+                    | "definition"
+                    | "prompt_runtime"
+                    | "active_prompt"
+                    | "prompt_state"
+                    | "state"
+                    | "private_states"
+                    | "prompt_private_states" => retire(field),
                     "prompt_states" => {
                         if let Some(states) = field.as_object_mut() {
                             states.values_mut().for_each(retire);
@@ -304,6 +409,105 @@ mod tests {
         retire(&mut value);
         assert_eq!(value, original);
     }
+    // MP-08 / MP-10 / MP-11: reset only runtime replay authority.
+    #[test]
+    fn skill_reset_preserves_unrelated_application_event_payloads_byte_for_byte() {
+        let mut db = database();
+        let original = r#"{ "extension_grants": [{"kind":"skill","name":"a field in user data"}], "state": {"required_skills":["documented example"]} }"#;
+        db.execute(
+            "INSERT INTO durable_state_events VALUES (1,'app','app.user.updated','app-1',1,?1)",
+            [original],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let preserved: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_events WHERE event_id='app'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved, original,
+            "application data is not an old instruction authority"
+        );
+    }
+    #[test]
+    fn skill_reset_clears_private_instruction_components_without_erasing_other_context() {
+        let mut value = json!({"private_states":[{"session_id":"s", "prompt_id":"p",
+            "hidden_system_context":"before\n<skill-context-instructions>\nold guidance\n</skill-context-instructions>\nafter",
+            "source_user_id":"owner"}],
+            "prompt_private_states":[{"session_id":"s", "prompt_id":"p2",
+            "hidden_system_context":"<chariox_skill name=\"review\">old body</chariox_skill>\nkeep"}],
+            "queued_prompts":[{"id":"p","prompt":"Explain the diff"}],
+            "history":[{"hidden_system_context":"<chariox_skill>historical text</chariox_skill>"}]});
+        retire(&mut value);
+        assert_eq!(
+            value["private_states"][0]["hidden_system_context"],
+            "before\n\nafter"
+        );
+        assert_eq!(value["private_states"][0]["source_user_id"], "owner");
+        assert_eq!(
+            value["prompt_private_states"][0]["hidden_system_context"],
+            "\nkeep"
+        );
+        assert_eq!(value["queued_prompts"][0]["prompt"], "Explain the diff");
+        assert_eq!(
+            value["history"][0]["hidden_system_context"],
+            "<chariox_skill>historical text</chariox_skill>"
+        );
+    }
+    #[test]
+    fn skill_reset_drops_malformed_private_instruction_context_instead_of_replaying_a_body() {
+        let mut value = json!({"private_states":[{"hidden_system_context":
+            "context\n<skill-context-instructions>\nold body without its close"}]});
+        retire(&mut value);
+        assert_eq!(value["private_states"][0]["hidden_system_context"], "");
+    }
+
+    #[test]
+    fn skill_reset_retires_batch_and_publication_materialization_events() {
+        let mut db = database();
+        for (index, kind) in [
+            "agents.created",
+            "sessions.updated",
+            "workflow.publication.materialized",
+            "workflow.publication.reconfigured",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let value=json!({"agents":[{"extension_grants":[{"kind":"skill","name":"old"},{"kind":"mcp","name":"keep"}]}],
+                "session":{"prompt_states":{"agent":{"queued_prompts":[{"prompt":"Use $review"}]}}}}).to_string();
+            db.execute(
+                "INSERT INTO durable_state_events VALUES (?1,?2,?3,'subject',1,?4)",
+                rusqlite::params![index as i64, format!("e-{index}"), kind, value],
+            )
+            .unwrap();
+        }
+        initialize(&mut db).unwrap();
+        let rows = db
+            .prepare("SELECT kind,payload_json FROM durable_state_events")
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for (kind, encoded) in rows {
+            let value: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(
+                value["agents"][0]["extension_grants"],
+                json!([{"kind":"mcp","name":"keep"}]),
+                "{kind}"
+            );
+            assert_eq!(
+                value["session"]["prompt_states"]["agent"]["queued_prompts"],
+                json!([]),
+                "{kind}"
+            );
+        }
+    }
+
     fn database() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(super::super::DURABLE_STATE_SCHEMA).unwrap();
