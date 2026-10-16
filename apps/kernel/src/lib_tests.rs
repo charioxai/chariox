@@ -452,7 +452,7 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "37d71e28b26468ad2e53f85c139b50156b9c20cbe7b9d6009d7337714b4f54d6"
+        "6db204e53de8ff8b08350ecca1d80f80ac027a0665b43cf82d175a4ac610f221"
     );
 }
 

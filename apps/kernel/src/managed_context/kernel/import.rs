@@ -2251,7 +2251,8 @@ mod tests {
         };
 
         let receipt = import_kernel_context(request.clone()).expect("kernel context should import");
-        assert_eq!(receipt.extension_count, 4);
+        // MP-08 / MP-10 / MP-11: Skill is no longer an Extension.
+        assert_eq!(receipt.extension_count, 3);
         assert_eq!(receipt.dependency_count, 0);
         assert_eq!(
             import_kernel_context(request.clone()).expect("exact import should replay"),

@@ -202,14 +202,14 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     },
     // MP-08 / MP-10 / MP-11: instruction operations have no extension grant path.
     MetaCommandDoc {
-        name: "skills list", aliases: &["skills list"],
+        name: "skills list", aliases: &["skills", "skills list", "skills ls"],
         usage: "skills list", examples: &[], tags: &["skills", "instructions"],
         intents: &["list skill instructions"], scope: "session", mutates: false,
         policy: MetaCommandPolicy::Allow, authority: "home catalog",
         routed: true, description: "Discover applicable Auto skill metadata from the home catalog. Manual and Off instructions are not model-discoverable.",
     },
     MetaCommandDoc {
-        name: "skills load", aliases: &["skills load"],
+        name: "skills load", aliases: &["skills load", "skills show", "skills get"],
         usage: "skills load <skill-id>", examples: &[], tags: &["skills", "instructions"],
         intents: &["load skill instructions"], scope: "session", mutates: false,
         policy: MetaCommandPolicy::Allow, authority: "home catalog",
