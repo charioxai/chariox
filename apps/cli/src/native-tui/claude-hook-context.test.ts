@@ -1,4 +1,4 @@
-// MP-08 / MP-10 / MP-11: real generated hook must fail a selected-body timeout.
+// MP-08 / MP-10 / MP-11: generated hooks preserve ordinary admission and honor kernel selection failures.
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -7,7 +7,7 @@ import path from "node:path"
 import test from "node:test"
 import { writeClaudeHookHandler } from "./claude-hook-handler.js"
 
-async function hook(prompt: string, kernel = false) {
+async function hook(prompt: string, kernel = false, context = "") {
   const dir = await mkdtemp(path.join(tmpdir(), "skillsp-hook-"))
   try {
     const handler = path.join(dir, "hook.mjs")
@@ -18,7 +18,7 @@ async function hook(prompt: string, kernel = false) {
       await writeFile(handler, script[1]!)
     } else await writeClaudeHookHandler(handler)
     await mkdir(path.join(dir, "responses"))
-    await writeFile(path.join(dir, "context"), "")
+    await writeFile(path.join(dir, "context"), context)
     const child = spawn("node", [handler], {
       env: { ...process.env, CHARIOX_HOME: dir,
         CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK: "0",
@@ -35,8 +35,8 @@ async function hook(prompt: string, kernel = false) {
       events: (await readFile(path.join(dir, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)) }
   } finally { await rm(dir, { recursive: true, force: true }) }
 }
-test("selected Chariox skill cannot continue with empty context after timeout", { timeout: 10_000 }, async () => {
-  const { result, events } = await hook("$review inspect source")
+test("kernel-resolved selection failure blocks the release hook", { timeout: 10_000 }, async () => {
+  const { result, events } = await hook("$review inspect source", false, "<chariox-skill-selection-error>delivery failed")
   assert.equal(events.some(e => e.hook_event_name === "UserPromptSubmit"), false)
   assert.equal(result.decision, "block")
   assert.match(result.reason, /skill.*context.*refresh|skill.*context.*retry/i)
@@ -50,8 +50,8 @@ test("ordinary prompt without skills still works when no skill bridge replies", 
 })
 
 // Execute the production kernel's generated hook as well as the release utility.
-test("kernel hook blocks a selected skill when its context delivery times out", { timeout: 10_000 }, async () => {
-  const { result, events } = await hook("$review inspect source", true)
+test("kernel-resolved selection failure blocks the kernel hook", { timeout: 10_000 }, async () => {
+  const { result, events } = await hook("$review inspect source", true, "<chariox-skill-selection-error>delivery failed")
   assert.equal(events.some(e => e.hook_event_name === "UserPromptSubmit"), false)
   assert.equal(result.decision, "block")
   assert.match(result.reason, /skill.*context.*retry/i)
@@ -66,3 +66,15 @@ for (const kernel of [false, true]) test(`quoted/fenced dollar examples remain o
   const { result } = await hook("Explain this example:\n```sh\n$review\n```\nthen \"use $review\" or `$review` with $HOME", kernel)
   assert.equal(result.decision, undefined)
 })
+
+for (const kernel of [false, true]) {
+  for (const prompt of ["$review inspect source", "why is $total null", "print $i"]) {
+    test(`MP-08 MP-10 MP-11 foundation admits unresolved dollar prose (${kernel ? "kernel" : "release"}): ${prompt}`, { timeout: 10_000 }, async () => {
+      const { code, result, events } = await hook(prompt, kernel)
+      assert.equal(code, 0)
+      assert.equal(result.decision, undefined, "an unresolved dollar token is not a kernel skill selection")
+      assert.equal(result.hookSpecificOutput.additionalContext, "")
+      assert.equal(events.filter(event => event.hook_event_name === "UserPromptSubmit").length, 1)
+    })
+  }
+}

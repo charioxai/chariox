@@ -2,15 +2,12 @@ import { writeFile } from "node:fs/promises"
 
 import { claudeHookCommand, releaseVersion } from "../release-build.js"
 import { shellQuote } from "./launch-environment.js"
-import { hasExplicitSkillMarker } from "./skill-marker.js"
 
 export async function writeClaudeHookHandler(file: string) {
   await writeFile(file, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
-
-${hasExplicitSkillMarker.toString()}
 
 let nativeOrigin = null
 try { nativeOrigin = JSON.parse(readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_ORIGIN, "utf8")) } catch {}
@@ -68,10 +65,10 @@ if (eventName === "UserPromptSubmit") {
       await sleep(50)
     }
   }
-  // MP-08 / MP-10 / MP-11: an explicit selection must never run with
-  // empty hidden instructions when the home/context bridge failed.
-  const selectedSkill = hasExplicitSkillMarker(input.prompt ?? "")
-  if (!additionalContext && selectedSkill) {
+  // MP-08 / MP-10 / MP-11: only a kernel-resolved selection failure blocks
+  // admission. Empty context and dollar prose do not establish a selection.
+  const selectionFailed = additionalContext.startsWith("<chariox-skill-selection-error>")
+  if (selectionFailed) {
     emitPromptAdmission(true)
     process.stdout.write(JSON.stringify({ decision: "block",
       reason: "Chariox skill context was not delivered. Refresh Skills and retry this prompt." }))
