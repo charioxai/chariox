@@ -100,9 +100,11 @@ class AgentInputClipboardTests(unittest.TestCase):
             get_input_focus=lambda:SimpleNamespace(focus=destination),
             screen=lambda:SimpleNamespace(width_in_pixels=100,height_in_pixels=100,root=SimpleNamespace(query_pointer=lambda:SimpleNamespace(child=destination,root_x=5,root_y=5))))
         events=[]
-        def press(kind,value,duration,*args,before_press=None):
+        def press(kind,value,duration,*args,before_press=None,key_guard=None):
+            self.assertIs(key_guard,destination_policy.key_destinations)
             before_press();events.append((kind,value))
-        def type_text(text,before_press=None):
+        def type_text(text,before_press=None,key_guard=None):
+            self.assertIs(key_guard,destination_policy.key_destinations)
             before_press();events.append(('text',text))
         loads={'native-accessibility':accessibility,'native-clipboard':clipboard,'native-x11':x11,'native-input-destination':destination_policy}
         with patch.object(module,'load',side_effect=loads.get),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),\
@@ -161,10 +163,13 @@ class WarmChannelTests(unittest.TestCase):
             self.assertIs(text.call_args.kwargs.get('connection'),connection)
             accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
             clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None)
-            with patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
+            destination=SimpleNamespace(key_destinations=lambda *_:None)
+            helpers={'native-accessibility':accessibility,'native-clipboard':clipboard_guard,'native-input-destination':destination}
+            with patch.object(module,'load',side_effect=helpers.get):
                 module.main({'op':'input','agent_input':True,'processes':[],
                              'input':{'kind':'text','text':'public'}},connection)
             self.assertIsNotNone(text.call_args.kwargs['before_press'])
+            self.assertIs(text.call_args.kwargs['key_guard'],destination.key_destinations)
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0.04)
             self.assertNotIn('connection',text.call_args.kwargs)
 
