@@ -469,3 +469,14 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
   } finally { await real.close(); }
 });
+
+test('MP-08/MP-10/MP-11 active target in one fresh viewport query keeps a foreign Tab fenced',async()=>{
+ const {host,windows}=fake(),display=new OwnedDisplay(process.env.TMPDIR??'/tmp');await display.start();
+ try{
+  host.chromium.display=display;const b=(await windows.resolve()).tabbed;let reads=0;
+  const viewport=host.tabGroups.viewport;host.tabGroups.viewport=async(...args)=>{reads++;return viewport(...args)};
+  assert.equal(await b.isPageCurrent('ta'),false);assert.equal(reads,1);assert.equal(b.isCurrent(),true,'a different active Tab does not retire the unchanged browser window');
+  assert.equal(await b.isPageCurrent('tb'),true);assert.equal(reads,2);
+  host.tabGroups.viewport=async()=>{throw Error('unavailable')};assert.equal(await b.isPageCurrent('tb'),false);assert.equal(b.isCurrent(),false);
+ }finally{await display.close()}
+});

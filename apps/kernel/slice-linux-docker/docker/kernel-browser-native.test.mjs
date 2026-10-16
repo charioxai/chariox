@@ -246,12 +246,13 @@ test('MP-11 a failed native spawn reclaims its private raster directory',async()
 });
 
 for(const retire of ['metadata','document'])test(`MP-08/MP-10/MP-11: ${retire} retires pending pixels during live validation without a publish exception`,async()=>{
- const timings=[],source=new LinuxCapture({connection:{presentationFence:{stable:()=>assert.fail('retired pixels must not enter presentation checks')}},timing:stage=>timings.push(stage)});
+ const timings=[],source=new LinuxCapture({connection:{presentationFence:{stable:()=>true}},timing:stage=>timings.push(stage)});
  source.valid=()=>!source.closed;source.attested=true;let released=0;
+ source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
  source.pending={captured_ms:1,release(){released++}};
  source.validateCurrent=async()=>{
   if(retire==='document')source.fence();
-  else {source.regionRevision++;source.pending?.release();source.pending=null;}
+  else source.retireFrames();
   return true;
  };
  try{
@@ -276,8 +277,36 @@ test('MP-08/MP-10/MP-11 a page region holds its frame under in-window Chrome UI 
  covered=true;source.pending=readback(2);await source.publish();
  assert.deepEqual(published,[1],'the dropdown\'s pixels never leave');assert.equal(source.sample().serial,1,'the last page frame stays');
  covered=false;source.pending=readback(3);await source.publish();assert.deepEqual(published,[1,3]);
- source.validateCurrent=async()=>{source.pending=null;return true;};// a protection retire during the await
+ source.validateCurrent=async()=>{source.retireFrames();return true;};// the real protection retirement while validation awaits
  source.pending=readback(4);await source.publish();
- assert.equal(source.closed,false,'the region keeps running');assert.equal(source.sample().serial,3);
+ assert.equal(source.closed,false,'the region keeps running');assert.equal(source.sample(),null,'retirement clears its old mask base and never publishes readback4');
  await source.close();
+});
+
+// MP-08/MP-10/MP-11: metadata awaits precede the final live admission;
+// no pixel masking/consumer can run before it, and no duplicate query follows.
+test('MP-08/MP-10/MP-11 native pixel admission follows metadata with one live binding query',async()=>{
+ const events=[],source=new LinuxCapture({connection:{},tab:{target_id:"t",tab_id:"t",document_id:"d"},timing:()=>{}});source.valid=()=>!source.closed;source.attested=true;
+ source.regions={guard:{},beforeAt:0,regions:async()=>{events.push('metadata');return[{x:0,y:0,width:1,height:1}];},retire(){}};
+ source.validateCurrent=async()=>{events.push('binding');return true};
+ const pixels=Buffer.alloc(16*16*4,255);
+ source.pending={width:16,height:16,length:pixels.length,format:'bgr0',serial:1,captured_ms:performance.timeOrigin+performance.now(),get pixels(){events.push('pixels');return pixels;},release(){}};
+ source.subscribe(frame=>{void frame.raw.pixels});
+ try{await source.publish();assert.equal(source.sample()?.serial,1);assert.equal(source.sample().raw.pixels[0],0,'the admitted frame still masks its protected pixel');assert(events.indexOf('metadata')<events.indexOf('binding'));assert(events.indexOf('binding')<events.indexOf('pixels'));assert.equal(events.filter(e=>e==='binding').length,1);}
+ finally{await source.close()}
+});
+
+for(const phase of ['occlusion','metadata','binding'])for(const retirement of ['metadata','document'])test(`MP-08/MP-10/MP-11 ${retirement} retirement during ${phase} releases held pixels before any read`,async()=>{
+ const timings=[],source=new LinuxCapture({connection:{},timing:stage=>timings.push(stage)});source.valid=()=>!source.closed;source.attested=true;
+ let released=0,reads=0,delivered=0;
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ source.regions=new NativeRegionProtection({},'s');source.regions.measure=async()=>[];await source.regions.refresh();
+ const retire=()=>retirement==='document'?source.fence():source.retireFrames();
+ source.occluded=async()=>{if(phase==='occlusion')retire();return false};
+ source.regions.measure=async()=>{if(phase==='metadata')retire();return[]};
+ source.validateCurrent=async()=>{if(phase==='binding')retire();return true};
+ source.pending={captured_ms:performance.timeOrigin+performance.now(),get pixels(){reads++;throw Error('retired pixels read');},release(){released++}};
+ source.subscribe(()=>delivered++);
+ try{await source.publish();assert.equal(released,1);assert.equal(reads,0);assert.equal(delivered,0);assert.equal(source.sample(),null);assert(!timings.some(s=>s.startsWith('native_publish_failed')));}
+ finally{await source.close()}
 });

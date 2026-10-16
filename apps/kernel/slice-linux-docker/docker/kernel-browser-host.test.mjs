@@ -1443,7 +1443,8 @@ test('MP-11 an out-of-band Tab switch stops whole-page native readback and input
   // The real publish loop refuses the readback before masks, encoder offers or delivery.
   const published = [];
   const source = Object.assign(Object.create(LinuxCapture.prototype), { closed: false, attested: true, listeners: new Set([frame => published.push(frame)]),
-    pending: { raw: true, release() {} }, valid: () => true, validateCurrent: () => host.nativeFront(tabA), fence() { this.closed = true; this.pending = null; } });
+    connection:{},timing:()=>{},regionRevision:0,regions:{guard:{},beforeAt:0,regions:async()=>[],retire(){}},
+    pending: { captured_ms:1,get pixels(){assert.fail('inactive Tab pixels must not be read');},release() {} }, valid: () => !source.closed, validateCurrent: () => host.nativeFront(tabA), fence() { this.closed = true; this.pending = null; } });
   await source.publish();
   assert.equal(source.closed, true); assert.deepEqual(published, []);
   // Native input of the retired foreground falls back instead of clicking into Tab B.

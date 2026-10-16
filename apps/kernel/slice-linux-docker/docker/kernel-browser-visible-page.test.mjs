@@ -30,7 +30,7 @@ test('MP-11 visible page refuses missing, overflowing or auxiliary window geomet
 test('MP-08/MP-10/MP-11 visible-page lease uses the shared region pump and retires before delivery',async()=>{
  const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
  let active=true,closed=0;
- const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async target=>target==='target'&&active};
  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},arbiter:{isActiveTab:async()=>active},
   browser:{resolvePageTarget:async()=>({connection:{send:async()=>({cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}})},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};

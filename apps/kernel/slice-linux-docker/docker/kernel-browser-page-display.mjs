@@ -22,7 +22,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
   const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&host.tabs.get(tab.tab_id)?.document_id===document;
-  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent()&&typeof host.arbiter?.isActiveTab==='function'&&await host.arbiter.isActiveTab(tab,window)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
+  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
   if(!await current())refuse();
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};

@@ -128,14 +128,8 @@ export class LinuxCapture {
  async publish(){
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
-   // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
-   // Refuse a readback before any mask, encoder offer or delivery can consume it.
-   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
-   // MP-08/MP-10/MP-11: CDP may retire these pixels while the live
-   // binding is checked. A metadata refresh waits for a new readback;
-   // document retirement stays fenced. Never consume the cleared slot.
-   if(!this.pending||!this.valid())continue;
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   const revision=this.regionRevision;
    // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
    // last frame, never Chrome's pixels; its popup stream shows them over the page. Checked live
    // after the capture: a readback holding the list's pixels always sees it open.
@@ -143,7 +137,8 @@ export class LinuxCapture {
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
    }
-   const revision=this.regionRevision;
+   if(!this.valid())break;
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
    // and geometry. Document changes also retire the source through onCdp.
    let at=performance.timeOrigin+performance.now();let regions;
@@ -151,6 +146,7 @@ export class LinuxCapture {
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
    }catch(error){
+    if(!this.valid())break;
     if(error.code==='fill_capture_retry'){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
     if(revision===this.regionRevision)throw error;
    }
@@ -159,11 +155,16 @@ export class LinuxCapture {
    // Attribute-only changes need a new readback even if XDamage/pixels did
    // not change. The first readback may precede the refreshed metadata.
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
+   // MP-08/MP-10/MP-11: finish asynchronous metadata work before the one
+   // fresh binding check. No pixel mask or consumer runs before admission,
+   // and there is no await between this fence, masking and publication.
+   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
+   if(!this.valid())break;
+   // Review #1016 @05a700a84 P1: re-projection during that await retires the masks.
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
-   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
-   // Review #1016 @05a700a84 P1: a re-projection during that await retired this raster's masks.
-   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
+   if(!this.valid())break;
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
