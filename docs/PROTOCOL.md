@@ -409,12 +409,13 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 
 Native TUI hidden context:
 
-- granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- MP-08 / MP-10 / MP-11: state-selected Skills v2 instruction context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
 - Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- MP-08 / MP-10 / MP-11: ordinary prompt text containing an unresolved `$word` is not evidence of a skill selection or missing skill context. Only a kernel-resolved selection failure may produce the explicit hidden selection-error response and refuse that turn; stale source-bound selections remain actionable errors.
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
 
 Provider-specific transport:
@@ -3704,6 +3705,17 @@ MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
 `skills_v2_runtime` capability in kernel status/relay discovery before routing
 Skills actions to V2. The unreleased 533/141 foundation does not advertise that
 capability: wire decoding alone is not a working list/load/dispatch runtime.
+
+MP-08 / MP-10 / MP-11: owning kernel startup completes the durable reset,
+exact product-owned legacy-copy cleanup and owned workflow artifact regeneration
+before admitting runtime work. The home journal ownership pin also serializes
+global cleanup with catalog publication. Other named kernel journals retire
+their own replayable state after the home owner completes; they cannot rewrite
+newly authored home artifacts. The overall checkpoint precedes the writer epoch
+fence, so an interrupted startup resumes before launches and an old writer
+connection cannot restore retired authority. Repo/native sources, other grants,
+credentials, Vaults and keys are outside this cleanup. Immutable old publications
+and archives needing legacy decoding require recreate/republish/re-export.
 
 The wire foundation alone is not an implemented catalog, destructive reset,
 provider delivery path or acceptance claim. Runtime rollout removes the old

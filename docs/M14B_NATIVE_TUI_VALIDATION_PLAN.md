@@ -242,11 +242,12 @@ MCPs and skills:
   propagation. Home-managed slice kernels set `CHARIOX_CAPABILITY_ISOLATION_ROOT`
   so project/user MCP and skill registries are isolated from any `.chariox`
   registries mounted from the host workspace or persisted in the slice home.
-- Live MCP/skill drills now pass for Codex and OpenCode in local, standard
-  same-host home-worker, and home-managed local Docker slice modes. Claude
-  native TUI validates provider-run MCP config and hidden skill injection
-  through hook `additionalContext` in local, same-host standard home-worker,
-  and home-managed local Docker slice modes.
+- MP-08 / MP-10 / MP-11: historical pre-v2 MCP/skill drills passed for Codex
+  and OpenCode in local, standard same-host home-worker and home-managed local
+  Docker slice modes, and exercised Claude MCP config/hidden hook context in
+  those placements. Those results do not establish Skills v2 state, selection,
+  dedupe, package transfer or reset acceptance. Run SV-08/SV-10/SV-12/SV-14
+  on the exact integrated head before marking their current dimensions PASS.
 
 ## Attachment Transfer Contract
 
