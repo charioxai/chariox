@@ -237,6 +237,7 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    skill_inventories: Arc<skills_native_inventory::SkillInventories>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -457,6 +458,11 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod skills_catalog_runtime;
+mod skills_dispatch;
+mod skills_native_inventory;
+mod skills_subscription;
+mod skills_turn_authority;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod tool_dispatch;
@@ -850,6 +856,7 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                skill_inventories: Arc::default(),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
@@ -896,6 +903,10 @@ impl KernelRuntimeState {
                 project_environment_setups,
             },
         };
+        runtime
+            .owned
+            .provider_store
+            .set_skill_prompt_bridge(skills_dispatch::bridge(&runtime));
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         runtime

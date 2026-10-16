@@ -37,6 +37,7 @@ mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
 mod script;
+mod skills;
 mod slice;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
@@ -174,6 +175,9 @@ impl KernelRuntimeState {
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
         }
+        if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
+            specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
+        }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
@@ -292,6 +296,9 @@ impl KernelRuntimeState {
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_skill_tool_name(tool_name)
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_recall_tool_name(tool_name)
@@ -450,6 +457,9 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
+                    | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                    | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                    | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
             ) {
                 if let Some(result) = self
                     .try_dispatch_remote_capability_runtime_tool_call(
@@ -791,6 +801,9 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+            | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
     ) || (slice_available
         && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
 }

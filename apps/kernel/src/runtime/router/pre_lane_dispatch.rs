@@ -394,6 +394,12 @@ impl CommandRouter {
                 .await
                 .map(Some);
             }
+            LocalDaemonRequest::SkillsV2(request) => {
+                return self
+                    .dispatch_skills_v2(command, request.clone(), caller_user_id)
+                    .await
+                    .map(Some);
+            }
             request @ (LocalDaemonRequest::InstallMcpServer(_)
             | LocalDaemonRequest::UpdateMcpServer(_)
             | LocalDaemonRequest::UninstallMcpServer(_)
@@ -424,8 +430,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RemoveConnector(_)
             | LocalDaemonRequest::GetConnector(_)
             | LocalDaemonRequest::ListConnectors(_)
-            | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::SkillsV2(_)) => {
+            | LocalDaemonRequest::TestConnector(_)) => {
                 let credential_vault = self
                     .config_projection
                     .snapshot()

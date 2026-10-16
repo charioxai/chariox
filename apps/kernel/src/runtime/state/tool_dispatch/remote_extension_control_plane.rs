@@ -223,6 +223,14 @@ impl KernelRuntimeState {
         let mut forwarded_arguments = arguments.clone();
         if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
             == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+            || matches!(
+                crate::transport::runtime_tools::canonical_skill_tool_name(tool_name),
+                Some(
+                    crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                        | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                        | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
+                )
+            )
         {
             let worker_origin = arguments
                 .get("origin_prompt_id")
@@ -348,12 +356,22 @@ impl KernelRuntimeState {
             // Agent messages retain the exact home-turn origin contract.
             if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
-                && context.home_prompt_id.is_none()
+                || matches!(
+                    crate::transport::runtime_tools::canonical_skill_tool_name(&tool_name),
+                    Some(
+                        crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
+                    )
+                )
             {
-                return Err(DaemonError::LocalTransport {
-                    operation: "dispatch forwarded agent message",
-                    message: "sender prompt or leased worker binding is no longer current".into(),
-                });
+                if context.home_prompt_id.is_none() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "dispatch forwarded agent message",
+                        message: "sender prompt or leased worker binding is no longer current"
+                            .into(),
+                    });
+                }
             }
             Ok(())
         })
@@ -407,6 +425,12 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         match tool_name {
+            crate::transport::runtime_tools::LIST_SKILLS_TOOL
+            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
+                self.handle_skill_runtime_tool(&session, &agent, tool_name, arguments)
+                    .await
+            }
             crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => {
                 Ok(self.handle_list_session_agents_runtime_tool(&session, &agent))
             }
