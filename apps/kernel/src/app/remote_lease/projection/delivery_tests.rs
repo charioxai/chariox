@@ -361,7 +361,7 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
             provider_run_id: "run".into(),
             provider_run: matches!(
                 boundary,
-                "native" | "cleanup-dispatching" | "cleanup-delivered"
+                "native" | "native-newer" | "cleanup-dispatching" | "cleanup-delivered"
             )
             .then(|| {
                 let mut run = super::explicit_completion_tests::provider_run(
@@ -370,7 +370,7 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                     "worker-agent",
                     "claude",
                     "claude",
-                    if boundary == "native" {
+                    if boundary.starts_with("native") {
                         crate::provider::ProviderClientInterface::NativeTui
                     } else {
                         crate::provider::ProviderClientInterface::Chariox
@@ -428,7 +428,7 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
         let db = app.operational_history_store().path().to_path_buf();
         let connection = rusqlite::Connection::open(&db).unwrap();
         let trigger = match boundary {
-            "receipt" | "native" => "CREATE TRIGGER fail_home_receipt BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END;",
+            "receipt" | "native" | "native-newer" => "CREATE TRIGGER fail_home_receipt BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END;",
             "result" => "CREATE TRIGGER fail_home_receipt BEFORE UPDATE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected result failure'); END;",
             "cleanup" | "cleanup-dispatching" | "cleanup-delivered" => "CREATE TRIGGER fail_home_receipt BEFORE DELETE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected cleanup failure'); END;",
             _ => unreachable!(),
@@ -537,6 +537,43 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
             ));
             app.sessions
                 .set_active_provider_run(session.id(), Some(id))
+                .unwrap();
+        }
+        let newer_id = crate::provider::projected_leased_provider_run_id("leased", "newer-run");
+        if boundary == "native-newer" {
+            // An idle native provider already moved on to a newer run before
+            // the old ready journal is replayed.
+            let mut run = super::explicit_completion_tests::provider_run(
+                "newer-run",
+                "worker-session",
+                "worker-agent",
+                "claude",
+                "newer-model",
+                crate::provider::ProviderClientInterface::NativeTui,
+            );
+            run.mark_running();
+            app.update_remote_provider_run_projection(run.projected_for_home_agent_with_id(
+                newer_id.clone(),
+                session.id(),
+                agent.id(),
+            ));
+            app.sessions
+                .set_active_provider_run(session.id(), Some(newer_id.clone()))
+                .unwrap();
+            app.agents
+                .set_remote_execution_active_worker_provider_run_id(
+                    agent.id(),
+                    Some("newer-run".into()),
+                )
+                .unwrap();
+            app.agents
+                .set_agent_runtime_profile(
+                    agent.id(),
+                    "claude",
+                    Some("newer-model".into()),
+                    None,
+                    crate::provider::ProviderResumeState::default(),
+                )
                 .unwrap();
         }
         let recovered = RemoteLeaseRuntime::new(&mut app)
@@ -665,6 +702,31 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 "ready journal must retain the running native binding after restart"
             );
         }
+        if boundary == "native-newer" {
+            let agent = app.agents.get_agent(agent.id()).unwrap();
+            assert_eq!(
+                agent
+                    .remote_execution()
+                    .unwrap()
+                    .active_worker_provider_run_id
+                    .as_deref(),
+                Some("newer-run"),
+                "an old native journal cannot rebind the agent to its old run"
+            );
+            assert_eq!(agent.model(), Some("newer-model"));
+            assert_eq!(
+                app.sessions
+                    .get_session(session.id())
+                    .unwrap()
+                    .active_provider_run_id(),
+                Some(newer_id.as_str())
+            );
+            assert_eq!(
+                app.provider_run_projection.get(&newer_id).unwrap().state(),
+                crate::provider::ProviderRunState::Running,
+                "an old native journal retired the newer run projection"
+            );
+        }
         if boundary == "cleanup" && final_page {
             assert_ne!(
                 app.agents.get_agent(agent.id()).unwrap().state(),
@@ -698,6 +760,11 @@ fn mp08_review_f6_cleanup_reemits_the_exact_unsent_successor() {
 #[test]
 fn mp08_review_f6_ready_journal_restores_worker_run_snapshot() {
     home_projection_fault_is_restart_safe("native");
+}
+
+#[test]
+fn mp08_native_ready_journal_keeps_a_newer_idle_run() {
+    home_projection_fault_is_restart_safe("native-newer");
 }
 
 #[test]

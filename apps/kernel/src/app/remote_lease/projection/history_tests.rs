@@ -414,3 +414,91 @@ fn mp08_history_owned_tool_ignores_late_terminal_records() {
         .destroy_leased_agent(&leased.id)
         .unwrap();
 }
+
+#[test]
+fn mp08_history_owned_running_tool_keeps_forwarding_new_output() {
+    let (mut app, leased) = worker_lease();
+    let run = super::explicit_completion_tests::provider_run(
+        "run",
+        &leased.backing_session_id,
+        &leased.backing_agent_id,
+        "managed-dev-stub",
+        "managed-dev-stub",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.providers_mut().insert_run_for_test(run);
+    let tool = |output: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "id": "long-tool", "name": "Bash", "status": "running", "output": output,
+        }))
+        .unwrap()
+    };
+    // The durable window projects the first running snapshot while the
+    // bounded terminal batch is still queued.
+    app.append_history_entry(
+        &leased.backing_session_id,
+        crate::history::SessionHistoryEntry::provider_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderTool,
+            Some("long-tool".into()),
+            String::from_utf8(tool("first ")).unwrap(),
+        ),
+    );
+    let drain = |app: &mut DaemonApp| {
+        let event = RemoteLeaseRuntime::new(app)
+            .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+            .unwrap()
+            .map(|(_, event)| event);
+        let Some(RelayPeerEvent::LeasedRuntimeProjection {
+            output_chunks,
+            delivery: Some(receipt),
+            ..
+        }) = event
+        else {
+            return Vec::new();
+        };
+        assert!(RemoteLeaseRuntime::new(app)
+            .acknowledge_leased_runtime_projection(&leased.id, "run", &receipt)
+            .unwrap());
+        output_chunks
+            .into_iter()
+            .map(|chunk| String::from_utf8(chunk.bytes).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(drain(&mut app).len(), 1);
+    // The real fan-out gate turns the cumulative output into deltas: the
+    // first snapshot repeats what history projected, the later ones are new
+    // output with the same running status, which history never persists.
+    for output in ["first ", "first second ", "first second third"] {
+        app.fan_out_output_for_agent(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderTool,
+            Some("long-tool".into()),
+            vec![leased.backing_attachment_id.clone()],
+            &tool(output),
+        );
+    }
+    let forwarded = drain(&mut app);
+    let outputs: Vec<String> = forwarded
+        .iter()
+        .map(|bytes| {
+            serde_json::from_str::<serde_json::Value>(bytes).unwrap()["output"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        outputs,
+        ["second ", "third"],
+        "new output after history took the tool must reach home exactly once"
+    );
+    assert!(drain(&mut app).is_empty());
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}

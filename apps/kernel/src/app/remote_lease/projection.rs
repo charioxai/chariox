@@ -1070,7 +1070,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 false,
                 false,
             )? {
-                events.push(event);
+                if self.retained_resend_due(&leased_agent.id, &event.1) {
+                    events.push(event);
+                }
             }
         }
         Ok(events)
@@ -1284,7 +1286,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .iter()
                             .any(|completion| completion.completed.id() == active.id())
                     })
-                    || (result.retain_native_binding && active.is_none())
+                    || (result.retain_native_binding
+                        && active.is_none()
+                        && remote.active_worker_provider_run_id.is_none())
             });
         // Run snapshots are observable even when a ready journal skips effects.
         // An old completed page must not select its run over a newer successor.

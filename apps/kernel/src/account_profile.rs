@@ -1237,6 +1237,24 @@ impl ProviderAccountProfileRegistry {
             }
             return Ok(profile);
         }
+        crate::logging::warn_with_fields(
+            "daemon.provider_account",
+            "selected provider account is not authenticated",
+            serde_json::json!({
+                "operation": operation,
+                "owner_user_id": owner_user_id,
+                "provider": profile.provider,
+                "profile_id": profile.profile_id,
+                "auth_state": profile.auth_state,
+                "origin": profile.origin,
+                "credential_registered": crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    &profile.provider,
+                    &profile.profile_id,
+                )
+                .ok(),
+            }),
+        );
         let action = match profile.auth_state {
             ProviderAccountAuthState::Expired => "reconnect",
             ProviderAccountAuthState::Error => "test or reconnect",

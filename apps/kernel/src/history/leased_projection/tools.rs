@@ -14,6 +14,28 @@ pub(crate) struct ToolProjectionState {
     revision: u64,
     #[serde(default)]
     history_owned: bool,
+    /// While history owns the tool: end of the output bytes per field that its
+    /// durable snapshots already delivered.
+    #[serde(default)]
+    history_end: std::collections::BTreeMap<String, u64>,
+}
+
+const OUTPUT_FIELDS: [&str; 5] = ["output", "stdout", "stderr", "result", "content"];
+
+/// The single output field a snapshot or delta carries, with the end offset of
+/// its bytes in that field's stream.
+fn output_end(payload: Option<&serde_json::Value>) -> Option<(&'static str, u64)> {
+    let payload = payload?;
+    let mut fields = OUTPUT_FIELDS
+        .into_iter()
+        .filter(|field| payload.get(*field).is_some_and(|v| v.is_string()));
+    let field = fields.next().filter(|_| fields.next().is_none())?;
+    let start = payload
+        .get("chariox_delta_offset_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let len = payload.get(field)?.as_str()?.len() as u64;
+    Some((field, start + len))
 }
 
 impl ToolProjectionState {
@@ -82,8 +104,23 @@ impl ToolProjectionState {
         stable_identity: bool,
     ) -> bool {
         // Durable snapshots already projected this tool; a later bounded
-        // terminal batch carries the same snapshots and must not repeat them.
-        !self.history_owned && self.record(snapshot_key, bytes, stable_identity)
+        // terminal batch carries copies of them that must not repeat. Output
+        // past what history delivered is new and returns the tool to streaming.
+        if self.history_owned {
+            let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+            let replaced = payload
+                .as_ref()
+                .and_then(|p| p.get("chariox_output_replaced"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let extends = output_end(payload.as_ref()).is_some_and(|(field, end)| {
+                replaced || end > self.history_end.get(field).copied().unwrap_or(0)
+            });
+            if !extends {
+                return false;
+            }
+        }
+        self.record(snapshot_key, bytes, stable_identity)
     }
 
     pub(crate) fn record_history(
@@ -98,9 +135,14 @@ impl ToolProjectionState {
         if self.revision != 0 && !self.history_owned {
             return false;
         }
+        let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
         let changed = self.record(snapshot_key, bytes, stable_identity);
         if changed {
             self.history_owned = true;
+            if let Some((field, end)) = output_end(payload.as_ref()) {
+                let covered = self.history_end.entry(field.into()).or_default();
+                *covered = (*covered).max(end);
+            }
         }
         changed
     }

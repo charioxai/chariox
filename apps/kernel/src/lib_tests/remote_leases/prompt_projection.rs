@@ -1967,6 +1967,62 @@ fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
 }
 
 #[test]
+fn leased_projection_pump_backs_off_an_unacknowledged_retained_page() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "session-1", "agent-gone", false, "user-home")
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let (provider_run_id, _) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+        .expect("leased prompt should submit");
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("backing prompt should settle");
+    let ended = app
+        .providers_mut()
+        .terminate_run_provider_only(&leased_agent.backing_session_id, &provider_run_id)
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    // The home agent is gone, so the page is never acknowledged. The pump must
+    // not re-send the same retained head on every 50 ms tick.
+    let mut sent = 0;
+    for _ in 0..20 {
+        sent += RemoteLeaseRuntime::new(&mut app)
+            .pump_leased_runtime_projections()
+            .expect("leased projection pump should run")
+            .len();
+    }
+    assert_eq!(sent, 1, "unacknowledged head re-sent without backoff");
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let resent = RemoteLeaseRuntime::new(&mut app)
+        .pump_leased_runtime_projections()
+        .expect("leased projection pump should run");
+    assert_eq!(resent.len(), 1, "head must still be retried after the backoff");
+}
+
+#[test]
 fn leased_projection_pump_leaves_home_prompt_records_for_authoritative_drain() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

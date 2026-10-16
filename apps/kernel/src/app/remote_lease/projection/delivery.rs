@@ -15,7 +15,49 @@ pub(crate) fn receipt_key(
     )
 }
 
+// The relay pump re-sends a retained page nobody acknowledged (for example
+// because the home agent is gone) with a growing delay, not on every tick.
+const RETAINED_RESEND_BASE: std::time::Duration = std::time::Duration::from_millis(100);
+const RETAINED_RESEND_MAX: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl RemoteLeaseRuntime<'_> {
+    pub(super) fn retained_resend_due(
+        &mut self,
+        leased_agent_id: &str,
+        event: &RelayPeerEvent,
+    ) -> bool {
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run_id,
+            delivery,
+            ..
+        } = event;
+        let Some(sequence) = delivery.as_ref().map(|delivery| delivery.sequence) else {
+            return true;
+        };
+        let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) else {
+            return true;
+        };
+        let now = std::time::Instant::now();
+        let attempts = match &agent.retained_resend {
+            Some(sent) if sent.provider_run_id == *provider_run_id && sent.sequence == sequence => {
+                if now < sent.next_at {
+                    return false;
+                }
+                sent.attempts.saturating_add(1)
+            }
+            _ => 0,
+        };
+        let delay = (RETAINED_RESEND_BASE * 2u32.saturating_pow(attempts.min(10)))
+            .min(RETAINED_RESEND_MAX);
+        agent.retained_resend = Some(crate::execution_lease::RetainedResend {
+            provider_run_id: provider_run_id.clone(),
+            sequence,
+            attempts,
+            next_at: now + delay,
+        });
+        true
+    }
+
     pub(crate) fn drain_retained_leased_runtime_projection(
         &mut self,
         leased_agent_id: &str,
