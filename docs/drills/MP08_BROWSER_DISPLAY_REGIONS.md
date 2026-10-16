@@ -40,8 +40,12 @@ reloads it; until then band input is refused). Repeat at DPR1 and DPR2.
 
 Use the hosted WSS path, shaped ~8 Mbit/s and measured RTT ≥60 ms. Strict
 paired Selkies reruns use the same integrated head on the coordinator's quiet
-host (HOST_REQUEST), with matching geometry. Record P95 ≤ measured RTT+60 ms,
-FPS ≥Selkies and ≥30 where streamed, and ≤one CPU core. Run a two-hour DPR2
+host (HOST_REQUEST), with matching geometry. Miguel's 2026-10-16 decision makes
+keystroke-to-paint PASS require Chariox P95 ≤ Selkies P95 in that same paired
+run. Keep measured wire RTT and RTT+60ms beside every keystroke result as
+tracked values. Other latency metrics retain P95 ≤ measured RTT+60ms and their
+existing comparator requirements. Require FPS ≥Selkies and ≥30 where streamed,
+and ≤one CPU core. Run a two-hour DPR2
 region session and reconnect. Watch all recordings; report a stuck, confused
 or blank/white user flow as FAIL with its timestamp. Google is N/A-AUTOMATED.
 
@@ -112,5 +116,6 @@ Repeat normal input while ACK replies are delayed, stop ACKs to prove the
 kernel gate closes, then recover without an unbounded request queue. Check a
 kernel without `ack_timing`: the viewer sends no `held_ms` and the original
 stream still works. Use the hosted shaped path and the same quiet-host Selkies
-control; apply RTT+60ms, FPS and CPU gates above. Keep current source identities
+control; apply the keystroke parity gate and track RTT+60ms, with other latency,
+FPS and CPU gates as above. Keep current source identities
 on every receipt and watch the recordings before grading.
