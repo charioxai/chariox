@@ -18,7 +18,6 @@ import type {
   CharioxEnvironmentConfig as KernelCharioxEnvironmentConfig,
   CharioxMcpServerConfig as KernelCharioxMcpServerConfig,
   CharioxScriptMetadata as KernelCharioxScriptMetadata,
-  CharioxSkillMetadata as KernelCharioxSkillMetadata,
   CharioxUserConfig as KernelCharioxUserConfig,
   CharioxUserConfigPayload as KernelCharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload as KernelCharioxUserConfigSchemaPayload,
@@ -94,7 +93,6 @@ import type {
   QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
   QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
   ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
-  SkillImportOutcome as KernelSkillImportOutcome,
   SkillImportSkip as KernelSkillImportSkip,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
   WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
@@ -151,7 +149,6 @@ export type McpImportSkip = KernelMcpImportSkip
 
 export type McpImportOutcome = KernelMcpImportOutcome
 
-export type CharioxSkillMetadata = KernelCharioxSkillMetadata
 
 export type CharioxEnvironmentConfig = KernelCharioxEnvironmentConfig
 
@@ -169,7 +166,6 @@ export type ExtensionGrant = KernelExtensionGrant
 
 export type SkillImportSkip = KernelSkillImportSkip
 
-export type SkillImportOutcome = KernelSkillImportOutcome
 
 export type RuntimeSession = KernelRuntimeSession & {
   room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory | undefined

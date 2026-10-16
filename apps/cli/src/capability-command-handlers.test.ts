@@ -36,15 +36,15 @@ test("extension slash command confirms active home-proxy grants before exposing 
   ])
 })
 
-test("extension slash command grants passive remote skills without home-proxy confirmation", async () => {
+test("MP-08 MP-10 MP-11 extension slash command rejects retired skill grants", async () => {
   const remote = agent({ remote: true })
   const harness = capabilityHarness(remote)
 
   await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant skill agent-1 qa") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
 
-  assert.deepEqual(harness.grants, ["skill:agent-1:qa"])
+  assert.deepEqual(harness.grants, [])
   assert.deepEqual(harness.notices, [])
-  assert.deepEqual(harness.footers, ["info:granted skill qa to agent-1"])
+  assert.deepEqual(harness.footers, ["error:extension kind must be mcp, script, connector, or app"])
 })
 
 test("extension slash command renders remote sync status, retry, and audit counts", async () => {
@@ -168,10 +168,6 @@ function capabilityHarness(agent: AgentInstance, options: {
       : { agent: null, error: `agent '${reference}' not found` },
     grantAgentMcp: async (agentRef, name) => {
       grants.push(`mcp:${agentRef}:${name}`)
-      return agent
-    },
-    grantAgentSkill: async (agentRef, name) => {
-      grants.push(`skill:${agentRef}:${name}`)
       return agent
     },
     grantAgentScript: async (agentRef, name, environment) => {
