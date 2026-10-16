@@ -38,6 +38,8 @@ export class BrowserMirror2Renderer {
   get painted(): boolean { return this.navigation.painted }
   readonly timings: Array<{ stage: string; duration_ms: number; ended_ms: number }> = []
   private doc: Document | null = null
+  private navigationAt = performance.now()
+  private paintFrame: HTMLIFrameElement | undefined
   private disposed = false
   private applying = false
   private dom = new Map<string, Node>()
@@ -86,7 +88,7 @@ export class BrowserMirror2Renderer {
   onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     this.empty = URL.createObjectURL(new Blob([]))
-    this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) this.onEmptyPaint?.() })
+    this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
     owner.addEventListener('pointerup', this.releasePointer, true)
     owner.addEventListener('pointercancel', this.releasePointer, true)
@@ -100,6 +102,17 @@ export class BrowserMirror2Renderer {
     this.bind(this.doc)
   }
   private timed(stage: string, at: number): void { this.timings.push({ stage, duration_ms: performance.now() - at, ended_ms: performance.timeOrigin + performance.now() }); if (this.timings.length > 2048) this.timings.splice(0, 1024) }
+  // MP-08/MP-10/MP-11: first visible navigation paint, after a paint opportunity.
+  // Keep identity local; diagnostics contain only the fixed stage and durations.
+  private navigationPaint(): void {
+    const frame = this.frame
+    if (!this.painted || this.paintFrame === frame) return
+    this.paintFrame = frame
+    const started = this.navigationAt
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!this.disposed && this.frame === frame && this.painted) this.timed('mirror_navigation_paint', started)
+    }))
+  }
   // ---- input: node-addressed, the kernel re-validates everything live.
   private enqueue(action: Mirror2Input): void {
     if (this.applying || this.disposed || !this.documentId || !this.navigation.painted) return
@@ -590,6 +603,7 @@ export class BrowserMirror2Renderer {
     if (packet.reset && this.documentId && packet.document_id !== this.documentId) {
       this.wheel.cancel(); this.scrollTargets.clear()
       if (this.scrollFrame) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = 0 }
+      this.navigationAt = performance.now()
       await this.navigation.prepare()
       if (this.disposed) throw Error('MP-08: mirror closed during navigation')
       this.doc = this.frame.contentDocument
@@ -638,6 +652,7 @@ export class BrowserMirror2Renderer {
         const view = this.frame.contentWindow!, position = rootScroll ?? packet.scroll; view.scrollTo(position[0]!, position[1]!); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
       this.navigation.present(packet.snapshot_complete === true)
+      this.navigationPaint()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
       this.kernelFocus = packet.focused

@@ -155,9 +155,12 @@ export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
   parentWorld(stream) { return stream.world; }
   async world(tab, stream) {
+    const targetAt = timestamp();
     const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
     const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
+    this.host.timing?.('mirror2_world_target', targetAt);
+    const installAt = timestamp();
     const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
@@ -165,8 +168,11 @@ export class Mirror2 {
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
+    this.host.timing?.('mirror2_world_install', installAt);
     const out = { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
+    const cssAt = timestamp();
     await this.watchCss(out, frameTree.frame.id, stream.id);
+    this.host.timing?.('mirror2_world_css', cssAt);
     return out;
   }
   async watchCss(world, frameId, streamId) {
@@ -298,13 +304,19 @@ export class Mirror2 {
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         await this.protectTargets(world, tab, policy);
+        const snapshotAt = timestamp();
         const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
+        this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
         // Sheets this CSSOM cannot read come through CDP.
+        const sheetsAt = timestamp();
         const sheetOps = await this.sheetOps(world, snap.sheets);
+        this.host.timing?.('mirror2_sheets', sheetsAt);
+        const framesAt = timestamp();
         // Cross-origin frames: child DOM under the owner, or an opaque region.
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
+        this.host.timing?.('mirror2_frames', framesAt);
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: [...frames.ops, ...sheetOps], resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
@@ -342,7 +354,9 @@ export class Mirror2 {
       // The first packet carries DOM, CSS and fonts; images follow it. Resource
       // bytes travel only in packets without DOM changes (and in bounded
       // slices), so an echo never queues behind image bytes on the socket.
+      const fontsAt = timestamp();
       resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
+      if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
       const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
@@ -412,6 +426,7 @@ export class Mirror2 {
     if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     const wire = await this.encode(stream, packet);
+    this.host.timing?.event?.('mirror2_packet', { sequence, reset: Number(reset), bytes: Buffer.byteLength(JSON.stringify(wire)), raw_bytes: wire.packet_bytes ?? Buffer.byteLength(JSON.stringify(packet)) });
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;

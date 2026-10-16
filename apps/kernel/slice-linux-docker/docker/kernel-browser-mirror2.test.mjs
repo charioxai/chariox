@@ -425,3 +425,13 @@ test('MP-08/MP-11 mirrored Ctrl+Z / Ctrl+Shift+Z resolve to modifier chords unde
     assert.equal(resolved.observedFrameInput, true); assert.equal(typeof resolved.guard, 'function'); assert.equal(typeof resolved.frameSensitive, 'function');
   }
 });
+
+// MP-08/MP-10/MP-11: fixed timing labels never expose document identity or content.
+test('MP-10: mirror world attributes target, observer installation and CSS setup separately', async () => {
+  const marks = [], connection = { send: async method => method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'frame', loaderId: 'doc' } } } : { result: { value: true } } };
+  const mirror = new Mirror2({ host: { timing: (stage, at) => marks.push([stage, at]), browser: { resolvePageTarget: async () => ({ connection, sessionId: 'session' }), ensureFocusWorld: async () => ({ contextId: 1 }) } } });
+  mirror.watchCss = async () => {};
+  await mirror.world({ target_id: 'target', document_id: 'doc' }, { id: 'stream' });
+  assert.deepEqual(marks.map(([stage]) => stage), ['mirror2_world_target', 'mirror2_world_install', 'mirror2_world_css']);
+  assert.ok(marks.every(([, at]) => Number.isFinite(at)));
+});
