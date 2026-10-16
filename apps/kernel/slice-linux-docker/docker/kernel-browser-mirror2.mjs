@@ -280,7 +280,8 @@ export class Mirror2 {
     assertNotCancelled(signal);
     // MP-08/MP-10/MP-11: negotiate native preview before any observer/CSS work.
     // It is an ordinary protected display, never a raster in the mirror packet.
-    if (stream.navigationPreview && stream.previewDocument !== tab.document_id && stream.document_id !== tab.document_id) {
+    const previousDocument = stream.document_id ?? stream.initialDocument;
+    if (stream.navigationPreview && previousDocument && stream.previewDocument !== tab.document_id && previousDocument !== tab.document_id) {
       if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
       stream.previewDocument = tab.document_id;
       this.regions.retireStream(stream);

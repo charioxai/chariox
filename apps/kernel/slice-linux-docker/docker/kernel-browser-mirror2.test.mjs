@@ -499,3 +499,13 @@ test('MP-08/MP-10/MP-11 explicit handover flush ends older polls before a fresh 
  mirror.hurry=s=>{s.hurry=(s.hurry??0)+1;hurried++};mirror.packet=async(_s,c,_scope,_signal,deadline)=>{assert.equal(c.flush,true);assert(deadline<=Date.now());return{sequence:3}};
  await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0,flush:true},'scope');assert.equal(hurried,1);
 });
+
+test('MP-08/MP-10/MP-11 native preview follows a document transition, not initial attachment',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'initial'},stream={tab_id:'t',scope:'scope',navigationPreview:true,initialDocument:'initial',issued:0};
+ const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
+ mirror.world=async()=>{throw Error('initial document uses the ordinary mirror path')};
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:0},'scope'),/initial document uses the ordinary mirror path/);
+ tab.document_id='typed';mirror.regions.retireStream=()=>{};
+ const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:0},'scope');
+ assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'typed');
+});

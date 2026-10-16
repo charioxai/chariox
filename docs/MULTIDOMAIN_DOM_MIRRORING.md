@@ -758,3 +758,10 @@ document/geometry, incomplete snapshot, pending input or active composition must
 keep the admitted native surface until a fresh synchronized mirror can replace
 it. Capture a region before and after the switch. The base must fail the same
 video/handover assertion. Source fixtures supplement this real drill only.
+
+MP-08 / MP-10 / MP-11 startup boundary: the subscription binds its initial
+document without starting native preview. A later document transition, including
+one committed before the first snapshot drains, may announce navigation preview.
+This keeps ordinary attachment on the mirror path and prevents native page
+initialization from resizing an already painted band before the person's first
+URL input. Existing owned-window rebinding still handles later native starts.

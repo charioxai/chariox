@@ -68,7 +68,7 @@ export class MirrorService {
       const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
       await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,navigationPreview:command.navigation_preview===true&&process.env.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'}));}
+      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,navigationPreview:command.navigation_preview===true&&process.env.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'}));}
       catch(error){await releaseRender().catch(()=>{});throw error;}
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
