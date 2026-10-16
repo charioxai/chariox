@@ -239,6 +239,47 @@ test('MP-08/MP-10/MP-11: typing defers full-frame refinement until input is quie
  host.inputChangedAt.set('t',performance.now()-2000);await service.next(next(s.subscription_id,second.sequence),'a');assert.equal(clips[2],null,'settled input refines');
 });
 
+function nativeTiles() {
+  const f=fixture(),clips=[],screenshot=f.host.screenshot;
+  f.state.snapshot.nodes[0].children=['n2','n4'];
+  f.state.snapshot.nodes[1]={id:'n2',parent:'n1',children:[],kind:'tile',tag:'button',box:{x:10,y:10,width:20,height:10},reason:'native_control'};
+  f.state.snapshot.nodes.push({id:'n4',parent:'n1',children:[],kind:'tile',tag:'input',box:{x:50,y:10,width:20,height:10},reason:'native_control'});
+  f.state.snapshot.tile_states={n2:'a',n4:'a'};
+  f.host.inputEpochs=new Map([['t',1]]);f.host.inputChangedAt=new Map([['t',performance.now()]]);
+  f.host.screenshot=async(tab,clip)=>{clips.push(clip);return screenshot(tab,clip)};
+  return {...f,clips,read:async(service,id,after=0)=>service.next(next(id,after),'a')};
+}
+test('MP-08/MP-10: native controls whose pixels cannot have changed are not screenshotted again',async()=>{
+  const {service,state,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);assert.equal(first.tiles.length,2);
+  state.snapshot.nodes[2].children=[];state.snapshot.nodes.push({id:'n5',parent:'n1',children:[],kind:'text',text:'elsewhere',box:{x:0,y:30,width:30,height:8}});state.snapshot.nodes[0].children.push('n5');
+  const second=await read(service,s.subscription_id,first.sequence);
+  assert.equal(clips.length,1,'an unrelated change and a grown container leave the controls alone');assert.deepEqual(second.tiles,first.tiles);
+});
+test('MP-08/MP-10: a changed native control captures only its own rect',async()=>{
+  const {service,state,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const first=await read(service,s.subscription_id);state.snapshot.tile_states={n2:'a',n4:'focused'};
+  const second=await read(service,s.subscription_id,first.sequence);
+  assert.deepEqual(clips[1],{x:50,y:10,width:20,height:10,scale:1});assert.equal(second.tiles.length,2);assert.deepEqual(second.tiles.find(t=>t.node_id==='n2'),first.tiles.find(t=>t.node_id==='n2'));
+});
+test('MP-08/MP-10: a record changing over a native control, or moving off it, captures it again',async()=>{
+  const {service,state,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  state.snapshot.nodes.push({id:'n5',parent:'n1',children:[],kind:'text',text:'over',box:{x:60,y:30,width:8,height:8}});state.snapshot.nodes[0].children.push('n5');
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);
+  state.snapshot.nodes[3].box={x:12,y:12,width:8,height:8};
+  const second=await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,2,'moved onto n2');assert.deepEqual(clips[1],{x:10,y:10,width:20,height:10,scale:1});
+  state.snapshot.nodes[3].box={x:60,y:30,width:8,height:8};
+  const third=await read(service,s.subscription_id,second.sequence);assert.equal(clips.length,3,'moved off n2 repaints the area it left');assert.deepEqual(clips[2],{x:10,y:10,width:20,height:10,scale:1});assert.equal(third.tiles.length,2);
+});
+test('MP-08/MP-10: idle refinement, document resets and tiles without private state still capture',async()=>{
+  const {service,state,host,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const first=await read(service,s.subscription_id);host.inputChangedAt.set('t',performance.now()-2000);
+  const second=await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,2);assert.equal(clips[1],null,'quiet input refines against the full frame');
+  const third=await read(service,s.subscription_id,second.sequence);assert.equal(clips.length,2,'the refined pixels are reused');
+  state.snapshot.tile_states=undefined;await read(service,s.subscription_id,third.sequence);assert.equal(clips.length,3,'no private state, no reuse');
+  state.snapshot.tile_states={n2:'a',n4:'a'};host.inputEpochs.set('t',2);host.inputChangedAt.set('t',performance.now());
+  await read(service,s.subscription_id,0);assert.equal(clips.length,4,'a reset packet captures every control');
+});
 test('MP-08/MP-11: kernel refuses overlapping credits instead of racing private observer bases',async()=>{
  const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let unblock;const held=new Promise(resolve=>{unblock=resolve}),world=service.world.bind(service);service.world=async(...args)=>{await held;return world(...args)};
  const first=service.next(next(s.subscription_id),'a');await assert.rejects(service.next(next(s.subscription_id),'a'),/credit already outstanding/);unblock();assert.equal((await first).sequence,1);assert.equal(service.streams.get(s.subscription_id).busy,false);

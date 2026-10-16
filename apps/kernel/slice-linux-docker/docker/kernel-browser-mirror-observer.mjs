@@ -23,7 +23,13 @@ function installMirrorObserver(initialStyles = {}) {
   const snapshots = new Map();
   const read = (_ignoredValues = [], opaqueRegions = [], subscription = null, reset = false) => {
     observer.disconnect();observed=new WeakSet();
-    const records = [], resources = [], fonts = [], nextLive = new Map();
+    const records = [], resources = [], fonts = [], nextLive = new Map(), tileStates = {};
+    // Private to the kernel (never in a packet): what a native control's pixels depend on beyond its record.
+    const nativeTile = (record,node) => {
+      const secret=node.localName==='input'&&node.type==='password',text=node.textContent;
+      tileStates[record.id]=[':hover',':active',':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}`;
+      record.kind='tile';record.reason='native_control';return done(record);
+    };
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
     let textSize = 0;
@@ -86,7 +92,7 @@ function installMirrorObserver(initialStyles = {}) {
         }
         record.style=safeStyle(node,null,true,record.box);
         // MP-08/MP-11: show password dots through pixels, never form metadata.
-        if(tag==='input'&&node.type==='password'){record.kind='tile';record.reason='native_control';return done(record);}
+        if(tag==='input'&&node.type==='password')return nativeTile(record,node);
         // MP-08/MP-10: viewport first. Offscreen simple flow blocks retain their
         // layout but hydrate descendants on the following bounded credit.
         // Exact filled-field protection precedes deferral; user scrolling affects
@@ -103,7 +109,7 @@ function installMirrorObserver(initialStyles = {}) {
         if(['input','textarea','select'].includes(tag)&&typeof node.value==='string'&&node.value.length>16384)throw new Error('mirror form bounds');
         if(tag==='input' || tag==='textarea' || tag==='select') record.form={value:tag==='input'&&node.type==='password'?'':(node.value??'').slice(0,16384),checked:!!node.checked,selected_index:node.selectedIndex??-1,selection_start:node.selectionStart??null,selection_end:node.selectionEnd??null};
         record.scroll={x:node.scrollLeft,y:node.scrollTop};
-        if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none'){record.kind='tile';record.reason='native_control';return done(record);}
+        if(['button','input','textarea','select'].includes(tag) && getComputedStyle(node).appearance!=='none')return nativeTile(record,node);
         if(media.has(tag) || tag.includes('-') && !node.shadowRoot) {record.kind='tile';record.tag='img';record.reason=tag.includes('-')?'opaque_shadow':'opaque_media';return done(record);}
         if(tag==='iframe') {
           try {
@@ -163,7 +169,7 @@ function installMirrorObserver(initialStyles = {}) {
     // sanitized CSS maps privately; public packet/hash shapes remain unchanged.
     const styles=[],styleIds=new Map();
     nodes=nodes.map(node=>{if(!node.style)return node;const key=JSON.stringify(node.style);if(!styleIds.has(key)){styleIds.set(key,styles.length);styles.push(node.style)}const {style,...packed}=node;return {...packed,style_index:styleIds.get(key)};});
-    return {root,nodes,styles,removed,incremental,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null};
+    return {root,nodes,styles,removed,incremental,resources,fonts,scroll:{x:scrollX,y:scrollY},revision,selection,focused:ids.get(focused)??null,tile_states:tileStates};
   };
   // MP-11: an admitted older packet may not retarget an element that moved or
   // changed after the latest sample. Validate again in the real isolated world.

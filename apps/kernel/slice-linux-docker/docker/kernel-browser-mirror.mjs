@@ -12,6 +12,7 @@ import { assertCurrentDocument,assertNotCancelled } from './browser-controller-a
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
 import { Mirror2,MirrorInputEpochRefusal } from './kernel-browser-mirror2.mjs';
+import { TileCache,damageOf,globalBoxes,tileKeys } from './kernel-browser-mirror-tile-cache.mjs';
 export { MirrorInputEpochRefusal };
 
 const lifetime=60000,maxWire=4*1024*1024,refineQuietMs=1000;
@@ -129,7 +130,7 @@ export class MirrorService {
       const ordered=[],visit=id=>{const n=records.get(id);if(!n||ordered.length>=12000)throw new Error('MP-11: invalid observer delta');ordered.push(n);for(const child of n.children)visit(child);};visit(source.root);
       source.nodes=ordered;
     }
-    delete source.incremental;delete source.removed;
+    const tileStates=source.tile_states;delete source.tile_states;delete source.incremental;delete source.removed;
     // Keep the isolated observer's sanitized resource descriptors unmodified.
     // Public resource remapping, drift tiles and hidden-subtree removal occur below.
     stream.observed=stream.fullFallback?null:source;
@@ -168,18 +169,18 @@ export class MirrorService {
     if(source.focused&&!source.nodes.some(n=>n.id===source.focused&&n.kind!=='mask'))source.focused=null;
     // MP-08/MP-11: opaque subtrees use protected compositor tiles.
     // Ordinary foreign-frame and closed-shadow pixels remain visible.
-    const globalBox=node=>{const box={...node.box};for(let ancestor=byId.get(node.parent);ancestor;ancestor=byId.get(ancestor.parent))if(ancestor.kind==='frame') {box.x+=ancestor.box.x+(parseFloat(ancestor.style?.['border-left-width'])||0)+(parseFloat(ancestor.style?.['padding-left'])||0);box.y+=ancestor.box.y+(parseFloat(ancestor.style?.['border-top-width'])||0)+(parseFloat(ancestor.style?.['padding-top'])||0);}return box;};
+    const globalBox=globalBoxes(byId);
     const tiles=source.nodes.filter(n=>{if(n.kind!=='tile'||!(n.box?.width>0&&n.box?.height>0))return false;const b=globalBox(n);return b.x<geometry.width&&b.y<geometry.height&&b.x+b.width>0&&b.y+b.height>0;});
     const tileBoxes=new Map(tiles.map(n=>[n.id,globalBox(n)]));
     if(tiles.length>64){this.host.timing?.('mirror_fallback_visible_tile_limit',timestamp());throw new Error('MP-11: visible tile limit; use display fallback');}
     mark('sanitize');
+    const reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
+    const previous=new Map((stream.previous?.nodes??[]).map(n=>[n.id,n]));
+    const changed=reset?source.nodes:source.nodes.filter(n=>JSON.stringify(n)!==JSON.stringify(previous.get(n.id)));
+    const removed=reset?[]:[...previous.keys()].filter(id=>!byId.has(id)||hidden.has(id));
     let tileFrame=null;
     if(tiles.length) {
-      // Bound the compositor crop to visible tiles; keep protection geometry in
-      // full canonical pixels so masks cannot shift with the crop origin.
-      const scale=this.host.scales.get(tab.tab_id)??1;
-      const x0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>tileBoxes.get(n.id).x)))),y0=Math.max(0,Math.floor(Math.min(...tiles.map(n=>tileBoxes.get(n.id).y))));
-      const x1=Math.min(geometry.width,Math.ceil(Math.max(...tiles.map(n=>tileBoxes.get(n.id).x+n.box.width)))),y1=Math.min(geometry.height,Math.ceil(Math.max(...tiles.map(n=>tileBoxes.get(n.id).y+n.box.height))));
+      const scale=this.host.scales.get(tab.tab_id)??1,size={width:geometry.width*scale,height:geometry.height*scale};
       // MP-08/MP-10: motion uses the negotiated PNG crop; the next idle
       // credit performs native full-frame verification/refinement, as display
       // does. Chromium's DPR2 cropped raster can differ at glyph/shape edges.
@@ -187,23 +188,40 @@ export class MirrorService {
       // a full-frame refinement that the next echo queues behind: refine once input settles.
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0,typedAt=this.host.inputChangedAt?.get(tab.tab_id)??-Infinity;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&performance.now()-typedAt>=refineQuietMs;
-      const clip=refine?{x:0,y:0,width:geometry.width,height:geometry.height,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
+      // MP-08/MP-10: a native control is captured again only when its pixels can have changed.
+      if(reset)stream.tileCache=null;
+      const cache=stream.tileCache??=new TileCache(),keys=tileKeys(tiles,tileBoxes,tileStates);
       const masks=await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy});
       mark('tile_masks_before');
-      const captured=await this.host.screenshot(tab,refine?null:clip);
-      stream.refinePending=!refine;stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;
-      mark('tile_capture');
-      const protectedRegions=await masks.afterCapture({width:geometry.width*scale,height:geometry.height*scale});
-      mark('tile_masks_after');
-      const frame=maskPixels(decodePng(captured.data_base64,scale),protectedRegions.map(r=>[r.x-clip.x*scale,r.y-clip.y*scale,r.width,r.height]));tileFrame=[];
-      for(const node of tiles) {
-        const box=tileBoxes.get(node.id);
-        const x=Math.max(0,Math.floor(box.x-clip.x)*scale),y=Math.max(0,Math.floor(box.y-clip.y)*scale);
-        const w=Math.max(0,Math.min(frame.width,Math.ceil(box.x+box.width-clip.x)*scale)-x),h=Math.max(0,Math.min(frame.height,Math.ceil(box.y+box.height-clip.y)*scale)-y);
-        if(!w||!h)continue;
-        const exact=losslessRegion(frame,x,y,w,h);
-        tileFrame.push({node_id:node.id,x:x/scale+clip.x-box.x,y:y/scale+clip.y-box.y,width:w/scale,height:h/scale,data_base64:exact.data_base64});
-      }
+      let plan=refine?tiles:cache.stale(tiles,keys,tileBoxes,scale,damageOf(changed,removed,previous,globalBox,globalBoxes(previous)),byId),regions=0;
+      // A protected region may lie under a reused tile: such a page captures every tile.
+      if(plan.length<tiles.length&&(await masks.afterCapture(size)).length)plan=tiles;
+      const fresh=new Map();
+      if(plan.length) {
+        // Bound the compositor crop to the tiles that changed; keep protection geometry in
+        // full canonical pixels so masks cannot shift with the crop origin.
+        const planned=plan.map(n=>tileBoxes.get(n.id));
+        const x0=Math.max(0,Math.floor(Math.min(...planned.map(b=>b.x)))),y0=Math.max(0,Math.floor(Math.min(...planned.map(b=>b.y))));
+        const x1=Math.min(geometry.width,Math.ceil(Math.max(...plan.map(n=>tileBoxes.get(n.id).x+n.box.width)))),y1=Math.min(geometry.height,Math.ceil(Math.max(...plan.map(n=>tileBoxes.get(n.id).y+n.box.height))));
+        const clip=refine?{x:0,y:0,width:geometry.width,height:geometry.height,scale:1}:{x:x0,y:y0,width:x1-x0,height:y1-y0,scale:1};
+        const captured=await this.host.screenshot(tab,refine?null:clip);
+        stream.refinePending=!refine;
+        mark('tile_capture');
+        const protectedRegions=await masks.afterCapture(size);regions=protectedRegions.length;
+        mark('tile_masks_after');
+        const frame=maskPixels(decodePng(captured.data_base64,scale),protectedRegions.map(r=>[r.x-clip.x*scale,r.y-clip.y*scale,r.width,r.height]));
+        for(const node of plan) {
+          const box=tileBoxes.get(node.id);
+          const x=Math.max(0,Math.floor(box.x-clip.x)*scale),y=Math.max(0,Math.floor(box.y-clip.y)*scale);
+          const w=Math.max(0,Math.min(frame.width,Math.ceil(box.x+box.width-clip.x)*scale)-x),h=Math.max(0,Math.min(frame.height,Math.ceil(box.y+box.height-clip.y)*scale)-y);
+          if(!w||!h)continue;
+          const exact=losslessRegion(frame,x,y,w,h);
+          fresh.set(node.id,{node_id:node.id,x:x/scale+clip.x-box.x,y:y/scale+clip.y-box.y,width:w/scale,height:h/scale,data_base64:exact.data_base64});
+        }
+      } else mark('tile_reuse');
+      stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;
+      cache.store(tiles,keys,fresh,scale,regions);
+      tileFrame=tiles.flatMap(n=>cache.data(n.id)??[]);
     }
     mark('tile_decode_mask_encode');
     await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertNotCancelled(signal);
@@ -214,10 +232,7 @@ export class MirrorService {
       stream.previous=null;stream.observed=null;stream.policy=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();
       throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    const hash=stream.hasher.hash(source),reset=!stream.previous||command.after_sequence!==stream.sequence||stream.document_id!==tab.document_id;
-    const previous=new Map((stream.previous?.nodes??[]).map(n=>[n.id,n]));
-    const changed=reset?source.nodes:source.nodes.filter(n=>JSON.stringify(n)!==JSON.stringify(previous.get(n.id)));
-    const removed=reset?[]:[...previous.keys()].filter(id=>!byId.has(id)||hidden.has(id));
+    const hash=stream.hasher.hash(source);
     const resources=[...material.resources.values()].filter(r=>reset||!stream.resources.has(r.resource_id));
     const packet={subscription_id:command.subscription_id,tab_id:tab.tab_id,generation:command.generation,document_id:tab.document_id,sequence:stream.sequence+1,base_sequence:reset?null:stream.sequence,reset,hash,root:source.root,nodes:changed,removed,fonts:source.fonts,scroll:source.scroll,focused:source.focused,selection:source.selection??null,resources,tiles:tileFrame??[],css_width:geometry.width,css_height:geometry.height,device_scale_factor:this.host.scales.get(tab.tab_id)??1};
     if(JSON.stringify(packet).length>maxWire)throw new Error('MP-11: mirror packet exceeds bound; use display fallback');
