@@ -1741,3 +1741,26 @@ test('MP-11 native agent mutations fail closed when browser destinations cannot 
     assert.equal(calls, 0);
   } finally { connection.beforeSend = null; }
 }));
+
+// r13 b3 union (1920x1080@1, browserux-r13union1-mvai225e): a whole-page native start fits Chrome's window
+// to the page (1288x891) even when it then refuses (attestation mismatch); the band's capture retired on that
+// resize and no live band was left to read the inventory, so the stale window binding refused every band
+// resubscribe for 20 min. Every native start attempt re-resolves the window binding from the owner's inventory.
+test('MP-08/MP-11 a native page start re-resolves the band window it may have resized', { timeout: 20000 }, (t) => using(async ({ host }) => {
+  const { LinuxCapture } = await import('./kernel-browser-native.mjs');
+  const { OwnedDisplay } = await import('./kernel-browser-owned-display.mjs');
+  const real = new OwnedDisplay(os.tmpdir());
+  try { await real.start(); } catch { return t.skip('no Xvfb'); }
+  const start = LinuxCapture.prototype.start;
+  try {
+    const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+    const tab = host.tabs.get(opened.tab_id);
+    host.chromium.display = real;
+    let resolves = 0;
+    host.chromeWindows.resolve = async () => { resolves++; };
+    LinuxCapture.prototype.start = async function () { throw Error('MD-DISPLAY: native attestation RGB differed'); };
+    const source = await host.compositorFor(tab, { codec: 'avc1.420033', device_scale_factor: 1 });
+    assert.equal(source instanceof LinuxCapture, false, 'the refused native start falls back');
+    assert.equal(resolves, 1, 'the window binding is re-resolved after the start');
+  } finally { LinuxCapture.prototype.start = start; await host.closeCompositors(); await real.close(); }
+}));
