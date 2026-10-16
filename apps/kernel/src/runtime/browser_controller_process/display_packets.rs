@@ -296,6 +296,9 @@ impl Drop for DisplayPackets {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
                     self.reclaim_rasters(&name);
+                    if matches!(name.as_str(), "display-timing.jsonl" | "display-hardware.jsonl") {
+                        Self::reclaim_private_files(&self.directory, &[&name], 64 * 1024 * 1024);
+                    }
                     if name == "display.xauth" {
                         Self::reclaim_private_files(&self.directory, &["display.xauth"], 4096);
                     }
@@ -321,6 +324,21 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn mp11_native_packets_reclaim_only_private_timing_files() {
+        let spool = DisplayPackets::create().unwrap();
+        let root = spool.root.clone();
+        for name in ["display-timing.jsonl", "display-hardware.jsonl"] {
+            let file = root.join(name);
+            std::fs::write(&file, b"numeric diagnostic").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        drop(spool);
+        assert!(
+            !root.exists(),
+            "MP-11: private timing files must not orphan the packet root"
+        );
+    }
     #[test]
     fn mp11_native_packets_reclaim_raster_after_supervisor_death() {
         use std::io::BufRead;

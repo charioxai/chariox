@@ -72,3 +72,26 @@ test('MP-08/MP-10/MP-11 535 registration resumes and attaches through the sole 5
   await f.request({op:'display_attach',subscription_id:resumed.subscription_id,observed_by:resumed.subscription_id,generation:resumed.generation});
  }finally{await f.display.close()}
 });
+
+// MP-08/MP-10/MP-11: anonymous numeric delivery markers join a worker's
+// queued request, producer wait and first frame without recording identities.
+test('MP-08/MP-10/MP-11 worker trace joins each viewer and resumed delivery without authority data',async()=>{
+ const f=fixture(),events=[];let flushes=0;f.display.timing.event=(stage,fields)=>events.push({stage,...fields});f.display.timing.flush=()=>flushes++;
+ f.display.display.createProducer=()=>({feedback(){},invalidate(){},close:async()=>{},waitReady:async()=>{},take:()=>({motion:true,width:1920,height:1080,data_base64:'protected-sample',encoded:{key:true,data_base64:'AAAA'}})});
+ try{
+  const a=await f.request(offer),b=await f.request({...offer,observed_by:'private-viewer-two'});
+  for(const [binding,owner] of [[a,offer.observed_by],[b,'private-viewer-two']]){
+   await f.request({op:'display_attach',subscription_id:binding.subscription_id,observed_by:owner,generation:1});
+   for(const after_sequence of [0,1])await f.request({op:'screenshot',subscription_id:binding.subscription_id,observed_by:owner,generation:1,after_sequence,push:{reset:false,congested:false}});
+  }
+  f.syncClock();
+  const resumed=await f.request({op:'display_resume_attach',subscription_id:a.subscription_id,observed_by:offer.observed_by,generation:1});
+  await f.request({op:'screenshot',subscription_id:resumed.subscription_id,observed_by:offer.observed_by,generation:1,after_sequence:0,push:{reset:true,congested:false}});
+  const first=events.filter(e=>e.stage==='desktop_delivery_first_frame');
+  assert.deepEqual(first.map(e=>[e.viewer,e.delivery,e.sequence]),[[1,1,1],[2,1,1],[1,2,1]],'MP-10 anonymous worker first-frame joins missing');
+  for(const stage of ['room_display_queue','room_display_binding','room_display_operation','desktop_producer_wait','desktop_frame_build'])assert(events.some(e=>e.stage===stage),'MP-10 missing stage '+stage);
+  for(const event of events)for(const [key,value]of Object.entries(event))if(key!=='stage'&&value!==undefined)assert(Number.isFinite(value),'MP-11 timing fields must be numeric');
+  const text=JSON.stringify(events);for(const value of [a.subscription_id,b.subscription_id,resumed.subscription_id,'private-viewer-two'])assert(!text.includes(value));
+ }finally{await f.display.close()}
+ assert.equal(flushes,1,'MP-10 shutdown must flush the last worker delivery markers');
+});
