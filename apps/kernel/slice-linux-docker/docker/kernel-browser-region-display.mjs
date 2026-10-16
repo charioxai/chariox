@@ -11,15 +11,16 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   const pageTab=overlayTab??tab;
   const {connection,sessionId}=await host.browser.resolvePageTarget(pageTab.target_id);
   const scale=window.scale,sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[target.kind]??0;
-  const validateCurrent=args.validateCurrent&&(async(lease_phase=1)=>{
+  const timedLease=check=>check&&(async(lease_phase=1)=>{
    const at=performance.timeOrigin+performance.now();
-   try{return await args.validateCurrent();}finally{host.timing.event?.('native_live_lease',{at,source_kind:sourceKind,lease_phase});}
+   try{return await check();}finally{host.timing.event?.('native_live_lease',{at,source_kind:sourceKind,lease_phase});}
   });
   // Browser UI survives page navigation; the frame document is its window epoch.
   // A dialog overlay's frames belong to the window epoch too; its page document fences it separately.
   const sourceTab=chromeUi(target)?{...pageTab,document_id:lease.document_id}:pageTab;
-  const {cachedCurrent,...captureArgs}=args;
-  source=new Capture({...captureArgs,validateCurrent,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
+  const {cachedCurrent,validateCurrent:validateArg,publishCurrent:publishArg,...captureArgs}=args;
+  const validateCurrent=timedLease(validateArg),publishCurrent=timedLease(publishArg);
+  source=new Capture({...captureArgs,validateCurrent,publishCurrent,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(pageTab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
   source.captureKind=sourceKind;

@@ -121,10 +121,13 @@ export class ChromeWindows {
       if(!cached||(target_id!==undefined&&cached.target_id!==target_id))return false;
       try{return JSON.stringify(nativePageRect(row,cached,scale))===JSON.stringify(pageRect)&&isCurrent();}catch{return false;}
     }:undefined;
+    // MP-11: source publication reuses the native owner snapshot only while no extension, resize or
+    // detach event has retired it (same window generation, same Tab, same page rect); a miss reads fresh.
+    const isPagePublishable=isPageCurrentCached?async target_id=>isPageCurrentCached(target_id)||isPageCurrent(target_id):isPageCurrent;
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached});
+      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached,isPagePublishable});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;

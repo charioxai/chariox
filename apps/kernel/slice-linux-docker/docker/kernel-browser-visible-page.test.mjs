@@ -92,3 +92,26 @@ test('MP-08/MP-10/MP-11 visible-page screenshot requires a live same-observer cr
  host.protection=policy;change=false;stream.regionCurrent=async()=>{host.displays.clear();return true;};
  await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
 });
+
+// vidlat r22: publication borrows the native owner verdict, never the layout read; input and admission stay fresh.
+test('MP-08/MP-10/MP-11 visible-page publication reuses the owner verdict but reads the layout viewport every time',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ let fresh=0,cached=0,layoutReads=0,clientWidth=1280,document='d';
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,
+  isPageCurrent:async()=>{fresh++;return true},isPagePublishable:async()=>{cached++;return true}};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{resolvePageTarget:async()=>({connection:{send:async()=>{layoutReads++;return {cssLayoutViewport:{clientWidth,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}}}},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+ class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);}async start(){return this;}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ const stream=[...host.displays.values()][0],{publishCurrent}=stream.regionSource.options;
+ fresh=cached=layoutReads=0;
+ assert.equal(await publishCurrent(),true);assert.equal(await publishCurrent(),true);
+ assert.deepEqual([fresh,cached,layoutReads],[0,2,2],'two publications: owner verdict reused, layout read each time');
+ assert.equal(await stream.regionCurrent(),true);assert.deepEqual([fresh,cached,layoutReads],[1,2,3],'input guard stays fresh');
+ assert.equal(await stream.regionSource.options.validateCurrent(),true);assert.equal(fresh,2,'attestation stays fresh');
+ clientWidth=1265;assert.equal(await publishCurrent(),false,'a scrollbar appearing (no CDP event) retires the next publication');
+ clientWidth=1280;tab.document_id='d2';assert.equal(await publishCurrent(),false,'a new document retires it');
+ tab.document_id='d';window.isCurrent=()=>false;assert.equal(await publishCurrent(),false,'a retired window retires it');
+});

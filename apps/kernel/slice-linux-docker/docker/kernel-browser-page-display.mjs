@@ -33,12 +33,15 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
   const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&host.tabs.get(tab.tab_id)?.document_id===document;
-  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
+  // The layout viewport (scrollbars, zoom, scale) has no CDP change event, so every check reads it.
+  const layout=async()=>JSON.stringify(await measure())===JSON.stringify(viewport);
+  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&await layout()&&alive();
+  const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await layout()&&alive();
   if(!await current())refuse();
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};
   return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});
+   args:{window,viewport,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});
  });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
