@@ -6,6 +6,7 @@ pub mod catalog;
 #[cfg(test)]
 mod catalog_tests;
 pub mod frontmatter;
+mod home_journal;
 mod package;
 #[cfg(test)]
 mod package_tests;

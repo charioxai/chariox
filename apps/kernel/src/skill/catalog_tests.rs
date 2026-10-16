@@ -445,10 +445,13 @@ fn skills_v2_symlinked_state_is_rejected_before_publication() {
     let f = StorageFixture::new();
     std::fs::create_dir_all(f.root.join("state")).unwrap();
     std::fs::create_dir_all(f.root.join("unrelated")).unwrap();
+    // Ownership is pinned at construction. A later swap must also close reads,
+    // rather than let a stale service publish through a replacement directory.
+    std::fs::rename(f.root.join("state/skills"), f.root.join("original-skills")).unwrap();
     std::os::unix::fs::symlink(f.root.join("unrelated"), f.root.join("state/skills")).unwrap();
     let (m, p) = install(skill("s1", "review", SkillScope::Chariox));
     assert!(f.storage.publish(&m, &p).is_err());
-    assert_eq!(f.storage.snapshot().unwrap().revision, 0);
+    assert!(f.storage.snapshot().is_err());
     assert!(std::fs::read_dir(f.root.join("unrelated"))
         .unwrap()
         .next()

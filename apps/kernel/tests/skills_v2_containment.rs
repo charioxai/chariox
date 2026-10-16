@@ -80,7 +80,7 @@ fn skills_v2_containment_rejects_staging_parent_symlink() {
     let f = Fixture::new();
     let outside = f.root.join("workspace");
     fs::create_dir(&outside).unwrap();
-    fs::create_dir(f.home.join("state")).unwrap();
+    fs::create_dir_all(f.home.join("state")).unwrap();
     std::os::unix::fs::symlink(&outside, f.home.join("state/skill-staging")).unwrap();
     assert!(
         f.service.prepare(&f.content()).is_err(),

@@ -28,7 +28,13 @@ impl SkillCatalogStorage {
         }
         let home = fs::canonicalize(home)
             .map_err(|_| failure("Chariox home must exist before loading skills"))?;
-        Ok(Self { home, durable })
+        let storage = Self { home, durable };
+        // MP-08 / MP-10 / MP-11: JSON paths are home-wide while ordinary
+        // durable journals may be daemon-specific. Claim the existing home
+        // journal under the same publication lock before any catalog work.
+        let _lock = storage.lock()?;
+        super::home_journal::claim(&storage)?;
+        Ok(storage)
     }
     pub(super) fn journal(&self) -> &DurableKernelStateStore {
         &self.durable
@@ -37,6 +43,7 @@ impl SkillCatalogStorage {
         &self.home
     }
     pub fn snapshot(&self) -> Result<SkillCatalogSet, DaemonError> {
+        super::home_journal::verify(self)?;
         let latest = self
             .durable
             .load_subject_events_by_kind(CATALOG_SUBJECT, CATALOG_KIND, 1)?;
@@ -90,6 +97,7 @@ impl SkillCatalogStorage {
             ));
         }
         let _lock = self.lock()?;
+        super::home_journal::verify(self)?;
         if self.loads(&record.session_id)?.iter().any(|previous| {
             previous.skill_id == record.skill_id
                 && previous.agent_id == record.agent_id
@@ -110,6 +118,7 @@ impl SkillCatalogStorage {
     /// remain available for active Manual loads, compaction and acknowledgement
     /// idempotency even after other agents generate more than one journal page.
     pub fn loads(&self, session_id: &str) -> Result<Vec<SkillLoadRecord>, DaemonError> {
+        super::home_journal::verify(self)?;
         let through_sequence = self.durable.latest_event_sequence()?;
         let mut after_sequence = 0;
         let mut records = Vec::new();
