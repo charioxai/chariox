@@ -697,6 +697,7 @@ export class BrowserMirror2Renderer {
       for (const id of this.frameDocuments) { const d = this.dom.get(id) as Document | undefined; if (d?.nodeType === 9) d.documentElement.style.setProperty('overflow-anchor', 'none', 'important') }
       // The viewer owns scroll while it scrolls; the kernel's positions (the latest per
       // scroller, kept while deferred) apply on reset or once the viewer settles.
+      mark('apply_state')
       if (packet.reset) { this.deferred.clear(); this.wheel.cancel() }
       for (const [element, x, y] of scrolls) this.deferred.set(element, [x, y])
       if (packet.reset || !this.scrolling()) {
@@ -710,8 +711,11 @@ export class BrowserMirror2Renderer {
         }
         const view = this.frame.contentWindow!, position = rootScroll ?? packet.scroll; view.scrollTo(position[0]!, position[1]!); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
+      mark('apply_scroll')
       for (const entry of this.styled.values()) if (entry.kind === 'css') entry.fontStyle?.attach()
+      mark('apply_fonts')
       this.navigation.present(packet.snapshot_complete === true)
+      mark('apply_present')
       this.navigationPaint()
       this.frame.inert = !this.interactive
       this.sequence = packet.sequence; this.documentId = packet.document_id
