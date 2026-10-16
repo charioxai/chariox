@@ -48,6 +48,7 @@ export function waitingRoomStartRows(
     | "selectedMachineRef"
     | "selectedKernelRef"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "sliceSelectionId"
     | "sliceDisplayMode"
     | "managedComputeClass"
@@ -164,7 +165,7 @@ export function waitingRoomStartRows(
       ? [{
           id: "project",
           title: "Project",
-          value: describeWaitingRoomProjectSelection(
+          value: state.projectSelectionId === "new" && state.projectNameDraft?.trim() ? `New (${state.projectNameDraft.trim()})` : describeWaitingRoomProjectSelection(
             state.projectSelectionId ?? "default",
             remote.projects,
             options.targets?.workspacePath,
@@ -307,6 +308,7 @@ function waitingRoomManagedRepositoryRows(
   state: Pick<WaitingRoomState,
     | "focus"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "managedDevelopmentMode"
     | "managedRepositorySelection"
     | "managedRepositoryIndex"

@@ -241,6 +241,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     }
   }
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
+  let pendingNewProjectName = false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
     isAttached: deps.isAttached,
@@ -459,6 +460,16 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
     isAttached: deps.isAttached,
     startSessionFromWaitingRoomDefaults: async () => {
+      if (pendingNewProjectName) {
+        const name = deps.promptTextController.currentText().trim()
+        if (!name) { deps.flashFooter("Enter a project name", "error"); return }
+        pendingNewProjectName = false
+        deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
+        deps.promptTextController.setText("")
+        deps.promptInputRefController.blur?.()
+        deps.rebuildTranscript()
+        return
+      }
       if (pendingProjectRenameId) {
         const projectId = pendingProjectRenameId
         pendingProjectRenameId = null
@@ -577,11 +588,12 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       return true
     }
     if (
-      pendingProjectRenameId
+      (pendingProjectRenameId || pendingNewProjectName)
       && event.eventType !== "release"
       && event.name === "escape"
     ) {
       pendingProjectRenameId = null
+      pendingNewProjectName = false
       deps.promptTextController.clear()
       deps.flashFooter("project rename canceled", "info")
       event.preventDefault?.()
@@ -635,6 +647,12 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.client.send({ SetProjectPinned: { project_id: projectId, pinned } })
         .then(() => deps.flashFooter(pinned ? "Project pinned" : "Project unpinned", "info"))
         .catch((error: unknown) => deps.flashFooter(error instanceof Error ? error.message : "Project pin failed", "error"))
+    },
+    beginNewProject: () => {
+      pendingNewProjectName = true
+      deps.promptTextController.setText(deps.waitingRoomState().projectNameDraft ?? "")
+      deps.promptInputRefController.focus()
+      deps.flashFooter("Name the new project and press Enter", "info")
     },
     beginProjectRename: (projectId, currentName) => {
       pendingProjectRenameId = projectId

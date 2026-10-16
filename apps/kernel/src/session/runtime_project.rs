@@ -22,7 +22,10 @@ pub enum RuntimeProjectStatus {
 pub enum SessionProjectSelection {
     Default,
     Existing { project_id: String },
-    New,
+    New {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
 impl Default for SessionProjectSelection {

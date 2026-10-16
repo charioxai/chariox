@@ -657,15 +657,6 @@ impl SessionService {
                     &request.owner_user_id,
                     "session.create",
                 )?;
-                if !project.contains_workspace(&request.workspace_id) {
-                    return Err(project_error(
-                        "session.create",
-                        format!(
-                            "project `{project_id}` does not include Workspace `{}`",
-                            request.workspace_id,
-                        ),
-                    ));
-                }
                 if project.status() != RuntimeProjectStatus::Active {
                     return Err(project_error(
                         "session.create",
@@ -674,20 +665,33 @@ impl SessionService {
                         ),
                     ));
                 }
+                if !project.contains_workspace(&request.workspace_id) {
+                    let mut workspaces = project.workspace_ids().to_vec();
+                    workspaces.push(request.workspace_id.clone());
+                    self.projects.get_mut(project_id).expect("owned project checked").replace_workspace_ids(workspaces);
+                }
                 Ok(project_id.clone())
             }
-            SessionProjectSelection::New => {
+            SessionProjectSelection::New { name } => {
                 let number = self.next_named_project_number(&request.owner_user_id);
                 let id = self.next_named_project_id(
                     &request.owner_user_id,
                     &request.workspace_id,
                     number,
                 );
+                let name = match name {
+                    Some(name) => {
+                        let name = normalize_project_name(name)?;
+                        self.ensure_project_name_available(&request.owner_user_id, &name, None, "session.create")?;
+                        name
+                    }
+                    None => format!("Project-{number}"),
+                };
                 let project = RuntimeProject::new(
                     id.clone(),
                     request.owner_user_id.clone(),
                     request.workspace_id.clone(),
-                    format!("Project-{number}"),
+                    name,
                     RuntimeProjectKind::Named,
                 );
                 self.projects.insert(id.clone(), project);

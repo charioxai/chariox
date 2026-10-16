@@ -37,6 +37,7 @@ export type WaitingRoomKeyControllerDeps = {
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
   openProjectEnvironment?: (projectId: string) => void
   pinProject?: (projectId: string, pinned: boolean) => void
+  beginNewProject?: () => void
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
@@ -117,6 +118,10 @@ export function createWaitingRoomKeyController(
       }
       if (event.eventType !== "release" && (event.name === "return" || event.name === "enter")) {
         const state = deps.getWaitingRoomState()
+        if (state.focus === "project" && state.projectSelectionId === "new") {
+          deps.beginNewProject?.()
+          return true
+        }
         if (
           state.focus === "launch-machine"
           && waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)

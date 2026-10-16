@@ -76,7 +76,7 @@ export type RuntimeProjectStatus = "active" | "archived"
 export type SessionProjectSelection =
   | { kind: "default" }
   | { kind: "existing"; project_id: string }
-  | { kind: "new" }
+  | { kind: "new"; name?: string }
 
 export type RuntimeProject = {
   pinned?: boolean
