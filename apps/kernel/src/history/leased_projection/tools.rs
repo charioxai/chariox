@@ -75,6 +75,17 @@ impl ToolProjectionState {
         true
     }
 
+    pub(crate) fn record_stream(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Durable snapshots already projected this tool; a later bounded
+        // terminal batch carries the same snapshots and must not repeat them.
+        !self.history_owned && self.record(snapshot_key, bytes, stable_identity)
+    }
+
     pub(crate) fn record_history(
         &mut self,
         snapshot_key: String,

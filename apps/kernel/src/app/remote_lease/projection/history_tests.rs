@@ -339,3 +339,78 @@ fn mp08_history_only_tool_snapshots_survive_retained_delivery_and_reopen() {
         .destroy_leased_agent(&leased.id)
         .unwrap();
 }
+
+#[test]
+fn mp08_history_owned_tool_ignores_late_terminal_records() {
+    let (mut app, leased) = worker_lease();
+    let run = super::explicit_completion_tests::provider_run(
+        "run",
+        &leased.backing_session_id,
+        &leased.backing_agent_id,
+        "managed-dev-stub",
+        "managed-dev-stub",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.providers_mut().insert_run_for_test(run);
+    let payloads = ["running", "completed"].map(|status| {
+        serde_json::to_vec(&serde_json::json!({
+            "id": "late-tool", "name": "Read", "status": status, "output": "public source",
+        }))
+        .unwrap()
+    });
+    for payload in &payloads {
+        app.append_history_entry(
+            &leased.backing_session_id,
+            crate::history::SessionHistoryEntry::provider_output(
+                &leased.backing_session_id,
+                "run",
+                Some(&leased.backing_agent_id),
+                TerminalOutputKind::ProviderTool,
+                Some("late-tool".into()),
+                String::from_utf8(payload.clone()).unwrap(),
+            ),
+        );
+    }
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap()
+        .expect("history owns a tool whose terminal records are still queued")
+        .1;
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        delivery: Some(receipt),
+        ..
+    } = &first
+    else {
+        panic!("receipted history projection required")
+    };
+    assert_eq!(output_chunks.len(), 2);
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .acknowledge_leased_runtime_projection(&leased.id, "run", receipt)
+        .unwrap());
+    // A bounded terminal drain delivers the same snapshots in a later batch.
+    for payload in &payloads {
+        app.terminal_mut().fan_out_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderTool,
+            Some("late-tool".into()),
+            vec![leased.backing_attachment_id.clone()],
+            payload,
+        );
+    }
+    let late = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap();
+    assert!(
+        late.is_none_or(|(_, event)| {
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+            output_chunks.is_empty()
+        }),
+        "late terminal copies of history-projected snapshots must not duplicate home rows"
+    );
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}

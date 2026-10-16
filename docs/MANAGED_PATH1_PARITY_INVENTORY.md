@@ -1547,3 +1547,6 @@ or MP-10 fresh-machine acceptance. Runtime review and deployment comparison
 remain open. Exact commands, source identities, resource samples, intermediate
 RED diagnostics and cleanup are retained under
 `/root/.codex/evidence/browser-resume-20260930/implD2/`.
+
+MP-08 / MP-10 / MP-11: a tool whose durable snapshots were projected owns its
+projection; later terminal records for the same tool are not delivered again.

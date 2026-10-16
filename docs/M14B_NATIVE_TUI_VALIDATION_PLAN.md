@@ -593,3 +593,9 @@ require worker completion and at least64 retained history records before home
 reconnects. Delaying an ACK with netem requires replacing the loss queue to flush
 already queued bytes; changing its loss percentage alone does not prove the
 fault armed.
+
+MP-08 / MP-10 / MP-11 completed-backlog duplicate check: compare the home and
+worker tool-row multisets after a backlog that spans several retained pages.
+A bounded terminal batch can lag the 64-event history window, so a tool already
+projected from durable snapshots must not be projected again from its later
+terminal records; row counts alone hide this.

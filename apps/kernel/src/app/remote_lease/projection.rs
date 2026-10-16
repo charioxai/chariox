@@ -248,7 +248,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     || history_store.leased_projection_key_exists(&snapshot_key)?
                     || !tool
                         .state
-                        .record(snapshot_key, &chunk.bytes, tool.identity.is_some())
+                        .record_stream(snapshot_key, &chunk.bytes, tool.identity.is_some())
                 {
                     continue;
                 }
