@@ -20,6 +20,7 @@ impl KernelRuntimeState {
                 &attachment_id,
                 &viewer_public_key,
                 &request.slice_ref,
+                false,
             )
             .await?;
         if slice
@@ -71,6 +72,7 @@ impl KernelRuntimeState {
         attachment_id: &str,
         viewer_public_key: &str,
         slice_ref: &str,
+        frame_read: bool,
     ) -> Result<
         (
             crate::slice::SliceRecord,
@@ -129,7 +131,15 @@ impl KernelRuntimeState {
         let guard = self
             .owned
             .slice_store
-            .queue_environment_use(&slice.id, Some(&session_id), "environment.display.open")
+            .queue_environment_use(
+                &slice.id,
+                Some(&session_id),
+                if frame_read {
+                    crate::slice::SHARED_DISPLAY_READ_OPERATION
+                } else {
+                    "environment.display.open"
+                },
+            )
             .await?;
         let slice = self.resolve_slice(&slice.id)?;
         if slice.status != SliceStatus::Running {

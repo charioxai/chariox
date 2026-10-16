@@ -75,7 +75,14 @@ impl KernelRuntimeState {
             let lease = self.home_display_lease(hint)?;
             let mut lease = lease.lock().await;
             let (slice, _guard) = self
-                .admit_room_display(caller, session, attachment, viewer, &request.slice_ref)
+                .admit_room_display(
+                    caller,
+                    session,
+                    attachment,
+                    viewer,
+                    &request.slice_ref,
+                    false,
+                )
                 .await?;
             if lease.session_id != session
                 || lease.attachment_id != attachment
@@ -95,7 +102,14 @@ impl KernelRuntimeState {
             return self.room_display_endpoint(&slice, &lease);
         }
         let (slice, _guard) = self
-            .admit_room_display(caller, session, attachment, viewer, &request.slice_ref)
+            .admit_room_display(
+                caller,
+                session,
+                attachment,
+                viewer,
+                &request.slice_ref,
+                false,
+            )
             .await?;
         let id = format!("room-display-{:032x}", rand::random::<u128>());
         let room = self
@@ -353,6 +367,7 @@ impl KernelRuntimeState {
                 &lease.attachment_id,
                 &lease.viewer_public_key,
                 &lease.slice_id,
+                false,
             )
             .await?;
         if matches!(
@@ -414,6 +429,7 @@ impl KernelRuntimeState {
                 &lease.attachment_id,
                 &lease.viewer_public_key,
                 &lease.slice_id,
+                true,
             )
             .await?;
         let result = self

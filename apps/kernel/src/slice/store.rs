@@ -13,7 +13,7 @@ use super::model::{
 use super::ports::{self, LocalDockerSlicePorts};
 
 mod environment;
-pub(crate) use environment::ENVIRONMENT_USE_ADMISSION_EXPIRED;
+pub(crate) use environment::{ENVIRONMENT_USE_ADMISSION_EXPIRED, SHARED_DISPLAY_READ_OPERATION};
 mod execution_reference;
 mod invariants;
 
@@ -63,7 +63,16 @@ pub struct SliceOperationGuard {
 pub(crate) struct SliceEnvironmentUseGuard {
     // Release the operation marker before admitting the next queued caller.
     _operation: SliceOperationGuard,
-    _queue: Option<tokio::sync::OwnedMutexGuard<()>>,
+    _queue: Option<SliceEnvironmentQueueGuard>,
+}
+
+enum SliceEnvironmentQueueGuard {
+    Read {
+        _guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    },
+    Write {
+        _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    },
 }
 
 impl From<SliceOperationGuard> for SliceEnvironmentUseGuard {
@@ -118,7 +127,7 @@ struct SliceStoreState {
     active_operations: BTreeMap<String, String>,
     environment_uses: BTreeMap<String, usize>,
     environment_route_uses: BTreeMap<String, usize>,
-    environment_use_queues: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
+    environment_use_queues: BTreeMap<String, Arc<tokio::sync::RwLock<()>>>,
 }
 
 impl SliceStore {

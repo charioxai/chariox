@@ -16,6 +16,41 @@ fn store() -> (SliceStore, String) {
 }
 
 #[tokio::test]
+async fn mp08_mp11_display_readers_share_admission_without_overtaking_routes() {
+    for exclusive in ["browser_controller.route", "environment.display.open"] {
+        let (store, id) = store();
+        let first = store
+            .queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION)
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(
+            Duration::from_millis(100),
+            store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION),
+        )
+        .await
+        .expect("MP-08: another viewer must not wait for a network-bound frame read")
+        .unwrap();
+        assert!(store.try_begin_operation(&id, "slice.stop").is_err());
+        let route = store.queue_environment_use(&id, None, exclusive);
+        let later = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
+        tokio::pin!(route, later);
+        assert!(poll!(&mut route).is_pending());
+        assert!(
+            poll!(&mut later).is_pending(),
+            "MP-11: viewer cannot overtake queued input"
+        );
+        drop(first);
+        assert!(poll!(&mut route).is_pending());
+        drop(second);
+        let route = route.await.unwrap();
+        assert!(poll!(&mut later).is_pending());
+        drop(route);
+        drop(later.await.unwrap());
+        store.try_begin_operation(&id, "slice.stop").unwrap();
+    }
+}
+
+#[tokio::test]
 async fn environment_queue_is_fifo_across_routes_and_viewer_reads() {
     let (store, id) = store();
     let blocker = store
@@ -109,26 +144,28 @@ async fn environment_queue_dropped_waiter_does_not_block_following_route() {
 
 #[tokio::test]
 async fn environment_queue_preserves_lifecycle_and_room_scope_refusals() {
-    let (store, id) = store();
-    store.bind_environment("room", &id, 1, |_| Ok(())).unwrap();
-    let error = store
-        .queue_environment_use(&id, Some("other-room"), "browser_controller.route")
-        .await
-        .err()
-        .unwrap();
-    assert!(error.to_string().contains("belongs to another Room"));
-    let lifecycle = store.try_begin_operation(&id, "slice.stop").unwrap();
-    let error = store
-        .queue_environment_use(&id, Some("room"), "browser_controller.route")
-        .await
-        .err()
-        .unwrap();
-    assert!(error.to_string().contains("slice.stop"));
-    drop(lifecycle);
-    store
-        .queue_environment_use(&id, Some("room"), "browser_controller.route")
-        .await
-        .unwrap();
+    for operation in ["browser_controller.route", SHARED_DISPLAY_READ_OPERATION] {
+        let (store, id) = store();
+        store.bind_environment("room", &id, 1, |_| Ok(())).unwrap();
+        let error = store
+            .queue_environment_use(&id, Some("other-room"), operation)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("belongs to another Room"));
+        let lifecycle = store.try_begin_operation(&id, "slice.stop").unwrap();
+        let error = store
+            .queue_environment_use(&id, Some("room"), operation)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("slice.stop"));
+        drop(lifecycle);
+        store
+            .queue_environment_use(&id, Some("room"), operation)
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -140,12 +177,14 @@ async fn environment_queue_refuses_quarantine_even_with_a_controller_route_activ
     store.replay_backup_restore_started(super::super::super::tests::restore_transaction(
         "restore", &id,
     ));
-    let result = tokio::time::timeout(
-        Duration::from_millis(100),
-        store.queue_environment_use(&id, None, "browser_controller.route"),
-    )
-    .await
-    .unwrap();
-    assert!(result.err().unwrap().to_string().contains("quarantined"));
+    for operation in ["browser_controller.route", SHARED_DISPLAY_READ_OPERATION] {
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            store.queue_environment_use(&id, None, operation),
+        )
+        .await
+        .unwrap();
+        assert!(result.err().unwrap().to_string().contains("quarantined"));
+    }
     drop(route);
 }

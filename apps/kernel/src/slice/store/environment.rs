@@ -2,11 +2,13 @@ use super::*;
 
 pub(crate) const ENVIRONMENT_USE_ADMISSION_EXPIRED: &str =
     "Room Environment operation admission deadline expired before dispatch";
+pub(crate) const SHARED_DISPLAY_READ_OPERATION: &str = "environment.display.read";
 
 impl SliceStore {
-    /// FIFO admission for controller routes and viewer reads. Admitted uses
-    /// share the slice, but a queued use waits for a controller route already
-    /// in flight. Only controller contention is retryable; lifecycle,
+    /// Fair admission for controller routes and viewer reads. Frame reads share
+    /// admission so one viewer's network wait cannot stall every other viewer.
+    /// Queued controller routes, opens and resumes exclude new frame reads.
+    /// Only controller contention is retryable; lifecycle,
     /// quarantine and scope errors remain refusals. Waiting never dispatches
     /// or retries the caller's command.
     pub(crate) async fn queue_environment_use(
@@ -47,7 +49,18 @@ impl SliceStore {
             operation,
             message: ENVIRONMENT_USE_ADMISSION_EXPIRED.to_string(),
         };
-        let queue = tokio::time::timeout_at(deadline, queue.lock_owned())
+        let acquire = async {
+            if operation == SHARED_DISPLAY_READ_OPERATION {
+                SliceEnvironmentQueueGuard::Read {
+                    _guard: queue.read_owned().await,
+                }
+            } else {
+                SliceEnvironmentQueueGuard::Write {
+                    _guard: queue.write_owned().await,
+                }
+            }
+        };
+        let queue = tokio::time::timeout_at(deadline, acquire)
             .await
             .map_err(|_| timed_out())?;
         loop {
@@ -60,8 +73,8 @@ impl SliceStore {
                 CONTROLLER_ROUTE_OPERATION,
                 operation,
             )?;
-            // Normal queued callers serialize on the FIFO mutex. This also
-            // waits for an already-admitted synchronous route.
+            // The fair queue prevents readers overtaking a waiting writer.
+            // Also wait for an already-admitted synchronous route.
             let route_in_flight = self
                 .inner
                 .lock()
