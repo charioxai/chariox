@@ -49,11 +49,13 @@ export async function handleConfigSlashCommand(
     return
   }
   if (subcommand === "workspace-live-sync") {
+    deps.flashFooter("This command is unavailable", "error") // MP-08 OWNER-20: discontinued.
+    return
     await setWorkspaceLiveSyncMode(deps, keyPath, rest)
     return
   }
   deps.flashFooter(
-    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync off|managed|tracked",
+    "usage: /config show | path | keys | schema | set <path> <value> | unset <path>",
     "error",
   )
 }

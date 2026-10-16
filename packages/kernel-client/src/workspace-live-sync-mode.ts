@@ -1,3 +1,5 @@
+// MP-08 OWNER-20: discontinued UI. Preserve runtime support for existing state.
+export const workspaceLiveSyncUiEnabled = false
 export type WorkspaceLiveSyncModeCommandInput = "off" | "managed" | "tracked"
 export type WorkspaceLiveSyncModeInput = WorkspaceLiveSyncModeCommandInput | "unrestricted"
 export type WorkspaceLiveSyncModeProtocolValue = "managed" | "tracked" | "unrestricted"

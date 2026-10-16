@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   backendProviderLabel,
   type BackendProviderId,
@@ -248,7 +249,7 @@ export function waitingRoomStartRows(
       selectable: !waitingRoomWorktreeDisabledHint(),
       scrollbar: "",
     },
-    {
+    ...(workspaceLiveSyncUiEnabled ? [{
       id: "live-sync",
       title: "Live Sync",
       value: formatWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
@@ -257,7 +258,7 @@ export function waitingRoomStartRows(
       focused: state.focus === "live-sync",
       selectable: true,
       scrollbar: "",
-    },
+    }] : []),
     {
       id: "collaborators",
       title: "Collaborators",

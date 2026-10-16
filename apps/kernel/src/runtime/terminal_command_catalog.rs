@@ -62,6 +62,15 @@ struct RawCommandNode {
     children: Vec<RawCommandNode>,
 }
 
+fn retire_workspace_sync_commands(nodes: &mut Vec<RawCommandNode>) {
+    nodes.retain(|node| !node.value.starts_with("/workspace sync") && !node.value.starts_with("/config workspace-live-sync"));
+    for node in nodes {
+        retire_workspace_sync_commands(&mut node.children);
+        node.search_aliases.retain(|alias| !alias.to_lowercase().contains("live sync"));
+        node.description = node.description.replace(", live sync,", ",").replace(", and live sync readiness", " readiness");
+    }
+}
+
 pub(crate) fn terminal_command_catalog_response() -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::TerminalCommandCatalog {
         catalog: terminal_command_catalog()?,
@@ -80,6 +89,9 @@ pub(crate) fn terminal_command_catalog() -> Result<TerminalCommandCatalog, Daemo
             })?;
         raw.append(&mut fragment);
     }
+    // MP-08 OWNER-20: retain the discontinued implementation/catalog source,
+    // but omit its commands and help from every client projection.
+    retire_workspace_sync_commands(&mut raw);
     let nodes = raw.into_iter().map(enrich_node).collect::<Vec<_>>();
     let revision = catalog_revision(&nodes)?;
     Ok(TerminalCommandCatalog { revision, nodes })
@@ -973,5 +985,16 @@ mod tests {
         }
         // `/app inbox move` ran MoveEventBindingToApp, retired in protocol 365.
         assert!(nodes.iter().all(|node| node.id != "app-inbox-move"));
+    }
+}
+
+#[cfg(test)]
+mod owner20_tests {
+    #[test]
+    fn mp08_owner20_discontinued_sync_absent_from_all_client_command_help() {
+        let catalog = super::terminal_command_catalog().unwrap();
+        let json = serde_json::to_string(&catalog).unwrap().to_lowercase();
+        assert!(!json.contains("live sync"), "discontinued help still projected");
+        assert!(!json.contains("/workspace sync"));
     }
 }

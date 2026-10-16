@@ -91,7 +91,7 @@ async function kernelHealthRuntimeContext(
       `  session: ${session.id}`,
       `  home kernel: ${formatSessionHomeKernelLabel(session)}`,
       `  owner: ${session.owner_user_id?.trim() || "-"}`,
-      "  authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools",
+      "  authority: home owns sessions, prompts, and grants; workers execute leases and projected tools",
       `  agent: ${context.agentId ?? "-"}`,
     ].join("\n")
   } catch (error) {
