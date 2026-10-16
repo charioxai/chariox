@@ -25,6 +25,14 @@ const RETIRED_SERVICE_NAMES: &[&str] = &[
 const BUILD_ATTESTATION_PATH: &str = "/usr/lib/chariox/build-attestation.json";
 const BUILD_ATTESTATION_SIGNATURE_PATH: &str = "/usr/lib/chariox/build-attestation.sig";
 const BUILDER_PUBLIC_KEY_PATH: &str = "/usr/lib/chariox/builder-public-key";
+const APP_RELEASE_ARTIFACTS: [(&str, &str); 3] = [
+    ("chariox-app-package", "/usr/local/bin/chariox-app-package"),
+    ("chariox-app-storage", "/usr/libexec/chariox-app-storage"),
+    (
+        "chariox-app-storage.service",
+        "/etc/systemd/system/chariox-app-storage.service",
+    ),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VerifiedRelease {
@@ -292,29 +300,70 @@ pub(super) fn verify_release_evidence(
         .map_err(|_| release_error("build attestation signature is invalid"))?;
     let attestation: BuildAttestation = serde_json::from_slice(&attestation_bytes)
         .map_err(|_| release_error("build attestation is invalid"))?;
+    // MP-09/MP-11: current releases attest App binaries too; legacy releases have no App set.
+    let has_apps = manifest.artifacts.iter().any(|artifact| {
+        APP_RELEASE_ARTIFACTS
+            .iter()
+            .any(|(name, _)| artifact.name == *name)
+    });
+    let expected_artifacts: &[&str] = if has_apps {
+        &[
+            "chariox-kernel",
+            "chariox-managed-bootstrap",
+            "chariox-relay",
+            "chariox-app-package",
+            "chariox-app-storage",
+        ]
+    } else {
+        &[
+            "chariox-kernel",
+            "chariox-managed-bootstrap",
+            "chariox-relay",
+        ]
+    };
     if attestation.schema_version != 1
         || !is_git_object_id(&attestation.source_commit)
         || !is_git_object_id(&attestation.source_tree)
         || attestation.source_commit != source_commit
         || attestation.source_tree != source_tree
         || attestation.target != expected_release_target()
-        || attestation.artifacts.len() != 3
     {
         return Err(release_error(
             "build attestation source identity or target is invalid",
         ));
     }
-    for (artifact, expected_name) in attestation.artifacts.iter().zip([
-        "chariox-kernel",
-        "chariox-managed-bootstrap",
-        "chariox-relay",
-    ]) {
-        if artifact.name != expected_name {
+    if attestation.artifacts.len() != expected_artifacts.len() {
+        return Err(release_error(
+            "build attestation artifact set does not match the signed release",
+        ));
+    }
+    for (artifact, expected_name) in attestation.artifacts.iter().zip(expected_artifacts) {
+        if artifact.name != *expected_name {
             return Err(release_error(
                 "build attestation artifact order or identity is invalid",
             ));
         }
         validate_digest(&artifact.sha256)?;
+    }
+    if has_apps {
+        // All three App artifacts are required and pinned by the release manifest;
+        // its two binaries must also match the independently signed build attestation.
+        for (index, (name, path)) in APP_RELEASE_ARTIFACTS.iter().enumerate() {
+            read_pinned_release_artifact(&manifest, name, path, &active_release_path)?;
+            if index < 2
+                && manifest
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.name == *name)
+                    .is_none_or(|artifact| {
+                        artifact.sha256 != attestation.artifacts[3 + index].sha256
+                    })
+            {
+                return Err(release_error(
+                    "build attestation App artifact does not match the signed release",
+                ));
+            }
+        }
     }
     let kernel_artifact = &attestation.artifacts[0];
     let manifest_kernel = manifest
