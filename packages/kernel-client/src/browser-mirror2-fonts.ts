@@ -64,3 +64,8 @@ export function mirror2RenderedFontReady(element: Element, style: CSSStyleDeclar
   }
   return true
 }
+
+// MP-08/MP-10/MP-11: canonical counterpart of the isolated observer descriptor.
+export function mirror2FontDescriptor(font: FontFace): string {
+  return JSON.stringify([font.family.replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase(), font.style.trim().replace(/\s+/g, ' '), font.weight === 'normal' ? '400' : font.weight.trim().replace(/\s+/g, ' '), font.stretch === 'normal' ? '100%' : font.stretch.trim(), font.unicodeRange.replace(/\s+/g, '').toUpperCase()])
+}

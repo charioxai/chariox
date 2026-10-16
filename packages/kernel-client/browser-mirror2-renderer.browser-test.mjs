@@ -1246,5 +1246,6 @@ for(const usage of ['hidden','text','pseudo','control'])test(`MP-08/MP-10/MP-11 
   await page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px MissingMirror').catch(()=>{});await d.fonts.ready});
   assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts].some(f=>f.status==='error')),true);
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),usage==='hidden','only fonts required by visible content constrain the switch');
+  if(usage!=='hidden'){const canonical=JSON.stringify(['missingmirror','normal','400','100%','U+0-10FFFF']);await apply(page,{...delta(3,[],{font_failures:[createHash('sha256').update(canonical).digest('hex')]}),document_id:'font-page'});assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'a certified native font failure renders the same fallback, rather than waiting forever')}
  }finally{await page.close()}
 });

@@ -1,4 +1,4 @@
-import { Mirror2FontStyle, mirror2RenderedFontReady } from './browser-mirror2-fonts.js'
+import { Mirror2FontStyle, mirror2RenderedFontReady, mirror2FontDescriptor } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -615,6 +615,8 @@ export class BrowserMirror2Renderer {
   handover(focus = false): void { this.navigation.release(); this.setInteractive(true, focus); this.navigationPaint() }
   // MP-08/MP-10/MP-11: fixed reasons only, no node/resource identities.
   private handoverStage = ''
+  private nativeFontFailures = new Set<string>()
+  private nativeFontFailureKey = '[]'
   private handoverDiagnostic(reason: string): void {
     if (this.handoverStage === reason) return
     this.handoverStage = reason; this.timed(`handover_${reason}`, performance.now())
@@ -632,7 +634,10 @@ export class BrowserMirror2Renderer {
     // Fonts and visible CSS imagery must not pop into place after the switch.
     if (doc.fonts.status === 'loading') this.handoverDiagnostic('wait_fonts')
     await doc.fonts.ready
-    const fontFailed = [...doc.fonts].some(font => font.status === 'error')
+    const nativeFailures = this.nativeFontFailures
+    const failures = await Promise.all([...doc.fonts].filter(font => font.status === 'error').map(font => digest(new TextEncoder().encode(mirror2FontDescriptor(font)))))
+    if (this.disposed || this.doc !== doc || this.documentId !== documentId || nativeFailures !== this.nativeFontFailures) return false
+    const fontFailed = failures.some(signature => !nativeFailures.has(signature))
     const view = doc.defaultView
     for (const node of this.dom.values()) if (node.nodeType === 1) {
       const element = node as Element, box = element.getBoundingClientRect()
@@ -659,6 +664,8 @@ export class BrowserMirror2Renderer {
     const packet = resolveMirror2Sheets(wire, this.sheets, this.sheetCache.texts)
     validateMirror2Packet(packet, this.records)
     mark('apply_validate')
+    const fontFailureKey = JSON.stringify(packet.font_failures ?? [])
+    if (packet.reset || fontFailureKey !== this.nativeFontFailureKey) { this.nativeFontFailureKey = fontFailureKey; this.nativeFontFailures = new Set(packet.font_failures ?? []) }
     this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
@@ -934,9 +941,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment' | 'snapshot_complete') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' ? false : null)
+    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' ? false : name === 'font_failures' ? [] : null)
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })

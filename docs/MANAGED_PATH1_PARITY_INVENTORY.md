@@ -1,5 +1,20 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 native font failures (2026-10-16)
+
+The real BBC diagnostic finds font failures in the source browser itself; all
+six font resources it fetched are available to mirroring. A source-native failed
+face legitimately uses fallback. The existing header now certifies those failures
+as bounded descriptor hashes, under mirror's authorized unreleased 539/147
+extension (union 540/148). Every matching native face must have failed; an
+unconfirmed visible client failure still holds native video. Shared and Cloud
+renderers validate, inherit and clear the metadata identically. Protocol
+snapshots/hash, real-Chromium failure/wake and ambiguous-face cases, compact
+inheritance and renderer admission checks accompany the change. No font names,
+URLs, credential, permission, pixel or resource-fetch authority are added.
+Source checks do not establish acceptance; the exact built hosted candidate must
+pass the same real cookie/article/capture and complete window/DPR matrix.
+
 ## MP-08 / MP-10 / MP-11 rendered-font handover readiness (2026-10-16)
 
 A completed page waits for fonts needed by its visible text, controls and

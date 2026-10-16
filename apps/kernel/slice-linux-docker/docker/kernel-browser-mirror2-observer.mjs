@@ -460,12 +460,22 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // MP-08/MP-10: the focus/selection state the last drain reported. A focus or selection event that leaves it
     // unchanged (focus emulation restoring the same element) does not end the long poll before the input it precedes.
+    // MP-08/MP-10/MP-11: certify only descriptors for which every native
+    // face failed. An unloaded/loading/loaded duplicate prevents certification.
+    const fontDescriptor = font => JSON.stringify([font.family.replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase(), font.style.trim().replace(/\s+/g, ' '), font.weight === 'normal' ? '400' : font.weight.trim().replace(/\s+/g, ' '), font.stretch === 'normal' ? '100%' : font.stretch.trim(), font.unicodeRange.replace(/\s+/g, '').toUpperCase()]);
+    const fontFailures = () => {
+      if (document.fonts.size > 4096) return [];
+      const groups = new Map();
+      for (const font of document.fonts) { const key = fontDescriptor(font); if (key.length > 4096) continue; groups.set(key, (groups.get(key) ?? true) && font.status === 'error'); }
+      return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
+    };
+    let reportedFonts = '[]';
     let reported = '', reportedComplete = false;
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
-      reportedComplete = complete();
-      return { snapshot_complete: reportedComplete, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
+      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
+      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -931,7 +941,8 @@ export function installMirror2(sanitizeMirrorCss) {
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => complete() !== reportedComplete || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    for (const type of ['loadingdone', 'loadingerror']) document.fonts.addEventListener(type, wake, { signal: listening.signal });
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged

@@ -217,8 +217,8 @@ test('MP-10: removing an inline style forgets it, so a later resource cannot res
 
 test('MP-08/MP-10: compact deltas inherit binding and header from their base; deflated bodies inflate in sequence order; late copies are not gaps', async () => {
   const kernel = kernelContext()
-  const reset = { ...packet(1, true), snapshot_complete: false, scroll: [0, 40], focused: 'n2' }
-  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, snapshot_complete: true, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
+  const reset = { ...packet(1, true), snapshot_complete: false, font_failures:['a'.repeat(64)], scroll: [0, 40], focused: 'n2' }
+  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, snapshot_complete: true, font_failures:[], focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
   const wires: unknown[] = []
   for (const body of bodies) { const text = JSON.stringify(body); wires.push(text.length >= 512 ? { wire: 2, sequence: body.sequence, ...(body.sequence === 1 ? { reset: true } : {}), encoding: 'deflate', ...await kernel.encode(text) } : body) }
   kernel.close()
@@ -232,6 +232,7 @@ test('MP-08/MP-10: compact deltas inherit binding and header from their base; de
   assert.deepEqual(f.applied, [1, 2, 3, 4]); assert.deepEqual(f.failures, [])
   const [, second, third, fourth] = f.packets
   assert.deepEqual(f.packets.map(p => p.snapshot_complete), [false, false, true, true], '539 completion changes survive compression, ordering and omitted compact headers')
+  assert.deepEqual(f.packets.map(p => p.font_failures), [['a'.repeat(64)],['a'.repeat(64)],[],[]], 'native font failures inherit and clear through compact deflated deltas')
   assert.deepEqual([second!.subscription_id, second!.tab_id, second!.document_id, second!.base_sequence, second!.reset, second!.scroll, second!.focused], ['s', 't', 'd', 1, false, [0, 40], 'n2'])
   assert.equal(third!.focused, null, 'an explicit null replaces the base value'); assert.equal(fourth!.focused, null); assert.deepEqual(fourth!.resources, [])
 })
@@ -662,3 +663,9 @@ test('MP-08/MP-10/MP-11 a recovery reset holds the renderer before any reset con
  const mirror=await attachBrowserMirror2({protocolVersion:540,request},{}as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:assert.fail,prepareReset:()=>{calls.push('prepare');return true}}as any,{renderer,credits:1,waitMs:0});
  try{await until(()=>calls.includes('apply'),1000);assert.deepEqual(calls.slice(0,3),['prepare','hold','apply'])}finally{await mirror.close()}
 });
+
+test('MP-08/MP-10/MP-11 source font failure metadata is bounded and authenticated as part of the packet',()=>{
+ const valid='a'.repeat(64)
+ for(const font_failures of [[],[valid]])validateMirror2Packet(base(tree(element('p')),{font_failures} as Partial<Mirror2Packet>),new Map())
+ for(const font_failures of [null,'x',[valid,valid],['not-a-digest'],Array(129).fill(valid)])assert.throws(()=>validateMirror2Packet(base(tree(element('p')),{font_failures} as unknown as Partial<Mirror2Packet>),new Map()),/unsafe mirror header/)
+})

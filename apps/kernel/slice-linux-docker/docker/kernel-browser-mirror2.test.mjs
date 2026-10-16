@@ -219,9 +219,10 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
     { op: 'css', id: 'n9', css: 'a{background:url("mr:r6")}' }, { op: 'adopted', id: 'n1', sheets: ['b{background:url("mr:r7")}'] }, { op: 'form', id: 'n7', form: { value: 'w' } }, { op: 'scroll', id: 'n7', scroll: [1, 2] },
     { op: 'size', id: 'n7', size: [3, 4] }, { op: 'res', id: 'n7', res: 'r8' }, { op: 'res', id: 'n7', res: null }, { op: 'state', id: 'n7', state: { popover_open: true } }],
     changed: ['n8'], resources: [{ key: 'r9', url: 'https://x/a.png', kind: 'image' }], sheets: [{ id: 'n9', url: 'https://x/a.css' }], scroll: [0, 5], focused: 'n7',
-    selection: { anchor_id: 'n8', anchor_offset: 0, focus_id: 'n8', focus_offset: 1 }, fragment: 'top', revision: 3, snapshot_complete: true };
+    selection: { anchor_id: 'n8', anchor_offset: 0, focus_id: 'n8', focus_offset: 1 }, fragment: 'top', revision: 3, snapshot_complete: true, font_failures:['a'.repeat(64)] };
   const out = frames.rebaseDelta(delta, slot);
   assert.equal(out.snapshot_complete, true, 'child completion is a scalar, never a parent completion override');
+  assert.deepEqual(out.font_failures,['a'.repeat(64)],'font descriptors are hashes, never rebased as node or resource ids');
   assert.deepEqual(out.ops[0], { op: 'children', id: n(6), children: [n(7)], nodes: [{ ...record, id: n(7), parent: n(6), attrs: { class: 'x', style: `background:url("mr:${r(3)}")` }, res: r(4) }] });
   assert.deepEqual(out.ops.slice(1).map(op => op.id), [n(7), n(8), n(9), n(1), n(7), n(7), n(7), n(7), n(7), n(7)]);
   assert.match(JSON.stringify(out.ops), new RegExp(`mr:${r(5)}.*mr:${r(6)}.*mr:${r(7)}.*"res":"${r(8)}".*"res":null`));
@@ -344,7 +345,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
   const connection = { isOpen: () => true, send: async () => ({}) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const header = { snapshot_complete: 'false', scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' };
+  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
   const host = { protection: 'p', generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };

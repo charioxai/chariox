@@ -90,3 +90,18 @@ test('MP-11 relational CSS keeps the hidden structure needed by the visible view
   assert(first.nodes.some(r=>r.attrs?.class==='ready'),'omitting hidden descendants would change the visible selector result');
  }finally{await browser.close();}
 });
+
+// MP-08/MP-10/MP-11: source-native failures permit the same fallback, never a missing live font.
+test('MP-08/MP-10/MP-11 native font failure metadata wakes and excludes a nonfailed matching face',async()=>{
+ const browser=await launch();try{
+  const page=await browser.newPage();await page.setContent('<body>Native fallback metadata</body>');await install(page);
+  await page.evaluate(()=>{window.nativeFont=new FontFace('NativeFailed','url(data:font/woff2;base64,AA==)');document.fonts.add(window.nativeFont)});
+  assert.deepEqual((await page.evaluate(()=>window.observer.snapshot())).font_failures,[]);
+  const waiting=page.evaluate(()=>window.observer.waitDrain(2000));await page.evaluate(async()=>{await window.nativeFont.load().catch(()=>{})});
+  let packet=await waiting;for(let n=0;n<3&&!packet.font_failures?.length;n++)packet=await page.evaluate(()=>window.observer.drain());
+  const fixture=JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-mirror2-font-failures-539.json',import.meta.url),'utf8'));
+  assert.deepEqual(packet.font_failures,[fixture.descriptor_sha256]);
+  await page.evaluate(()=>document.fonts.add(new FontFace('NativeFailed','url(data:font/woff2;base64,AAAA)')));
+  assert.deepEqual((await page.evaluate(()=>window.observer.drain())).font_failures,[],'an unloaded matching face could still supply glyphs, so failure is not certified');
+ }finally{await browser.close()}
+});

@@ -29,6 +29,8 @@ export type Mirror2Selection = { anchor_id: string; anchor_offset: number; focus
 export type Mirror2Packet = {
   /** Initial serialization drained and native main document complete. */
   snapshot_complete?: boolean
+  /** SHA-256 descriptors whose matching native faces have all failed. Unreleased539 extension. */
+  font_failures?: string[]
   wire: 2; subscription_id: string; tab_id: string; generation: number; document_id: string
   sequence: number; base_sequence: number | null; reset: boolean; fallback?: string
   root?: string; nodes?: Mirror2Record[]; ops?: Mirror2Op[]; sheets?: Record<string, string>

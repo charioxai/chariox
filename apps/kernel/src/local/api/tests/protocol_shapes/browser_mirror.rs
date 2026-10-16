@@ -229,3 +229,24 @@ fn browser_mirror2_navigation_539_shape_is_pinned() {
     let preview: LocalDaemonResponse = serde_json::from_value(preview).unwrap();
     assert_eq!(serde_json::to_value(preview).unwrap()["KernelBrowser"]["result"], fixture["preview"]);
 }
+
+#[test]
+fn browser_mirror2_native_font_failures_539_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: coordinator's additive unreleased539/147 allocation.
+    let bytes = include_bytes!("browser-mirror2-font-failures-539.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "05e083db6ddd9b6bec797c4d823edb58e0fa76dd06938276d9c9fc8969e53b8f"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    for name in ["reset_header", "inherited_delta", "cleared_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}

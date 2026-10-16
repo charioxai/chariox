@@ -4131,6 +4131,22 @@ feature-detect 530; no client floor moves.
 
 ### MP-08 / MP-10 / MP-11: mirror initial snapshot completion (local 539 / peer 147)
 
+MP-08 / MP-10 / MP-11: the coordinator-authorized additive extension of mirror's
+unreleased 539/147 allocation (current union 540/148) adds
+`font_failures?: string[]`. It contains at most 128 unique lowercase SHA-256 hex
+descriptors. Every matching native FontFace must have status `error`; any
+unloaded, loading or loaded match prevents certification. Hash UTF-8 JSON of
+`[family, style, weight, stretch, unicodeRange]`: remove matching family quotes,
+trim/lowercase family, trim/collapse style and weight whitespace, normalize
+weight `normal` to `400` and stretch `normal` to `100%`, remove whitespace and
+uppercase unicodeRange. Descriptors above 4096 characters or FontFaceSets above
+4096 faces are not certified. A client failed face with a matching authenticated
+kernel descriptor may use the same fallback. Missing metadata is conservative.
+An explicit empty array clears prior failures; unchanged lists inherit through
+the existing compact/deflated delta. Native font completion/failure wakes the
+existing mirror credit. No font name, URL, credential or input authority is
+added. The snapshot/hash fixture is `browser-mirror2-font-failures-539.json`.
+
 The mirror v2 packet header adds `snapshot_complete?: boolean`. The kernel emits
 `true` only when the main document's initial serializer has drained and its
 native `document.readyState` is `complete`. A bounded prefix, even one with a
@@ -4283,4 +4299,4 @@ video producer closes after handover. A subsequent protected capture may resolve
 the same crop afresh for a live opted-in mirror of that observer/document/policy;
 the kernel requires exact issued geometry, active owned window, density and
 pre/post-capture fences. A frame-size hint never supplies capture coordinates or
-observation authority. This composes unreleased mirror539 with union540/148.
+observation authority. This composes unreleased mirror539 with union 540/148.
