@@ -1,5 +1,31 @@
 # Chariox v1 Protocol
 
+### Provider login copies (local protocol 541 / relay peer 149)
+
+Decision record: [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md). Two
+optional fields, both omitted when false, so older clients and kernels keep
+working and no minimum supported protocol changes:
+
+- `LogoutProvider.end_everywhere` (default false). Without it, signing out a
+  Codex or Claude login that other machines hold (this machine received it as a
+  copy, or handed copies out) only deletes this machine's credential. The
+  provider's own `logout` is not run because it revokes the refresh token every
+  other holder uses. With it, the kernel runs the provider logout and ends the
+  session on every machine holding the login.
+- `ProviderLoggedOut.local_only` (default false). True when the kernel removed
+  only this machine's copy so clients can say so.
+
+`StartProviderLogin` has no new field: for a shared Codex login, or a shared
+Claude login using the terminal method, the kernel deletes the stored credential
+locally before the provider's own sign-in starts, so that sign-in has nothing to
+revoke. Claude `setup_token` enrollment does not touch the stored login.
+
+A run or account check that fails because the machine's copy cannot be renewed
+marks the profile `expired` on that machine only and raises the existing
+`provider_login` runtime interaction titled `Sign in again on <machine>` (the
+machine alias, else its id) on every attached client. Hosted focused drill:
+`credfix` CRED-01..CRED-04.
+
 ### Hosted terminal renewal (local protocol 472)
 
 `RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
