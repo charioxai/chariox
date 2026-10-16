@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: one worker, eight repair chains and a <=3 video queue.
 const inWorker=typeof WorkerGlobalScope!=='undefined'&&globalThis instanceof WorkerGlobalScope;
 if(inWorker){
- const channels=new Map();let writer=null,writing=Promise.resolve();
+ const channels=new Map();let writer=null,writing=Promise.resolve(),lastTimestamp=0;
  const now=()=>globalThis.performance?performance.timeOrigin+performance.now():Date.now();
  const retire=channel=>{const state=channels.get(channel);channels.delete(channel);if(state?.decoder?.state!=='closed')state?.decoder?.close();return state;};
  const fail=channel=>{const state=retire(channel);for(const job of state?.pending?.values()??[])self.postMessage({id:job.id,error:'MD-DISPLAY: worker decode failed'});};
@@ -20,7 +20,7 @@ if(inWorker){
     fail(channel);state={pending:new Map(),format};channels.set(channel,state);
     const current=state;
     state.decoder=new VideoDecoder({output:frame=>{
-     const job=current.pending.get(frame.timestamp);
+     const timestamp=frame.timestamp,job=current.pending.get(timestamp);
      if(channels.get(channel)!==current||!job){frame.close();return;}
      const decodedAt=now();
      // Geometry is checked before a frame can enter the native track. Repair
@@ -28,12 +28,12 @@ if(inWorker){
      if(job.sink&&!((frame.displayWidth===job.width&&frame.displayHeight===job.height)||(frame.displayWidth===job.cssWidth&&frame.displayHeight===job.cssHeight)||(job.cssWidth===1920&&job.cssHeight===1080&&frame.displayWidth===1280&&frame.displayHeight===720))){frame.close();fail(channel);return;}
      const deliver=async()=>{
       if(channels.get(channel)!==current){frame.close();return;}
-      let image=frame,committedAt;
+      let image=frame,writtenAt;
       try{
-       if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);committedAt=now();}
+       if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);writtenAt=now();}
        if(channels.get(channel)!==current){image.close();return;}
-       current.pending.delete(job.sequence*16667);
-       self.postMessage({id:job.id,frame:image,decodedAt,committedAt},[image]);
+       current.pending.delete(timestamp);
+       self.postMessage({id:job.id,frame:image,decodedAt,writtenAt},[image]);
       }catch{image.close();fail(channel);}
       finally{if(image!==frame)frame.close();}
      };
@@ -42,7 +42,10 @@ if(inWorker){
     },error:()=>{if(channels.get(channel)===current){if(current.pending.size===0)self.postMessage({id:null,error:'MD-DISPLAY: worker decode failed'});fail(channel);}}});
     state.decoder.configure({codec,codedWidth:width,codedHeight:height,optimizeForLatency:true});
    }
-   const timestamp=sequence*16667;
+   // MP-08/MP-10/MP-11: sparse damage/repairs make sequence a dependency
+   // cursor, never a60Hz media clock. Native live tracks must see the actual
+   // arrival cadence, including idle gaps. Break same-tick ties by1us.
+   const timestamp=Math.max(Math.round((globalThis.performance?performance.now():Date.now())*1000),lastTimestamp+1);lastTimestamp=timestamp;
    state.pending.set(timestamp,data);
    state.decoder.decode(new EncodedVideoChunk({type:key?'key':'delta',timestamp,data:bytes}));
   }catch{fail(channel);self.postMessage({id,error:'MD-DISPLAY: worker decode failed'});}
@@ -52,7 +55,7 @@ export class WorkerVideoDecoder {
  constructor(WorkerClass=globalThis.Worker){
   this.jobs=new Map();this.channels=new Map();this.next=0;this.closed=false;
   this.worker=new WorkerClass(new URL('./decoder-worker.mjs',import.meta.url),{type:'module',name:'MD-DISPLAY decoder'});
-  this.worker.onmessage=({data})=>{const p=this.jobs.get(data.id);if(!p){data.frame?.close();return}clearTimeout(p.timer);this.jobs.delete(data.id);this.channels.set(p.channel,(this.channels.get(p.channel)??1)-1);if(data.error)p.reject(Error(data.error));else p.resolve(p.sink?{image:data.frame,decodedAt:data.decodedAt,committedAt:data.committedAt}:data.frame)};
+  this.worker.onmessage=({data})=>{const p=this.jobs.get(data.id);if(!p){data.frame?.close();return}clearTimeout(p.timer);this.jobs.delete(data.id);this.channels.set(p.channel,(this.channels.get(p.channel)??1)-1);if(data.error)p.reject(Error(data.error));else p.resolve(p.sink?{image:data.frame,decodedAt:data.decodedAt,writtenAt:data.writtenAt}:data.frame)};
   this.worker.onerror=()=>this.close();
  }
  setSink(writable){this.worker.postMessage({op:'sink',writable},[writable]);}

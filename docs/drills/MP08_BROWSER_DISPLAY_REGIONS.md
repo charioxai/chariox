@@ -40,8 +40,12 @@ reloads it; until then band input is refused). Repeat at DPR1 and DPR2.
 
 Use the hosted WSS path, shaped ~8 Mbit/s and measured RTT ≥60 ms. Strict
 paired Selkies reruns use the same integrated head on the coordinator's quiet
-host (HOST_REQUEST), with matching geometry. Record P95 ≤ measured RTT+60 ms,
-FPS ≥Selkies and ≥30 where streamed, and ≤one CPU core. Run a two-hour DPR2
+host (HOST_REQUEST), with matching geometry. Miguel's 2026-10-16 decision makes
+keystroke-to-paint PASS require Chariox P95 ≤ Selkies P95 in that same paired
+run. Keep measured wire RTT and RTT+60ms beside every keystroke result as
+tracked values. Other latency metrics retain P95 ≤ measured RTT+60ms and their
+existing comparator requirements. Require FPS ≥Selkies and ≥30 where streamed,
+and ≤one CPU core. Run a two-hour DPR2
 region session and reconnect. Watch all recordings; report a stuck, confused
 or blank/white user flow as FAIL with its timestamp. Google is N/A-AUTOMATED.
 
@@ -86,3 +90,32 @@ Report startup/placement/input/retirement separately with exact heads,
 screenshots, recording review and first failing seam. Only after functional
 readiness passes request the quiet host for strict paired Selkies timing and
 the two-hour soak; b3 source/functional checks cannot establish these gates.
+
+## MP-08 / MP-10 / MP-11 timed ACK lane (536/144)
+
+Before changing ACK scheduling, preserve the red held-reply regression and
+90ms RTT/30fps cadence result from `apps/browser-display/ack-pipeline.test.mjs`.
+The cadence target is ACK-age P95 <=105ms. Preserve Rust red/green receiver-hold,
+adaptive allowance, generation refusal and stalled-client recovery tests;
+round-trip the extended536 snapshot/hash through cargo-slot. These are
+supplementary checks only.
+
+On the integrated real kernel/relay/web path, use normal play/pause and scroll
+on MDN's public flower video and the Commons video at DPR2, with three two-second
+steady windows and a post-correction physical-pixel FPS sampler. Keep the full
+kernel log and numeric `push_oldest_unacked` samples; count `push_gate_closed`
+transitions separately from closed polling, and record `push_ack_rtt` beside
+raw `push_frame_ack` age. Absent transition telemetry means unknown counts.
+Collect `chariox:browser-display-timing` (and Room's existing timing event)
+from the real viewer: `client_receive` starts at raw socket receipt; the track
+`committedAt` and `displayPresentedSequence` require an exact decoded-media-time
+rVFC join, while `writtenAt` only means track writer completion. This compositor
+clock still requires comparison with recorded physical pixels.
+
+Repeat normal input while ACK replies are delayed, stop ACKs to prove the
+kernel gate closes, then recover without an unbounded request queue. Check a
+kernel without `ack_timing`: the viewer sends no `held_ms` and the original
+stream still works. Use the hosted shaped path and the same quiet-host Selkies
+control; apply the keystroke parity gate and track RTT+60ms, with other latency,
+FPS and CPU gates as above. Keep current source identities
+on every receipt and watch the recordings before grading.

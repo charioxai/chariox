@@ -246,3 +246,20 @@ test('MP-11 bootstrap cancelled during native exact preparation publishes no pix
  const m=new MotionEncoder(source,{nativeSession:'owned',encode:async()=>{throw Error('unexpected codec')}},{bootstrapExact:true,bitrate:8000000,codec:'avc1.420033'});
  latest={serial:1,width:16,height:16,raw};offer(latest);const closed=m.close();resolve({native_exact:true,width:16,height:16,data_base64:'AAAA'});await closed;assert.equal(m.take(),null);assert.equal(held,0);
 });
+
+// PERF_AUDIT 4.2.1 (browserux r12b3: band frame_out P95 200-300 ms while capture+encode took 5-15 ms): a band or
+// Chrome popup stream whose two encoded deltas wait behind a closed ACK gate shows the newest sample instead: the
+// stale deltas are retired and the newest is encoded as a key (a band crop IDR is cheap). Page streams keep every delta.
+test('MP-08/MP-10 a Chrome UI stream drops queued deltas for the newest sample, as a key', async () => {
+ let offer;const calls=[];
+ const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>null};
+ const encoder={encode:async(image,bitrate,key)=>{calls.push({image,key});return{key,data_base64:image}},discard:e=>calls.push({discarded:e.data_base64})};
+ const m=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000,latest:true});
+ for(let n=1;n<=3;n++){offer({serial:n,data_base64:String(n)});await m.active;}
+ const frame=m.take();
+ assert.equal(frame.serial,3,'the newest sample, not the oldest queued delta');
+ assert.equal(frame.encoded.key,true);
+ assert.deepEqual(calls.filter(c=>c.discarded).map(c=>c.discarded),['1','2']);
+ assert.equal(m.take(),null);
+ await m.close();
+});

@@ -369,6 +369,14 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             owned.bind_agent_event_submission(dispatch)?;
+            let private_assessment_evidence = owned.private_evidence_for_dispatch(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                &dispatch.provider_run_id,
+                dispatch.prompt_origin,
+                dispatch.steering,
+            );
             let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -383,6 +391,7 @@ impl KernelRuntimeState {
                 &hidden_system_context,
                 &dispatch.attachments,
                 mode.with_prompt_origin(dispatch.prompt_origin),
+                private_assessment_evidence,
                 dispatch.steering,
             );
             return result.map(|()| true);

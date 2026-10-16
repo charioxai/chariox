@@ -16,7 +16,14 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
   const region=stream.regionLease;
-  if(region&&(command.generation!==host.generation||!stream.regionSource.valid()||!await stream.regionCurrent()))throw Error('MP-11: region lease retired');
+  const regionAlive=()=>!region||(command.generation===host.generation&&stream.regionSource.valid()&&region.isAlive()&&stream.regionWindow.isCurrent());
+  const retired=()=>{
+    // Diagnostics (labels only): which fence retired this region's capture.
+    const source=stream.regionSource;
+    host.timing?.(`region_retired ${stream.regionTarget?.kind} ${command.generation!==host.generation?'generation':source.closed?'closed':!source.allowed(source.policy)?'policy':'lease'}`,timestamp());
+    return Error('MP-11: region lease retired');
+  };
+  if(!regionAlive())throw retired();
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;
   const empty=()=>nativeCreditEmpty(stream,cachedSource,host.protection,host.inputEpochs.get(stream.tab_id)??0,
       host.inputChangedAt.get(stream.tab_id)??-Infinity,command.after_sequence);
@@ -28,8 +35,12 @@ export async function displayCredit(host, stream, command, signal) {
     // wait in displayPushCredit instead, on every readiness source.
     if(!command.push)await stream.producer.waitReady(20,signal);
     assertNotCancelled(signal);
+    if(!regionAlive())throw retired();
     if(empty())return {generation:host.generation,frame_sent:false,display_frame:null};
   }
+  // MP-08/MP-10/MP-11: the source masks every sample after fresh admission.
+  // The synchronous lifetime guard above admits preparation; the credit's one
+  // fresh region query follows all encoding/pacing awaits before delivery.
   const native = cachedSource?.native===true&&cachedSource.attested;
   let tab;
   try { tab = region ? stream.regionSource.tab : await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }
@@ -84,7 +95,7 @@ export async function displayCredit(host, stream, command, signal) {
   if(compositor&&sample&&stream.codec!=='png'){
     // Serials are source-local. Retiring a source also retires its exact
     // base, even when a newly navigated document starts at the same serial.
-    if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
+    if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
     // Admit recovery before selecting a native patch or taking an encoded
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
@@ -157,7 +168,7 @@ export async function displayCredit(host, stream, command, signal) {
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
   },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
-  if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
+  if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
     damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');

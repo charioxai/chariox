@@ -170,6 +170,15 @@ impl KernelRuntimeOwnedState {
             })?;
         }
         self.reconcile_workflow_delegation(room, agent, prompt)?;
+        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
+            if cancelled {
+                self.private_work_results
+                    .discard(room, agent, prompt.id(), answer_run);
+            } else {
+                self.private_work_results
+                    .seal_work(room, agent, prompt.id(), answer_run);
+            }
+        }
         if !cancelled {
             let catalog_handoff = self
                 .pending_mcp_continuations

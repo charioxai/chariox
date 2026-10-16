@@ -1,4 +1,4 @@
-import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion} from './region-binding.mjs';
+import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -54,13 +54,17 @@ export async function supportedCodecs() {
   return [...codecs,'chariox-video-dependencies-v1',...(codecs.some(c=>c==='avc1.420033'||c==='vp8')?['chariox-stripes-v1']:[])];
 }
 export class BrowserDisplayPresenter {
-  constructor(canvas, binding, onTiming = () => {}) {
+  constructor(canvas, binding, onTiming = () => {}, warmDecoder = null, videoOptions = {}) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
-    this.videoSink=new VideoSink(canvas,onTiming);this.prepared=new WeakMap();this.outcomes=new WeakMap();
+    // MP-08/MP-10/MP-11: request the low-latency compositor path before the
+    // first crop/Chrome UI draw. Full-page and desktop streams retain their sink.
+    if(videoOptions.direct)canvas.getContext?.('2d',{desynchronized:true});
+    this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
-    if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
+    if(warmDecoder&&!warmDecoder.closed)this.workerDecoder=warmDecoder;
+    else if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
   }
   getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
   validate(frame,sequence) {
@@ -80,12 +84,14 @@ export class BrowserDisplayPresenter {
       if(!globalThis.Worker)return null;
       this.prediction?.restore();
       const decoder=this.getWorkerDecoder();this.videoSink.setup(decoder);
-      const result=await decoder.decode(frame,bytes(frame.data),8,true);
+      const payload=bytes(frame.data),receivedAt=frame[Symbol.for('chariox.display.receivedAt')];
+      if(Number.isFinite(receivedAt))this.onTiming('client_receive',receivedAt,{sequence:frame.sequence,receivedAt,decodeSubmittedAt:performance.timeOrigin+performance.now()});
+      const result=await decoder.decode(frame,payload,8,true);
       if(this.closed){result.image.close();throw Error('MD-DISPLAY: presenter closed');}
       try{
         const outcome=await this.videoSink.commit(result,frame);this.outcomes.set(frame,outcome);
-        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,committedAt:outcome.committedAt});
-        if(outcome.drawn)this.onTiming('client_present',outcome.committedAt);
+        this.onTiming('client_decode',result.decodedAt,{sequence:frame.sequence,decodedAt:result.decodedAt,writtenAt:outcome.writtenAt,committedAt:outcome.committedAt});
+        if(outcome.drawn&&outcome.writtenAt===undefined&&outcome.committedAt!==undefined)this.onTiming('client_present',outcome.committedAt,{sequence:frame.sequence,committedAt:outcome.committedAt});
         return result.image;
       }catch(error){result.image.close();throw error;}
     };
@@ -116,12 +122,25 @@ export class BrowserDisplayPresenter {
         stripes=await this.stripeDecoder.decode(frame,bytes);
       }else if (frame.kind === 'tiles') {
         if (!Array.isArray(frame.tiles) || frame.tiles.length > 260) throw new Error('MD-DISPLAY: tile count');
+        // MP-08/MP-10/MP-11: validate the complete packet before starting any
+        // decode; four workers overlap independent images without unbounded jobs.
         for (const tile of frame.tiles) {
-          // MP-08/MP-10: lossless PNG tiles or WebP strips up to 2560x256 pixels.
           if (![tile.x, tile.y, tile.width, tile.height].every(Number.isSafeInteger) || tile.x < 0 || tile.y < 0 || tile.width < 1 || tile.height < 1 || tile.width * tile.height > 2560 * 256 || tile.x + tile.width > frame.width || tile.y + tile.height > frame.height || !Object.hasOwn(imageTypes, tile.format)) throw new Error('MD-DISPLAY: tile geometry');
-          const bitmap = await createImageBitmap(new Blob([bytes(tile.data)], { type: imageTypes[tile.format] })); bitmaps.push(bitmap);
-          if (bitmap.width !== tile.width || bitmap.height !== tile.height) throw new Error('MD-DISPLAY: tile dimensions');
         }
+        let next=0,decodeError;
+        const decode=async()=>{
+          while(!decodeError && next<frame.tiles.length){
+            const index=next++,tile=frame.tiles[index];
+            try{
+              const bitmap=await createImageBitmap(new Blob([bytes(tile.data)],{type:imageTypes[tile.format]}));
+              bitmaps[index]=bitmap;
+              if(bitmap.width!==tile.width||bitmap.height!==tile.height)throw Error('MD-DISPLAY: tile dimensions');
+            }catch(error){decodeError??=error;}
+          }
+        };
+        // All in-flight decodes must settle before finally closes their images.
+        await Promise.all(Array.from({length:Math.min(4,frame.tiles.length)},decode));
+        if(decodeError)throw decodeError;
       } else if (frame.kind === 'png') {
         const bitmap = await createImageBitmap(new Blob([bytes(frame.data)], { type: 'image/png' })); bitmaps.push(bitmap);
         if (bitmap.width !== frame.width || bitmap.height !== frame.height) throw new Error('MD-DISPLAY: image dimensions');
@@ -184,7 +203,7 @@ export class BrowserDisplayPresenter {
       if(!videoFrame){this.decodeSequence=frame.sequence;this.decodeDocumentId=frame.document_id;}
       if(!globalThis.Worker||!videoFrame)this.onTiming('client_present', presented);
       return true;
-    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap.close(); this.busy = false; }
+    } finally { for(const row of stripes??[])row.output.close();videoFrame?.close();for(const bitmap of bitmaps)bitmap?.close(); this.busy = false; }
   }
   input(input) {
     if (this.closed || !this.documentId) throw new Error('MD-DISPLAY: no displayed document');
@@ -238,10 +257,14 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const hint=options.resumeHint;
   const resume=transport.kernelProtocolVersion>=resumeProtocolVersion&&hint?.targetKey===targetKey&&
     hint.desktop===Boolean(options.desktop)&&hint.device_scale_factor===offer.device_scale_factor&&hint.expiresAt>performance.now();
+  // MP-08/MP-10/MP-11: start code-only worker loading while the existing
+  // authenticated registration is pending. No pixels or binding enter it yet.
+  let warmDecoder;
+  if(globalThis.Worker&&globalThis.VideoDecoder){try{warmDecoder=new WorkerVideoDecoder();}catch{/* Normal presenter admission handles unavailable codecs. */}}
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
     :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer});}
-  catch(error){options.onResumeHint?.(null);throw error;}
+  catch(error){warmDecoder?.close();options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
   const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
@@ -254,15 +277,26 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     finally{await transport.unsubscribeDisplay?.(binding);}
   };
   if(options.desktop&&(binding.source?.kind!=='desktop'||binding.source.surface_id!==tab.surface_id||binding.source.generation!==tab.generation||![binding.source.width,binding.source.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096)||binding.device_scale_factor!==offer.device_scale_factor)){
+    warmDecoder?.close();
     await request({op:'unsubscribe',subscription_id:binding.subscription_id,generation:binding.generation}).catch(()=>{});
     throw Error('MP-11: invalid desktop subscription binding');
   }
   const actorCommand=op=>op==='actors'?(options.desktop?{op:'computer',command:{op}}:{op:'display_actors'}):options.desktop?{op:'computer',command:{op,target:tab}}:{op:`display_${op}`,tab_id:binding.tab_id,generation:binding.generation};
-  if(options.target&&!regionBindingCurrent(binding)){
+  // MP-08/MP-10/MP-11: a default page crop is activated only at allocated536.
+  // Explicit519 regions and pre536 full-viewport producers keep their contracts.
+  if(!options.desktop&&!options.target&&binding.source_kind==='region'&&transport.kernelProtocolVersion<visiblePageMinimumProtocolVersion){
+    warmDecoder?.close();
+    await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: protocol536 visible page adapter required');
+  }
+  if((options.target||binding.source_kind==='region')&&!regionBindingCurrent(binding)){
+    warmDecoder?.close();
     await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: invalid region negotiation');
   }
   const onTiming = options.onTiming ?? (() => {});
-  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
+  // MP-08/MP-10/MP-11: crops and Chrome UI paint into their actual canvas.
+  // Avoid an intermediate media-track compositor and another rAF for regions.
+  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming, warmDecoder,
+    {direct:!options.desktop&&(binding.source_kind==='region'||['region','browser_chrome','browser_auxiliary'].includes(options.target?.kind))});
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();
@@ -420,19 +454,23 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   let nextSequence = presenter.sequence + 1, heldBytes = 0, failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
-  // MP-08/MP-10: heartbeat ownership is bounded even while hidden.
-  // Keep the relay lease alive, with one request and one latest queued ACK.
+  // MP-08/MP-10/MP-11: ACK replies must not delay delivery feedback by another
+  // WAN round trip. Bound outstanding requests and coalesce only at that bound.
   const document=presenter.canvas.ownerDocument;
-  let ackInFlight=false, queuedAck=null;
+  let ackInFlight=0, queuedAck=null, timedAcks=false;
+  const receiptTimes=new Map();
   const ack = (sequence, lost = false) => {
     if (closed) return;
-    const candidate={sequence,lost:lost||queuedAck?.lost||false};
-    if (ackInFlight) { queuedAck=candidate;return; }
-    queuedAck=null;ackInFlight=true;ackedAt=performance.now();
+    const candidate={sequence:Math.max(sequence,queuedAck?.sequence??sequence),lost:lost||queuedAck?.lost||false};
+    if (ackInFlight>=8) { queuedAck=candidate;return; }
+    queuedAck=null;ackInFlight++;ackedAt=performance.now();
+    const received=receiptTimes.get(candidate.sequence);
+    if(timedAcks&&received!==undefined)candidate.held_ms=Math.min(60000,Math.max(0,Math.floor(performance.timeOrigin+performance.now()-received)));
+    for(const sequence of receiptTimes.keys())if(sequence<=candidate.sequence)receiptTimes.delete(sequence);
     request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, ...candidate })
-      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail)
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); else if(transport.kernelProtocolVersion>=536&&reply.ack_timing===true)timedAcks=true; }, fail)
       .finally(()=>{
-        ackInFlight=false;
+        ackInFlight--;
         if(!closed&&!failure&&queuedAck){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
       });
   };
@@ -484,6 +522,9 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     if (resync && Number.isSafeInteger(frame.sequence)) { resync = false; nextSequence = frame.sequence; }
     // Relay lanes and concurrent decryption may reorder; decode in sequence.
     if (!Number.isSafeInteger(frame.sequence) || frame.sequence < nextSequence || held.has(frame.sequence)) return;
+    const received=frame[Symbol.for('chariox.display.receivedAt')];
+    receiptTimes.set(frame.sequence,Number.isFinite(received)?received:performance.timeOrigin+performance.now());
+    while(receiptTimes.size>64)receiptTimes.delete(receiptTimes.keys().next().value);
     held.set(frame.sequence, frame); heldBytes += size;
     // A sequence that never arrives: skip the gap and recover from a key.
     // While recovering, an independent frame establishes the cursor at once.
@@ -515,6 +556,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close(closeOptions) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
+    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
   };
 }

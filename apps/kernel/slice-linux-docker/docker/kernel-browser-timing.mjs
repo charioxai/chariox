@@ -54,13 +54,27 @@ export function timedHostRequests(host, scheduleRequest) {
   const queued = new WeakMap();
   return {
     scheduleRequest(request) {
-      if (['host.browser','host.computer'].includes(request.method) && request.params?.op === 'input') queued.set(request, timestamp());
+      const target=request.method==='host.browser'&&request.params?.op==='display_input_target';
+      const display=request.method==='host.browser'&&request.params?.op==='screenshot'&&typeof request.params?.display_subscription_id==='string';
+      if (target||display||['host.browser','host.computer'].includes(request.method)&&request.params?.op==='input')
+        queued.set(request,{at:timestamp(),stage:target?'host_input_target_queue':display?'host_display_queue':'host_input_queue'});
       return scheduleRequest(request);
     },
     handleRequest(request, options) {
       const started = queued.get(request);
-      if (started !== undefined) { queued.delete(request); host.timing('host_input_queue', started); }
-      return host.handle(request, options);
+      if (started !== undefined) { queued.delete(request); host.timing(started.stage, started.at); }
+      const target=request.method==='host.browser'&&request.params?.op==='display_input_target';
+      const display=request.method==='host.browser'&&request.params?.op==='screenshot'&&typeof request.params?.display_subscription_id==='string';
+      if(!target&&!display)return host.handle(request,options);
+      // Native region input resolves its active Tab before ledger admission.
+      // Attribute that separate seam without logging a binding, key or payload.
+      const kind=display?host.displays?.get(request.params.display_subscription_id)?.regionTarget?.kind:null;
+      const sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[kind]??0;
+      const at=timestamp(),complete=()=>display?host.timing.event?.('host_display',{at,source_kind:sourceKind}):host.timing('host_input_target',at);
+      let result;
+      try{result=host.handle(request,options)}catch(error){complete();throw error}
+      if(result&&typeof result.then==='function')return Promise.resolve(result).finally(complete);
+      complete();return result;
     },
   };
 }

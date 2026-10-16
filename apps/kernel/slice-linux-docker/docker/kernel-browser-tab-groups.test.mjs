@@ -88,3 +88,24 @@ test("MP-08 a Tab in a second tabbed window folds into the oldest one, also afte
       "only the second normal window's Tab moves (after the drag ends); the main window's and the popup's stay");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+// MP-08/MP-10/MP-11: every native region read checks this live source. Re-reading
+// the same debugger inventory and active Tab amplifies each protected frame's
+// admission cost; one fresh query must supply both identity and dimensions.
+test('MP-08/MP-10/MP-11 viewport reads one live native Tab and one target inventory',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-tab-viewport-'));
+ try{
+  const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8');
+  const calls=[],state={};let active=7;
+  const chrome={runtime:{getPlatformInfo(){}},windows:{getAll:async()=>{calls.push('windows');return [{id:10}]}},
+   debugger:{getTargets:async()=>{calls.push('targets');return [{id:'target-a',tabId:7},{id:'target-b',tabId:8}]}},
+   tabs:{onCreated:{addListener(){}},onAttached:{addListener(){}},query:async value=>{assert.deepEqual(value,{active:true,windowId:10});calls.push('active');return [{id:active,width:1280,height:713}]},get:async()=>{calls.push('get');return {width:1280,height:713}}}};
+  new Function('chrome','setInterval','globalThis',source)(chrome,()=>{},state);
+  assert.deepEqual(await state.charioxTabs.viewport(),{target_id:'target-a',width:1280,height:713});
+  assert.equal(calls.filter(c=>c==='targets').length,1,'one native identity inventory per live check');
+  assert.equal(calls.filter(c=>c==='get').length,0,'active query already carries these exact dimensions');
+  active=8;assert.equal((await state.charioxTabs.viewport()).target_id,'target-b','next check sees a native Tab switch without a cache');
+  active=99;assert.equal(await state.charioxTabs.viewport(),null,'a Tab absent from native target inventory cannot name a surface');
+  assert.equal(await state.charioxTabs.active(),null);
+ }finally{await rm(root,{recursive:true,force:true})}
+});

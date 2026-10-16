@@ -10,8 +10,8 @@ const motionHeight=raw=>Number.isSafeInteger(raw.motion_height)&&raw.motion_heig
 const denseNative=raw=>raw?.nativeEncode&&!raw[displayMaskRegions]?.length&&Array.isArray(raw.damage)&&raw.damage.length===4&&
  (raw.damage[2]-raw.damage[0])*(raw.damage[3]-raw.damage[1])>raw.width*raw.height/2&&motionHeight(raw)>=raw.height*.75;
 export class MotionEncoder {
- constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,bootstrapExact=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
-  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,bootstrapExact,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
+ constructor(source,encoder,{bitrate,codec,independent=false,stripes=false,bootstrapExact=false,latest=false,valid=()=>true,shouldEncode=()=>true,timing=()=>{},now=()=>performance.now()}={}){
+  Object.assign(this,{source,encoder,bitrate,codec,independent,stripes,bootstrapExact,latest,valid,shouldEncode,timing,now});this.frames=[];this.pending=null;this.active=null;this.key=true;this.resetRows=new Set();this.rate=new CreditBudget(bitrate,now);this.revision=0;this.lastSerial=-1;this.closed=false;this.readyWaiters=new Set();
   this.off=source.subscribe(sample=>this.offer(sample));this.offer(source.sample());
  }
  wakeReady(){for(const wake of [...this.readyWaiters])wake();}
@@ -25,7 +25,11 @@ export class MotionEncoder {
  // MP-08/MP-10: encode a sample previously skipped as a lossless candidate.
  // Nothing was encoded for it, so no reference chain is retired.
  retry(sample){if(sample?.serial===this.lastSerial&&!this.pending&&!this.closed){this.lastSerial=sample.serial-1;this.offer(sample)}}
- offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};this.pump();}
+ offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};
+  // PERF_AUDIT 4.2.1: Chrome UI (band, popups) shows the newest sample rather than deltas queued behind a
+  // closed ACK gate; the next encode is a key (a band crop IDR is cheap). Page streams keep every delta.
+  if(this.latest&&this.frames.length>=2){for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.key=true;this.revision++;this.timing('motion_stale_dropped',performance.timeOrigin+this.now());}
+  this.pump();}
  // MP-08/MP-10: coalesce only unencoded samples. Every completed
  // packet retains its decoder reference until delivery.
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}

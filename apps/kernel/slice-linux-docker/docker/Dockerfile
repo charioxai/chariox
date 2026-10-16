@@ -348,7 +348,9 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-credit.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-document.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-admission.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
@@ -375,6 +377,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs \

@@ -57,6 +57,12 @@ export class DisplayDocuments {
  current(tab){
   const s=tab[snapshot];return Boolean(s&&!s.entry.retired&&!s.entry.pending&&s.entry.connection.isOpen?.()!==false&&this.entries.get(tab.target_id)===s.entry&&s.entry.revision===s.revision&&s.entry.document===tab.document_id);
  }
+ // MP-08/MP-10/MP-11: input pins the requested loader, never the normalized
+ // latest loader returned by target(). Mutation of the caller also retires it.
+ async guard(browser,stored){
+  const target=stored.target_id,document=stored.document_id,tab=await this.target(browser,stored);
+  return ()=>stored.target_id===target&&stored.document_id===document&&tab.document_id===document&&this.current(tab);
+ }
  connection(tab){const s=tab[snapshot];if(!s)throw Error('MP-11: display document unbound');return s.entry;}
  async validate(tab){
   if(this.current(tab))return true;

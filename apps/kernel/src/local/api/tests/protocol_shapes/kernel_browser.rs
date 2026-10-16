@@ -187,6 +187,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             generation: 2,
             sequence: 3,
             lost: true,
+            held_ms: None,
         },
         Command::DisplayInput {
             tab_id: "t".into(),
@@ -440,6 +441,27 @@ fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
     assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
 }
 
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): allocated 540/148 keeps the omnibox list's
+// `chrome_window.auxiliary` entry with visible height 0 while the address bar has the
+// person's keys, so a viewer keeps its stream and the next list paints from it.
+#[test]
+fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 540);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 148);
+    let bytes = include_bytes!("browser-omnibox-warm-540.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "d4b2015e816e29d78230f2e394f9596b964350a26e24d6e40805d5831016063e"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
@@ -472,7 +494,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-539.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "ab0d2b897b06b4bd6c232a136464cd3ed4782c1b64510f4d502aa1708eabe174");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "f4a92a67c5c789d2e904e054d575ecb70c1c8ab3d1cf107bda0c2e7200dbe165");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
@@ -481,4 +503,22 @@ fn mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash() {
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);
     }
+}
+
+// MP-08/MP-10/MP-11: default page capture uses the existing region lease shape.
+#[test]
+fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 536);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 144);
+    let bytes = include_bytes!("browser-visible-page-536.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "867f99b3a87658e32c893b7030ac6c0d20b05ab001e336563081b8ab5892e588");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
+    let ack: LocalDaemonResponse = serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(ack).unwrap(), snapshot["ack_response"]);
 }

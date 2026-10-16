@@ -119,8 +119,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 137 carries local529 page display placement.
 /// Allocated 138 carries the local 530 band gestures and auxiliary popups.
 /// MP-08/MP-10/MP-11: allocated 140 negotiates chunks-v2 multiplexed transport.
-/// MP-08/MP-10/MP-11: allocated147 carries539 mirror snapshot completion.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 147;
+/// Allocated143 carries535 delivery registration with525 Room resume+attach.
+/// MP-08/MP-10/MP-11: allocated144 carries the visible-page default crop contract.
+/// MP-08/MP-10/MP-11: allocated 148 carries the local 540 warm omnibox list.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 148;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

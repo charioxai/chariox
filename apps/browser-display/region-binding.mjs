@@ -1,5 +1,6 @@
 // MP-08/MP-10/MP-11: only a negotiated kernel lease admits crop geometry.
 export const regionMinimumProtocolVersion = 519;
+export const visiblePageMinimumProtocolVersion = 536;
 export function regionBindingCurrent(binding) {
  const {binding_id,document_id,sequence,css_width,css_height,device_scale_factor:scale}=binding;
  return binding.source_kind==='region'&&typeof binding_id==='string'&&binding_id.length>0&&binding_id.length<=256&&

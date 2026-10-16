@@ -389,3 +389,11 @@ test("MP-11 (530): drag endpoints read through same-origin frames and fail close
   assert.equal(run(frame({ elementFromPoint: () => el({ tagName: "INPUT", type: "password" }) })), true, "a password field inside a same-origin frame");
   assert.equal(run(frame(null)), true, "a cross-origin frame cannot be inspected");
 });
+
+test('MP-11 ordinary page input applies a retired visible crop guard before any press',async()=>{
+ const {inputHostTab}=await import('./kernel-browser-input.mjs');const sent=[];
+ const connection={send:async(method,params)=>{sent.push(method);if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};return {};}};
+ const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
+ await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'click',x:12,y:700},{inputGuard:async()=>{throw Error('retired visible crop');}}),/retired visible crop/);
+ assert(!sent.some(m=>m.startsWith('Input.')),'a retired crop must dispatch no button press');
+});

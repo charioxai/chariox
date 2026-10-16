@@ -174,6 +174,7 @@ export async function assertCurrentDocument(connection, sessionId, targetId, doc
       `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
     );
   }
+  return frameTree;
 }
 
 async function resolveBackendNode(connection, sessionId, backendNodeId, isolated = false) {

@@ -18,6 +18,8 @@ const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
 export const POPUP_CORNER = 16;
 /** Chrome 155's suggestion list holds at most 8 rows of 40 DIP in an 8 DIP frame (observed 48..288). */
 export const OMNIBOX_LIST_HEIGHT = 344;
+/** Protocol 540: an address bar without the person's input for this long no longer keeps its list stream warm. */
+const OMNIBOX_WARM_MS = 30_000;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
@@ -62,6 +64,7 @@ export class ChromeWindows {
   retire(reason) {
     if (!this.bound) return;
     const {window_generation} = this.bound.tabbed; this.bound = null;
+    this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
   }
   current() {
@@ -97,7 +100,7 @@ export class ChromeWindows {
     const measure = async () => {
       const next = await host.tabGroups?.viewport();
       if (!next || ![...host.tabs.values()].some(tab => tab.target_id === next.target_id)) throw new UserDomainRefusal('stale_reference');
-      return nativePageRect(row, next, scale);
+      return {rect:nativePageRect(row, next, scale),target_id:next.target_id};
     };
     const pageRect = nativePageRect(row, viewport, scale);
     // The page origin remains exact, including odd rows and GTK side insets.
@@ -109,10 +112,11 @@ export class ChromeWindows {
     if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
     const windowGeneration = this.windowGeneration;
     const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
-    const isPageCurrent = async () => {
+    // MP-08/MP-10/MP-11: identity and geometry share one fresh native query.
+    const isPageCurrent = async target_id => {
       if (!isCurrent()) return false;
-      try { if (JSON.stringify(await measure()) === JSON.stringify(pageRect)) return isCurrent(); } catch {}
-      // MP-08/MP-10/MP-11: consume browserux40979b97d; rebind from owned geometry.
+      try { const next=await measure();if (JSON.stringify(next.rect) === JSON.stringify(pageRect)) return (target_id===undefined||next.target_id===target_id)&&isCurrent(); } catch {}
+      // Rebind at the real geometry: no other path may notice (r13 union3: the band never came back).
       if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
       return false;
     };
@@ -150,14 +154,16 @@ export class ChromeWindows {
     }
     // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
     const live = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
-      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), held = this.omniboxHeld;
+      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), last = this.omniboxRect(tabbed);
     // Chrome resizes the list on almost every key and each new stream left the person without a list
     // for 0.4-1.3 s (r10, r11 profile): the stream opens at the list's full height and keeps it while the
     // list stays open. Below the live list it shows the page (its masks apply); input there is refused.
     const full = live && {...live, height: Math.max(live.height, Math.min(OMNIBOX_LIST_HEIGHT, Math.floor((tabbed.bounds.height / tabbed.scale - live.y) / 2) * 2))};
-    const popup = live && held?.window_generation === tabbed.window_generation && held.x === live.x && held.y === live.y
-      && held.width === live.width && live.height <= held.height ? held : full;
-    this.omniboxHeld = popup && {...popup, window_generation: tabbed.window_generation};
+    // Protocol 540: while the address bar has the person's keys the last list's stream stays (nothing
+    // visible), so the next list paints from a running stream instead of a new one (r12: ~0.9 s).
+    const popup = live ? (last && last.x === live.x && last.y === live.y && last.width === live.width && live.height <= last.height ? last : full)
+      : this.omniboxWarm() ? last : null;
+    if (popup) this.omniboxLast = {...popup, window_generation: tabbed.window_generation};
     this.omniboxLive = live;
     if (popup && bound.length < 8) {
       const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
@@ -170,7 +176,7 @@ export class ChromeWindows {
     this.auxiliaryIds = ids;
     return bound;
   }
-  /** A state read with no binding retries one, at most once a second. */
+  /** A state read with no binding retries one, at most once a second: a missed rebind never strands the band. */
   async heal() {
     if (this.bound) return;
     const now = performance.now();
@@ -178,6 +184,29 @@ export class ChromeWindows {
     this.healedAt = now;
     await this.resolve().catch(() => {});
   }
+  /** The last list rect of this window (window CSS px), or null. */
+  omniboxRect(tabbed = this.bound?.tabbed) {
+    return tabbed && this.omniboxLast?.window_generation === tabbed.window_generation ? this.omniboxLast : null;
+  }
+  /** Protocol 540: the address bar has (`on`) or lost the person's keys; `ago` backdates it (ms). */
+  focusOmnibox(on, ago = 0) {
+    const was = this.omniboxWarm();
+    this.omniboxFocusAt = on ? performance.now() + ago : null;
+    if (was !== this.omniboxWarm()) this.refreshAuxiliary(this.rows);
+  }
+  omniboxWarm() { return this.omniboxFocusAt != null && performance.now() - this.omniboxFocusAt < OMNIBOX_WARM_MS; }
+  /** A state read while the address bar is warm sees a list Chrome opened since the last poll; right
+   * after an address-bar key it waits briefly for the list that key opens (else the next 250 ms poll). */
+  async refreshWarm() {
+    if (!this.omniboxWarm() || !this.bound?.tabbed.isCurrent()) return;
+    for (;;) {
+      this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(this.rows);
+      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > 250) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
+  onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
   observeBand(raw) {
     const tabbed = this.bound?.tabbed;
@@ -231,7 +260,8 @@ export class ChromeWindows {
     this.omnibox = await this.readOmnibox();
     this.refreshAuxiliary(this.rows);
     if (source.isCurrent() !== true) return false;
-    if (!point) return true;
+    // MP-11: keeping capture warm never grants keyboard admission after the list closes.
+    if (!point) return !!this.omniboxLive;
     const live = this.omniboxLive, scale = this.bound.tabbed.scale, region = source.region.window_region;
     const x = region.left / scale + point.x, y = region.top / scale + point.y;
     return !!live && x >= live.x && x < live.x + live.width && y >= live.y && y < live.y + live.height;
@@ -271,12 +301,13 @@ export class ChromeWindows {
     if (!this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live};
     return this.inWindowOver(rect, live);
   }
-  /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
+  /** While a band is watched, follow its popups (one poller per host, shared by viewers). The newest
+   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes. */
   watch(read, interval = 150) {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
     watcher.reads.add(read);
     const tick = async () => {
-      const [first] = watcher.reads;
+      const [first] = [...watcher.reads].reverse();
       try { if (first) {
         const rows = await first(), binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
         this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
@@ -294,12 +325,12 @@ export class ChromeWindows {
   auxiliaryState() {
     const tabbed = this.bound?.tabbed;
     if (!tabbed?.isCurrent()) return [];
-    // The omnibox list's stream keeps its grown size; the viewer shows only the live list (r10).
+    // The omnibox list's stream keeps its grown size; the viewer shows only the live list (r10), none while warm (540).
     const live = this.omniboxLive;
     return this.bound.auxiliary.map(({auxiliary_id, bounds, omnibox}) => ({auxiliary_id,
       x: Math.round((bounds.x - tabbed.bounds.x) / tabbed.scale), y: Math.round((bounds.y - tabbed.bounds.y) / tabbed.scale),
       width: (bounds.width - bounds.width % 2) / tabbed.scale,
-      height: Math.min((bounds.height - bounds.height % 2) / tabbed.scale, omnibox && live ? Math.floor(live.height / 2) * 2 : Infinity)}));
+      height: Math.min((bounds.height - bounds.height % 2) / tabbed.scale, omnibox ? live ? Math.floor(live.height / 2) * 2 : 0 : Infinity)}));
   }
   auxiliary(auxiliaryId) {
     const binding = this.current().auxiliary.find(a => a.auxiliary_id === auxiliaryId);
@@ -411,14 +442,18 @@ export class InputArbiter {
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
+      let proved = false;
       const currentProof = async () => {
         const active = await activeAdmitted();
         if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
-        await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
+        const cached = proved && this.host.browser.currentPageFrame?.(tab.target_id);
+        const frame = cached && cached.connection === connection && cached.sessionId === sessionId && cached.frame.loaderId === documentId
+          ? {frameTree:{frame:cached.frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
+        proved = true;
         if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
+        return frame;
       };
-      await currentProof();
-      const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
+      const {frameTree} = await currentProof();
       const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
       const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
@@ -451,6 +486,8 @@ export class InputArbiter {
     // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
     const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
+    // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
+    const omnibox = on => { this.inOmnibox = on; this.windows.focusOmnibox?.(on); };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
       let tab;
@@ -460,6 +497,7 @@ export class InputArbiter {
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? uiFocus(tab) : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
+      omnibox(tab ? !!this.chromeFocus : !!this.inOmnibox && !!this.chromeFocus);
       return dispatched(() => source.chord(keysym, modifiers));
     };
     const band = source?.surface === 'browser_chrome';
@@ -470,12 +508,13 @@ export class InputArbiter {
       // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
       // A popup item (menu, dropdown) may navigate or switch Tabs: the keys return to the page.
       const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? uiFocus(tab) : null;
+      omnibox(!!this.chromeFocus && this.windows.onOmnibox?.(input.x) === true);
       return dispatched(() => source.click(input.x, input.y, button));
     }
     if (input.kind === 'drag') {
       // Protocol 530: reorder Tabs within the strip; leaving it would tear a Tab into a new window.
       if (!band || ![input.x, input.y, input.to_x, input.to_y].every(Number.isSafeInteger) || input.y >= STRIP_HEIGHT || input.to_y >= STRIP_HEIGHT) throw new Error('MD-2: unsupported input');
-      await switching(); this.chromeFocus = null;
+      await switching(); this.chromeFocus = null; omnibox(false);
       return dispatched(() => source.drag(input.x, input.y, input.to_x, input.to_y));
     }
     if (input.kind === 'scroll') {

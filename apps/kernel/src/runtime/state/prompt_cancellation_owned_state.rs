@@ -327,6 +327,14 @@ impl KernelRuntimeOwnedState {
                     &hidden_system_context,
                     started_next.attachments(),
                     mode.with_prompt_origin(started_next.prompt_origin()),
+                    self.private_evidence_for_dispatch(
+                        session_id,
+                        agent_id,
+                        started_next.id(),
+                        provider_run_id,
+                        started_next.prompt_origin(),
+                        false,
+                    ),
                     false,
                 )?;
                 self.note_prompt_started(provider_run_id);

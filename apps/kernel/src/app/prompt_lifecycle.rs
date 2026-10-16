@@ -186,6 +186,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 hidden_system_context,
                 attachments,
                 mode.with_prompt_origin(origin),
+                None,
                 false,
             )?;
             return Ok(());

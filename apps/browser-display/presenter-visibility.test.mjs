@@ -22,16 +22,13 @@ test('MP-08/MP-10 hidden heartbeats renew the lease beyond its expiry and resume
   assert.equal(h.stream.error,null,'MP-10 visible return keeps the running binding');
  }finally{await h.stream.close()}
 });
-test('MP-08/MP-10 hidden slow ACK keeps one request in flight',async()=>{
- const h=await fixture(true,true);
- try{await pause(40);assert.equal(h.ops.filter(c=>c.op==='display_ack').length,1);
-  h.stream.presenter.sequence=12;await pause(10);h.replies.shift()();await pause(1);
-  assert.deepEqual(h.ops.filter(c=>c.op==='display_ack').map(c=>c.sequence),[0,12]);
- }finally{for(const reply of h.replies)reply();await h.stream.close()}
-});
-test('MP-08/MP-10 slow ACK remains one in flight with one latest sequence',async()=>{
- const h=await fixture(false,true);
- try{h.stream.presenter.sequence=12;await pause(40);assert.equal(h.ops.filter(c=>c.op==='display_ack').length,1);
-  h.replies.shift()();await pause(1);assert.deepEqual(h.ops.filter(c=>c.op==='display_ack').map(c=>c.sequence),[0,12]);
- }finally{for(const reply of h.replies)reply();await h.stream.close()}
+// MP-08/MP-10/MP-11: C1 pipelines replies; hidden renewal obeys the same bound.
+for(const hidden of [true,false])test(`MP-08/MP-10/MP-11 ${hidden?'hidden':'visible'} slow ACK caps requests and releases the newest cursor`,async()=>{
+ const h=await fixture(hidden,true),acks=()=>h.ops.filter(c=>c.op==='display_ack');
+ try{
+  const until=performance.now()+1000;while(acks().length<8&&performance.now()<until)await pause(5);
+  assert.equal(acks().length,8);h.stream.presenter.sequence=12;await pause(20);
+  assert.equal(acks().length,8,'held replies must not grow the ACK window');
+  h.replies.shift()();await pause(1);assert.equal(acks().length,9);assert.equal(acks().at(-1).sequence,12);
+ }finally{await h.stream.close();for(const reply of h.replies)reply()}
 });

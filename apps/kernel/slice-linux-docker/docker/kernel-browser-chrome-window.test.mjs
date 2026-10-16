@@ -221,6 +221,29 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
 });
 
+// Protocol 540: the person's keys in the address bar (a click on it, Ctrl+L, typing there) keep its list
+// stream warm; Enter, Tab, another toolbar button, the strip or another shortcut end it.
+test("MP-08/MP-11 the arbiter tells the windows when the address bar has the keys", async () => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: true } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { inputCapture: { physicalFocus: async () => false }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const focus = [];
+  const arbiter = new InputArbiter(host, { focusOmnibox: on => focus.push(on), onOmnibox: x => x >= 300 && x < 1000 });
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => true, chord: async () => true };
+  const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
+  const step = async (input, expected, why) => { focus.length = 0; await send(input); assert.deepEqual(focus, [expected], why); };
+  await step({ kind: "click", x: 520, y: 63 }, true, "a click on the address bar");
+  await step({ kind: "text", text: "w" }, true, "typing there");
+  await step({ kind: "key", key: "Enter" }, false, "Enter navigates");
+  await step({ kind: "key", key: "l", modifiers: 2 }, true, "Ctrl+L");
+  await step({ kind: "click", x: 80, y: 63 }, false, "Reload is not the address bar");
+  await step({ kind: "key", key: "l", modifiers: 2 }, true);
+  await step({ kind: "click", x: 300, y: 20 }, false, "a Tab in the strip");
+  await step({ kind: "key", key: "l", modifiers: 2 }, true);
+  await step({ kind: "key", key: "t", modifiers: 2 }, false, "another browser shortcut");
+});
+
 // MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
 // A native omnibox check must observe physical focus, not that logical wake-up.
 test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
@@ -316,6 +339,31 @@ test("MP-08/MP-11 popups of the band's window get kernel ids, follow the band's 
   } finally { await real.close(); }
 });
 
+// r12 quiet host: the band's native capture retired (a transient window size change) while the window
+// stayed bound; the viewer subscribed a new band, but the poll kept reading the dead first band, so a
+// closed Tab menu stayed listed and the omnibox dropdown never appeared.
+test("MP-08/MP-11 popups follow a live band when an earlier band's reader has died", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const menu = { id: 0x600070, x: 2000, y: 140, width: 497, height: 801, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+    let rows = [tabbed, menu];
+    const stopDead = windows.watch(async () => { throw Error("MP-11: native window inventory lease"); }, 5);
+    const stopLive = windows.watch(async () => rows, 5);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.deepEqual(windows.auxiliaryState().map(({x, y}) => [x, y]), [[1000, 70]], "the live band's menu is listed");
+      rows = [tabbed];
+      await new Promise(resolve => setTimeout(resolve, 40));
+      assert.deepEqual(windows.auxiliaryState(), [], "the closed menu is retired");
+    } finally { stopDead(); stopLive(); }
+  } finally { await real.close(); }
+});
+
 // MP-08/MP-10/MP-11: Caps Lock/automation can report upper-case key labels
 // without Shift. Native X11 must receive the caller's explicit modifier chord.
 test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite upper-case labels', async () => {
@@ -386,6 +434,61 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     windows.readOmnibox = async () => ["hidden", 103, 25, 1078, 1, 1110, 178];
     assert.equal(await windows.inWindowCurrent(open), false, "closed: refused");
     assert.deepEqual(windows.auxiliaryState(), [], "and retired at once");
+  } finally { await real.close(); }
+});
+
+// Protocol 540 (r12 quiet pair: list first paint ~0.9 s vs Selkies ~0.16 s, mostly a new stream per open):
+// while the person's keys are in the address bar, the last list's stream stays listed with no visible
+// height under the same kernel id, so the viewer keeps it subscribed and the next list paints from it.
+test("MP-08/MP-11 the omnibox list stream stays warm while the address bar has focus", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const open = ["visible", 103, 25, 1078, 90, 1110, 178], closed = ["hidden", 103, 25, 1078, 1, 1110, 178];
+    const show = state => { windows.omnibox = state; windows.refreshAuxiliary([tabbed]); return windows.auxiliaryState(); };
+    windows.focusOmnibox(false);
+    assert.deepEqual(show(closed), [], "no list seen yet: nothing to keep warm");
+    windows.focusOmnibox(true);
+    assert.deepEqual(show(closed), [], "a list never seen in this window has no rect yet");
+    const [list] = show(open);
+    assert.equal(list.height, 88);
+    const binding = windows.auxiliary(list.auxiliary_id);
+    assert.deepEqual(show(closed), [{ ...list, height: 0 }], "closed while focused: same id, nothing visible");
+    assert.equal(binding.isCurrent(), true, "its stream stays current");
+    assert.equal(windows.auxiliaryRegion(binding).rect.height, 2 * OMNIBOX_LIST_HEIGHT);
+    assert.equal(windows.inWindowOver({ left: 0, top: 174, width: 2560, height: 1600 }), false, "a closed list covers no page region");
+    windows.readOmnibox = async () => closed;
+    const source = { isCurrent: binding.isCurrent, region: { window_region: windows.auxiliaryRegion(binding).rect } };
+    assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 20 }), false, "a click on the warm stream reaches nothing");
+    assert.equal(await windows.inWindowCurrent(source), false, "a warm capture without a live Chrome list grants no keyboard exemption");
+    windows.readOmnibox = async () => open;
+    await windows.refreshWarm();
+    assert.deepEqual(windows.auxiliaryState(), [list], "a state read sees the list Chrome just opened, on the same stream");
+    // r13 b3: the read that follows a key often arrived before Chrome opened the list (then a 250 ms poll).
+    show(closed); windows.focusOmnibox(true);
+    let reads = 0; windows.readOmnibox = async () => ++reads >= 3 ? open : closed;
+    await windows.refreshWarm();
+    assert.deepEqual(windows.auxiliaryState(), [list], "a read right after a key waits briefly for the list");
+    show(closed); windows.focusOmnibox(true, -1000);
+    reads = 0; windows.readOmnibox = async () => (++reads, closed);
+    await windows.refreshWarm();
+    assert.equal(reads, 1, "no wait long after the last key");
+    windows.focusOmnibox(true);
+    delete windows.readOmnibox;
+    assert.deepEqual(show(closed), [{ ...list, height: 0 }]);
+    assert.deepEqual(show(open), [list], "the next list paints from the same stream");
+    windows.focusOmnibox(false);
+    assert.deepEqual(show(closed), [], "focus left: the warm stream retires");
+    assert.equal(binding.isCurrent(), false);
+    windows.focusOmnibox(true, -60_000);
+    assert.deepEqual(show(closed), [], "an address bar idle for a minute is not kept warm");
+    windows.focusOmnibox(true);
+    host.generation = 4;
+    assert.deepEqual(windows.auxiliaryState(), [], "no warm list without a current window");
   } finally { await real.close(); }
 });
 
@@ -623,6 +726,21 @@ test('MP-11 an occlusion probe cannot be shared across native input revisions', 
  assert.equal(await second,true);assert.equal(reads,2);finish();
 });
 
+// PERF_AUDIT 4.2.7 (C2): a key for the page reads the document's frame tree once; the fence that asserted the
+// document already holds it (the focus world and the sensitive-field check still run on every key).
+test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
+  const sent = [];
+  const connection = { send: async (method) => (sent.push(method), method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {}) };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { currentPageFrame: () => ({connection,sessionId:"s",frame:{id:"f",loaderId:"db"}}), inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const arbiter = new InputArbiter(host, {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
+  assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "text", text: "a" } } }), { dispatched: true });
+  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 1);
+  assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
+});
+
 // r13 b3 union (browserux-r13union3-mvalvidm, 1440x900@2 -> 1920x1080@1): a page region saw the page geometry
 // change and retired the window without rebinding it; every band subscribe then failed (241 stale references)
 // and the band never painted again. A geometry retirement rebinds at the real geometry.
@@ -647,4 +765,15 @@ test("MP-08/MP-11 a page geometry change rebinds the band window", async t => {
     await windows.heal();
     assert.throws(() => windows.current(), { code: "user_domain_stale_reference" }, "at most once a second");
   } finally { await real.close(); }
+});
+
+test('MP-08/MP-10/MP-11 active target in one fresh viewport query keeps a foreign Tab fenced',async()=>{
+ const {host,windows}=fake(),display=new OwnedDisplay(process.env.TMPDIR??'/tmp');await display.start();
+ try{
+  host.chromium.display=display;const b=(await windows.resolve()).tabbed;let reads=0;
+  const viewport=host.tabGroups.viewport;host.tabGroups.viewport=async(...args)=>{reads++;return viewport(...args)};
+  assert.equal(await b.isPageCurrent('ta'),false);assert.equal(reads,1);assert.equal(b.isCurrent(),true,'a different active Tab does not retire the unchanged browser window');
+  assert.equal(await b.isPageCurrent('tb'),true);assert.equal(reads,2);
+  host.tabGroups.viewport=async()=>{throw Error('unavailable')};assert.equal(await b.isPageCurrent('tb'),false);assert.equal(b.isCurrent(),false);
+ }finally{await display.close()}
 });
