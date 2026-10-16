@@ -509,3 +509,13 @@ test('MP-08/MP-10/MP-11 native preview follows a document transition, not initia
  const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:0},'scope');
  assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'typed');
 });
+
+test('MP-08/MP-10/MP-11 the protected native preview can initialize before observer work',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
+ const displays=new Map(),host={generation:1,scales:new Map(),protection:{},browser:{},displays,chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let ready=false;
+ mirror.world=async()=>{assert(ready,'observer must leave startup time for the protected native source');throw Error('observer reached after preview')};
+ const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');pending.catch(()=>{});
+ await new Promise(resolve=>setTimeout(resolve,10));ready=true;displays.set('native',{tab_id:'t',generation:1,observed_by:'scope',expires:Date.now()+60000,regionTarget:{kind:'visible_page'},regionLease:{document_id:'new'},regionSource:{attested:true,valid:()=>true,sample:()=>({})}});
+ await assert.rejects(pending,/observer reached after preview/);
+});

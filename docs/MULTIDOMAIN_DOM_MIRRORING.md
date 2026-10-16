@@ -765,3 +765,11 @@ one committed before the first snapshot drains, may announce navigation preview.
 This keeps ordinary attachment on the mirror path and prevents native page
 initialization from resizing an already painted band before the person's first
 URL input. Existing owned-window rebinding still handles later native starts.
+
+MP-08 / MP-10 / MP-11 — native preview scheduling: after a navigation-preview
+notification, the observer waits at most2500ms for this observer/document's
+ordinary protected visible-page producer to initialize on the owned desktop.
+The wait ends on a valid attested sample, a deadline or cancellation; it grants
+no capture/input authority. This gives native startup a chance before a large
+DOM drain competes on CDP. Record `mirror2_preview_wait` and native first-paint
+timings on the real large-document flow; source scheduling checks are not acceptance.

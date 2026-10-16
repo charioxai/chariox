@@ -17,6 +17,7 @@ import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 // Protocol 530: mirrored undo/redo as named mirror keys (the renderer never sends raw modifiers here).
 const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
+import {waitForNavigationPreview} from './kernel-browser-mirror2-preview.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
@@ -294,6 +295,13 @@ export class Mirror2 {
       this.remember(stream, sequence, packet, true);
       this.host.timing?.('mirror2_navigation_preview', started);
       return packet;
+    }
+    if(stream.navigationPreview&&stream.previewDocument===tab.document_id&&stream.document_id!==tab.document_id&&stream.previewWaitedDocument!==tab.document_id){
+      const previewAt=timestamp(),document=tab.document_id;
+      await waitForNavigationPreview(this.host,{tab_id:tab.tab_id,document_id:document,generation:command.generation,scope},signal);
+      assertNotCancelled(signal);this.service.require(command.subscription_id,scope,command.generation);
+      if(this.host.generation!==command.generation||tab.document_id!==document)throw new Error('MP-11: navigation preview document retired');
+      stream.previewWaitedDocument=document;this.host.timing?.('mirror2_preview_wait',previewAt);
     }
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
