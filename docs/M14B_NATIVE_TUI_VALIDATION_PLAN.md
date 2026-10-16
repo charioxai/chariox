@@ -545,3 +545,26 @@ reattaching must not accumulate old sockets. Cover both the32-frame queue and
 prove these capacity/cancellation boundaries only; they do not replace the real
 native-client drill. Fresh waiting-room entry also must show Loading Catalog
 while discovery is idle or retrying; only a completed failure is unavailable.
+
+
+### MP-08 / MP-10 / MP-11: home page application crash boundary
+
+Use the real compiled TUI to submit a real leased provider task and queue its
+successor over hosted WSS. On the lane-owned home history database only, fail
+the delivery-receipt write after a provider history item commits. Crash and
+restart the home kernel while the worker retains that unacknowledged page.
+Show duplicated durable output on the base. On the candidate, require one
+history copy, one exact original settlement, one successor admission and no
+pending application after recovery. Repeat source fault injection before the
+application-result save and after receipt/queue admission; replay must finish
+without removing the successor. Check the current worker/lease/run admission,
+including rejection of altered retained bytes and foreign callers.
+
+Record kernel/client/relay/Cloud identities, fault timing and body-free delivery
+counters. Drive browser reload at DPR1/2 and both 1440x900 and 1920x1080; record
+initial visible recovery state and definitive restored transcript, then inspect
+recordings for blank or stuck frames. A source-only pass or composer placeholder
+alone does not establish this live acceptance. Run the separate lost-page-ACK
+cell without the home receipt-write fault; prove the home-applied/worker-unacked
+sequence gap and single history/settlement after re-ACK. Clean up exact owned
+processes, temporary provider copies, network controls and stack.

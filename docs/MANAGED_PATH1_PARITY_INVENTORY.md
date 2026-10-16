@@ -50,6 +50,16 @@ lost acknowledgement retry, future-sequence rejection and single successor
 admission through the reconciliation entry point. They do not establish live
 provider, client, hosted recovery or MP-10 acceptance.
 
+Home application now retains an admitted page and its local result until receipt
+commit and queue admission finish. Per-page prompt/output/notice identities and
+per-prompt settlement identities make partially committed history replayable.
+The exact original prompt is removed durably before the receipt; the captured
+queue head is admitted only afterward. Replaying a pending result cannot settle
+a successor or admit it twice. This is shared kernel history/recovery behavior,
+with no managed-placement branch or new wire fields. Restart regressions inject
+failures after history, before the receipt, and after successor admission; their
+source results remain supplementary to real hosted provider/Web/TUI evidence.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

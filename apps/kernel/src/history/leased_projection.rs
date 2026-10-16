@@ -1,5 +1,7 @@
 //! Worker-local projection bookkeeping. No fields here are part of the relay protocol.
+mod application;
 mod delivery;
+pub(crate) use application::HomeProjectionResult;
 mod tools;
 pub(crate) use tools::{tool_identity, ProjectedToolState};
 
@@ -99,6 +101,7 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
          CREATE INDEX IF NOT EXISTS idx_history_projection_stream ON history_events(leased_projection_stream_key);
          CREATE INDEX IF NOT EXISTS idx_history_projection_snapshot ON history_events(leased_projection_snapshot_key);
          CREATE TABLE IF NOT EXISTS leased_projection_deliveries (projection_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_json TEXT NOT NULL, PRIMARY KEY (projection_id, sequence));
+         CREATE TABLE IF NOT EXISTS home_projection_applications (projection_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, event_digest TEXT NOT NULL, result_json TEXT);
          CREATE TABLE IF NOT EXISTS leased_projection_delivery_receipts (projection_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_cursors (projection_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_pending_keys (key TEXT PRIMARY KEY, projection_id TEXT NOT NULL);

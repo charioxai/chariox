@@ -265,3 +265,286 @@ fn mp08_projection_home_deduplicates_replayed_output_and_rechecks_admission() {
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11: the receipt can fail after durable history and runtime
+// effects. Reopen the real stores, replay the retained page, and count effects.
+#[test]
+fn mp08_home_projection_receipt_failure_is_restart_safe() {
+    home_projection_fault_is_restart_safe("receipt");
+}
+
+#[test]
+fn mp08_home_projection_partial_application_and_queue_boundary_are_restart_safe() {
+    for boundary in ["result", "cleanup", "native"] {
+        home_projection_fault_is_restart_safe(boundary);
+    }
+}
+
+fn home_projection_fault_is_restart_safe(boundary: &str) {
+    use crate::git_observer::CompletedTurnSettlementStatus as Status;
+    for (final_page, status) in [
+        (false, None),
+        (true, Some(Status::Completed)),
+        (true, Some(Status::Cancelled)),
+        (true, Some(Status::Failed)),
+    ] {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new("home", "home"))
+            .unwrap();
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker".into(),
+                    worker_machine_id: "machine".into(),
+                    execution_lease_id: "lease".into(),
+                    leased_agent_id: "leased".into(),
+                    active_worker_provider_run_id: Some("run".into()),
+                    relay_url: None,
+                    relay_token: None,
+                    relay_peer_protocol_version: Some(139),
+                },
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            PromptQueueItem::new(
+                "original",
+                attachment.id(),
+                agent.id(),
+                "question",
+                PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+        let original = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        app.prompt_owner_submit_prepared_prompt(
+            session.id(),
+            PromptQueueItem::new(
+                "successor",
+                attachment.id(),
+                agent.id(),
+                "next",
+                PromptStatus::Queued,
+            ),
+            true,
+        )
+        .unwrap();
+        let successor = app
+            .prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        app.save_durable_state_snapshot().unwrap();
+        let event = RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: session.id().into(),
+            home_agent_id: agent.id().into(),
+            provider_run_id: "run".into(),
+            provider_run: (boundary == "native").then(|| {
+                let mut run = super::explicit_completion_tests::provider_run(
+                    "run",
+                    "worker-session",
+                    "worker-agent",
+                    "claude",
+                    "claude",
+                    crate::provider::ProviderClientInterface::NativeTui,
+                );
+                run.mark_running();
+                run
+            }),
+            delivery: Some(RelayProjectionDelivery {
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased".into(),
+                sequence: 1,
+            }),
+            prompts: vec![],
+            output_chunks: vec![RelayProjectedOutputChunk {
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: None,
+                bytes: b"durable exactly once".to_vec(),
+            }],
+            notices: vec!["notice exactly once".into()],
+            completions: if final_page {
+                vec![RelayProjectedCompletion {
+                    message_id: "done".into(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: Some(original.id().into()),
+                    settlement_status: status,
+                    provider_termination: None,
+                }]
+            } else {
+                vec![]
+            },
+        };
+        // Ensure the delivery tables exist, then fail precisely at receipt save.
+        app.operational_history_store()
+            .leased_projection_delivery_sequence("probe")
+            .unwrap();
+        let db = app.operational_history_store().path().to_path_buf();
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        let trigger = match boundary {
+            "receipt" | "native" => "CREATE TRIGGER fail_home_receipt BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END;",
+            "result" => "CREATE TRIGGER fail_home_receipt BEFORE UPDATE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected result failure'); END;",
+            "cleanup" => "CREATE TRIGGER fail_home_receipt BEFORE DELETE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected cleanup failure'); END;",
+            _ => unreachable!(),
+        };
+        connection.execute_batch(trigger).unwrap();
+        let first = RemoteLeaseRuntime::new(&mut app).project_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker"),
+            event.clone(),
+        );
+        assert!(first.is_err(), "{boundary} failure must propagate");
+        if boundary == "receipt" && final_page {
+            assert!(
+                app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                    .unwrap()
+                    .is_none(),
+                "successor admission must stay after the receipt"
+            );
+            assert_eq!(
+                app.prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+                    .unwrap()
+                    .unwrap()
+                    .id(),
+                successor.id()
+            );
+        }
+        connection
+            .execute_batch("DROP TRIGGER fail_home_receipt")
+            .unwrap();
+        drop(connection);
+        assert!(
+            !RemoteLeaseRuntime::new(&mut app)
+                .project_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::test_projection_authority(
+                        "foreign-worker"
+                    ),
+                    event.clone(),
+                )
+                .unwrap()
+                .accepted,
+            "journal cannot replace worker admission"
+        );
+        if boundary != "receipt" {
+            let mut changed = event.clone();
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = &mut changed;
+            output_chunks[0].bytes = b"altered retained page".to_vec();
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .project_remote_runtime_projection(
+                        crate::runtime::relay_peer_authority::test_projection_authority("worker"),
+                        changed,
+                    )
+                    .is_err(),
+                "journal must bind the exact retained bytes"
+            );
+        }
+        drop(app);
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let recovered = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker"),
+                event.clone(),
+            )
+            .unwrap();
+        assert!(
+            recovered.accepted && recovered.acknowledgement.is_some(),
+            "pending page must finish after restart"
+        );
+        let history = app
+            .operational_history_store()
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session.id().into()),
+                agent_id: Some(agent.id().into()),
+                ..Default::default()
+            })
+            .unwrap();
+        for text in ["durable exactly once", "notice exactly once"] {
+            assert_eq!(
+                history
+                    .iter()
+                    .filter(|entry| entry.content.as_deref() == Some(text))
+                    .count(),
+                1,
+                "{text}: final={final_page}"
+            );
+        }
+        if final_page {
+            let settled = app
+                .completed_git_turn_snapshot_store()
+                .projection_for_prompt(session.id(), agent.id(), original.id())
+                .expect("restart restores the exact runtime settlement");
+            assert_eq!(settled.settlement_status, status.unwrap());
+        }
+        let settlements = history
+            .iter()
+            .filter(|event| {
+                event
+                    .metadata
+                    .contains_key(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            })
+            .count();
+        assert_eq!(
+            settlements,
+            usize::from(final_page),
+            "one durable settlement: {boundary}"
+        );
+        assert_eq!(
+            recovered.remote_dispatches.len(),
+            usize::from(final_page && boundary != "cleanup"),
+            "one successor admission: {boundary}"
+        );
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            active.id(),
+            if final_page {
+                successor.id()
+            } else {
+                original.id()
+            }
+        );
+        if boundary == "native" {
+            assert_eq!(
+                app.agents
+                    .get_agent(agent.id())
+                    .unwrap()
+                    .remote_execution()
+                    .unwrap()
+                    .active_worker_provider_run_id
+                    .as_deref(),
+                Some("run"),
+                "ready journal must retain the running native binding after restart"
+            );
+        }
+        let duplicate = RemoteLeaseRuntime::new(&mut app)
+            .project_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker"),
+                event,
+            )
+            .unwrap();
+        assert!(duplicate.replayed);
+        assert!(duplicate.remote_dispatches.is_empty());
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                .unwrap()
+                .unwrap()
+                .id(),
+            active.id()
+        );
+    }
+}
