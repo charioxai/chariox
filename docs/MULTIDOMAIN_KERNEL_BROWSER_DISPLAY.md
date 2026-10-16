@@ -681,7 +681,10 @@ fields. The network drill requires at least one joined receive/end pair in that
 file; a missing capture is an instrumentation failure. These encrypted-request
 marks do not cover the separate 535 subscription exchange: keep its client and
 worker phase timings too. Preserve exact home/worker/relay/client source and
-binary receipts with every run. Source collector tests establish neither
+binary receipts with every run. Worker `desktop_frame_out` and first-frame
+records include the same anonymous numeric viewer and delivery values: sequence
+numbers alone repeat across concurrent viewers and resumed deliveries. These
+local timing fields carry no lease identity or authority. Source collector tests establish neither
 timing acceptance nor a completed live drill.
 
 MP-08/MP-10/MP-11 home admission does not hold a per-slice write lock across

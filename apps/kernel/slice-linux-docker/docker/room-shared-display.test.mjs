@@ -89,6 +89,8 @@ test('MP-08/MP-10/MP-11 worker trace joins each viewer and resumed delivery with
   await f.request({op:'screenshot',subscription_id:resumed.subscription_id,observed_by:offer.observed_by,generation:1,after_sequence:0,push:{reset:true,congested:false}});
   const first=events.filter(e=>e.stage==='desktop_delivery_first_frame');
   assert.deepEqual(first.map(e=>[e.viewer,e.delivery,e.sequence]),[[1,1,1],[2,1,1],[1,2,1]],'MP-10 anonymous worker first-frame joins missing');
+  const outgoing=events.filter(e=>e.stage==='desktop_frame_out'&&e.sequence===1);
+  assert.deepEqual(outgoing.map(e=>[e.viewer,e.delivery,e.sequence]),first.map(e=>[e.viewer,e.delivery,e.sequence]),'MP-10 every first outgoing frame must join its anonymous viewer and delivery');
   for(const stage of ['room_display_queue','room_display_binding','room_display_operation','desktop_producer_wait','desktop_frame_build'])assert(events.some(e=>e.stage===stage),'MP-10 missing stage '+stage);
   for(const event of events)for(const [key,value]of Object.entries(event))if(key!=='stage'&&value!==undefined)assert(Number.isFinite(value),'MP-11 timing fields must be numeric');
   const text=JSON.stringify(events);for(const value of [a.subscription_id,b.subscription_id,resumed.subscription_id,'private-viewer-two'])assert(!text.includes(value));

@@ -76,7 +76,7 @@ export class DesktopDisplay {
     const frame=await stream.frame({...sample,generation:this.host.generation,push_delivery:Boolean(command.push)},binding.generation,command.after_sequence,async()=>current(),current);
     this.host.timing.event?.('desktop_frame_build',{at:building,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sent:frame?1:0});
     if(frame&&frame.sequence===1)this.host.timing.event?.('desktop_delivery_first_frame',{at:stream.timingDeliveryStarted??building,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sequence:frame.sequence});
-    if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
+    if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
   }
   // MP-08/MP-10: a quiet lossy desktop settles to exact repair tiles of the
