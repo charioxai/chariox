@@ -598,8 +598,8 @@ Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
 hosted slice receipts require peer 145 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
-workflow contracts. Client feature floors depend on
-the contracts they use; this entry allocates no new protocol version.
+workflow contracts. Client feature floors are listed separately below; the
+537/145 allocation identifies the integrated runtime contract.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -615,9 +615,13 @@ terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
 the transactional immutable proof. Managed upgrade policy retains 506 as an
 explicit predecessor; the aggregate retains 493, 506, 513 and 520 in both
-upgrade and rollback policy. Goal, window-sudo and agent-tab web controls require
-537 because main 520 alone lacks the agent-model union; unrelated feature floors
-remain at their introduction versions. The version-bound aggregate snapshot
+upgrade and rollback policy. The shared agent-tab inventory minimum is 486
+(`kernelBrowserAgentTabsMinimumProtocolVersion`), enforced by the OSS CLI's
+`/access tabs` command. Owner-managed context transfer retains the C5 minimums
+of local 520 and peer 128. The OSS CLI has no separate Goal or window-sudo
+feature-version gate. The paired Cloud client defines its own web feature
+floors; they are not shared OSS minimums or implied by the aggregate allocation.
+The version-bound aggregate snapshot
 and encrypted lease-admission drill cover both parent contracts and rejection
 of older worker contracts.
 
