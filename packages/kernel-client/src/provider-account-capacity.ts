@@ -103,8 +103,8 @@ export function providerAccountStatusLabel(profile: ProviderAccountProfile, nowM
   if (profile.auth_state === "not_configured") return "sign in"
   if (profile.auth_state !== "authenticated") return "sign in again"
   if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
-  const until = providerAccountExhaustedResets(profile, nowMs, model).at(-1)
-  return until === undefined ? "usage limit reached" : `usage limit until ${utcDayMonth(until)}`
+  const until = providerAccountRecoveryMs(profile, nowMs, model)
+  return until === null ? "usage limit reached" : `usage limit until ${utcDayMonth(until)}`
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -136,19 +136,33 @@ function openCodeServiceLabel(profile: ProviderAccountProfile, serviceId: string
 }
 
 export function providerAccountCapacityResetLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
-  const times = providerAccountExhaustedResets(profile, nowMs, model)
-    .map(reset => new Date(reset).toISOString().slice(0, 16).replace("T", " ") + " UTC")
-  return times.length ? `resets ${times.join(", ")}` : null
+  const reset = providerAccountRecoveryMs(profile, nowMs, model)
+  return reset === null ? null : `resets ${new Date(reset).toISOString().slice(0, 16).replace("T", " ")} UTC`
 }
 
-/** Ascending distinct reset times of the exhausted meters; empty unless the account is exhausted. */
-function providerAccountExhaustedResets(profile: ProviderAccountProfile, nowMs: number, model?: string | null): number[] {
-  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return []
-  const resets = providerAccountModelMeters(profile, model)
+/**
+ * First scheduled instant an exhausted account is admitted again, from the same
+ * condition as providerAccountCapacity: Codex/Claude reopen when every exhausted
+ * allowance window resets or any credit/spend meter resets; other providers when
+ * every exhausted meter resets. Null when nothing is scheduled.
+ */
+function providerAccountRecoveryMs(profile: ProviderAccountProfile, nowMs: number, model?: string | null): number | null {
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  const pending = (meters: readonly ProviderAccountUsageMeter[]): number[] => meters
     .filter(meter => meter.state === "exhausted" && meter.resets_at_ms != null && meter.resets_at_ms > nowMs
-      && (meter.observed_at_ms == null || nowMs - meter.observed_at_ms <= 24 * 60 * 60 * 1000))
+      && nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS)
     .map(meter => meter.resets_at_ms!)
-  return [...new Set(resets)].sort((a, b) => a - b)
+  const isCredit = (meter: ProviderAccountUsageMeter): boolean => meter.kind === "credit_balance" || meter.kind === "spend_limit"
+  const modelMeters = providerAccountModelMeters(profile, model)
+  const family = profile.provider.startsWith("claude") ? "claude" : profile.provider
+  if (family !== "codex" && family !== "claude") {
+    const resets = pending(modelMeters)
+    return resets.length ? Math.max(...resets) : null
+  }
+  const allowance = pending(modelMeters.filter(meter => !isCredit(meter)))
+  const credit = pending((profile.usage?.meters ?? []).filter(isCredit))
+  const options = [...(allowance.length ? [Math.max(...allowance)] : []), ...credit]
+  return options.length ? Math.min(...options) : null
 }
 
 function providerAccountModelMeters(profile: ProviderAccountProfile, model?: string | null) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import test from "node:test"
 
-import { providerAccountAdmissionBlocked, providerAccountCapacity, providerAccountName, providerAccountStatusLabel } from "./provider-account-capacity.js"
+import { providerAccountAdmissionBlocked, providerAccountCapacity, providerAccountCapacityResetLabel, providerAccountName, providerAccountStatusLabel } from "./provider-account-capacity.js"
 import type { ProviderAccountProfile, ProviderAccountUsageMeter } from "./kernel-types-provider.js"
 
 const nowMs = 10_000
@@ -166,6 +166,16 @@ test("inline status names only what stops an account, and healthy accounts have 
   assert.equal(providerAccountStatusLabel(profile("codex", [
     { ...usage, resets_at_ms: day, observed_at_ms: day - 1_000 }, later, { ...credits, observed_at_ms: day - 1_000 },
   ]), day - 1_000), "usage limit until 23 Oct")
+  // Admission reopens when the allowance windows all reset or any credit meter resets, whichever is first.
+  const at = day - 3 * 86_400_000
+  const weekly = { ...usage, resets_at_ms: day, observed_at_ms: at }
+  const spend = { ...credits, meter_id: "spend", kind: "spend_limit" as const, observed_at_ms: at }
+  const creditsBack = { ...spend, resets_at_ms: day - 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, creditsBack]), at), "usage limit until 21 Oct")
+  assert.equal(providerAccountCapacityResetLabel(profile("codex", [weekly, creditsBack]), at), "resets 2026-10-21 06:13 UTC")
+  const creditsLater = { ...spend, resets_at_ms: day + 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, creditsLater]), at), "usage limit until 22 Oct")
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, spend]), at), "usage limit until 22 Oct")
   for (const [authState, label] of [
     ["unknown", "sign-in not checked"],
     ["not_configured", "sign in"],
