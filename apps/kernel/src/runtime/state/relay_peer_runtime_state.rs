@@ -723,7 +723,9 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.require_leased_agent_authenticated(&leased_agent_for_prepare)?;
+                runtime.prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
                     &hidden_system_context,

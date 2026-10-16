@@ -649,6 +649,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    /// A profile that needs a new sign-in on this worker refuses the prompt before any run is
+    /// launched, so the home receives a definitive rejection instead of an unresolved admission.
+    pub(crate) fn require_leased_agent_authenticated(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        self.app
+            .provider_account_profile_registry()
+            .require_agent_authenticated(&self.app.config, &agent, "submit prompt")
+    }
+
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,
