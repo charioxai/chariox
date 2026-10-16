@@ -933,7 +933,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription,
-    transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
+    transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, prepareSessionSelection, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
@@ -1018,7 +1018,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     readSecret: secretInput.readSecret,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
     showProviderLoginLink: providerLoginLink, providerLoginInteractions,
-    attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
+    attachBinding, prepareSessionSelection, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
     currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",

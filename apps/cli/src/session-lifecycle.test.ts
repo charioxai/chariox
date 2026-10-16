@@ -30,6 +30,20 @@ test("attachBinding is a no-op when already attached to the target session", asy
   assert.deepEqual(calls, [])
 })
 
+test("MP-08 / MP-10 OWNER-24 resolving the current alias reattaches a prepared placeholder", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "old", session_id: "session-1" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    setAttachmentState: (value: typeof attachment) => { attachment = value },
+    detachAttachment: async () => {},
+    attachToSession: async () => { throw new Error("entered kernel attach") },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  controller.prepareSessionSelection({ id: "current-alias" })
+  assert.equal(attachment, null)
+  await assert.rejects(controller.attachBinding({ id: "session-1" }, false), /entered kernel attach/)
+})
+
 test("session switching clears an attachment the kernel already removed", async () => {
   let attachment: { id: string; session_id: string } | null = { id: "att-stale", session_id: "session-1" }
   const { deps } = createBaseDeps({

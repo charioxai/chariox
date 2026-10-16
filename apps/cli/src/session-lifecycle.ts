@@ -127,6 +127,7 @@ type SessionLifecycleDeps = {
 }
 
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
+  let pendingAttachment: RuntimeAttachment | null = null
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
@@ -202,7 +203,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   const detachCurrentAttachment = async () => {
-    const attachment = deps.attachmentState()
+    const attachment = deps.attachmentState() ?? pendingAttachment
     if (!attachment) {
       return
     }
@@ -218,6 +219,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (deps.attachmentState()?.id === attachment.id) {
       deps.setAttachmentState(null)
     }
+    if (pendingAttachment?.id === attachment.id) pendingAttachment = null
   }
 
   const rollbackAttachedSession = async (
@@ -241,18 +243,13 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     return true
   }
 
-  const attachBinding = async (
-    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
-    createdSession: boolean,
-    launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
-  ) => {
-    const currentAttachment = deps.attachmentState()
-    if (currentAttachment?.session_id === session.id) {
-      return
-    }
+  const prepareSessionSelection = (session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) => {
+    const currentAttachment = deps.attachmentState() ?? pendingAttachment
+    if (currentAttachment?.session_id === session.id) return
     // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
     // Move display ownership now, with no attachment or launch authority.
     if (currentAttachment) {
+      pendingAttachment ??= currentAttachment
       const pending = deps.deriveDetachedCliTransitionState({
         cliOptions: deps.cliOptions,
         waitingRoomState: deps.waitingRoomState(),
@@ -273,10 +270,24 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.setWorking(false)
       deps.setSubmitting(false)
       deps.setStreamingAgentId(null)
+      deps.setProviderActivityLabel(null)
+      deps.setActiveStatusLabel(null)
       deps.setStatusLine(`Loading session ${session.alias?.trim() || session.id}…`)
       deps.updateSessionChrome()
       deps.requestRender()
     }
+  }
+
+  const attachBinding = async (
+    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+    createdSession: boolean,
+    launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
+  ) => {
+    const currentAttachment = deps.attachmentState() ?? pendingAttachment
+    if (deps.attachmentState()?.session_id === session.id) {
+      return
+    }
+    prepareSessionSelection(session)
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
     let sessionHydratingCleared = false
@@ -296,6 +307,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           if (!formatError(error).includes(`attachment \`${currentAttachment.id}\` was not found`)) throw error
         }
       }
+      if (pendingAttachment?.id === currentAttachment?.id) pendingAttachment = null
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
 
       const provisionalSession = isCompleteSessionSnapshot(session)
@@ -489,6 +501,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     transitionToNoSession,
     detachCurrentAttachment,
     rollbackAttachedSession,
+    prepareSessionSelection,
     attachBinding,
   }
 }

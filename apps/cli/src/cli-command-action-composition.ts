@@ -235,6 +235,7 @@ export type CliCommandActionCompositionDeps = {
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
+  prepareSessionSelection?: (session: { id: string }) => void
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn
@@ -523,6 +524,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    prepareSessionSelection: reference => deps.prepareSessionSelection?.({ id: reference }),
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),

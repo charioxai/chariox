@@ -232,6 +232,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     transitionToNoSession,
     detachCurrentAttachment,
     rollbackAttachedSession,
+    prepareSessionSelection,
     attachBinding,
   } = createSessionLifecycleController({
     cliOptions: deps.options,
@@ -486,6 +487,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     transitionToNoSession,
     detachCurrentAttachment,
     rollbackAttachedSession,
+    prepareSessionSelection,
     attachBinding,
     recoverProviderRun,
     requestExit,

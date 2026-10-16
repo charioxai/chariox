@@ -55,6 +55,7 @@ export type SessionCommandHandlerDeps = {
     createdSession: boolean,
   ) => Promise<void>
   resolveSession: (reference: string, workspace: string) => Promise<ResolveSessionResult>
+  prepareSessionSelection?: (reference: string) => void
   listSessions: () => Promise<RuntimeSession[]>
   listSlices?: () => Promise<SliceRecord[]>
   deleteSessionByRef: (reference: string, workspace: string) => Promise<DeleteSessionResult>
@@ -154,7 +155,9 @@ async function attachSession(
     deps.flashFooter("usage: /session attach <ref>", "error")
     return true
   }
-  const session = await deps.resolveSession(value, deps.currentWorkspaceTarget())
+  const workspace = deps.currentWorkspaceTarget()
+  deps.prepareSessionSelection?.(value)
+  const session = await deps.resolveSession(value, workspace)
   await deps.attachBinding(session, false)
   deps.flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
   return true
