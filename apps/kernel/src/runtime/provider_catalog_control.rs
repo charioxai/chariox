@@ -158,7 +158,7 @@ fn refresh_provider_catalog_in_background(
     request: crate::local::GetProviderCatalogRequest,
     cache_key: String,
 ) {
-    let Some(generation) = provider_catalog_projection.begin_refresh() else {
+    let Some(generation) = provider_catalog_projection.begin_refresh(&cache_key) else {
         return;
     };
     tokio::spawn(async move {
@@ -204,7 +204,7 @@ fn refresh_provider_catalog_in_background(
                 }),
             ),
         }
-        provider_catalog_projection.finish_refresh();
+        provider_catalog_projection.finish_refresh(&cache_key, generation);
     });
 }
 

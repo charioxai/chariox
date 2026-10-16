@@ -463,13 +463,14 @@ pub(crate) struct ProviderCatalogProjectionStore {
     catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
     changes: Arc<tokio::sync::Notify>,
     revision: Arc<std::sync::atomic::AtomicU64>,
-    refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    refresh_in_progress: Arc<StdMutex<BTreeSet<String>>>,
     generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
 struct CachedProviderCatalogProjection {
     cached_at: Instant,
+    generation: u64,
     catalog: OpenCodeProviderCatalog,
 }
 
@@ -489,7 +490,7 @@ impl ProviderCatalogProjectionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(cache_key)
             .cloned()?;
-        if cached.cached_at.elapsed() < ttl {
+        if cached.generation == self.invalidation_generation() && cached.cached_at.elapsed() < ttl {
             Some(cached.catalog)
         } else {
             None
@@ -527,7 +528,7 @@ impl ProviderCatalogProjectionStore {
         let changed = {
             let mut catalogs = self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let changed = catalogs.get(cache_key).is_none_or(|previous| previous.catalog != catalog);
-            catalogs.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), catalog });
+            catalogs.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), generation: self.invalidation_generation(), catalog });
             changed
         };
         if changed { self.changed(); }
@@ -545,16 +546,12 @@ impl ProviderCatalogProjectionStore {
             .map(|cached| cached.catalog.clone())
     }
 
-    pub(crate) fn begin_refresh(&self) -> Option<u64> {
+    pub(crate) fn begin_refresh(&self, cache_key: &str) -> Option<u64> {
         self.refresh_in_progress
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-            .then(|| self.generation.load(std::sync::atomic::Ordering::Acquire))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(cache_key.to_string())
+            .then(|| self.invalidation_generation())
     }
 
     pub(crate) fn update_scoped_if_generation(
@@ -578,6 +575,7 @@ impl ProviderCatalogProjectionStore {
             cache_key.to_string(),
             CachedProviderCatalogProjection {
                 cached_at: Instant::now(),
+                generation,
                 catalog,
             },
         );
@@ -586,18 +584,23 @@ impl ProviderCatalogProjectionStore {
         true
     }
 
-    pub(crate) fn finish_refresh(&self) {
+    pub(crate) fn finish_refresh(&self, cache_key: &str, generation: u64) {
         self.refresh_in_progress
-            .store(false, std::sync::atomic::Ordering::Release);
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(cache_key);
+        // A change during discovery needs one fresh attempt after this gate
+        // opens. Ordinary completion/failure never creates a polling loop.
+        if generation != self.invalidation_generation() { self.changed(); }
     }
 
     pub(crate) fn invalidate(&self) {
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.catalogs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        // MP-08 / MP-10 / MP-11: account metadata is read fresh separately.
+        // Keep scoped model metadata for the existing stale-while-refresh path,
+        // so account changes do not block on provider model discovery. The
+        // generation fence still rejects fresh reads and older refresh jobs.
         self.changed();
     }
 
@@ -619,7 +622,7 @@ impl ProviderCatalogProjectionStore {
         let age = cached.cached_at.elapsed();
         ProviderCatalogHealthSnapshot {
             cached: true,
-            expired: age >= ttl,
+            expired: cached.generation != self.invalidation_generation() || age >= ttl,
             age_ms: Some(age.as_millis() as u64),
             ttl_ms: ttl.as_millis() as u64,
         }
@@ -659,19 +662,48 @@ mod provider_catalog_projection_tests {
     }
 
     #[test]
+    fn mp08_mp10_invalidation_keeps_models_for_immediate_account_revision_reads() {
+        let store = ProviderCatalogProjectionStore::default();
+        store.update_scoped("owner-a:claude:work:local", catalog("claude"));
+        let sequence = store.change_sequence();
+        store.invalidate();
+        assert!(store.change_sequence() > sequence);
+        assert!(store.get_scoped("owner-a:claude:work:local", Duration::from_secs(3600)).is_none(), "invalidated models are never fresh");
+        assert_eq!(store.cached_scoped("owner-a:claude:work:local").expect("stale model metadata must not block fresh account labels").connected, vec!["claude"]);
+        assert!(store.cached_scoped("owner-b:claude:work:local").is_none(), "stale data stays in its owner/profile/location scope");
+    }
+
+    #[test]
     fn explicit_invalidation_rejects_an_inflight_refresh() {
         let store = ProviderCatalogProjectionStore::default();
         store.update(catalog("codex"));
         let generation = store
-            .begin_refresh()
+            .begin_refresh("")
             .expect("first refresh should acquire the gate");
 
         store.invalidate();
 
         assert!(!store.update_scoped_if_generation("", catalog("opencode"), generation));
-        assert!(store.cached().is_none());
-        store.finish_refresh();
-        assert!(store.begin_refresh().is_some());
+        assert!(store.get(Duration::from_secs(3600)).is_none());
+        assert_eq!(store.cached().expect("only the previous scoped metadata remains").connected, vec!["codex"]);
+        store.finish_refresh("", generation);
+        assert!(store.begin_refresh("").is_some());
+    }
+
+    #[test]
+    fn mp08_mp10_model_refreshes_are_scoped_and_retry_changes_during_discovery() {
+        let store = ProviderCatalogProjectionStore::default();
+        let generation = store.begin_refresh("owner-a:claude:work:local").unwrap();
+        assert!(store.begin_refresh("owner-a:claude:work:local").is_none());
+        let other = store.begin_refresh("owner-a:claude:personal:local").expect("one scope must not suppress another scope's refresh");
+        let sequence = store.change_sequence();
+        store.finish_refresh("owner-a:claude:personal:local", other);
+        assert_eq!(store.change_sequence(), sequence, "ordinary completion does not poll");
+        store.invalidate();
+        let sequence = store.change_sequence();
+        store.finish_refresh("owner-a:claude:work:local", generation);
+        assert!(store.change_sequence() > sequence, "a newer invalidation is retried after the old job releases its scope");
+        assert_eq!(store.begin_refresh("owner-a:claude:work:local"), Some(store.invalidation_generation()));
     }
 
     #[test]
