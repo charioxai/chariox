@@ -95,3 +95,29 @@ test('MP-08/MP-10/MP-11 hidden disconnected driver keeps its latest base without
  try{const outcome=await sink.commit({image,decodedAt:1},{width:8,height:8});assert.equal(outcome.drawn,false);assert.deepEqual(draws,[image]);assert.equal(outcome.committedAt,undefined);}
  finally{sink.close()}
 });
+
+// MP-08/MP-10/MP-11: sparse native Chrome damage is an interactive image,
+// not a paced movie. It must reach the next compositor paint without a media
+// jitter buffer or an extra animation-frame boundary.
+test('MP-08/MP-10/MP-11 direct Chrome video commits decoded pixels immediately',async()=>{
+ const draws=[],canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:{requestAnimationFrame(){assert.fail('interactive Chrome pixels must not wait for rAF')}}},getContext:()=>({drawImage:image=>draws.push(image)})};
+ const image={close(){},clone(){return {close(){}}}},sink=new VideoSink(canvas,()=>{},{direct:true});
+ try{const job=sink.commit({image,decodedAt:1},{width:8,height:8});job.catch(()=>{});assert.deepEqual(draws,[image]);assert.equal((await job).drawn,true);}
+ finally{sink.close()}
+});
+test('MP-08/MP-10/MP-11 direct Chrome mode preserves hidden output without claiming visible paint',async()=>{
+ const draws=[],canvas={width:8,height:8,ownerDocument:{hidden:true},getContext:()=>({drawImage:image=>draws.push(image)})};
+ const image={close(){},clone(){return {close(){}}}},sink=new VideoSink(canvas,()=>{},{direct:true});
+ try{const outcome=await sink.commit({image,decodedAt:1},{width:8,height:8});assert.equal(outcome.drawn,false);assert.equal(outcome.committedAt,undefined);assert.deepEqual(draws,[image]);}
+ finally{sink.close()}
+});
+test('MP-08/MP-10/MP-11 direct Chrome mode bypasses the live media track',()=>{
+ const priorGenerator=globalThis.MediaStreamTrackGenerator,priorStream=globalThis.MediaStream;
+ let generated=0;const created=[];
+ globalThis.MediaStreamTrackGenerator=class{constructor(){generated++;this.writable={}}stop(){}};
+ globalThis.MediaStream=class{};
+ const parent={style:{},insertBefore(){}},canvas={parentElement:parent,style:{},dataset:{},width:8,height:8,ownerDocument:{createElement(kind){created.push(kind);return {style:{},dataset:{},setAttribute(){},remove(){}}}}};
+ const sink=new VideoSink(canvas,()=>{},{direct:true});
+ try{assert.equal(sink.setup({setSink(){assert.fail('Chrome UI must not enter a media jitter buffer')}}),false);assert.equal(generated,0);assert.deepEqual(created,['canvas']);}
+ finally{sink.close();globalThis.MediaStreamTrackGenerator=priorGenerator;globalThis.MediaStream=priorStream;}
+});

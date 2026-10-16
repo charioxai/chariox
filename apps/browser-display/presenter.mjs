@@ -54,11 +54,11 @@ export async function supportedCodecs() {
   return [...codecs,'chariox-video-dependencies-v1',...(codecs.some(c=>c==='avc1.420033'||c==='vp8')?['chariox-stripes-v1']:[])];
 }
 export class BrowserDisplayPresenter {
-  constructor(canvas, binding, onTiming = () => {}) {
+  constructor(canvas, binding, onTiming = () => {}, videoOptions = {}) {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
-    this.videoSink=new VideoSink(canvas,onTiming);this.prepared=new WeakMap();this.outcomes=new WeakMap();
+    this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
     if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
   }
@@ -267,7 +267,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: invalid region negotiation');
   }
   const onTiming = options.onTiming ?? (() => {});
-  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming);
+  // MP-08/MP-10/MP-11: Chrome UI has sparse, latency-sensitive damage.
+  // Paint its decoded video directly; live page/desktop video keeps its track.
+  const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming,
+    {direct:['browser_chrome','browser_auxiliary'].includes(options.target?.kind)});
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();

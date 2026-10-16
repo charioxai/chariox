@@ -2,8 +2,8 @@
 // canvas overlay until the next complete decoded video image (key or delta).
 // No producer or protection-policy changes.
 export class VideoSink {
- constructor(canvas,onTiming){
-  this.canvas=canvas;this.onTiming=onTiming;this.pending=[];this.closed=false;this.overlayActive=false;
+ constructor(canvas,onTiming,{direct=false}={}){
+  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;
   this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
@@ -13,7 +13,7 @@ export class VideoSink {
   const document=this.canvas.ownerDocument,parent=this.canvas.parentElement;
   if(!document?.createElement||!parent)return false;
   let track;
-  if(globalThis.MediaStreamTrackGenerator&&globalThis.MediaStream){
+  if(!this.direct&&globalThis.MediaStreamTrackGenerator&&globalThis.MediaStream){
    try{track=new MediaStreamTrackGenerator({kind:'video'});decoder.setSink(track.writable);}
    catch{track?.stop();track=null;}
   }
@@ -64,7 +64,7 @@ export class VideoSink {
    if(this.canvas.ownerDocument?.hidden){this.commitPending(false);return;}
    // MP-08/MP-10/MP-11: an intermediate region canvas is copied into a
    // visible surface by onPresented; only that surface needs a paint boundary.
-   if(this.canvas.isConnected===false){this.commitPending(true);return;}
+   if(this.direct||this.canvas.isConnected===false){this.commitPending(true);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
    const commit=()=>this.commitPending(!this.canvas.ownerDocument?.hidden);
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);
