@@ -584,6 +584,16 @@ impl ProviderCatalogProjectionStore {
         true
     }
 
+    /// A discovery that an invalidation overtook is still the best known model
+    /// metadata for a scope that has none: keep it as stale, never fresh.
+    pub(crate) fn update_scoped_stale_if_absent(&self, cache_key: &str, catalog: OpenCodeProviderCatalog, generation: u64) {
+        let mut cached = self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cached.contains_key(cache_key) { return; }
+        cached.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), generation, catalog });
+        drop(cached);
+        self.changed();
+    }
+
     pub(crate) fn finish_refresh(&self, cache_key: &str, generation: u64) {
         self.refresh_in_progress
             .lock()

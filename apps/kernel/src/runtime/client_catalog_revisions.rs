@@ -5,6 +5,7 @@ use crate::local::{
     GetProviderCatalogRequest, LocalDaemonResponse,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use super::provider_catalog_control::CatalogRead;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -15,7 +16,7 @@ pub(super) async fn catalog_revisions(
     owner: &str,
     request: GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let snapshot = load(providers, config, accounts, owner, request, false).await?;
+    let snapshot = load(providers, config, accounts, owner, request, false, None).await?;
     Ok(LocalDaemonResponse::ClientCatalogRevisions {
         revisions: snapshot.revisions,
     })
@@ -28,8 +29,9 @@ pub(super) async fn catalog_snapshot(
     owner: &str,
     request: GetClientCatalogSnapshotRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let mut snapshot = load(providers, config, accounts, owner, request.scope, true).await?;
-    if let Some(known) = request.known {
+    let known = request.known;
+    let mut snapshot = load(providers, config, accounts, owner, request.scope, true, known.as_ref()).await?;
+    if let Some(known) = known {
         if known.provider_accounts == snapshot.revisions.provider_accounts {
             snapshot.provider_accounts = None;
         }
@@ -53,34 +55,45 @@ async fn load(
     owner: &str,
     request: GetProviderCatalogRequest,
     allow_stale: bool,
+    known: Option<&ClientCatalogRevisions>,
 ) -> Result<ClientCatalogSnapshot, DaemonError> {
     let owner =
         crate::account_profile::provider_account_authority_owner_user_id(&config.snapshot(), owner);
-    let profiles = accounts.list(&owner, request.provider.as_deref())?;
-    let catalog = super::provider_catalog_control::load_catalog(
+    let provider = request.provider.clone();
+    let catalog = super::provider_catalog_control::read_catalog(
         providers,
         config,
         accounts,
         &owner,
         request,
         allow_stale,
+        known.is_some(),
     )
     .await?;
+    // Accounts are read after discovery: a rename during a slow read is never missed.
+    let profiles = accounts.list(&owner, provider.as_deref())?;
     let commands =
         super::provider_catalog_control::execute_get_provider_command_catalogs_request()?;
     let LocalDaemonResponse::ProviderCommandCatalogs { catalogs: commands } = commands else {
         unreachable!()
     };
     let terminal = super::terminal_command_catalog::terminal_command_catalog()?;
+    // A scope still being discovered keeps the caller's copy; the change event
+    // that ends discovery makes it ask again.
+    let (catalog_revision, catalog) = match (catalog, known) {
+        (CatalogRead::Loaded(catalog), _) => (revision(&catalog)?, Some(catalog)),
+        (CatalogRead::Revalidating, Some(known)) => (known.provider_catalog.clone(), None),
+        (CatalogRead::Revalidating, None) => unreachable!("only a caller holding a catalog may be answered while revalidating"),
+    };
     Ok(ClientCatalogSnapshot {
         revisions: ClientCatalogRevisions {
             provider_accounts: revision(&profiles)?,
-            provider_catalog: revision(&catalog)?,
+            provider_catalog: catalog_revision,
             provider_commands: revision(&commands)?,
             terminal_commands: terminal.revision.clone(),
         },
         provider_accounts: Some(profiles),
-        provider_catalog: Some(catalog),
+        provider_catalog: catalog,
         provider_commands: Some(commands),
         terminal_commands: Some(terminal),
     })

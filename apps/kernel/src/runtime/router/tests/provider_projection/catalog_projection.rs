@@ -176,3 +176,56 @@ fn mp08_mp10_conditional_catalog_snapshot_retains_unchanged_sections() {
         assert!(serde_json::to_vec(&unchanged).unwrap().len() < 460);
     });
 }
+
+async fn slow_discovery_router(delay_ms: u64) -> (Arc<Mutex<DaemonApp>>, CommandRouter) {
+    let mut config = DaemonConfig::for_tests();
+    config.provider_catalog_read_delay_ms = delay_ms;
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    (app, router)
+}
+
+fn snapshot_request(known: Option<serde_json::Value>) -> LocalDaemonRequest {
+    serde_json::from_value(serde_json::json!({"GetClientCatalogSnapshot": {"scope": GetProviderCatalogRequest::default(), "known": known}})).unwrap()
+}
+
+// MP-08 / MP-10 / MP-11: a client that already holds a catalog is never held back by model discovery.
+#[test]
+fn mp08_mp10_mp11_cold_scope_with_a_client_copy_answers_before_discovery_ends() {
+    run_provider_projection_large_stack_test("cold-scope-client-copy", || async {
+        let (_app, router) = slow_discovery_router(1500).await;
+        let held = serde_json::json!({"provider_accounts": "0".repeat(64), "provider_catalog": "1".repeat(64), "provider_commands": "2".repeat(64), "terminal_commands": format!("sha256:{}", "3".repeat(64))});
+        let request = snapshot_request(Some(held.clone()));
+        let command = KernelCommand::from_local_request("cold-with-copy", None, None, &request);
+        let response = tokio::time::timeout(Duration::from_millis(750), router.dispatch(command, request))
+            .await.expect("a cold scope must answer a client that holds a catalog before discovery ends").unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        let snapshot = &value["ClientCatalogSnapshot"]["snapshot"];
+        assert!(snapshot["provider_accounts"].is_array(), "accounts never wait for models");
+        assert!(snapshot["provider_catalog"].is_null(), "the client's own copy stays until discovery ends");
+        assert_eq!(snapshot["revisions"]["provider_catalog"], held["provider_catalog"]);
+    });
+}
+
+// MP-08 / MP-10 / MP-11: a rename during slow discovery is in the response that ends it, and is not an error.
+#[test]
+fn mp08_mp10_mp11_account_rename_during_discovery_is_in_the_response_that_ends_it() {
+    run_provider_projection_large_stack_test("rename-during-discovery", || async {
+        let (app, router) = slow_discovery_router(700).await;
+        let (registry, store) = { let app = app.lock().await; (app.provider_account_profile_registry(), app.provider_catalog_projection_store()) };
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let profile = registry.create_managed(owner, "claude", "before").unwrap();
+        let request = snapshot_request(None);
+        let command = KernelCommand::from_local_request("rename-during-discovery", None, None, &request);
+        let read = tokio::spawn({ let router = router.clone(); async move { router.dispatch(command, request).await } });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        registry.rename(owner, "claude", &profile.profile_id, "after").unwrap();
+        store.invalidate();
+        let response = read.await.unwrap().expect("an invalidation during discovery must not fail the read");
+        let value = serde_json::to_value(response).unwrap();
+        let snapshot = &value["ClientCatalogSnapshot"]["snapshot"];
+        let labels: Vec<_> = snapshot["provider_accounts"].as_array().unwrap().iter().map(|a| a["label"].as_str().unwrap().to_string()).collect();
+        assert!(labels.contains(&"after".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"before".to_string()), "{labels:?}");
+    });
+}
