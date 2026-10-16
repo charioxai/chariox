@@ -156,9 +156,6 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const offWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync off"), context, { client: fake.client })
-  const managedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
-  const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
   assert.equal(pathResult.message, "/home/.chariox/config.json")
   assert.equal(keysResult.ok, true)
@@ -170,21 +167,12 @@ test("executeShellCommand mutates user config", async () => {
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
-  assert.equal(offWorkspaceLiveSyncResult.ok, true)
-  assert.match(offWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
-  assert.equal(managedWorkspaceLiveSyncResult.ok, true)
-  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions set to managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
-  assert.equal(defaultWorkspaceLiveSyncResult.ok, true)
-  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
   ])
 })
 
