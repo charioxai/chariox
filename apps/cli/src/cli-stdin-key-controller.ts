@@ -100,13 +100,18 @@ export function createCliStdinKeyController(
     // The focused textarea receives the same terminal key through its
     // onKeyDown handler. Let it exclusively own an active interaction so a
     // printable key is not appended once here and once by the textarea.
+    const queuedPromptKeyEvent = queuedPromptKeyEventFromStdin(event)
     if (deps.promptFocused() && deps.focusedInteractionActive()) {
+      // Only this raw path carries the queued-prompt Alt keys. The strip must
+      // stay usable beside an approval; Alt+Up/Down still cycle its choices.
+      if (queuedPromptKeyEvent && queuedPromptKeyEvent.name !== "up" && queuedPromptKeyEvent.name !== "down") {
+        deps.handleQueuedPromptKey(queuedPromptKeyEvent)
+      }
       return true
     }
     if (deps.handleFocusedInteractionKey(event)) {
       return true
     }
-    const queuedPromptKeyEvent = queuedPromptKeyEventFromStdin(event)
     if (queuedPromptKeyEvent && deps.handleQueuedPromptKey(queuedPromptKeyEvent)) {
       return true
     }
