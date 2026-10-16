@@ -3,16 +3,16 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
-pub(super) fn affected(snapshot: &Value) -> bool {
+pub(super) fn affected(snapshot: &Value, names: &BTreeSet<String>) -> bool {
     let mut retired = snapshot.clone();
-    super::retire(&mut retired);
+    super::retire_with_names(&mut retired, names);
     &retired != snapshot
 }
 
 /// Session snapshots and old session events can carry the same publication
 /// projection as the normalized hot store. Drop the pair, preserving unrelated
 /// publications and historical text; a normal explicit publish makes a new one.
-pub(super) fn retire_session(fields: &mut Map<String, Value>) {
+pub(super) fn retire_session(fields: &mut Map<String, Value>, names: &BTreeSet<String>) {
     let Some(snapshots) = fields
         .get_mut("workflow_publication_snapshots")
         .and_then(Value::as_object_mut)
@@ -21,7 +21,7 @@ pub(super) fn retire_session(fields: &mut Map<String, Value>) {
     };
     let removed: BTreeSet<_> = snapshots
         .iter()
-        .filter(|(_, snapshot)| affected(snapshot))
+        .filter(|(_, snapshot)| affected(snapshot, names))
         .map(|(id, _)| id.clone())
         .collect();
     snapshots.retain(|id, _| !removed.contains(id));
@@ -84,7 +84,7 @@ pub(super) fn retire_hot(tx: &Transaction<'_>, rowid: i64) -> rusqlite::Result<(
             }
         }
     }
-    retire_intents(tx, Some((&owner, &session, &removed)))
+    retire_intents(tx, Some((&owner, &session, &removed)), &BTreeSet::new())
 }
 
 /// Dispatch intents are a second persisted copy of a pending queue entry.
@@ -93,6 +93,7 @@ pub(super) fn retire_hot(tx: &Transaction<'_>, rowid: i64) -> rusqlite::Result<(
 pub(super) fn retire_intents(
     tx: &Transaction<'_>,
     removed: Option<(&str, &str, &BTreeSet<String>)>,
+    names: &BTreeSet<String>,
 ) -> rusqlite::Result<()> {
     let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='durable_workflow_dispatch_intents')",[],|r|r.get(0))?;
     if !exists {
@@ -116,7 +117,7 @@ pub(super) fn retire_intents(
                         && session == expected_session
                         && invokes_any(&prompt, publications)
                 }
-                None => super::queued_selection(&prompt),
+                None => super::queued_selection(&prompt, names),
             };
             if retire {
                 stop_run(tx, &owner, &session, &run)?;

@@ -2,11 +2,21 @@
 //! This is not a legacy skill decoder or a conversion to v2 selections.
 use rusqlite::Connection;
 use serde_json::Value;
+#[path = "skill_reset_executable.rs"]
+mod executable;
 #[path = "skill_reset_files.rs"]
 mod files;
 #[path = "skill_reset_publications.rs"]
 mod publications;
 pub(crate) use files::{LegacySkillRoot, LegacySkillRootKind};
+
+const REPLAY_TABLES: &[(&str, &str)] = &[
+    ("durable_state_events", "kind"),
+    ("durable_state_snapshots", "''"),
+    ("durable_state_checkpoint_entities", "entity_kind"),
+    ("durable_state_owner_checkpoint_entities", "entity_kind"),
+    ("durable_workflow_hot_entities", "entity_kind"),
+];
 
 /// Startup must hold the existing durable owner lease and must not serve turns
 /// or catalog mutations until both phases return. Persist the deletion plan
@@ -61,8 +71,13 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
         "SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='publication_reference_reset'",
         [], |row| row.get(0),
     ).optional()?;
+    let executable_complete: Option<String> = tx.query_row(
+        "SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='executable_database_reset'",
+        [], |row| row.get(0),
+    ).optional()?;
     if complete.as_deref() == Some("complete")
         && publications_complete.as_deref() == Some("complete")
+        && executable_complete.as_deref() == Some("complete")
     {
         return Ok(());
     }
@@ -70,13 +85,10 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
     // entry-intent retirement. Finish those before any runtime admission.
     // Only replayable kernel-owned stores. No App data, credentials, Vault,
     // provider history or transcript database is traversed.
-    for (table, kind_column) in [
-        ("durable_state_events", "kind"),
-        ("durable_state_snapshots", "''"),
-        ("durable_state_checkpoint_entities", "entity_kind"),
-        ("durable_state_owner_checkpoint_entities", "entity_kind"),
-        ("durable_workflow_hot_entities", "entity_kind"),
-    ] {
+    let mut names = executable::load_names(&tx)?;
+    executable::capture_replay_names(&tx, &mut names)?;
+    tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2','retired_names',?1,0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value",[serde_json::to_string(&names).map_err(|_| rusqlite::Error::InvalidQuery)?])?;
+    for &(table, kind_column) in REPLAY_TABLES {
         let mut cursor = i64::MIN;
         loop {
             let query = format!(
@@ -104,7 +116,11 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
                 let mut value: Value =
                     serde_json::from_str(&encoded).map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let before = value.clone();
-                retire(&mut value);
+                if table == "durable_workflow_hot_entities" && kind == "workflow" {
+                    executable::retire_definition(&mut value, &names);
+                } else {
+                    retire_with_names(&mut value, &names);
+                }
                 if before != value {
                     if table == "durable_workflow_hot_entities" && kind == "publication_snapshot" {
                         publications::retire_hot(&tx, id)?;
@@ -120,8 +136,12 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
             }
         }
     }
-    publications::retire_intents(&tx, None)?;
-    for key in ["authority_reset", "publication_reference_reset"] {
+    publications::retire_intents(&tx, None, &names)?;
+    for key in [
+        "authority_reset",
+        "publication_reference_reset",
+        "executable_database_reset",
+    ] {
         tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2',?1,'complete',0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value='complete'", [key])?;
     }
     tx.commit()
@@ -211,12 +231,17 @@ fn retire_hidden_context(context: &str) -> String {
 fn legacy_grant(value: &Value) -> bool {
     value.get("kind").and_then(Value::as_str) == Some("skill")
 }
-fn queued_selection(value: &Value) -> bool {
+fn queued_selection(value: &Value, names: &std::collections::BTreeSet<String>) -> bool {
     // Before v2 there is no source identity with which to safely replay these.
     // Cancel explicit selections, including old invocation spelling. Do not
     // reinterpret an unknown $name as a provider-native selection after reset.
     let prompt = value.get("prompt").and_then(Value::as_str).unwrap_or("");
-    !crate::skill::selection::explicit_skill_names(prompt).is_empty()
+    crate::skill::selection::explicit_skill_tokens_with_names(
+        prompt,
+        &names.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .iter()
+    .any(|token| names.contains(&token.name.to_ascii_lowercase()))
         || prompt.trim_start().starts_with("/skill ")
         || value
             .get("skill_selections")
@@ -230,10 +255,17 @@ fn queued_selection(value: &Value) -> bool {
             })
 }
 fn retire(value: &mut Value) {
+    let mut names = std::collections::BTreeSet::new();
+    executable::collect_names(value, &mut names);
+    retire_with_names(value, &names);
+}
+fn retire_with_names(value: &mut Value, names: &std::collections::BTreeSet<String>) {
     match value {
-        Value::Array(values) => values.iter_mut().for_each(retire),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| retire_with_names(value, names)),
         Value::Object(fields) => {
-            publications::retire_session(fields);
+            publications::retire_session(fields, names);
             for (key, field) in fields.iter_mut() {
                 match key.as_str() {
                     "extension_grants" | "extensions" => {
@@ -251,11 +283,16 @@ fn retire(value: &mut Value) {
                     }
                     "queued_prompts" | "workflow_queued_prompts" => {
                         if let Some(prompts) = field.as_array_mut() {
-                            prompts.retain(|prompt| !queued_selection(prompt));
-                            prompts.iter_mut().for_each(retire);
+                            prompts.retain(|prompt| !queued_selection(prompt, names));
+                            prompts
+                                .iter_mut()
+                                .for_each(|prompt| retire_with_names(prompt, names));
                         }
                     }
-                    "active_prompt" if queued_selection(field) => *field = Value::Null,
+                    "active_prompt" if queued_selection(field, names) => *field = Value::Null,
+                    "workflow" | "workflows" | "definition" => {
+                        executable::retire_definition(field, names)
+                    }
                     // Typed structural edges only: user JSON, schemas, output and
                     // historical text must never be treated as replay authority.
                     "agent"
@@ -265,19 +302,18 @@ fn retire(value: &mut Value) {
                     | "sessions"
                     | "snapshot"
                     | "requirements"
-                    | "workflow"
-                    | "workflows"
                     | "nodes"
-                    | "definition"
                     | "prompt_runtime"
                     | "active_prompt"
                     | "prompt_state"
                     | "state"
                     | "private_states"
-                    | "prompt_private_states" => retire(field),
+                    | "prompt_private_states" => retire_with_names(field, names),
                     "prompt_states" => {
                         if let Some(states) = field.as_object_mut() {
-                            states.values_mut().for_each(retire);
+                            states
+                                .values_mut()
+                                .for_each(|state| retire_with_names(state, names));
                         }
                     }
                     _ => {}
@@ -385,7 +421,7 @@ mod tests {
     fn skill_reset_cancels_queued_selection_but_preserves_history() {
         let queued = json!({"id":"q","prompt":"Use $review", "status":"Queued"});
         let ordinary = json!({"id":"o","prompt":"Read the file", "status":"Queued"});
-        let mut value = json!({"queued_prompts":[queued.clone(), ordinary.clone()],
+        let mut value = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],"queued_prompts":[queued.clone(), ordinary.clone()],
             "history":[queued], "active_prompt":{"prompt":"$review","status":"Running"}});
         retire(&mut value);
         assert_eq!(value["queued_prompts"], json!([ordinary]));
@@ -410,7 +446,7 @@ mod tests {
         let before = value.clone();
         retire(&mut value);
         assert_eq!(value, before);
-        let mut selected = json!({"queued_prompts":[
+        let mut selected = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],"queued_prompts":[
             {"prompt":"Use $review","status":"Queued"},
             {"prompt":"Read the file","skill_selections":[{"name":"review"}]},
             {"prompt":"/skill review","status":"Queued"}
@@ -495,7 +531,7 @@ mod tests {
         .iter()
         .enumerate()
         {
-            let value=json!({"agents":[{"extension_grants":[{"kind":"skill","name":"old"},{"kind":"mcp","name":"keep"}]}],
+            let value=json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"},{"kind":"mcp","name":"keep"}]}],
                 "session":{"prompt_states":{"agent":{"queued_prompts":[{"prompt":"Use $review"}]}}}}).to_string();
             db.execute(
                 "INSERT INTO durable_state_events VALUES (?1,?2,?3,'subject',1,?4)",
@@ -589,6 +625,14 @@ mod tests {
     fn skill_reset_cancels_skill_bearing_workflow_entry_intents_and_stops_their_runs() {
         let mut db = database();
         db.execute_batch("CREATE TABLE durable_workflow_dispatch_intents(owner_id TEXT,session_id TEXT,run_id TEXT,queued_json TEXT,submitted INTEGER);").unwrap();
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES (1,1,1,?1)",
+            [
+                json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}]})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
         for (id, prompt) in [("old", "Use $review"), ("keep", "Inspect $HOME/.config")] {
             let queued = json!({"id":id,"prompt":prompt}).to_string();
             let run=json!({"id":id,"status":"Created","active_node_run_id":"n", "node_runs":[{"id":"n","status":"Ready"}],"invocation_prompt":prompt}).to_string();
@@ -726,6 +770,166 @@ mod tests {
         let status: String = db.query_row("SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='authority_reset'", [], |r|r.get(0)).unwrap();
         assert_eq!(status, "complete");
     }
+    #[test]
+    fn skill_reset_retires_workflow_invocations_without_erasing_ordinary_variables_or_schema_text()
+    {
+        let mut db = database();
+        let value = json!({
+            "agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],
+            "workflows":[{"id":"wf","revision":7,"prompt":"Use $review then explain $total",
+                "nodes":[{"instructions":"Read $review then keep $HOME and `$review`"}],
+                "schemas":[{"schema":{"default":"$review"}}],
+                "code_source":{"source_sha256":"old-binding"}}]
+        });
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES(1,1,1,?1)",
+            [value.to_string()],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            retired["workflows"][0]["prompt"],
+            "Use  then explain $total"
+        );
+        assert_eq!(
+            retired["workflows"][0]["nodes"][0]["instructions"],
+            "Read  then keep $HOME and `$review`"
+        );
+        assert_eq!(
+            retired["workflows"][0]["schemas"],
+            value["workflows"][0]["schemas"]
+        );
+        assert!(retired["workflows"][0]["code_source"].is_null());
+        assert_eq!(retired["workflows"][0]["revision"], 8);
+    }
+
+    #[test]
+    fn skill_reset_detaches_generated_bindings_even_when_only_old_node_grants_change() {
+        let mut db = database();
+        let value = json!({"workflows":[{"id":"wf","revision":7,"prompt":"Ordinary unchanged text",
+            "nodes":[{"extensions":[{"kind":"skill","name":"review"},{"kind":"mcp","name":"safe"}]}],
+            "code_source":{"source_sha256":"old-binding"}}]});
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES(1,1,1,?1)",
+            [value.to_string()],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert!(retired["workflows"][0]["code_source"].is_null());
+        assert_eq!(
+            retired["workflows"][0]["prompt"],
+            value["workflows"][0]["prompt"]
+        );
+        assert_eq!(
+            retired["workflows"][0]["nodes"][0]["extensions"],
+            json!([{"kind":"mcp","name":"safe"}])
+        );
+    }
+
+    #[test]
+    fn skill_reset_preserves_unresolved_lowercase_dollars_in_queued_and_active_prompts() {
+        let mut db = database();
+        let ordinary = json!({"id":"keep","prompt":"Why is $total null?"});
+        let value = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],
+            "queued_prompts":[ordinary.clone(),{"id":"drop","prompt":"Use $review"}],"active_prompt":ordinary.clone()});
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES(1,1,1,?1)",
+            [value.to_string()],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(retired["queued_prompts"], json!([ordinary.clone()]));
+        assert_eq!(retired["active_prompt"], ordinary);
+    }
+
+    #[test]
+    fn skill_reset_invalidates_body_only_publications_instead_of_rewriting_signed_bytes() {
+        let mut db = database();
+        let value = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],
+            "workflow_publications":[{"id":"old","source_snapshot_digest":"immutable"},{"id":"keep"}],
+            "workflow_publication_snapshots":{"old":{"workflow":{"prompt":"Use $review"}},"keep":{"workflow":{"prompt":"Explain $total"}}}});
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES(1,1,1,?1)",
+            [value.to_string()],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(retired["workflow_publications"], json!([{"id":"keep"}]));
+        assert!(retired["workflow_publication_snapshots"]
+            .get("old")
+            .is_none());
+        assert_eq!(
+            retired["workflow_publication_snapshots"]["keep"],
+            value["workflow_publication_snapshots"]["keep"]
+        );
+    }
+
+    #[test]
+    fn skill_reset_learns_old_names_before_rewriting_earlier_workflow_rows() {
+        let mut db = database();
+        for (id, kind, value) in [
+            (
+                1,
+                "session.updated",
+                json!({"workflows":[{"id":"wf","prompt":"Use $review"}]}),
+            ),
+            (
+                2,
+                "agent.created",
+                json!({"agent":{"extension_grants":[{"kind":"skill","name":"review"}]}}),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO durable_state_events VALUES (?1,?2,?3,'s',1,?4)",
+                rusqlite::params![id, format!("e-{id}"), kind, value.to_string()],
+            )
+            .unwrap();
+        }
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_events WHERE sequence=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(retired["workflows"][0]["prompt"], "Use ");
+        assert!(executable::load_names(&db).unwrap().contains("review"));
+    }
+
     #[test]
     fn skill_reset_corrupt_state_rolls_back_without_checkpoint() {
         let mut db = database();
