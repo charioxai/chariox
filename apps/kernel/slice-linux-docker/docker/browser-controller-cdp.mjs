@@ -1,4 +1,4 @@
-import {pageObservationFence} from './browser-controller-frames.mjs';
+import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
 import {FOCUS_WORLD,ensureFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
@@ -152,7 +152,7 @@ export class BrowserCdpClient {
     } catch { return false; }
   }
 
-  async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
+  async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
     const viewport = canonicalViewport(rawViewport);
     // A changed or failed viewport is never an observational preflight.
     if (this.appliedViewport !== appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth)) {
@@ -194,14 +194,14 @@ export class BrowserCdpClient {
         || deviceMetricsFor(viewport);
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
-          return await this.inspectPage(connection, target, metricsFor(target));
+          return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
           if (!targetGone(error)) throw error;
           await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
           if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
           try {
-            return await this.inspectPage(connection, target, metricsFor(target));
+            return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
           } catch (again) {
             // Gone twice: it is closing. The next reconcile sees it if not.
             if (!targetGone(again)) throw again;
@@ -466,15 +466,18 @@ export class BrowserCdpClient {
   }
 
 
-  async inspectPage(connection, target, metrics) {
+  async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
     // Metrics differ per target (App pages lay out beside their panel).
     // Reapply only when this target's metrics changed.
     const metricsKey = JSON.stringify(metrics);
-    if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
+    const configured = this.viewportByTarget.get(target.targetId) === metricsKey;
+    if (!configured) {
       await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       this.viewportByTarget.set(target.targetId, metricsKey);
     }
+    const metadata = nativeStatePage(this, connection, sessionId, target, visibleTargetId, configured);
+    if (metadata) return metadata;
     const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
     const frame = frameTree?.frameTree?.frame;
     const documentId = frame?.loaderId;

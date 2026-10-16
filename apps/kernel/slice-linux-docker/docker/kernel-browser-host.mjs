@@ -1,4 +1,4 @@
-import {resolveDisplayTarget} from './kernel-browser-display-document.mjs';
+import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
@@ -385,15 +385,16 @@ export class KernelBrowserHost {
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
     return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
-  async reconcile() {
+  async reconcile({readOnly=false}={}) {
     const observation = ++this.observations;
+    const stateOptions = await nativeStateObservationOptions(this, readOnly);
     let state;
     // MP-08/MP-10/MP-11 (BROWSER-UX-14): the kernel's Tabs keep their window's native tab
     // strip and omnibox (the browser_chrome band); the Room bar's fullscreen policy is not applied.
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(this.viewport()); break; }
+      try { state = await this.browser.reconcile(this.viewport(), stateOptions); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -623,7 +624,7 @@ export class KernelBrowserHost {
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
-    if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
+    if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
     if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }

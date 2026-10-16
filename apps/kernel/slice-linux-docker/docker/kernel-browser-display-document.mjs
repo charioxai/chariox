@@ -99,3 +99,9 @@ export async function resolveDisplayTarget(host, command, native = false) {
  }
  current();return {...host.tabs.get(command.tab_id),document_id};
 }
+
+export async function nativeStateObservationOptions(host, readOnly) {
+ if(!readOnly||!host.chromium?.desktop?.binding?.())return undefined;
+ try { const visibleTargetId=await host.tabGroups?.active?.();return typeof visibleTargetId==='string'?{visibleTargetId}:undefined; }
+ catch { return undefined; }
+}

@@ -26,6 +26,18 @@ export function captureDocumentOwner(browser, tab, expectedConnection, expectedS
   assertCurrent();return {connection,sessionId,assertCurrent};
 }
 
+// Native state is metadata only. A pending page keeps its last committed id;
+// this never populates the frame-owner cache or admits pixels/input.
+export function nativeStatePage(browser, connection, sessionId, target, visibleTargetId, configured) {
+  if (!configured || typeof visibleTargetId !== 'string' || browser.connection !== connection ||
+      browser.sessionsByTarget.get(target.targetId) !== sessionId) return null;
+  const document = browser.currentPageFrame(target.targetId)?.frame.loaderId ?? browser.documentIdsByTarget.get(target.targetId);
+  if (typeof document !== 'string' || !document) return null;
+  return { target_id: target.targetId, ...(typeof target.openerId === 'string' ? {opener_target_id:target.openerId} : {}),
+    document_id: document, url: typeof target.url === 'string' ? target.url : '',
+    title: typeof target.title === 'string' ? target.title : '', focused: target.targetId === visibleTargetId };
+}
+
 const MAX_FRAMES = 64;
 const MAX_NODES = 5_000;
 
