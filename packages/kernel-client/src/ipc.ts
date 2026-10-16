@@ -269,6 +269,7 @@ export class LocalIpcClient {
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private readonly requestLifetime = new KernelRequestLifetime()
+  private readonly requestKinds = new Map<string, number>()
   private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
@@ -381,6 +382,18 @@ export class LocalIpcClient {
 
   private isRelayMode() {
     return this.relayAuthToken != null
+  }
+
+  /** Requests written to the kernel by kind (no payloads); drills read it as "requests on open". */
+  requestStats(): { count: number; kinds: Record<string, number> } {
+    const kinds = Object.fromEntries(this.requestKinds)
+    return { count: [...this.requestKinds.values()].reduce((sum, n) => sum + n, 0), kinds }
+  }
+
+  private countRequest(request: unknown): void {
+    const kind = typeof request === "string" ? request
+      : request && typeof request === "object" ? Object.keys(request)[0] ?? "unknown" : "unknown"
+    this.requestKinds.set(kind, (this.requestKinds.get(kind) ?? 0) + 1)
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
@@ -683,6 +696,7 @@ export class LocalIpcClient {
           ? relayRequest.frame
           : normalizeWebSocketRequest(requestId, request)
         socket.send(JSON.stringify(payload))
+        this.countRequest(request)
       } catch (error) {
         pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
       }
@@ -795,6 +809,7 @@ export class LocalIpcClient {
         subscriptionScope,
       })
       socket.send(JSON.stringify(frame))
+      this.countRequest("RelaySubscribe")
       this.relaySubscriptionDiagnostics.emit("binding_sent", subscriptionId)
     } catch (error) {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))

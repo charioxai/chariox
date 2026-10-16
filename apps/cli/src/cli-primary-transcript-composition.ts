@@ -50,6 +50,8 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setProviderCommandCatalogState: AnyFn
   setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
+  applyAttachLaunch: AnyFn
+  reportAttachLaunchFailure: AnyFn
   flashFooter: AnyFn
   attachmentState: AnyFn
   sessionState: AnyFn
@@ -333,6 +335,8 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     setProviderCommandCatalogs: deps.setProviderCommandCatalogState,
     setTerminalCommandCatalog: deps.setTerminalCommandCatalogState,
     updateSessionChrome: deps.updateSessionChrome,
+    applyAttachLaunch: deps.applyAttachLaunch,
+    reportAttachLaunchFailure: deps.reportAttachLaunchFailure,
     setPromptHistoryEntries: deps.setPromptHistoryEntries,
     resetPromptHistoryNavigation: () => {
       deps.setPromptHistoryIndex(null)

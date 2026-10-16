@@ -445,7 +445,15 @@ export type ComposerInventory = {
   reconciliation?: Promise<ComposerInventory>
 }
 
+export type AttachLaunch = {
+  sessionId: string
+  session: RuntimeSession | null
+  providerRun: RuntimeProviderRun | null
+  issue: "credential_vault_locked" | null
+}
+
 export type BootstrapDeferredState = {
+  attachLaunch?: Promise<AttachLaunch>
   composerScopeKey?: () => string
   loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>
   loadComposer?: () => Promise<ComposerInventory>

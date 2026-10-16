@@ -34,6 +34,8 @@ export type FocusedInteractionChoicePasteEvent = {
 export type FocusedInteractionChoiceControllerDeps = {
   getFocusedInteraction: () => RuntimeInteraction | null
   isAttached: () => boolean
+  /** Text already typed in the composer; Enter and digits then belong to it. */
+  getComposerText?: () => string
   getSessionId: () => string
   getSelectedIndex: (interactionId: string) => number | undefined
   setSelectedIndex: (interactionId: string, index: number) => void
@@ -170,6 +172,12 @@ export function createFocusedInteractionChoiceController(
       void (event.name === "o" ? deps.providerLogin.openLink(interaction) : deps.providerLogin.copyLink(interaction))
         .catch((error) => deps.flashFooter(formatError(error), "error"))
       return true
+    }
+    // A steer typed beside the card is sent with Enter; a digit inside it is text.
+    if (!deps.isCustomEditing(interaction.id) && deps.getComposerText?.().trim()
+      && !event.ctrl && !event.meta && !event.alt
+      && (event.name === "return" || event.name === "enter" || /^[0-9]$/.test(event.name))) {
+      return false
     }
     const keyAction = resolveInteractionChoiceKeyAction({
       interaction,

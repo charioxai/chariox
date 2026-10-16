@@ -122,3 +122,24 @@ test("MP-08 / MP-10 / MP-11 empty surface handoff is not a first transcript rece
     rmSync(root, { recursive: true })
   }
 })
+
+test("MP-08 / MP-10 PANE-03: the first-frame receipt carries the kernel requests made so far", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pane-requests-"))
+  const path = join(root, "receipt.jsonl")
+  const oldPath = process.env.CHARIOX_PANE_TIMING_FILE
+  process.env.CHARIOX_PANE_TIMING_FILE = path
+  let sample = () => {}
+  const renderer = { addPostProcessFn: (f: () => void) => { sample = f }, removePostProcessFn: () => {} } as unknown as CliRenderer
+  try {
+    const dispose = recordPaneFirstFrame(renderer, () => true, () => [], false, undefined, undefined,
+      () => ({ count: 2, kinds: { AttachSessionView: 1, ProviderRunLaunch: 1 } }))
+    sample(); dispose()
+    const row = JSON.parse(readFileSync(path, "utf8").trim().split("\n")[0]!)
+    assert.equal(row.event, "pane_first_frame")
+    assert.deepEqual(row.kernelRequests, { count: 2, kinds: { AttachSessionView: 1, ProviderRunLaunch: 1 } })
+  } finally {
+    if (oldPath === undefined) delete process.env.CHARIOX_PANE_TIMING_FILE
+    else process.env.CHARIOX_PANE_TIMING_FILE = oldPath
+    rmSync(root, { recursive: true })
+  }
+})

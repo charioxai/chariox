@@ -30,6 +30,7 @@ export function recordPaneFirstFrame(
   cached = false,
   onFirstFrame?: () => void,
   hasMountedSurface: () => boolean = hasMountedTranscript,
+  requestStats?: () => { count: number; kinds: Record<string, number> },
 ): () => void {
   const destination = process.env.CHARIOX_PANE_TIMING_FILE
   if (!destination && !onFirstFrame) return () => {}
@@ -51,7 +52,9 @@ export function recordPaneFirstFrame(
     }
     if (!recorded && hasMountedTranscript()) {
       recorded = true
-      write({ event: "pane_first_frame", ...(cached ? { cached: true } : {}) })
+      write({ event: "pane_first_frame", ...(cached ? { cached: true } : {}), ...(requestStats ? { kernelRequests: requestStats() } : {}) })
+      // Requests the open still issues after the first frame (provider launch, subscriptions).
+      if (requestStats) setTimeout(() => write({ event: "pane_open_requests", kernelRequests: requestStats() }), 3000).unref()
       if (destination && !prefix) renderer.removePostProcessFn(sample)
     }
     if (!tagPattern) return

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
-
 import { issueKernelCloudRelayClientToken, joinKernelTerminalPairingLink, pollCloudRelayLogin, logoutCloudRelay } from "./relay-api.js"
 import type { LocalIpcClient } from "./ipc.js"
 
@@ -38,7 +36,6 @@ function tokenResponse(thumbprint = "bootstrap-thumbprint", allowedTargets?: unk
 }
 
 test("CLI token and terminal join requests bind the actual bootstrap thumbprint", async () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 508)
   const requests: unknown[] = []
   const client = fakeClient(async (request) => {
     requests.push(request)

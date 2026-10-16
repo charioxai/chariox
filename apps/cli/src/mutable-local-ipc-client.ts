@@ -96,6 +96,9 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     send<TResponse>(request: unknown): Promise<TResponse> {
       return currentClient.send<TResponse>(request)
     },
+    requestStats() {
+      return currentClient.requestStats()
+    },
     subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
       return currentClient.subscribeToKernelEvents(sessionId, attachmentId)
     },

@@ -229,6 +229,29 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
   assert.deepEqual(harness.prependCalls, [])
 })
 
+test("MP-08 / MP-10 PANE-03: the attach-time launch result is applied to the attachment that started it", async () => {
+  const launch = { sessionId: "s", session: null, providerRun: null, issue: "credential_vault_locked" as const }
+  const harness = bootstrapHarness({ deferred: { attachLaunch: Promise.resolve(launch) }, attachmentSessionId: "s", attachmentId: "a" })
+  harness.controller!.apply()
+  await flushPromises()
+  assert.deepEqual(harness.launches, [launch])
+
+  const moved = bootstrapHarness({ deferred: { attachLaunch: Promise.resolve(launch) }, attachmentSessionId: "s", attachmentId: "a" })
+  moved.controller!.apply()
+  moved.attachmentId = "b"
+  await flushPromises()
+  assert.deepEqual(moved.launches, [])
+})
+
+test("MP-08 / MP-10 PANE-03: a failed attach-time launch is reported, never swallowed", async () => {
+  const harness = bootstrapHarness({ deferred: { attachLaunch: Promise.reject(new Error("launch refused")) }, attachmentSessionId: "s", attachmentId: "a" })
+  harness.controller!.apply()
+  await flushPromises()
+  assert.deepEqual(harness.launches, [])
+  assert.equal(harness.launchFailures.length, 1)
+  assert.match(harness.launchFailures[0]!, /launch refused/)
+})
+
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
@@ -256,6 +279,8 @@ function bootstrapHarness(options: {
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
     prependCalls: [] as Array<Array<{ id: number; text: string }>>,
     warnings: [] as string[],
+    launches: [] as unknown[],
+    launchFailures: [] as string[],
     hydrating: [] as boolean[],
     controller: null as ReturnType<typeof createDeferredBootstrapController> | null,
   }
@@ -280,6 +305,8 @@ function bootstrapHarness(options: {
     updateSessionChrome: () => {
       harness.chromeUpdates += 1
     },
+    applyAttachLaunch: (launch) => { harness.launches.push(launch) },
+    reportAttachLaunchFailure: (message) => { harness.launchFailures.push(message) },
     setPromptHistoryEntries: (entries) => {
       harness.promptHistoryEntries = entries
     },

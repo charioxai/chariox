@@ -14,6 +14,7 @@ import { settleAttachProviderRun } from "./attach-provider-run.js"
 import { sessionHistoryCursorForVisibleAgent } from "@chariox/kernel-client/session-history-outline"
 
 import type {
+  AttachLaunch,
   ComposerInventory,
   CliOptions,
   BootstrapState,
@@ -198,60 +199,13 @@ export async function bootstrapSession(
 
   const initialView = (requestedView ? await requestedView : null) ?? await deps.attachSessionView?.(client, session.id, options.clientId, deps.resolveVisibleAgentId(session, preferences))
   const attachment = initialView?.attachment ?? await deps.attachToSession(client, session.id, options.clientId)
-  let attachedSession = initialView?.session ?? await deps.getSessionState(client, session.id)
-  const providerSettlement = await settleAttachProviderRun(
-    attachedSession,
-    {
-      provider: options.provider ?? "opencode",
-      model: options.model,
-      effort: options.effort,
-    },
-    options.accountProfile,
-    createdSession,
-    {
-      launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
-        deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
-      getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
-      tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
-    },
-  )
-  attachedSession = providerSettlement.session
-  const providerRun: RuntimeProviderRun | null = providerSettlement.providerRun
-  if (providerSettlement.action === "skipped") {
-    if (providerSettlement.recoveredRemotePlacement) {
-      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "no_visible_agents") {
-      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "missing_focused_agent") {
-      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "remote_backed_agent") {
-      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "credential_vault_locked") {
-      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-      })
-    }
-  }
-  // The new attachment already buffers output after its history read. Let the
-  // live runtime drain it; catch-up would discard rows absent from this view.
-  if (!initialView) await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
-  const hydratedSession = initialView && providerSettlement.action !== "launched"
-    ? attachedSession : await deps.getSessionState(client, session.id)
+  const attachedSession = initialView?.session ?? await deps.getSessionState(client, session.id)
+  // MP-08 / MP-10 PANE-03: with a bundled initial view the transcript needs no
+  // launch result, so the attach-time launch runs beside the first paint.
+  const launching = settleAttachLaunch(client, session, attachedSession, attachment.id, createdSession, Boolean(initialView), options, deps)
+  launching.catch(() => {})
+  const settled = initialView ? null : await launching
+  const hydratedSession = settled?.session ?? attachedSession
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   // MP-08 / MP-10: composer inventories are user requested, never attach work.
   const refreshComposer = async (cached?: ComposerInventory): Promise<ComposerInventory> => {
@@ -286,11 +240,8 @@ export async function bootstrapSession(
     binding: {
       session: hydratedSession,
       attachment,
-      providerRun,
-      providerLaunchIssue: providerSettlement.action === "skipped"
-        && providerSettlement.reason === "credential_vault_locked"
-        ? "credential_vault_locked"
-        : null,
+      providerRun: settled?.providerRun ?? null,
+      providerLaunchIssue: settled?.issue ?? null,
       createdSession,
       historyEntries: [],
       promptHistoryEntries: [],
@@ -307,7 +258,81 @@ export async function bootstrapSession(
       composerScopeKey: () => JSON.stringify([options.provider, options.accountProfile]),
       loadPromptInputHistory: (sessionId: string) => loadSessionPromptHistory(client, sessionId, deps).then(entries => ({ sessionId, entries })),
       attachedHistory: attachedHistoryPromise,
+      ...(initialView ? { attachLaunch: launching } : {}),
     },
+  }
+}
+
+async function settleAttachLaunch(
+  client: LocalIpcClient,
+  session: RuntimeSession,
+  attachedSession: RuntimeSession,
+  attachmentId: string,
+  createdSession: boolean,
+  hasInitialView: boolean,
+  options: CliOptions,
+  deps: BootstrapDeps,
+): Promise<AttachLaunch> {
+  const providerSettlement = await settleAttachProviderRun(
+    attachedSession,
+    {
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    },
+    options.accountProfile,
+    createdSession,
+    {
+      launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
+        deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
+      getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
+      tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
+    },
+  )
+  const settledSession = providerSettlement.session
+  if (providerSettlement.action === "skipped") {
+    if (providerSettlement.recoveredRemotePlacement) {
+      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+      })
+    } else if (providerSettlement.reason === "no_visible_agents") {
+      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+        session_id: session.id,
+        focused_agent_id: settledSession.focused_agent_id,
+      })
+    } else if (providerSettlement.reason === "missing_focused_agent") {
+      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+        session_id: session.id,
+        focused_agent_id: settledSession.focused_agent_id,
+      })
+    } else if (providerSettlement.reason === "remote_backed_agent") {
+      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+      })
+    } else if (providerSettlement.reason === "credential_vault_locked") {
+      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+      })
+    }
+  }
+  // The new attachment already buffers output after its history read. Let the
+  // live runtime drain it; catch-up would discard rows absent from this view.
+  if (!hasInitialView) await deps.catchUpAttachedSession(client, session.id, attachmentId, settledSession, deps.logger)
+  return {
+    sessionId: session.id,
+    // Only a state read after the launch (or a recovered placement) may replace
+    // the live session; the bundled view is already what the client shows.
+    session: !hasInitialView || providerSettlement.action === "launched"
+      ? await deps.getSessionState(client, session.id)
+      : settledSession === attachedSession ? null : settledSession,
+    providerRun: providerSettlement.providerRun,
+    issue: providerSettlement.action === "skipped" && providerSettlement.reason === "credential_vault_locked"
+      ? "credential_vault_locked" : null,
   }
 }
 

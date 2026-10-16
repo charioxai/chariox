@@ -1,5 +1,6 @@
 import { clientInventoryEpoch } from "./client-inventory-cache.js"
 import type {
+  AttachLaunch,
   BootstrapDeferredState,
   SessionHistoryCursorState,
   TranscriptEntry,
@@ -24,6 +25,8 @@ export type DeferredBootstrapControllerDeps = {
   setProviderCommandCatalogs: (catalogs: ProviderCommandCatalogs) => void
   setTerminalCommandCatalog: (catalog: TerminalCommandCatalog) => void
   updateSessionChrome: () => void
+  applyAttachLaunch: (launch: AttachLaunch) => void
+  reportAttachLaunchFailure: (message: string) => void
   setPromptHistoryEntries: (entries: string[]) => void
   resetPromptHistoryNavigation: () => void
   setNextHistoryCursor: (cursor: SessionHistoryCursorState) => void
@@ -111,6 +114,14 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
       deps.setTerminalCommandCatalog(catalog)
     }).catch((error) => {
       warn("failed to hydrate terminal command catalog after bootstrap", error)
+    })
+
+    const launchAttachmentId = deps.currentAttachmentId()
+    void deferred.attachLaunch?.then(launch => {
+      if (deps.currentAttachmentId() === launchAttachmentId) deps.applyAttachLaunch(launch)
+    }).catch(error => {
+      warn("attach-time provider launch failed", error)
+      if (deps.currentAttachmentId() === launchAttachmentId) deps.reportAttachLaunchFailure(deps.formatError(error))
     })
 
     // Only the startup attachment's hydration ends here; a newer attach owns its own.

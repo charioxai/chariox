@@ -691,6 +691,34 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   }])
 })
 
+test("MP-08 / MP-10 PANE-03: a slow attach-time provider launch does not hold the first transcript view", async () => {
+  const session = { id: "s", active_provider_run_id: null, agents: [{ id: "a", provider: "codex", model: "m", effort: "low" }], focused_agent_id: "a" }
+  const launched = { id: "run-1", session_id: "s", agent_instance_id: "a", provider: "codex", model: "m", variant: "low" }
+  let finishLaunch: (run: typeof launched) => void = () => {}
+  const launch = new Promise<typeof launched>(resolve => { finishLaunch = resolve })
+  const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  let stateReads = 0
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "m", effort: "low", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "earlier prompt", "earlier answer")] } }),
+    attachToSession: unexpected, catchUpAttachedSession: unexpected, getSessionHistoryOutline: unexpected,
+    getSessionState: async () => { stateReads++; return { ...session, active_provider_run_id: "run-1" } },
+    launchProviderRun: () => launch, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const first = await Promise.race([boot, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(first, "blocked", "the first view waited for the provider launch")
+  if (first === "blocked") return
+  assert.equal((await first.deferred?.attachedHistory)?.historyEntries.length, 2)
+  assert.equal(first.binding?.providerRun, null)
+  finishLaunch(launched)
+  const settled = await first.deferred?.attachLaunch
+  assert.equal(settled?.providerRun?.id, "run-1")
+  assert.equal(settled?.session?.active_provider_run_id, "run-1")
+  assert.equal(stateReads, 1)
+})
+
 function outlineAgent(
   agentId: string,
   prompt: string,

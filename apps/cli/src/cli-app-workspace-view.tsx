@@ -30,6 +30,7 @@ type PromptInputController = {
 
 type PromptTextController = {
   snapshot: () => string
+  currentText: () => string
 }
 
 export type CliAppWorkspaceViewProps = {
@@ -216,7 +217,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onPromptContentChange={props.handlePromptContentChange}
       onPromptSubmit={() => {
         if (props.kernelApprovalOwnsInput()) return
-        if (props.focusedAgentInteraction()) {
+        if (props.focusedAgentInteraction() && !props.promptTextController.currentText().trim()) {
           void props.submitFocusedInteractionChoice()
           return
         }

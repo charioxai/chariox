@@ -117,6 +117,7 @@ import { createResponsePaneRenderScheduleController } from "./response-pane-rend
 import {
   extractPromptHistoryEntries,
 } from "@chariox/kernel-client/prompt-history"
+import { applyProviderRunProfileToSession } from "@chariox/kernel-client/prompt-provider-selection"
 import {
   DEFAULT_CONNECTED_STATUS,
 } from "./runtime.js"
@@ -856,7 +857,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     || responseVisibleAgents().some(agent => (agentPaneRuntimeStore.entryRenderables.get(agent.id)?.size ?? 0) > 0),
     () => [...primaryTranscriptRuntimeStore.transcriptRenderables.values()].map(value => value.entry), false, props.bootstrap.onTranscriptFrame,
     () => primaryTranscriptRuntimeStore.hasMountedSurface()
-      || responseVisibleAgents().some(agent => agentPaneRuntimeStore.hasMountedSurface(agent.id))))
+      || responseVisibleAgents().some(agent => agentPaneRuntimeStore.hasMountedSurface(agent.id)),
+    () => client.requestStats()))
   const {
     hydrateComposer, hydratePromptInputHistory, mountTranscriptEntry, reconcileMountedTranscript, updateTranscriptEntry, rebuildTranscript, flushDeferredRebuild,
     replaceTranscriptEntries, primeAttachedSessionBinding, bumpHistoryLoadGeneration, transcriptHistoryAutoloadController,
@@ -875,6 +877,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     promptHistoryEntries, promptHistoryIndex, promptHistoryDraft,
     setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
     setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
+    applyAttachLaunch: (launch) => {
+      if (launch.providerRun) setProviderRunState(launch.providerRun)
+      if (launch.session) applySessionState(applyProviderRunProfileToSession(launch.session, providerRunState()))
+      if (launch.issue === "credential_vault_locked") setStatusLine("Chariox vault locked. Run /credential vault manage.")
+      updateSessionChrome()
+    },
+    reportAttachLaunchFailure: (message) => appendNotice(`Provider launch failed: ${message}`, "warning"),
     attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
