@@ -1398,3 +1398,74 @@ async fn held_notification_expires_with_a_reason_at_its_deadline() {
         "the definitive outcome carries its reason"
     );
 }
+
+// MP-08 / MP-10 / MP-11: a retried delivery that lands must leave no stale held record behind,
+// or a restart resurrects it as a held item whose receipt is already delivered.
+#[tokio::test]
+async fn retried_notification_that_lands_is_not_restored_as_held_after_restart() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime
+        .owned
+        .resolve_held_notification_delivery(&session, &id, true)
+        .unwrap()
+        .expect("a held notification can be retried");
+    let injection = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .expect("the retried item is admitted into the active turn again");
+    runtime
+        .owned
+        .mark_notification_submit(&session, &injection, None)
+        .unwrap();
+    runtime
+        .owned
+        .settle_notification_injection(&session, &injection, true)
+        .unwrap();
+    let owner = runtime
+        .owned
+        .session_store
+        .get_session(&session)
+        .unwrap()
+        .host_daemon_id()
+        .to_owned();
+    let restored = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(&owner)
+        .unwrap()
+        .into_iter()
+        .find(|(s, _)| s == &session)
+        .unwrap()
+        .1;
+    let item = restored.workflow_queued_prompts.iter().find(|item| item.id() == id);
+    assert!(
+        item.is_none_or(|item| item.status() == WorkflowQueuedPromptStatus::Completed
+            && item.delivery_uncertain_until_ms().is_none()),
+        "a delivered retry must not restore as a held item: {item:?}"
+    );
+}
+
+#[tokio::test]
+async fn held_notification_whose_receipt_already_settled_is_retired() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute(
+        "UPDATE app_outbox SET state='delivered' WHERE queued_prompt_id=?1",
+        [&id],
+    )
+    .unwrap();
+    drop(db);
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 2);
+    let item = queued_item(&runtime, &session, &id);
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
+    assert_eq!(item.delivery_uncertain_until_ms(), None);
+}

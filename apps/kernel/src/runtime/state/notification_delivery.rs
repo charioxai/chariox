@@ -295,25 +295,23 @@ impl KernelRuntimeOwnedState {
     /// Surface sends whose outcome the kernel cannot prove. The item stays held (never
     /// re-sent) until its deadline; the user may retry or discard it meanwhile.
     pub(super) fn hold_unconfirmed_notification_sends(&self, now: u64) {
-        let due: Vec<_> = self
-            .session_store
-            .read()
-            .list_sessions()
-            .into_iter()
-            .flat_map(|session| {
-                session
-                    .workflow_queued_prompts()
-                    .iter()
-                    .filter(|item| {
-                        item.notification_send_unconfirmed()
-                            && item.delivery_uncertain_until_ms().is_none()
-                            && now.saturating_sub(item.updated_at_ms())
-                                >= UNCONFIRMED_SEND_NOTICE_AFTER_MS
-                    })
-                    .map(|item| (session.id().to_owned(), item.id().to_owned()))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let mut due = Vec::new();
+        let mut already_held = Vec::new();
+        for session in self.session_store.read().list_sessions() {
+            for item in session
+                .workflow_queued_prompts()
+                .iter()
+                .filter(|item| item.notification_send_unconfirmed())
+            {
+                let key = (session.id().to_owned(), item.id().to_owned());
+                if item.delivery_uncertain_until_ms().is_some() {
+                    already_held.push(key);
+                } else if now.saturating_sub(item.updated_at_ms()) >= UNCONFIRMED_SEND_NOTICE_AFTER_MS
+                {
+                    due.push(key);
+                }
+            }
+        }
         for (session_id, id) in due {
             if let Err(error) = self.hold_unconfirmed_notification_send(&session_id, &id) {
                 crate::logging::warn_with_fields(
@@ -323,6 +321,45 @@ impl KernelRuntimeOwnedState {
                 );
             }
         }
+        for (session_id, id) in already_held {
+            if let Err(error) = self.retire_held_notification_with_settled_receipt(&session_id, &id)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.notification_delivery",
+                    "failed to retire a held notification whose receipt settled",
+                    serde_json::json!({"session_id": session_id, "prompt_id": id, "error": error.to_string()}),
+                );
+            }
+        }
+    }
+
+    /// A held item whose receipt is already delivered, failed or expired (for example a record
+    /// restored from before its delivery landed) can never be confirmed: retire it instead of
+    /// showing a ghost the user cannot act on.
+    fn retire_held_notification_with_settled_receipt(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let mut after = sessions.get_session(session_id)?;
+            let Some(held) = after
+                .workflow_queued_prompts()
+                .iter()
+                .find(|item| item.id() == id && item.notification_send_unconfirmed())
+                .cloned()
+            else {
+                return Ok(());
+            };
+            if self.durable_state_store.notification_queue_is_owned(&after, &held)? {
+                return Ok(());
+            }
+            after.notification_prompt_mut(id).unwrap().mark_cancelled();
+            self.durable_state_store.persist_workflow_runtime_transition(&after, "notification_inject_stale_held_retired")?;
+            sessions.restore_session(after);
+            Ok(())
+        })
     }
 
     fn hold_unconfirmed_notification_send(

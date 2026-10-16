@@ -117,3 +117,19 @@ Track at least:
 Investigate growth when a workflow transition payload contains a full `session`
 field, when terminal runs appear in restored hot sessions, or when post-checkpoint
 tail bytes exceed the configured hard limit.
+
+## Restart outcomes are definitive (MP-08 / MP-10 / MP-11)
+
+Startup recovery never leaves work in limbo:
+
+- A local prompt whose delivery cannot be proven from the provider transcript is retried for a
+  5 minute observation window. If it is still unproven it is not replayed (that could repeat
+  external effects) and cannot be resumed (it has no provider identity): the prompt fails with a
+  reason and a resend hint, its workflow run fails, and the queue advances.
+- Before recovery runs, the kernel reclaims its own Codex app-servers left running by a previous,
+  unsupervised-killed kernel (same Chariox MCP URL proof the periodic provider GC uses). Those
+  processes hold the native thread writers a resume needs. Kernels configured with an unbounded
+  provider-process orphan TTL (test kernels) skip this.
+- A notification injection whose send has no proven outcome is held, never re-sent, and shown on
+  the item until its deadline; the user can retry or discard it, and the kernel retires it with a
+  stated reason at the deadline. See `PROTOCOL.md` (held notification delivery).
