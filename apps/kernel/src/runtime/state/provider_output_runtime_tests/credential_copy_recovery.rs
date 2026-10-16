@@ -310,12 +310,16 @@ async fn run_case(recovery: RecoveryCase) {
                 .session_store
                 .get_session(session.id())
                 .unwrap();
-            if let Some(login) = snapshot
-                .active_interaction_for_agent(agent.id())
-                .and_then(|i| i.provider_login())
-                .cloned()
-            {
-                break login;
+            if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                if let Some(login) = interaction.provider_login().cloned() {
+                    // The link popup keeps naming the machine being signed in.
+                    let machine = runtime.owned.config_projection.snapshot().host_machine_id;
+                    assert_eq!(
+                        interaction.title(),
+                        Some(format!("Sign in again on {machine}").as_str())
+                    );
+                    break login;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

@@ -34,6 +34,6 @@ fn credfix_logout_shapes_are_versioned_hashed_and_backward_compatible() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0000000000000000000000000000000000000000000000000000000000000000"
+        "bc88f3f902709065c58d5a5c01fdd14cb479b3330997d298aaa830e388e48679"
     );
 }

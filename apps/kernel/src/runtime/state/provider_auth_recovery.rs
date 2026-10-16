@@ -459,6 +459,10 @@ impl KernelRuntimeState {
                 &owner,
                 &progress_id,
                 &login,
+                Some(&format!(
+                    "Sign in again on {}",
+                    machine_label(&self.owned.config_projection.snapshot())
+                )),
             )
             .await;
         // MP-08/MP-11: only the execution kernel can read this login store.
