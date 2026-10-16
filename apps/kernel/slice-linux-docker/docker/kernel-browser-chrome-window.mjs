@@ -260,6 +260,7 @@ export class ChromeWindows {
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
+    if (this.bound.auxiliary.length !== this.auxiliaryCount) { this.auxiliaryCount = this.bound.auxiliary.length; this.host.timing?.(`aux_count ${this.auxiliaryCount}`, performance.timeOrigin + performance.now()); }
   }
   /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
    * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
@@ -305,12 +306,16 @@ export class ChromeWindows {
   }
   /** One read of the watched inventory now (a band input's reply sees the menu it opened). */
   async observeRows() {
+    let unreadable = 0;
     for (const next of [...this.watcher?.reads ?? []].reverse()) {
       let rows;
-      try { rows = await next(); } catch { continue; }
+      try { rows = await next(); } catch { unreadable++; continue; }
+      this.unreadableMarked = false;
       try { this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } catch {}
       return;
     }
+    // Every watched band is unreadable: popups are no longer refreshed (a closed menu stays listed). Marked once per streak.
+    if (unreadable && !this.unreadableMarked) { this.unreadableMarked = true; this.host.timing?.('aux_poll_unreadable', performance.timeOrigin + performance.now()); }
   }
   /** Protocol 530 state: popups of the band's window, CSS px from the window's top-left. */
   auxiliaryState() {
