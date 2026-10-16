@@ -289,13 +289,31 @@ fn remove_claude_keychain_credentials(
     ambient_default: bool,
 ) -> Result<(), DaemonError> {
     for service in claude_keychain_service_names(claude_config_dir, ambient_default) {
-        // Absent items make `security` fail; only local removal is intended.
-        let _ = std::process::Command::new("security")
+        let output = std::process::Command::new("security")
             .args(["delete-generic-password", "-s", &service])
             .output()
             .map_err(registry_io("discard local provider credential"))?;
+        keychain_delete_outcome(output.status.code(), &output.stderr)?;
     }
     Ok(())
+}
+
+/// `security` exits 44 when the item is absent, which is a finished deletion; any other failure
+/// (locked or inaccessible Keychain, denied access) leaves the usable login in place.
+#[cfg(any(target_os = "macos", test))]
+fn keychain_delete_outcome(code: Option<i32>, stderr: &[u8]) -> Result<(), DaemonError> {
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = 44;
+    if code == Some(0) || code == Some(ERR_SEC_ITEM_NOT_FOUND) {
+        return Ok(());
+    }
+    Err(registry_error(
+        "discard local provider credential",
+        format!(
+            "Keychain deletion failed ({}): {}",
+            code.map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(stderr).trim()
+        ),
+    ))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -306,6 +324,16 @@ fn remove_claude_keychain_credentials(_: &Path, _: bool) -> Result<(), DaemonErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keychain_deletion_failures_other_than_an_absent_item_are_errors() {
+        assert!(keychain_delete_outcome(Some(0), b"").is_ok());
+        assert!(keychain_delete_outcome(Some(44), b"The specified item could not be found").is_ok());
+        let denied = keychain_delete_outcome(Some(36), b"User interaction is not allowed.")
+            .expect_err("a locked Keychain must not count as a deleted login");
+        assert!(denied.to_string().contains("User interaction"), "{denied}");
+        assert!(keychain_delete_outcome(None, b"").is_err());
+    }
 
     #[test]
     fn mp08_mp10_mp11_only_renewable_logins_get_copy_notices() {

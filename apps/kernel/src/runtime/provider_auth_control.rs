@@ -829,6 +829,22 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
         &request.provider,
         request.method.as_deref(),
     )?;
+    let is_codex = crate::provider::canonical_provider_family(&request.provider) == Some("codex");
+    // A login already awaiting approval is returned as is: discarding the copy first would kill the
+    // app-server polling its device code.
+    if is_codex {
+        let profile = runtime_state.provider_account_profile_registry().get(
+            owner_user_id,
+            "codex",
+            &request.account_profile,
+        )?;
+        if let Some(login) = runtime_state
+            .provider_login_process_store()
+            .running_start_for_profile(owner_user_id, "codex", &profile.profile_id)
+        {
+            return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
+        }
+    }
     if request.method.as_deref() != Some(CLAUDE_SETUP_TOKEN_METHOD) {
         release_shared_credential(
             runtime_state,
@@ -837,7 +853,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
             &request.account_profile,
         )?;
     }
-    if crate::provider::canonical_provider_family(&request.provider) != Some("codex") {
+    if !is_codex {
         return start_terminal_provider_auth(
             runtime_state,
             owner_user_id,
@@ -850,13 +866,6 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
         .await;
     }
     let registry = runtime_state.provider_account_profile_registry().clone();
-    let profile = registry.get(owner_user_id, "codex", &request.account_profile)?;
-    if let Some(login) = runtime_state
-        .provider_login_process_store()
-        .running_start_for_profile(owner_user_id, "codex", &profile.profile_id)
-    {
-        return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
-    }
     let owner = owner_user_id.to_string();
     let response = tokio::task::spawn_blocking(move || {
         start_provider_login_response(&registry, &owner, request)

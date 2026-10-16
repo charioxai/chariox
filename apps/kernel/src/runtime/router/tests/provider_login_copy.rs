@@ -289,3 +289,62 @@ async fn shared_claude_logout_removes_only_the_local_login() {
         }
     ));
 }
+
+/// A second start while the device code is still awaiting approval returns that login; it must not
+/// delete the copy first, which would kill the polling app-server and orphan the displayed code.
+#[tokio::test]
+async fn repeated_codex_sign_in_start_keeps_the_login_it_is_waiting_on() {
+    crate::test_support::isolated_env_test!();
+    let fixture = fixture();
+    fixture.mark_as_received_copy();
+    let now_ms = crate::session::unix_epoch_ms();
+    let start = crate::provider::ProviderLoginStart {
+        provider: "codex".into(),
+        account_profile: fixture.profile.profile_id.clone(),
+        login_kind: "chatgptDeviceCode".into(),
+        login_id: Some("login-awaiting-approval".into()),
+        auth_url: None,
+        verification_url: Some("https://example.invalid/device".into()),
+        user_code: Some("SYNTHETIC".into()),
+    };
+    fixture
+        .router
+        .runtime_state
+        .provider_login_process_store()
+        .insert(crate::runtime::state::ProviderLoginProcessRecord {
+            owner_user_id: "local".into(),
+            kernel_id: "daemon-test".into(),
+            provider: "codex".into(),
+            account_profile: fixture.profile.profile_id.clone(),
+            credential_scope: fixture.profile.profile_id.clone(),
+            login_id: "login-awaiting-approval".into(),
+            start,
+            state: crate::local::ProviderLoginProcessState::Running,
+            backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
+            operation: crate::runtime::state::ProviderAuthProcessOperation::Login,
+            setup_token: None,
+            output: Vec::new(),
+            started_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        })
+        .unwrap();
+    let request = LocalDaemonRequest::StartProviderLogin(crate::local::StartProviderLoginRequest {
+        provider: "codex".into(),
+        account_profile: fixture.profile.profile_id.clone(),
+        method: None,
+    });
+    let command = KernelCommand::from_local_request("login", None, None, &request);
+    let response = fixture.router.dispatch(command, request).await.unwrap();
+    assert!(
+        matches!(
+            &response,
+            LocalDaemonResponse::ProviderLoginStarted { login }
+                if login.login_id.as_deref() == Some("login-awaiting-approval")
+        ),
+        "{response:?}"
+    );
+    assert!(
+        fixture.auth.exists(),
+        "the copy stays until a replacement sign-in really starts"
+    );
+}
