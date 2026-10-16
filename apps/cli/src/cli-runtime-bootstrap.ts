@@ -321,6 +321,8 @@ export async function bootstrapCliRuntime(
       session_id: bootstrap.binding.session.id,
       attachment_id: bootstrap.binding.attachment.id,
       created_session: bootstrap.binding.createdSession,
+      // Kernel requests made to reach the first transcript (PANE-03 "requests on open").
+      kernel_requests: client.requestStats().kinds,
     })
     // Sizing is advisory. Send it before mounting, but do not put another
     // relay round trip between the bundled transcript and the first frame.

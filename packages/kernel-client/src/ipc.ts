@@ -270,6 +270,7 @@ export class LocalIpcClient {
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private readonly requestLifetime = new KernelRequestLifetime()
   private readonly requestKinds = new Map<string, number>()
+  private readonly requestTimeline: Array<[string, number]> = []
   private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
@@ -385,15 +386,17 @@ export class LocalIpcClient {
   }
 
   /** Requests written to the kernel by kind (no payloads); drills read it as "requests on open". */
-  requestStats(): { count: number; kinds: Record<string, number> } {
+  requestStats(): { count: number; kinds: Record<string, number>; timeline: Array<[string, number]> } {
     const kinds = Object.fromEntries(this.requestKinds)
-    return { count: [...this.requestKinds.values()].reduce((sum, n) => sum + n, 0), kinds }
+    return { count: [...this.requestKinds.values()].reduce((sum, n) => sum + n, 0), kinds, timeline: [...this.requestTimeline] }
   }
 
   private countRequest(request: unknown): void {
     const kind = typeof request === "string" ? request
       : request && typeof request === "object" ? Object.keys(request)[0] ?? "unknown" : "unknown"
     this.requestKinds.set(kind, (this.requestKinds.get(kind) ?? 0) + 1)
+    // [kind, ms since process start], bounded: enough to order the requests of an open.
+    if (this.requestTimeline.length < 64) this.requestTimeline.push([kind, Math.round(process.uptime() * 1000)])
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {

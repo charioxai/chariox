@@ -30,7 +30,7 @@ export function recordPaneFirstFrame(
   cached = false,
   onFirstFrame?: () => void,
   hasMountedSurface: () => boolean = hasMountedTranscript,
-  requestStats?: () => { count: number; kinds: Record<string, number> },
+  requestStats?: () => { count: number; kinds: Record<string, number>; timeline?: Array<[string, number]> },
 ): () => void {
   const destination = process.env.CHARIOX_PANE_TIMING_FILE
   if (!destination && !onFirstFrame) return () => {}
