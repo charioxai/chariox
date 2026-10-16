@@ -112,7 +112,8 @@ export class ChromeWindows {
     const isPageCurrent = async () => {
       if (!isCurrent()) return false;
       try { if (JSON.stringify(await measure()) === JSON.stringify(pageRect)) return isCurrent(); } catch {}
-      if (isCurrent()) this.retire('page_geometry_changed');
+      // MP-08/MP-10/MP-11: consume browserux40979b97d; rebind from owned geometry.
+      if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
       return false;
     };
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
@@ -168,6 +169,14 @@ export class ChromeWindows {
     }
     this.auxiliaryIds = ids;
     return bound;
+  }
+  /** A state read with no binding retries one, at most once a second. */
+  async heal() {
+    if (this.bound) return;
+    const now = performance.now();
+    if (now - (this.healedAt ?? -Infinity) < 1000) return;
+    this.healedAt = now;
+    await this.resolve().catch(() => {});
   }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
   observeBand(raw) {

@@ -323,6 +323,9 @@ export class KernelBrowserHost {
           const attempts=retryAt?.document===tab.document_id?retryAt.attempts+1:1;
           (this.nativeRetryAt??=new Map()).set(tab.tab_id,{document:tab.document_id,attempts,at:performance.now()+nativeRetryDelayMs(attempts)});throw error;
         }
+        // The start fits Chrome's window to the page, also when it then refuses. The band's own capture
+        // retires on that resize, so no live band may be left to notice it: rebind from the owner's inventory.
+        finally{this.chromeWindows.resolve().catch(()=>{});}
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
@@ -652,6 +655,7 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // newest observation, as at a navigation commit
       return this.observe(this.tabState(), tab, scope);
     }
+    if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
