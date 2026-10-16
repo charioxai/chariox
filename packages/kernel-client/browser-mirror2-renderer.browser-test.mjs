@@ -1129,12 +1129,15 @@ for(const preserveFrame of [false,true])test(`MP-11 closed empty attachment neve
 test('MP-10: navigation paint diagnostics follow a revealed frame and a paint opportunity once', async () => {
   const page = await viewer();
   try {
+    await page.evaluate(() => { window.paintMarks = []; window.r.onTiming = sample => window.paintMarks.push(sample) });
     await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' }, { id: 'n4', parent: 'n3', kind: 'text', text: 'Visible page' }]));
     await page.waitForFunction(() => window.r.timings.some(t => t.stage === 'mirror_navigation_paint'));
     await apply(page, delta(2));
     await frames();
     const marks = await page.evaluate(() => window.r.timings.filter(t => t.stage === 'mirror_navigation_paint'));
     assert.equal(marks.length, 1);
+    const observed = await page.evaluate(() => window.paintMarks.filter(t => t.stage === 'mirror_navigation_paint'));
+    assert.deepEqual(observed, marks, 'the host client can export the same paint mark without reading mirrored content');
     assert.ok(marks[0].duration_ms >= 0 && Number.isFinite(marks[0].ended_ms));
   } finally { await page.close(); }
 });
