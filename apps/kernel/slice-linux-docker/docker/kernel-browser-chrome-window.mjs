@@ -373,6 +373,8 @@ export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'),
 const STRIP_HEIGHT = 41;
 // PERF_AUDIT 4.2.6: how long a strip input's reply waits for Chrome to show another Tab.
 const FOLLOW_MS = 150;
+// The whole follow-up (Tab wait, inventory and omnibox reads) is bounded.
+const FOLLOW_LIMIT_MS = 500;
 
 export class InputArbiter {
   constructor(host, windows) { this.host = host; this.windows = windows; }
@@ -407,7 +409,9 @@ export class InputArbiter {
   async input(args) {
     const follow = {switches: false};
     const reply = await this.dispatchInput(args, follow);
-    try { return await this.followed(reply, args.command, follow.switches); } catch { return reply; }
+    // Best effort: a stalled Chrome read never holds the input's reply (it then names no window).
+    const bound = new Promise(resolve => setTimeout(resolve, FOLLOW_LIMIT_MS, reply).unref?.());
+    try { return await Promise.race([this.followed(reply, args.command, follow.switches), bound]); } catch { return reply; }
   }
   /** PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left: the Tab
    * the strip now shows and its popups (the omnibox list a key opened, a menu a click opened). The

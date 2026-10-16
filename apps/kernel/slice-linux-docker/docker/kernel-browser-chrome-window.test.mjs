@@ -702,3 +702,16 @@ test("MP-08/MP-10 a band input marks each native dispatch after its fences", asy
   await assert.rejects(send({ kind: "click", x: 300, y: 12 }, "host-tab-b"), { code: "user_domain_stale_reference" });
   assert.equal(order.length, 4, "a refused input marks nothing");
 });
+
+// The reply's follow-up reads are best effort: a Chrome read that stalls (vidlat r20: band keys answered
+// "kernel request timed out" after 30 s) never holds the input's reply.
+test("MP-08/MP-10 a stalled follow-up read never holds a band input's reply", async () => {
+  const active = { target: "ta" };
+  const windows = { onOmnibox: () => true, focusOmnibox() {}, refreshWarm: () => new Promise(() => {}) };
+  const arbiter = new InputArbiter(followHost(active), windows);
+  const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
+  const started = performance.now(), alive = setInterval(() => {}, 50); // the host's event loop is never idle
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "key", key: "a" } } }).finally(() => clearInterval(alive));
+  assert.deepEqual(reply, { dispatched: true });
+  assert(performance.now() - started < 1000, "answered at the follow bound");
+});
