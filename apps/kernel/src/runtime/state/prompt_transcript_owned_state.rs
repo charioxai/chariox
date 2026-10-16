@@ -19,6 +19,7 @@ pub(super) struct TerminalOutputBatchAppend {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ActivePromptTranscriptMetadata {
+    pub(super) prompt_id: Option<String>,
     pub(super) prompt_origin: Option<crate::session::PromptOrigin>,
     pub(super) source_attachment_id: Option<String>,
 }
@@ -75,6 +76,7 @@ impl KernelRuntimeOwnedState {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: Some(dispatch.agent_id.clone()),
+                prompt_id: Some(dispatch.prompt_id.clone()),
                 prompt_origin: Some(dispatch.prompt_origin),
                 source_attachment_id: Some(dispatch.source_attachment_id.clone()),
                 kind,
@@ -275,6 +277,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
@@ -334,7 +337,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id,
-                prompt_id: None,
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind,
@@ -367,6 +370,7 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             kind.clone(),
             merge_key.clone(),
+            prompt_metadata.prompt_id,
             prompt_metadata.prompt_origin,
             prompt_metadata.source_attachment_id.clone(),
             recipient_attachment_ids,
@@ -460,6 +464,7 @@ impl KernelRuntimeOwnedState {
                     .active_prompt_for_agent(&session, agent_id)
             })
             .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_id: Some(prompt.id().to_string()),
                 prompt_origin: Some(prompt.prompt_origin()),
                 source_attachment_id: Some(prompt.source_attachment_id().to_string()),
             })

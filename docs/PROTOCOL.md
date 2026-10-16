@@ -3649,3 +3649,17 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+
+### Live output prompt identity — local 545 / relay peer 153 (MP-08 / MP-10 / MP-11)
+
+Structured provider output and terminal stream events carry the existing optional
+`prompt_id`, now populated from kernel ownership: the active prompt of the agent
+(local runs) or the dispatched home prompt (leased remote runs, including the
+settled prompt for dispatch failures). Home worker projections use the home
+prompt ID, never the worker's. Providers that reuse assistant or reasoning merge
+keys across turns (Claude) therefore no longer merge a later reply into an
+earlier answer in clients that scope live rows by prompt. Clients must treat an
+absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
+added; the bump records the changed relay terminal-event semantics under the
+Protocol Change Rule. Web/native minimums are unchanged unless a client requires
+prompt-scoped live rows.
