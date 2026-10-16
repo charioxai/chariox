@@ -4,6 +4,8 @@ use rusqlite::Connection;
 use serde_json::Value;
 #[path = "skill_reset_files.rs"]
 mod files;
+#[path = "skill_reset_publications.rs"]
+mod publications;
 pub(crate) use files::{LegacySkillRoot, LegacySkillRootKind};
 
 /// Startup must hold the existing durable owner lease and must not serve turns
@@ -55,9 +57,17 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
         "SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='authority_reset'",
         [], |row| row.get(0),
     ).optional()?;
-    if complete.as_deref() == Some("complete") {
+    let publications_complete: Option<String> = tx.query_row(
+        "SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='publication_reference_reset'",
+        [], |row| row.get(0),
+    ).optional()?;
+    if complete.as_deref() == Some("complete")
+        && publications_complete.as_deref() == Some("complete")
+    {
         return Ok(());
     }
+    // A foundation's authority-only checkpoint did not certify publication or
+    // entry-intent retirement. Finish those before any runtime admission.
     // Only replayable kernel-owned stores. No App data, credentials, Vault,
     // provider history or transcript database is traversed.
     for (table, kind_column) in [
@@ -96,6 +106,10 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
                 let before = value.clone();
                 retire(&mut value);
                 if before != value {
+                    if table == "durable_workflow_hot_entities" && kind == "publication_snapshot" {
+                        publications::retire_hot(&tx, id)?;
+                        continue;
+                    }
                     let encoded =
                         serde_json::to_string(&value).map_err(|_| rusqlite::Error::InvalidQuery)?;
                     tx.execute(
@@ -106,7 +120,10 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
             }
         }
     }
-    tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2','authority_reset','complete',0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value='complete'", [])?;
+    publications::retire_intents(&tx, None)?;
+    for key in ["authority_reset", "publication_reference_reset"] {
+        tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2',?1,'complete',0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value='complete'", [key])?;
+    }
     tx.commit()
 }
 
@@ -216,6 +233,7 @@ fn retire(value: &mut Value) {
     match value {
         Value::Array(values) => values.iter_mut().for_each(retire),
         Value::Object(fields) => {
+            publications::retire_session(fields);
             for (key, field) in fields.iter_mut() {
                 match key.as_str() {
                     "extension_grants" | "extensions" => {
@@ -506,6 +524,135 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    // MP-08 / MP-10 / MP-11: immutable publications are invalidated, never rewritten.
+    #[test]
+    fn skill_reset_invalidates_only_affected_hot_publications() {
+        let mut db = database();
+        let affected = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"retired"}]}]})
+            .to_string();
+        let ordinary = r#"{ "agents": [{"extension_grants":[{"kind":"mcp","name":"keep"}]}] }"#;
+        for (owner, id, snapshot) in [
+            ("owner", "affected", affected.as_str()),
+            ("owner", "ordinary", ordinary),
+            ("other", "affected", ordinary),
+        ] {
+            for (kind, payload) in [
+                (
+                    "publication",
+                    json!({"id":id,"enabled":true,"source_snapshot_digest":"immutable"})
+                        .to_string(),
+                ),
+                ("publication_snapshot", snapshot.to_string()),
+            ] {
+                db.execute(
+                    "INSERT INTO durable_workflow_hot_entities VALUES (?1,'session',?2,?3,1,?4)",
+                    rusqlite::params![owner, kind, id, payload],
+                )
+                .unwrap();
+            }
+        }
+        initialize(&mut db).unwrap();
+        let count:i64=db.query_row("SELECT count(*) FROM durable_workflow_hot_entities WHERE owner_id='owner' AND entity_id='affected'",[],|r|r.get(0)).unwrap();
+        assert_eq!(
+            count, 0,
+            "do not rewrite a content-addressed publication snapshot under the original digest"
+        );
+        for (owner, id) in [("owner", "ordinary"), ("other", "affected")] {
+            let kept:String=db.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND entity_id=?2 AND entity_kind='publication_snapshot'",rusqlite::params![owner,id],|r|r.get(0)).unwrap();
+            assert_eq!(kept, ordinary);
+        }
+    }
+    #[test]
+    fn skill_reset_retires_session_publication_pairs_and_their_pending_invocations() {
+        let mut value = json!({"workflow_publications":[{"id":"old"},{"id":"keep"}],
+            "workflow_publication_snapshots":{
+                "old":{"agents":[{"extension_grants":[{"kind":"skill","name":"retired"}]}]},
+                "keep":{"agents":[{"extension_grants":[{"kind":"mcp","name":"keep"}]}]}},
+            "workflow_queued_prompts":[{"id":"q-old","publication_invocation":{"publication_id":"old"}},
+                {"id":"q-keep","publication_invocation":{"publication_id":"keep"}}],
+            "history":[{"workflow_publication_snapshots":{"old":{"immutable":"history"}}}]});
+        let kept = value["workflow_publication_snapshots"]["keep"].clone();
+        let history = value["history"].clone();
+        retire(&mut value);
+        assert_eq!(value["workflow_publications"], json!([{"id":"keep"}]));
+        assert!(value["workflow_publication_snapshots"].get("old").is_none());
+        assert_eq!(value["workflow_publication_snapshots"]["keep"], kept);
+        assert_eq!(
+            value["workflow_queued_prompts"],
+            json!([{"id":"q-keep","publication_invocation":{"publication_id":"keep"}}])
+        );
+        assert_eq!(value["history"], history);
+    }
+    #[test]
+    fn skill_reset_cancels_skill_bearing_workflow_entry_intents_and_stops_their_runs() {
+        let mut db = database();
+        db.execute_batch("CREATE TABLE durable_workflow_dispatch_intents(owner_id TEXT,session_id TEXT,run_id TEXT,queued_json TEXT,submitted INTEGER);").unwrap();
+        for (id, prompt) in [("old", "Use $review"), ("keep", "Inspect $HOME/.config")] {
+            let queued = json!({"id":id,"prompt":prompt}).to_string();
+            let run=json!({"id":id,"status":"Created","active_node_run_id":"n", "node_runs":[{"id":"n","status":"Ready"}],"invocation_prompt":prompt}).to_string();
+            db.execute(
+                "INSERT INTO durable_workflow_dispatch_intents VALUES ('owner','session',?1,?2,0)",
+                rusqlite::params![id, queued],
+            )
+            .unwrap();
+            db.execute("INSERT INTO durable_workflow_runs VALUES ('owner','session',?1,'workflow','Created',1,NULL,1,?2)",rusqlite::params![id,run]).unwrap();
+        }
+        initialize(&mut db).unwrap();
+        let pending: i64 = db
+            .query_row(
+                "SELECT count(*) FROM durable_workflow_dispatch_intents WHERE run_id='old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending, 0,
+            "retired queued selection must not replay after startup"
+        );
+        let (status, encoded): (String, String) = db
+            .query_row(
+                "SELECT status,payload_json FROM durable_workflow_runs WHERE run_id='old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "Stopped");
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(value["status"], "Stopped");
+        assert_eq!(value["node_runs"][0]["status"], "Stopped");
+        assert!(value["active_node_run_id"].is_null());
+        let ordinary: i64 = db
+            .query_row(
+                "SELECT count(*) FROM durable_workflow_dispatch_intents WHERE run_id='keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ordinary, 1);
+    }
+
+    #[test]
+    fn skill_reset_resumes_publication_retirement_after_a_prior_authority_checkpoint() {
+        let mut db = database();
+        db.execute("INSERT INTO durable_state_metadata VALUES ('skills-v2','authority_reset','complete',0)",[]).unwrap();
+        let value=json!({"workflow_publications":[{"id":"old"}],"workflow_publication_snapshots":{"old":{"agents":[{"extension_grants":[{"kind":"skill","name":"old"}]}]}}}).to_string();
+        db.execute(
+            "INSERT INTO durable_state_events VALUES (1,'e','session.updated','session',1,?1)",
+            [value],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row("SELECT payload_json FROM durable_state_events", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let retired: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(retired["workflow_publications"], json!([]));
+        let complete:String=db.query_row("SELECT metadata_value FROM durable_state_metadata WHERE metadata_key='publication_reference_reset'",[],|r|r.get(0)).unwrap();
+        assert_eq!(complete, "complete");
     }
 
     fn database() -> Connection {
