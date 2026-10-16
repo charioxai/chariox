@@ -478,6 +478,7 @@ impl ProviderProcessServiceStore {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
@@ -491,6 +492,7 @@ impl ProviderProcessServiceStore {
             hidden_system_context,
             attachments,
             mode,
+            private_assessment_evidence,
             steering,
         )
     }
