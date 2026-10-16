@@ -30,6 +30,8 @@ export class VisiblePageCapture extends LinuxCapture{
    return {...cropProtectedPng(shot.data_base64,clip,options.scale),[displayMaskRegions]:masks};
   }});
   this.region=region;this.window=window;this.validateCurrent=options.validateCurrent;
+  // MP-08/MP-11: a navigation preview shares the region capture's live Chrome-UI fence.
+  this.occluded=options.occluded??(()=>{throw Error('MP-11: visible page occlusion unavailable');});
  }
  valid(){return super.valid()&&this.window?.isCurrent()===true;}
  async prepareReadback(){

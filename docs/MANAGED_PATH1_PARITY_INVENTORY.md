@@ -18,6 +18,13 @@ even if a loader value returns. The shared region setup reuses that same live
 binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
 policy and mask fences remain mandatory before delivery.
 
+Whole-page previews now also apply the same live Chrome-UI overlap query as
+streamed page regions after readback. While an omnibox list or dialog overlaps
+the crop, only the last unobscured page frame is retained; the existing auxiliary
+stream owns the Chrome UI pixels. An unavailable overlap guard refuses delivery.
+The ordinary/managed path and window-coordinate crop are shared. The focused
+publication regression supplements the required real typing/handover recording.
+
 Security anchors: `browser-capture-presentation.mjs`, `kernel-browser-native.mjs`
 and `kernel-desktop-source.mjs` in `apps/kernel/slice-linux-docker/docker/`.
 The pixel predicate, document/window leases and Vault masks are unchanged.

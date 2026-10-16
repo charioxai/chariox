@@ -29,10 +29,10 @@ test('MP-11 visible page refuses missing, overflowing or auxiliary window geomet
 
 test('MP-08/MP-10/MP-11 visible-page lease uses the shared region pump and retires before delivery',async()=>{
  const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
- let active=true,closed=0;
+ let active=true,closed=0,covered=false,checkedRect;
  const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async target=>target==='target'&&active};
  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
-  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},arbiter:{isActiveTab:async()=>active},
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window}),inWindowOverNow:async rect=>{checkedRect=rect;return covered;}},arbiter:{isActiveTab:async()=>active},
   browser:{resolvePageTarget:async()=>({connection:{send:async()=>({cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}})},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);}async start(){return this;}async close(){closed++;}}
  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
@@ -40,6 +40,8 @@ test('MP-08/MP-10/MP-11 visible-page lease uses the shared region pump and retir
  active=true;const result=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
  assert.equal(result.css_height,712);assert.equal(result.device_scale_factor,1);assert.equal(result.source_kind,'region');assert.equal(result.document_id,'d');
  const stream=[...host.displays.values()][0];assert.equal(await stream.regionCurrent(),true);
+ assert.equal(await stream.regionSource.options.occluded(),false);covered=true;assert.equal(await stream.regionSource.options.occluded(),true);
+ assert.deepEqual(checkedRect,{left:0,top:87,width:1280,height:712});
  active=false;assert.equal(await stream.regionCurrent(),false);await stream.close();assert.equal(host.displays.size,0);assert.equal(closed,1);
  active=true;class Retired extends Capture {async start(){active=false;return this;}}
  await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture:Retired}));assert.equal(host.displays.size,0);assert.equal(closed,2);
@@ -123,4 +125,20 @@ test('MP-08/MP-10/MP-11 visible-page startup shares the mirror document owner wh
  const result=await subscribeVisiblePage(host,{op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1},'terminal:a',undefined,{Capture});
  assert.equal(result.document_id,'new');const stream=host.displays.get(result.subscription_id);assert.equal(await stream.regionCurrent(),true);
  proof={...proof};assert.equal(await stream.regionCurrent(),false,'a replaced navigation proof cannot re-admit the same loader');await stream.close();
+});
+
+// MP-08/MP-10/MP-11: full-page navigation previews share the page-region publication fence.
+test('MP-08/MP-10/MP-11 visible-page preview holds its last page frame while Chrome UI overlaps it',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async()=>assert.fail('unexpected CDP')};let covered=false;
+ const source=new VisiblePageCapture({window:binding(),viewport:{clientWidth:1280,clientHeight:800,zoom:1,scale:1},scale:1,connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true,validateCurrent:async()=>true,occluded:async()=>covered});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const published=[];source.subscribe(sample=>published.push(sample.serial));
+ const readback=serial=>({width:64,height:32,length:64*32*4,pixels:Buffer.alloc(64*32*4,serial),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now(),release(){}});
+ try{
+  source.pending=readback(1);await source.publish();covered=true;source.pending=readback(2);await source.publish();
+  assert.deepEqual(published,[1]);assert.equal(source.sample().serial,1,'retain only the last unobscured page');
+  covered=false;source.pending=readback(3);await source.publish();assert.deepEqual(published,[1,3]);
+ }finally{await source.close();}
 });
