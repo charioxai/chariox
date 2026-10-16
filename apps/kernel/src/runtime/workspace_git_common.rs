@@ -153,14 +153,14 @@ pub(crate) fn workspace_repository_state(workspace_path: &str) -> String {
         "unborn"
     } else {
         "ready"
-    }.to_string()
+    }
+    .to_string()
 }
 
 pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
     git_command_output(workspace_path, &["remote", "get-url", "origin"])
         .as_deref()
         .and_then(repo_label_from_remote_url)
-
 }
 
 pub(crate) fn canonical_workspace_path(
@@ -424,14 +424,48 @@ mod owner14_tests {
     #[test]
     fn mp02_mp08_owner14_workspace_label_requires_a_git_remote() {
         struct Scratch(std::path::PathBuf);
-        impl Scratch { fn path(&self) -> &std::path::Path { &self.0 } }
-        impl Drop for Scratch { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-        let root = Scratch(std::env::temp_dir().join(format!("wrux-owner14-{}", rand::random::<u64>())));
+        impl Scratch {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            Scratch(std::env::temp_dir().join(format!("wrux-owner14-{}", rand::random::<u64>())));
         std::fs::create_dir_all(root.path()).unwrap();
-        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);
-        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(root.path()).status().unwrap().success());
-        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);
-        assert!(std::process::Command::new("git").arg("-C").arg(root.path()).args(["remote", "add", "origin", "https://github.com/charioxai/chariox.git"]).status().unwrap().success());
-        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()).as_deref(), Some("charioxai/chariox"));
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()),
+            None
+        );
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(root.path())
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()),
+            None
+        );
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/charioxai/chariox.git"
+            ])
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()).as_deref(),
+            Some("charioxai/chariox")
+        );
     }
 }

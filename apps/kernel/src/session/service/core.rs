@@ -500,7 +500,12 @@ impl SessionService {
             .collect()
     }
 
-    pub fn set_project_pinned(&mut self, project_id: &str, pinned: bool, caller_user_id: &str) -> Result<RuntimeProject, DaemonError> {
+    pub fn set_project_pinned(
+        &mut self,
+        project_id: &str,
+        pinned: bool,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
         let project = self.project_mut_for_owner(project_id, caller_user_id, "project.pin")?;
         project.set_pinned(pinned);
         Ok(project.clone())
@@ -668,7 +673,10 @@ impl SessionService {
                 if !project.contains_workspace(&request.workspace_id) {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
-                    self.projects.get_mut(project_id).expect("owned project checked").replace_workspace_ids(workspaces);
+                    self.projects
+                        .get_mut(project_id)
+                        .expect("owned project checked")
+                        .replace_workspace_ids(workspaces);
                 }
                 Ok(project_id.clone())
             }
@@ -682,7 +690,12 @@ impl SessionService {
                 let name = match name {
                     Some(name) => {
                         let name = normalize_project_name(name)?;
-                        self.ensure_project_name_available(&request.owner_user_id, &name, None, "session.create")?;
+                        self.ensure_project_name_available(
+                            &request.owner_user_id,
+                            &name,
+                            None,
+                            "session.create",
+                        )?;
                         name
                     }
                     None => format!("Project-{number}"),

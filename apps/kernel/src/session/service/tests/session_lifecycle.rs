@@ -2056,24 +2056,63 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
 #[test]
 fn mp08_owner15_project_pins_enforce_owner_and_survive_durable_restore() {
     let mut service = SessionService::new(&test_config());
-    let session = service.create_session(CreateSessionRequest::new("/workspace/pin", "main")).unwrap();
-    assert!(service.set_project_pinned(session.project_id(), true, "other-user").is_err());
-    let pinned = service.set_project_pinned(session.project_id(), true, DEFAULT_LOCAL_USER_ID).unwrap();
+    let session = service
+        .create_session(CreateSessionRequest::new("/workspace/pin", "main"))
+        .unwrap();
+    assert!(service
+        .set_project_pinned(session.project_id(), true, "other-user")
+        .is_err());
+    let pinned = service
+        .set_project_pinned(session.project_id(), true, DEFAULT_LOCAL_USER_ID)
+        .unwrap();
     assert!(pinned.pinned());
     let serialized = serde_json::to_vec(&service.durable_projects()).unwrap();
     let mut restored = SessionService::new(&test_config());
     restored.restore_projects(serde_json::from_slice(&serialized).unwrap());
     assert!(restored.get_project(session.project_id()).unwrap().pinned());
-    assert!(!restored.set_project_pinned(session.project_id(), false, DEFAULT_LOCAL_USER_ID).unwrap().pinned());
+    assert!(!restored
+        .set_project_pinned(session.project_id(), false, DEFAULT_LOCAL_USER_ID)
+        .unwrap()
+        .pinned());
 }
 
 #[test]
 fn mp08_owner19_named_project_creation_and_cross_workspace_assignment() {
     let mut service = SessionService::new(&test_config());
-    let first = service.create_session(CreateSessionRequest::new("/workspace/a", "a").with_project_selection(SessionProjectSelection::New { name: Some(" Release ".into()) })).unwrap();
-    assert_eq!(service.get_project(first.project_id()).unwrap().name(), "Release");
-    let second = service.create_session(CreateSessionRequest::new("/workspace/b", "b").with_project_selection(SessionProjectSelection::Existing { project_id: first.project_id().into() })).unwrap();
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/a", "a").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some(" Release ".into()),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        service.get_project(first.project_id()).unwrap().name(),
+        "Release"
+    );
+    let second = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/b", "b").with_project_selection(
+                SessionProjectSelection::Existing {
+                    project_id: first.project_id().into(),
+                },
+            ),
+        )
+        .unwrap();
     assert_eq!(first.project_id(), second.project_id());
-    assert!(service.get_project(first.project_id()).unwrap().contains_workspace("/workspace/b"));
-    assert!(service.create_session(CreateSessionRequest::new("/workspace/c", "c").with_project_selection(SessionProjectSelection::New { name: Some("release".into()) })).is_err());
+    assert!(service
+        .get_project(first.project_id())
+        .unwrap()
+        .contains_workspace("/workspace/b"));
+    assert!(service
+        .create_session(
+            CreateSessionRequest::new("/workspace/c", "c").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some("release".into())
+                }
+            )
+        )
+        .is_err());
 }

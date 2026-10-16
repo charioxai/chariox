@@ -966,7 +966,9 @@ mod tests {
                     primary.to_string_lossy(),
                     primary.to_string_lossy(),
                 )
-                .with_project_selection(crate::session::SessionProjectSelection::New { name: None }),
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::New { name: None },
+                ),
             )
             .expect("session");
         app.sessions_mut()
@@ -1203,7 +1205,9 @@ mod tests {
                     primary.to_string_lossy(),
                     primary.to_string_lossy(),
                 )
-                .with_project_selection(crate::session::SessionProjectSelection::New { name: None }),
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::New { name: None },
+                ),
             )
             .expect("session");
         app.sessions_mut()

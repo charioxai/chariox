@@ -83,8 +83,16 @@ impl KernelRuntimeState {
             .list_visible_projects(caller_user_id, true)
     }
 
-    pub(crate) async fn set_project_pinned(&self, project_id: &str, pinned: bool, caller_user_id: &str) -> Result<crate::session::RuntimeProject, DaemonError> {
-        let project = self.owned.session_store.set_project_pinned(project_id, pinned, caller_user_id)?;
+    pub(crate) async fn set_project_pinned(
+        &self,
+        project_id: &str,
+        pinned: bool,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project =
+            self.owned
+                .session_store
+                .set_project_pinned(project_id, pinned, caller_user_id)?;
         self.append_project_durable_event("project.updated", &project)?;
         self.owned.runtime_projection_changes.record_change();
         Ok(project)

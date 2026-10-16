@@ -63,11 +63,18 @@ struct RawCommandNode {
 }
 
 fn retire_workspace_sync_commands(nodes: &mut Vec<RawCommandNode>) {
-    nodes.retain(|node| !node.value.starts_with("/workspace sync") && !node.value.starts_with("/config workspace-live-sync"));
+    nodes.retain(|node| {
+        !node.value.starts_with("/workspace sync")
+            && !node.value.starts_with("/config workspace-live-sync")
+    });
     for node in nodes {
         retire_workspace_sync_commands(&mut node.children);
-        node.search_aliases.retain(|alias| !alias.to_lowercase().contains("live sync"));
-        node.description = node.description.replace(", live sync,", ",").replace(", and live sync readiness", " readiness");
+        node.search_aliases
+            .retain(|alias| !alias.to_lowercase().contains("live sync"));
+        node.description = node
+            .description
+            .replace(", live sync,", ",")
+            .replace(", and live sync readiness", " readiness");
     }
 }
 
@@ -994,7 +1001,10 @@ mod owner20_tests {
     fn mp08_owner20_discontinued_sync_absent_from_all_client_command_help() {
         let catalog = super::terminal_command_catalog().unwrap();
         let json = serde_json::to_string(&catalog).unwrap().to_lowercase();
-        assert!(!json.contains("live sync"), "discontinued help still projected");
+        assert!(
+            !json.contains("live sync"),
+            "discontinued help still projected"
+        );
         assert!(!json.contains("/workspace sync"));
     }
 }

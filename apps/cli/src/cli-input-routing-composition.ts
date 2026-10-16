@@ -148,6 +148,7 @@ export type CliInputRoutingCompositionDeps = {
   setFatalError: AnyFn
   setStatusLine: AnyFn
   promptInputRefController: {
+    blur?: AnyFn
     plainText: AnyFn
     isFocused: AnyFn
     hasInput: AnyFn
@@ -462,13 +463,13 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     startSessionFromWaitingRoomDefaults: async () => {
       if (pendingNewProjectName) {
         const name = deps.promptTextController.currentText().trim()
-        if (!name) { deps.flashFooter("Enter a project name", "error"); return }
+        if (!name) { deps.flashFooter("Enter a project name", "error"); return false }
         pendingNewProjectName = false
         deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
         deps.promptTextController.setText("")
         deps.promptInputRefController.blur?.()
         deps.rebuildTranscript()
-        return
+        return false
       }
       if (pendingProjectRenameId) {
         const projectId = pendingProjectRenameId
@@ -476,7 +477,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         const name = deps.promptTextController.currentText().trim()
         await deps.renameWaitingRoomProject(projectId, name)
         deps.promptTextController.setText("")
-        return
+        return false
       }
       return deps.startSessionFromWaitingRoomDefaults()
     },

@@ -17,7 +17,11 @@ pub(crate) async fn execute_prompt_settings_request(
     match request {
         LocalDaemonRequest::ListPromptSettings(ListPromptSettingsRequest) => {
             Ok(LocalDaemonResponse::PromptSettingsListed {
-                settings: registry.list_settings()?.into_iter().filter(|setting| !setting.id.contains("workspace-live-sync")).collect(),
+                settings: registry
+                    .list_settings()?
+                    .into_iter()
+                    .filter(|setting| !setting.id.contains("workspace-live-sync"))
+                    .collect(),
             })
         }
         LocalDaemonRequest::GetPromptSetting(GetPromptSettingRequest { id }) => {

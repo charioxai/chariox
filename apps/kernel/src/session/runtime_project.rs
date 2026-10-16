@@ -21,7 +21,9 @@ pub enum RuntimeProjectStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionProjectSelection {
     Default,
-    Existing { project_id: String },
+    Existing {
+        project_id: String,
+    },
     New {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -124,9 +126,13 @@ impl RuntimeProject {
         self.status
     }
 
-    pub fn pinned(&self) -> bool { self.pinned }
+    pub fn pinned(&self) -> bool {
+        self.pinned
+    }
 
-    pub(crate) fn set_pinned(&mut self, pinned: bool) { self.pinned = pinned; }
+    pub(crate) fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
 
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
