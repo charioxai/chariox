@@ -6,28 +6,38 @@ export function createKernelSecurityRefresh(deps: {
 }) {
   let epoch = 0
   let connected = true
+  // A reconnect asks from the event and from connectivity; show the check once.
+  let checking = false
   const refresh = async () => {
     const requestEpoch = ++epoch
-    deps.notify("Checking Vault and access status…")
+    if (!checking) {
+      checking = true
+      deps.notify("Checking Vault and access status…")
+    }
     try {
       const [vault, access] = await Promise.all([deps.readVault(), deps.readGrants()])
       if (requestEpoch !== epoch) return
+      checking = false
       if (typeof vault.unlocked !== "boolean" || !Array.isArray(access.grants)) throw new Error("Invalid security status")
       deps.notify(`Vault ${vault.unlocked ? "unlocked" : "locked"} · ${access.grants.length} active access grant${access.grants.length === 1 ? "" : "s"}`)
     } catch {
-      if (requestEpoch === epoch) deps.notify("Vault and access status unavailable; reconnect to check")
+      if (requestEpoch !== epoch) return
+      checking = false
+      deps.notify("Vault and access status unavailable; reconnect to check")
     }
   }
   return {
     invalidate() { epoch++ },
-    connectionChanged(next: boolean) {
-      if (connected === next) return
+    /** Returns whether the connection really changed. */
+    connectionChanged(next: boolean): boolean {
+      if (connected === next) return false
       connected = next
       if (next) void refresh()
       else {
         epoch++
-        deps.notify("Checking Vault and access status…")
+        checking = false
       }
+      return true
     },
     refresh,
   }

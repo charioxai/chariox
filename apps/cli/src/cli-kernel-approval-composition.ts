@@ -90,8 +90,7 @@ export function createCliKernelApprovalComposition(deps: {
   })
   createEffect(() => {
     const connected = deps.kernelConnected()
-    security.connectionChanged(connected)
-    if (!connected) popup.invalidateConnectionState()
+    if (security.connectionChanged(connected) && !connected) popup.invalidateConnectionState()
     deps.themeRevision()
     deps.dimensions()
     controller.sync()
