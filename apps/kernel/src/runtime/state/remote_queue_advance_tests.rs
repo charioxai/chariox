@@ -73,23 +73,46 @@ async fn queue_fixture_with_provider(
 
     let provider_run_id = if local_provider_run {
         // The dev-stub adapter creates an in-memory run record and starts no provider process.
+        let request = LaunchProviderRequest::new(
+            &session_id,
+            "dev-stub",
+            provider.unwrap_or(agent.provider()),
+            "default",
+            "queue-advance-test-model",
+        )
+        .with_agent_id(&agent_id);
         let started = app
             .providers()
-            .start_run_provider_only(
-                LaunchProviderRequest::new(
-                    &session_id,
-                    "dev-stub",
-                    provider.unwrap_or(agent.provider()),
-                    "default",
-                    "queue-advance-test-model",
-                )
-                .with_agent_id(&agent_id),
-            )
+            .start_run_provider_only(request.clone())
             .expect("test provider run should be created");
-        let run = app
+        let mut run = app
             .providers()
             .mark_run_running(started.run().id())
             .expect("test provider run should become running");
+        if provider.is_some() {
+            // The App dispatcher performs real liveness reconciliation. An in-memory
+            // managed run without a PTY is correctly retired before submission.
+            // Match provider_output's external-endpoint/manual-poll fixture instead.
+            run = crate::provider::RuntimeProviderRun::new(
+                run.id(),
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::External,
+                    process_label: "app-evidence-fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: Default::default(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: Some("test-app-evidence".into()),
+                },
+            );
+            run.mark_running();
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers_mut().use_manual_output_polls_for_tests();
+            app.update_provider_run_projection(run.clone());
+        }
         app.sessions_mut()
             .set_active_provider_run(&session_id, Some(run.id().to_string()))
             .expect("session should reference the test provider run");
@@ -411,6 +434,19 @@ async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
                 next.attachments(),
             )
             .expect("fixture must reach production App provider dispatch");
+        assert_eq!(
+            app.providers().get_run(run).unwrap().state(),
+            crate::provider::ProviderRunState::Running,
+            "fixture liveness must remain valid through the dispatcher"
+        );
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+                .unwrap()
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some(next.id()),
+            "fixture must preserve the active prompt through provider submission"
+        );
         next
     };
     let second_runtime =
