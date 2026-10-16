@@ -38,12 +38,15 @@ session/connection mismatch refuses the image. A delayed page inspection cannot 
 revive a retired session. Its initial frame and document-map references must
 remain unchanged across focus/frame observations. A cold mismatched cache may
 be repaired only by that fresh, stable inspection. `browser-controller-frames.mjs`
-owns this publication fence. Native read-only state may use the browser-process target
+owns this publication fence. Native read-only inventory may use the browser-process target
 metadata and native active tab when metrics and a previously committed document
 are already known. A loading tab may retain its last committed document label;
 this path never populates the frame-owner cache. Cold targets, changed metrics,
 ordinary/headless state and mutations retain renderer discovery. Pixel and input
-admission continue to require their own current document proof.
+admission continue to require their own current document proof. When native New Tab input discovers
+an unadopted active target, that inventory read also avoids loading background
+renderers. The arbiter then resolves the active target's document independently
+before ledger admission; pending metadata cannot serve as that proof.
 
 Screenshot masking policy lives
 in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and

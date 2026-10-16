@@ -432,7 +432,9 @@ export class InputArbiter {
     let tab = await this.activeTab();
     // A native New Tab can precede the next inventory poll. Discover it here,
     // before ledger admission; no action has been dispatched or replayed.
-    if (!tab) { await this.host.reconcile(); tab = await this.activeTab(); }
+    // Discovery is advisory: the displayTarget read below still proves this
+    // active document before admission. Loading background pages need no proof.
+    if (!tab) { await this.host.reconcile({readOnly:true}); tab = await this.activeTab(); }
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     // Native navigation commits independently of inventory polling. Admit the
     // live document instead of attributing a person's new input to cached state.
