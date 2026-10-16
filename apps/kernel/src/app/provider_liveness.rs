@@ -67,6 +67,18 @@ pub(crate) struct ProviderProcessExit {
     pub(crate) terminal_diagnostic: Option<String>,
 }
 
+impl ProviderProcessExit {
+    pub(crate) fn termination_at(&self, at_ms: u64) -> crate::provider::ProviderRunTermination {
+        match (self.exit_code, self.signal.as_deref()) {
+            (_, Some(signal)) => crate::provider::ProviderRunTermination::signal(signal, at_ms),
+            (Some(code), None) => {
+                crate::provider::ProviderRunTermination::process_exit(code, at_ms)
+            }
+            _ => crate::provider::ProviderRunTermination::unknown_process_exit(at_ms),
+        }
+    }
+}
+
 impl ProviderRunLivenessProcesses {
     fn poll_process_exit(
         app: &mut DaemonApp,
@@ -83,12 +95,53 @@ impl ProviderRunLivenessProcesses {
                     .collect::<String>();
                 let terminal_diagnostic =
                     crate::provider::sanitize_provider_diagnostic(&terminal_diagnostic);
-                Ok(Some(ProviderProcessExit {
+                // Output pumping can consume the last bytes before liveness
+                // observes exit. The PTY's bounded tail survives that drain.
+                let retained_tail = app.pty.exited_output_diagnostic(provider_run_id);
+                let mut exit = ProviderProcessExit {
                     exit_code,
                     signal,
                     terminal_diagnostic: (!terminal_diagnostic.is_empty())
-                        .then_some(terminal_diagnostic),
-                }))
+                        .then_some(terminal_diagnostic)
+                        .or_else(|| retained_tail.clone()),
+                };
+                if let Ok(run) = app.providers.get_run(provider_run_id) {
+                    let pending_delivery = run.agent_instance_id().is_some_and(|agent_id| {
+                        app.prompt_owner_active_prompt_for_agent(run.session_id(), agent_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|prompt| prompt.delivery_pending())
+                    });
+                    if crate::provider::provider_run_is_claude_headless(&run) && pending_delivery {
+                        let startup =
+                            super::provider_output_claude_native::claude_native_startup_exit(
+                                &run,
+                                retained_tail.as_deref(),
+                            );
+                        // Native terminal output can contain the queued task.
+                        // Only fixed startup facts cross this diagnostic seam.
+                        let message = crate::provider::provider_exit_before_delivery_message(
+                            &exit.termination_at(crate::session::unix_epoch_ms()),
+                            startup.detail,
+                        );
+                        let mut fields = startup.fields;
+                        fields["provider_run_id"] = serde_json::json!(provider_run_id);
+                        fields["agent_id"] = serde_json::json!(run.agent_instance_id());
+                        fields["exit_code"] = serde_json::json!(exit.exit_code);
+                        fields["signal"] = serde_json::json!(exit.signal);
+                        crate::logging::warn_with_fields(
+                            "daemon.claude_headless",
+                            "Claude exited before prompt delivery",
+                            fields,
+                        );
+                        let diagnosed = app
+                            .providers
+                            .record_terminal_diagnostic(provider_run_id, message.clone())?;
+                        app.update_provider_run_projection(diagnosed);
+                        exit.terminal_diagnostic = Some(message);
+                    }
+                }
+                Ok(Some(exit))
             }
             Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
                 exit_code: None,
@@ -257,6 +310,28 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             return Ok(true);
         }
 
+        let pending_delivery = self
+            .app
+            .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
+            .is_some_and(|prompt| prompt.delivery_pending());
+        let termination = outcome.provider_termination.clone().unwrap_or_else(|| {
+            crate::provider::ProviderRunTermination::unknown_process_exit(
+                crate::session::unix_epoch_ms(),
+            )
+        });
+        let reason = if pending_delivery {
+            crate::provider::provider_exit_before_delivery_message(
+                &termination,
+                outcome.ended_run.terminal_diagnostic(),
+            )
+        } else {
+            format!(
+                "Provider run `{}` for `{}` ended unexpectedly: {}.",
+                outcome.provider_run_id,
+                outcome.ended_run.provider(),
+                termination.reason
+            )
+        };
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
         if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
@@ -267,9 +342,8 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             &outcome.session_id,
             &outcome.provider_run_id,
             format!(
-                "Provider run `{}` for `{}` ended unexpectedly. {}",
-                outcome.provider_run_id,
-                outcome.ended_run.provider(),
+                "{} {}",
+                reason,
                 if session_outcome.started_next_prompt {
                     "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                 } else {
@@ -345,21 +419,9 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
         };
         self.app.update_provider_run_projection(ended_run.clone());
         let _ = ProviderRunLivenessProcesses::remove_tracked_process(self.app, provider_run_id)?;
-        let provider_termination = process_exit.as_ref().map(|process_exit| {
-            match (process_exit.exit_code, process_exit.signal.as_deref()) {
-                (Some(exit_code), _) => crate::provider::ProviderRunTermination::process_exit(
-                    exit_code,
-                    crate::session::unix_epoch_ms(),
-                ),
-                (None, Some(signal)) => crate::provider::ProviderRunTermination::signal(
-                    signal,
-                    crate::session::unix_epoch_ms(),
-                ),
-                (None, None) => crate::provider::ProviderRunTermination::unknown_process_exit(
-                    crate::session::unix_epoch_ms(),
-                ),
-            }
-        });
+        let provider_termination = process_exit
+            .as_ref()
+            .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()));
 
         Ok(Some(ProviderRunLivenessOutcome {
             ended_run,
