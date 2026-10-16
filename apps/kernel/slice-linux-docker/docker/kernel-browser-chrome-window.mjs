@@ -174,14 +174,19 @@ export class ChromeWindows {
   /** Protocol 540: the address bar has (`on`) or lost the person's keys; `ago` backdates it (ms). */
   focusOmnibox(on, ago = 0) {
     const was = this.omniboxWarm();
-    this.omniboxFocusAt = on ? performance.now() + ago : 0;
+    this.omniboxFocusAt = on ? performance.now() + ago : null;
     if (was !== this.omniboxWarm()) this.refreshAuxiliary(this.rows);
   }
-  omniboxWarm() { return this.omniboxFocusAt > 0 && performance.now() - this.omniboxFocusAt < OMNIBOX_WARM_MS; }
-  /** A state read while the address bar is warm sees a list Chrome opened since the last poll. */
+  omniboxWarm() { return this.omniboxFocusAt != null && performance.now() - this.omniboxFocusAt < OMNIBOX_WARM_MS; }
+  /** A state read while the address bar is warm sees a list Chrome opened since the last poll; right
+   * after an address-bar key it waits briefly for the list that key opens (else the next 250 ms poll). */
   async refreshWarm() {
     if (!this.omniboxWarm() || !this.bound?.tabbed.isCurrent()) return;
-    this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(this.rows);
+    for (;;) {
+      this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(this.rows);
+      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > 250) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
   }
   /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
   onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }

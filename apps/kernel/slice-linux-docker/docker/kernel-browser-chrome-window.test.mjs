@@ -429,6 +429,16 @@ test("MP-08/MP-11 the omnibox list stream stays warm while the address bar has f
     windows.readOmnibox = async () => open;
     await windows.refreshWarm();
     assert.deepEqual(windows.auxiliaryState(), [list], "a state read sees the list Chrome just opened, on the same stream");
+    // r13 b3: the read that follows a key often arrived before Chrome opened the list (then a 250 ms poll).
+    show(closed); windows.focusOmnibox(true);
+    let reads = 0; windows.readOmnibox = async () => ++reads >= 3 ? open : closed;
+    await windows.refreshWarm();
+    assert.deepEqual(windows.auxiliaryState(), [list], "a read right after a key waits briefly for the list");
+    show(closed); windows.focusOmnibox(true, -1000);
+    reads = 0; windows.readOmnibox = async () => (++reads, closed);
+    await windows.refreshWarm();
+    assert.equal(reads, 1, "no wait long after the last key");
+    windows.focusOmnibox(true);
     delete windows.readOmnibox;
     assert.deepEqual(show(closed), [{ ...list, height: 0 }]);
     assert.deepEqual(show(open), [list], "the next list paints from the same stream");
