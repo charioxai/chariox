@@ -2,11 +2,20 @@
 //! Opaque, socket-local framing. Receipts acknowledge transport delivery only;
 //! they never authorize a request or acknowledge a kernel operation.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v1";
+pub const DISPLAY_EVENT_SCOPE: &str = "kernel_browser_display";
+/// MP-08/MP-10/MP-11: allocated535/143, delivery registration invoking525 resume.
+pub const DISPLAY_RESUME_SCOPE: &str = "kernel_browser_display_resume";
+pub fn is_display_scope(scope: Option<&str>) -> bool {
+    matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
+}
+pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_TRANSFERS: usize = 4;
+pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -25,6 +34,11 @@ pub enum TransportFrame {
 
 pub fn transport_url(value: &str) -> String {
     let (base, query) = value.split_once('?').unwrap_or((value, ""));
+    let query = query
+        .split('&')
+        .filter(|part| !part.is_empty() && !part.starts_with("chariox_transport="))
+        .collect::<Vec<_>>()
+        .join("&");
     let has_path = base
         .split_once("://")
         .is_some_and(|(_, authority)| authority.contains('/'));
@@ -42,8 +56,9 @@ pub fn transport_url(value: &str) -> String {
 /// No payload appears in errors or Debug output, including incomplete transfers.
 #[derive(Default)]
 pub struct FrameReceiver {
-    active: Option<(u32, usize, String)>,
+    active: BTreeMap<u32, (usize, String)>,
     last_id: u32,
+    reserved: usize,
 }
 
 impl FrameReceiver {
@@ -70,24 +85,41 @@ impl FrameReceiver {
             unreachable!()
         };
         let total = total_bytes as usize;
-        if transfer_id == 0
-            || total <= CHUNK_BYTES
-            || total > MAX_MESSAGE_BYTES
-            || payload.is_empty()
-            || payload.len() > CHUNK_BYTES
-        {
+        if transfer_id == 0 || total > MAX_MESSAGE_BYTES || payload.len() > CHUNK_BYTES {
             return Err("invalid transport chunk bounds");
         }
-        if self.active.is_none() {
-            if offset != 0 || transfer_id <= self.last_id {
+        // A zero-byte transfer is the receipt checkpoint immediately after one
+        // bounded binary envelope. It never dispatches an application envelope.
+        if total == 0 {
+            if offset != 0 || !payload.is_empty() || transfer_id <= self.last_id {
+                return Err("invalid transport checkpoint");
+            }
+            self.last_id = transfer_id;
+            let ack = serde_json::to_string(&TransportFrame::TransportAck {
+                transfer_id,
+                offset: 0,
+            })
+            .map_err(|_| "cannot encode transport receipt")?;
+            return Ok((None, Some(ack)));
+        }
+        if payload.is_empty() {
+            return Err("invalid transport chunk bounds");
+        }
+        if !self.active.contains_key(&transfer_id) {
+            if offset != 0
+                || transfer_id <= self.last_id
+                || self.active.len() >= MAX_TRANSFERS
+                || total > MAX_ASSEMBLY_BYTES - self.reserved
+            {
                 return Err("invalid transport transfer start");
             }
-            // Allocate only bytes actually received, not an untrusted total.
-            self.active = Some((transfer_id, total, String::new()));
+            self.last_id = transfer_id;
+            self.reserved += total;
+            // Allocate only bytes received; declared totals reserve a fixed budget.
+            self.active.insert(transfer_id, (total, String::new()));
         }
-        let (id, expected_total, assembled) = self.active.as_mut().unwrap();
-        if *id != transfer_id
-            || *expected_total != total
+        let (expected_total, assembled) = self.active.get_mut(&transfer_id).unwrap();
+        if *expected_total != total
             || assembled.len() != offset as usize
             || payload.len() > total - assembled.len()
         {
@@ -100,8 +132,8 @@ impl FrameReceiver {
         })
         .map_err(|_| "cannot encode transport receipt")?;
         if assembled.len() == total {
-            self.last_id = transfer_id;
-            let (_, _, completed) = self.active.take().unwrap();
+            let (_, completed) = self.active.remove(&transfer_id).unwrap();
+            self.reserved -= total;
             // Reassembly cannot create a nested transport frame.
             let value: serde_json::Value =
                 serde_json::from_str(&completed).map_err(|_| "invalid assembled relay JSON")?;
@@ -162,11 +194,11 @@ mod tests {
     fn transport_urls_preserve_paths_and_normalize_empty_paths() {
         assert_eq!(
             transport_url("ws://127.0.0.1:1"),
-            "ws://127.0.0.1:1/?chariox_transport=chunks-v1"
+            "ws://127.0.0.1:1/?chariox_transport=chunks-v2"
         );
         assert_eq!(
             transport_url("wss://relay.example/path?scope=public"),
-            "wss://relay.example/path?scope=public&chariox_transport=chunks-v1"
+            "wss://relay.example/path?scope=public&chariox_transport=chunks-v2"
         );
     }
     #[test]
@@ -199,7 +231,7 @@ mod tests {
         assert!(receiver
             .receive(&chunk(1, 0, MAX_MESSAGE_BYTES as u32 + 1, "private-canary"))
             .is_err());
-        assert!(receiver.active.is_none());
+        assert!(receiver.active.is_empty());
         let (_, receipt) = receiver.receive(&chunk(1, 0, 17000, "public")).unwrap();
         assert!(receipt.is_some());
         assert!(receiver.receive(&chunk(1, 0, 17000, "duplicate")).is_err());
@@ -207,5 +239,51 @@ mod tests {
         assert!(receiver
             .receive(&chunk(1, 6, 18000, "changed total"))
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod multiplex_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_medium_reply_finishes_before_catalog() {
+        let mut receiver = FrameReceiver::default();
+        let catalog=serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(40000)}).to_string();
+        let reply=serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(18000)}).to_string();
+        let chunk = |id, offset, total, payload: &str| {
+            serde_json::to_string(&TransportFrame::TransportChunk {
+                transfer_id: id,
+                offset,
+                total_bytes: total,
+                payload: payload.into(),
+            })
+            .unwrap()
+        };
+        receiver
+            .receive(&chunk(1, 0, catalog.len() as u32, &catalog[..8000]))
+            .unwrap();
+        receiver
+            .receive(&chunk(2, 0, reply.len() as u32, &reply[..8000]))
+            .unwrap();
+        assert_eq!(
+            receiver
+                .receive(&chunk(2, 8000, reply.len() as u32, &reply[8000..]))
+                .unwrap()
+                .0,
+            Some(reply)
+        );
+        let mut complete = None;
+        for offset in (8000..catalog.len()).step_by(8000) {
+            complete = receiver
+                .receive(&chunk(
+                    1,
+                    offset as u32,
+                    catalog.len() as u32,
+                    &catalog[offset..(offset + 8000).min(catalog.len())],
+                ))
+                .unwrap()
+                .0;
+        }
+        assert_eq!(complete, Some(catalog));
     }
 }

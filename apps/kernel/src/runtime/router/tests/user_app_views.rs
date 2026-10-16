@@ -757,12 +757,16 @@ async fn check_browser_keyboard(
 ) {
     let browser = view.browser.as_ref().unwrap();
     for input in [
-        KernelBrowserInput::Key { key: "Tab".into() },
+        KernelBrowserInput::Key {
+            key: "Tab".into(),
+            modifiers: 0,
+        },
         KernelBrowserInput::Text {
             text: "TUI keyboard fixture".into(),
         },
         KernelBrowserInput::Key {
             key: "Enter".into(),
+            modifiers: 0,
         },
     ] {
         browser_request(
@@ -955,16 +959,93 @@ async fn check_agent_app_input(
     );
     assert_eq!(last["context"]["agent_id"], agent.id());
     assert_eq!(last["context"]["room_id"], session.id());
-    // After the agent's window, the owner's own keys run as the owner again.
+    // MP-08/MP-11 #1001: the controller cannot tell the owner's keys in this
+    // Tab from the agent's delayed work, so they act with no more than the
+    // agent's grants, long after its input ended.
     tokio::time::sleep(std::time::Duration::from_millis(5_200)).await;
-    for input in [
-        KernelBrowserInput::Text {
-            text: " owner".into(),
-        },
+    owner_types(router, browser, " owner-as-agent", false).await;
+    assert_eq!(
+        typed_call(observed, " owner-as-agent").await["context"]["actor"],
+        serde_json::json!({"kind":"agent","id":agent.id()})
+    );
+    // A new Tab of the same App, which no agent drove, is the owner's.
+    let LocalDaemonResponse::UserAppViewOpened { view: fresh, .. } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("a fresh App Tab for the owner")
+    };
+    let fresh_browser = fresh.browser.as_ref().unwrap();
+    wait_for_page(router, fresh_browser, "App channel {\\\"ok\\\":true}").await;
+    owner_types(router, fresh_browser, " fresh-owner", true).await;
+    let owned = typed_call(observed, " fresh-owner").await;
+    assert_eq!(
+        owned["context"]["actor"],
+        serde_json::json!({"kind":"human","id":"alice"})
+    );
+    assert!(owned["context"].get("agent_id").is_none());
+    // Once the agent's App grant is revoked, nothing from its Tab falls back
+    // to the owner's authority.
+    router
+        .runtime_state
+        .revoke_agent_extension(
+            agent.id(),
+            crate::extension::ExtensionKind::App,
+            "installed",
+            "alice",
+        )
+        .await
+        .unwrap();
+    owner_types(router, browser, " owner-after-revoke", false).await;
+    wait_for_page(
+        router,
+        browser,
+        "Keyboard App channel refused AGENT_APP_NOT_GRANTED",
+    )
+    .await;
+    assert!(!observed
+        .tool_requests()
+        .unwrap()
+        .iter()
+        .any(|r| r["params"]["input"]["text"]
+            .as_str()
+            .is_some_and(|text| text.ends_with(" owner-after-revoke"))));
+    for view in [&view, &fresh] {
+        request(
+            router,
+            "alice",
+            LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+                view_id: view.view_id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+async fn owner_types(
+    router: &CommandRouter,
+    browser: &UserAppViewBrowser,
+    text: &str,
+    focus: bool,
+) {
+    let focus = focus.then(|| KernelBrowserInput::Key {
+        key: "Tab".into(),
+        modifiers: 0,
+    });
+    for input in focus.into_iter().chain([
+        KernelBrowserInput::Text { text: text.into() },
         KernelBrowserInput::Key {
             key: "Enter".into(),
+            modifiers: 0,
         },
-    ] {
+    ]) {
         browser_request(
             router,
             KernelBrowserCommand::Input {
@@ -975,39 +1056,27 @@ async fn check_agent_app_input(
         )
         .await;
     }
+}
+
+// The App call the owner's typing submitted, found by the text it ends with.
+async fn typed_call(
+    observed: &chariox_app_runtime::worker_process::test_fixture::Observation,
+    suffix: &str,
+) -> serde_json::Value {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while observed.tool_invocations() < calls + 2 {
+        loop {
+            if let Some(call) = observed.tool_requests().unwrap().into_iter().find(|r| {
+                r["params"]["input"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.ends_with(suffix))
+            }) {
+                return call;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("owner keyboard App call");
-    let recorded = observed.tool_requests().unwrap();
-    let last = recorded.last().unwrap().clone();
-    assert_eq!(
-        last["context"]["actor"],
-        serde_json::json!({"kind":"human","id":"alice"}),
-        "owner call after the agent window: {:?}",
-        recorded
-            .iter()
-            .rev()
-            .take(3)
-            .map(|r| (
-                r["params"]["input"]["text"].clone(),
-                r["context"]["actor"].clone()
-            ))
-            .collect::<Vec<_>>()
-    );
-    assert!(last["context"].get("agent_id").is_none());
-    request(
-        router,
-        "alice",
-        LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
-            view_id: view.view_id.clone(),
-        }),
-    )
-    .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("App call typed {suffix}"))
 }
 
 fn listed_views(

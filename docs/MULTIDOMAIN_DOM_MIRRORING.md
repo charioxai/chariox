@@ -5,9 +5,289 @@ See `MULTIDOMAIN_ROUND2_ON_MAIN.md` for the exact imported source heads and
 validation limits; earlier allocations below describe their branch history.
 
 The user-domain browser now has a DOM transport and a shared reference renderer.
-The screen tiers are native App views, mirrored web pages, then protected video.
+Kernel browser pages and App Tabs use the shared DOM mirror; unsupported page regions use protected video.
 This implementation targets host Chromium on Linux. It does not introduce a
 browser inside a slice, a Cloud runtime proxy, or a second input authority.
+
+## Protocol 503: DOM mirror v2 (current; introduced in 482, compact wire in 489, control/UA state in 492, resend/custom validity/sprites in 501, per-document fragments in 503)
+
+`mirror_subscribe {wire: 2}` selects v2; the 443 computed-style packets below
+remain for one protocol version (TUI/tests) and are superseded for web clients.
+v2 follows rrweb's model instead of a per-credit computed-style dump:
+
+- **One observer per viewer.** Each subscription has its own observer instance
+  in the isolated world (ids, mutation journal, listeners), so one viewer's
+  snapshot or reset never touches another's; it stops when the subscription
+  closes or expires.
+- **Snapshot, then deltas.** One pre-order snapshot per document (`reset`),
+  then MutationObserver deltas as ops: `children` (reconcile a parent's child
+  list; new subtrees carried as records), `attr`, `text`, `css`, `adopted`,
+  `form`, `scroll`, `size`, `res`, `state` (492). Records travel as compact rows
+  `[idDelta, parentBack, tag | kindCode, attrs | 0, extra]`; a stylesheet text
+  of 2 KB or more travels once per snapshot epoch (`sheets` + `css_ref`).
+  MP-08/MP-10/MP-11 M2 keeps ordinary small documents atomic. Large documents
+  start with a pre-order prefix; later credits extend it with these same
+  `children` operations. Each continuation visits at most 4096 nodes, targets
+  an 8 ms task after a minimum 256 visits, and stops near 128 KiB of record
+  work. The initial prefix completes its fixed 1024-visit allowance (subject to
+  the byte bound), so a busy first task cannot cut a detailed header before
+  its visible viewport. Document limits remain
+  finite (900,000 records, 64 MiB of record work, local ids below 1,000,000);
+  one record is bounded at 1 MiB. Local node ids restart on a full snapshot
+  only after the producer advances its input/region epoch fence. Old scroll
+  suppression and frame slots are retired before rebuilding. Cancellation
+  keeps the fence ahead of the published sequence, forcing the next credit
+  to rebuild a full base. Resource keys retain their document lifetime.
+  A small document has a 20,000-record/4 MiB
+  atomic backstop, including large open shadow trees. Input echoes precede
+  continuation records. A same-document reset preserves an active root wheel
+  target and submits that position through normal input under the newly applied
+  sequence; navigation discards it. Node-targeted gestures are never replayed,
+  and kernel epoch, identity and protection checks are unchanged.
+  A structural mutation or changed protection kind
+  restarts a bounded current prefix instead of resuming a stale traversal.
+  Closed roots are discovered with bounded `DOM.describeNode` batches on
+  serialized host identities, including open roots and same-origin frames;
+  no whole-document `DOMSnapshot` reply precedes first paint. Unpublished
+  hosts become opaque before their packet leaves, with their light descendants
+  removed. Published hosts retain ordinary replacement/identity fences.
+  These are kernel implementation bounds; mirror v2's wire is unchanged.
+  A loading document waits for its first contentful paint before its initial
+  prefix. A document that grows past the small-document limit restarts with
+  bounded hydration. CSS event initialization runs asynchronously for loading
+  or large documents: Chromium's `CSS.enable` waits for resource bodies. Its
+  own 30 s bound leaves ordinary CDP request deadlines unchanged. Stylesheet
+  owners are reconciled when activation completes so edits during startup are
+  retained; attached frames share the same watcher and discovery rules.
+  Completed response metadata is indexed by session, frame, loader and observed
+  URL (at most 4096 pending and completed entries each). CSS and font reads use
+  `Network.getResponseBody` for those exact completed responses before the
+  existing resource-tree/content fallback. This avoids waiting for unrelated
+  resource bodies before painting the viewport, preserves authenticated bytes,
+  and makes no new request or credential copy. Reconnection and detached sessions
+  retire the index; document and protection fences still gate publication.
+  Deltas carry only changes: a child list that ends as it was sends nothing, a
+  form op travels only when the field's state changed, and a subtree the page
+  rebuilds with the same shape (a typeahead list replaced by innerHTML) keeps
+  the viewer's nodes: the new page nodes take over the removed nodes' ids and
+  only `attr`/`text`/`res` differences travel. A `form` op carries only the
+  properties that changed (489). Masks, form fields, frames,
+  styles, opaque and custom elements are never morphed, and a morphed node
+  counts as a changed input target.
+- **Author CSS and real attributes.** Stylesheets are the page's own CSSOM
+  text (imports inlined; cross-origin sheets read through CDP and normalized
+  by a constructed sheet); adoptedStyleSheets and open shadow roots are kept.
+  CSSOM edits (insertRule, rule.style writes, replace/replaceSync) make no
+  mutation record: the controller enables the CDP CSS domain per mirrored
+  session and a `styleSheetChanged` marks the owner node (constructed sheets:
+  the adopted lists; imported sheets: sheets with imports) in every observer
+  instance of that frame's world; there is no periodic text compare and no
+  rule-count cap. Events of a same-origin child document (observed by an
+  ancestor's world, no world of its own) are marked in every world of its CDP
+  session. A per-drain signature (rule count, `disabled`, the CSSOM media list)
+  covers what Chrome does not report (`disabled` arrives as a removal,
+  media-list edits not at all); style/link sheets carry their effective CSSOM
+  media list. Imports are found after leading `@layer` statements. Attributes
+  ship by denylist (492): every attribute except
+  `src`-like/navigation names, `on*` handlers and credential-like names
+  (`csrf`, `xsrf`, `token`, `nonce`, `secret`, `passw`) outside the rendered
+  set; values outside the rendered set and `aria-*` are capped at 1 KB. Links
+  carry `href="#"`; `:target` is rewritten to `[chariox-target]`, which the
+  viewer sets, per document, on the element that document's fragment names
+  (the top document's `fragment` header; a mirrored frame document's
+  `fragment` record field and `fragment` op (503), from its own location for
+  same-origin and cross-origin frames alike), and `:defined` to
+  `:not([chariox-undefined])`, which the viewer sets on custom elements the
+  kernel reports undefined (no viewer registry definition outlives its source
+  document). Both markers are denied page attributes.
+- **Pushed credits.** `mirror_next {wait_ms <= 2000}` is a long poll answered
+  by the next page change; the client keeps four credits outstanding, packets
+  apply strictly in sequence (`base_sequence`). The kernel keeps its last 16
+  packets (at most 8 MB) with their original bytes. A gap (a reply lost with a
+  dropped socket, or one overtaken by milliseconds) sends one
+  `mirror_next {resend: true}` at once (501): the kernel ends earlier long polls
+  and answers with the packet after the credit's base from that history
+  (also once an ended long poll issued it), else as an ordinary credit; a
+  duplicate is ignored, and a gap that outlives its resend asks for a reset
+  (`after_sequence: 0`). A failed credit (a dropped socket, a relay
+  re-authentication that rejects pending KernelBrowser requests) also asks for
+  a resend instead of a full snapshot; a reply that could not be applied asks
+  for a reset (credits lost with one socket count as one failure for the
+  backoff). Without a resend, a packet that stays unacknowledged for 1.5 s
+  while a later credit still names an older base is sent again in order. A
+  credit the transport replays after a reconnect (same command id) gets its
+  original packet, and a still-waiting original stops its long poll. The reset
+  and resend credits do not wait for credits in flight, and the kernel ends
+  the long poll of every credit that arrived before them. A queued credit's wait starts when its predecessor is answered
+  (one heartbeat per wait instead of one per credit), at most three waits from
+  its arrival (below the client's 8 s request timeout).
+- **Compact wire (489).** A reset packet carries the binding and header
+  (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`,
+  `fragment` (492)). A
+  delta carries `wire`, `sequence`, its ops, and only the header fields that
+  differ from its base (an explicit `null` replaces); its base is
+  `sequence - 1`, and the viewer restores the rest from its binding and the
+  base. Empty `resources`/`tiles` are omitted. The controller encodes the packet
+  (the Rust kernel passes it through): a body from 512 bytes travels as
+  `{encoding: "deflate", packet_bytes, packet_base64}`, raw deflate in the
+  subscription's context (one sync flush per packet; a reset packet starts a
+  fresh context), so repeated structure such as typeahead rows costs a few
+  bytes. The viewer inflates such bodies strictly in sequence order; a body it
+  cannot inflate asks for a reset. Smaller bodies (echoes) travel as JSON outside
+  the context. A credit replayed after a reconnect gets the same encoded bytes.
+  `mirror_input` answers `{"accepted": true}`: the kernel reconciles its actor
+  ledger with the full browser state, and the viewer sees the input's effect in
+  the next packet.
+- **Resources** are only bytes the page itself loaded (data: URLs, the resource
+  tree, or Chrome's cache without credentials for Resource Timing URLs), typed
+  by magic bytes; fonts ride with the snapshot, images follow it. SVG renders as
+  a `data:` image; the sandbox CSP is `img-src blob: data:; font-src blob:`.
+  An external `<use href="file.svg#icon">` (501) carries its fragment as `href`
+  and the file as a `sprite` resource: the page's bytes parsed inert in the
+  observer's world and rebuilt (shapes, symbols, paint servers, sanitized
+  `<style>`; href and url() only to fragments; no script, foreign content,
+  image, link or animation). `<use>` does not follow `data:` URLs, so the
+  viewer validates the file again and uses it as a same-origin blob; a refused
+  file renders nothing.
+  Element images (`<img>` in the top document) travel only within one viewport
+  of the view, nearest first; the rest wait until the view comes near them.
+  While the view moves (a viewer `scroll_to` or a page scroll, and 300 ms
+  after), a near image above 8 KB travels as a preview: decoded in the
+  observer's world from the page's bytes, half its CSS size, WebP, wrapped in an
+  SVG of the original pixel size so the layout does not change. Its exact bytes
+  replace it under the same key once the view settles (settled pixels stay
+  exact). CSS images and frame resources keep the earlier order. A packet's
+  resource budget is 256 KB of base64, or 64 KB within a second of viewer input,
+  so an echo waits behind at most one such packet. A resource larger than the
+  room left travels in slices (489): `offset`/`total` in base64 characters
+  (4-aligned), in order, under the whole resource's `resource_id`; the viewer
+  verifies the digest of the reassembled bytes. A reset restarts a resource
+  still in slices (its slices may have been lost with the base).
+- **Frames.** Same-origin frames are part of the document. Cross-origin frames
+  are mirrored through their own CDP session/isolated world with the same
+  observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM
+  cannot read are read through the child's CDP session). Every field of a
+  child record, op and delta is rebased by a declared schema; an unnamed field
+  is refused. Nested or unattachable frames, canvas/video/plugins are opaque
+  regions, stills at most 1 Hz until video regions land: a canvas bitmap or a
+  video frame travels as the element's own pixels (overlays above it stay
+  mirrored DOM); tainted media, plugins, closed roots and unattached frames are
+  masked screenshot crops, and such a crop under any transform beyond a
+  translation (also size-preserving ones such as `rotate(180deg)`,
+  `scaleX(-1)`, the `rotate`/`scale` properties), a filter, or opacity/blending
+  on it or an ancestor hands the page to labelled video (`region_transform`):
+  the crop already holds that compositing. Region and
+  mask records carry their layout size; sizes and a mask's display are
+  reconciled every drain.
+- **UA state (492).** State without an attribute footprint is sampled from a
+  declared set (elements with `popover`, dialogs, checkboxes, custom elements)
+  on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:
+  `state {popover_open, modal, indeterminate, defined, custom_invalid}`
+  (records carry non-default values; `custom_invalid` (501) is a control's
+  `setCustomValidity` without its message, sampled again after the page's own
+  input/change handlers). The viewer shows/hides popovers (its copies are
+  `manual`: no viewer light dismiss), opens modal dialogs in its top layer,
+  sets `indeterminate`, marks undefined custom elements (`chariox-undefined`)
+  and sets a custom validity on its copy so `:invalid` matches.
+- **Input** is node-addressed with the viewer's offset inside the node; the
+  kernel clamps to the live box, hit-tests at dispatch (through frames/shadow),
+  refuses protected ancestry and targets whose attributes changed after the
+  viewer's applied sequence. Epochs are snapshot sequences, not wall clocks.
+  CDP pointer coordinates follow the emulated view scale (DPR1 on a scale-2
+  window). Text/keys go to the live focus behind the shared text fence.
+  Focus transitions travel explicitly (492): viewer `focusin` sends `focus`,
+  focus leaving to nothing while the mirror keeps focus sends `blur` (the
+  kernel blurs only while that control is still its live focus), and a kernel
+  header `focused: null` blurs the viewer's control. The caret (a collapsed
+  selection) travels inside editable content only. A press's focus/selection
+  waits up to 50 ms for the rest of its click, so a menu the page renders a
+  frame later shares the packet; after an acknowledged viewer focus, packets
+  still in flight that name the old focus leave the viewer's focus alone. Selects and date/time/
+  month/week/color/range inputs keep the viewer's own UI (popup, picker,
+  typeahead, arrows; only Tab/Enter go to the kernel); their committed value
+  travels as `set {node_id, value | checked | selected_index}`, which the kernel
+  validates live (protected/sensitive/disabled/epoch) and writes with
+  input + change events; the viewer listens for committed changes on every
+  mirrored document and shadow root (`change` is not composed), and compares a
+  multiple select's option with the state it last sent until the kernel echoes
+  it. Keystroke forwarding remains for text controls.
+- **Scroll** is shared (owner decision): the kernel tab has one position. A
+  viewer scrolls its own copy locally for frame rate (spaced pixel wheel
+  steps ease over the frames until the next step, like a browser's animated
+  wheel tick; mouse-wheel notches ease continuously over about the browser's
+  own tick duration, so reversals and sub-pixel tails do not stall the
+  content; frame-rate steps, zoom and snap scrollers stay native) and sends
+  coalesced `scroll_to`; the kernel applies it and every other viewer follows the
+  kernel's position (last writer wins). A viewer ignores kernel echoes only
+  while it is scrolling itself, and the kernel does not send a viewer its own
+  scroll position back. Wheel over opaque regions drives the kernel.
+- **Paint holding (MP-08/MP-10, owner A/B 2026-10-14).** Like Chrome, a navigated
+  document's first snapshot waits for its first contentful paint (or `load`),
+  at most 2.5 s, so viewers keep showing the previous page instead of a white,
+  half-parsed one, also when the same credit resets the stream (a resynchronizing
+  viewer). The viewer keeps its subscription across documents. A bounded prefix
+  may still contain only head nodes after the source has painted (large inline
+  stylesheets, including GitHub login). The renderer prepares that document in
+  a second script-free iframe and retires the prior frame only after continued
+  visible content is available. A fresh attachment keeps its labelled loading
+  state until then. Preparation work is bounded and stops after the first paint.
+  The producer also exempts head bytes from the 128 KiB chunk accounting until
+  the body is reached while cumulative observation bytes remain within 2 MiB.
+  This carries ordinary large CSS heads with their viewport. Node/time and the
+  64 MiB document bounds remain; the exemption is checked between records, not
+  a new wire-size limit. Larger or node-heavy heads can still need continuation,
+  so the client paint hold remains necessary. Quiet-host measurements qualify
+  first-packet cost separately; source tests do not establish that timing gate.
+  MP-11: the held frame is inert; event forwarding also checks that the event's
+  document belongs to the current painted iframe, because native keyboard focus
+  can remain in an inert iframe. Same-document protection resets apply at once;
+  they never retain the old field. Capture geometry is unavailable during a
+  pending document replacement. Repeated navigation retains at most one prior
+  frame and one replacement; failure and disposal retire the unused frame.
+- **No tree hash.** Correctness comes from sequenced deltas, base checks,
+  resnapshot on a gap and independent client validation.
+- **Observer bounds.** Instances are least recently used first, at most 16 per
+  world (twice the service's subscriptions); a new instance for a running
+  subscription answers `resync: evicted`. Resource keys are monotonic and the
+  URL map is LRU at 4096, so long sessions keep materializing images; the
+  kernel drops resource bytes once the viewer acknowledged them.
+- **Stated bounds (unsupported).** JS-only styling without a sheet or attribute
+  (`element.animate`/WAAPI, `FontFace`/`document.fonts.add`,
+  `CSS.registerProperty`, `CSS.highlights`); CSS animations restart at the
+  snapshot; ElementInternals custom states (`:state()`) and form-associated
+  custom element validity (`ElementInternals.setValidity`); closed shadow roots on
+  non-custom hosts (open ones attached late are found within 2 s); select popups
+  and pickers use the viewer's OS UI. Font and
+  scrollbar parity assumes the viewer resolves the same fonts and scrollbar
+  width as the kernel host (Linux Chrome); Mac/Windows viewers may wrap
+  differently.
+- **Fallback.** Over-budget or unavailable DOM returns a labelled `fallback`
+  packet; the web client shows protected video and retries the mirror after
+  30 s, doubling to 10 min. A retired subscription (`stale or foreign mirror`)
+  or a credit failure streak longer than 15 s ends the mirror the same way;
+  shorter streaks back off (250 ms to 4 s). A packet that fails to apply asks
+  for a reset; later packets still apply.
+
+MP-11 rules for v2 (owner decision, Miguel 2026-10-09 11:30 UTC, replacing the
+earlier variant scanning): only the fields the kernel filled from the Vault are
+masked, by node identity (top-level `backend:N` and child-frame
+`frame:<id>:<loader>:backend:N` targets), and only while they are not password
+fields (any other input type, textarea, contenteditable: the pixel path's rule);
+the type is checked on every capture, so a show-password toggle becomes a mask.
+A target is masked only while it holds the fill (coordinator decision
+2026-10-11, consistent with #950): the kernel registers it with the secret's
+value hash and fill revision before the insertion, so it is masked from then
+until the field first holds the fill, stays masked while it does, and becomes a
+plain field for every viewer once its value is no longer the fill (an edit);
+a refill (new revision) masks it again. Targets without a hash stay masked
+(never under-masking). A password field
+renders as dots of the same length and its value never leaves, nor does a
+hidden input's. No page-text, attribute or CSS value scanning and no
+container, frame or media masks: cross-origin frames are mirrored. Fonts and
+images ship; every url() spelling is a kernel resource key or `none`; the
+client validates every packet independently (unknown record keys, forbidden
+tags/attributes, any fetching CSS refused).
 
 ## Contract and authority
 
@@ -16,7 +296,7 @@ on the kernel. The shared client requires 433 only when attaching this feature;
 older unrelated feature minima remain unchanged. Commands are terminal-only:
 `mirror_subscribe`, `mirror_next`, `mirror_close`, and `mirror_input`.
 The kernel derives the user and terminal actor; the caller cannot supply either.
-Native App targets are refused and keep their native capability frontend.
+App Tabs use the same caller-bound mirror subscription and kernel input path as ordinary browser Tabs. App calls, grants and actor attribution remain in the kernel App host.
 
 Subscribe selects the existing canonical 1280×800 CSS viewport at DPR 1 or 2.
 There are at most eight subscriptions; idle subscriptions expire after 60 seconds.
@@ -68,6 +348,60 @@ and shared client each admit only one outstanding credit per subscription. No
 public push events were added; the reserved439/83 pair is not consumed.
 
 ## MP-11 protection boundaries
+
+MP-08/MP-10/MP-11, coordinator decision 2026-10-15: native region attestation
+proves window/Tab/document identity and the authoritative page origin, not the
+decoded media pixels. Native compositing and CDP can rasterize video differently.
+Only live video, canvas (including WebGL), object and embed boxes reported by
+the kernel's isolated DOM observer are excluded from the pixel comparison.
+Their geometry and issued node identity are checked before and after capture;
+the viewer cannot supply exclusions. Every non-media, unprotected pixel must
+match exactly, with no tolerance or media padding. These exclusions never mask
+the displayed media or change Vault protection.
+
+When a region has fewer than 10% (and at least 64) usable identity pixels, an
+unadvertised readback attests surrounding visible page pixels at the same
+native origin, using the same owned PID/XID and current lease. It closes before
+the region is advertised. A full-bleed page without enough surrounding anchors
+refuses. Wrong windows/Tabs, stale documents or generations, shifted origins,
+non-media pixel changes and unreported media still refuse. Admission, delivery
+and input retain the native-window, active-Tab, geometry and protection fences.
+
+MP-11 attestation review amendment (2026-10-15 09:41): a DOM tag alone
+never supplies an exclusion. The kernel resolves that exact node in its isolated
+world and requires its backend node in the same CDP session's current content
+layer tree, with the document loader unchanged before and after the read. OOPIF
+media needs that child's own observer/session; an unattached frame remains in
+the exact comparison. Missing or oversized layer evidence supplies no exclusion.
+Static layer evidence waits for the observed document's own animation-frame
+commit, with a bounded timeout. It does not take a screenshot that could resize
+the native surface merely to request layer metadata.
+
+Exclusions are clipped to the attested visible page, never native Chrome, and
+cover at most 75% of that page. Each box needs an exact three-device-pixel ring
+on its visible surrounding page edges; another exclusion or a protection mask
+cannot cover the ring. Full-bleed or insufficient proof still refuses. Existing
+kernel protection wins: its regions mask both comparison rasters before compare,
+and any overlap between a media exclusion and a protected region refuses.
+Proof-pixel counts exclude all masks. This preserves the owner's existing
+Vault-fill/password-dot policy rather than introducing generic page masks.
+The private immutable attestation receipt and `native_region_attestation`
+diagnostic contain area/count fields only (excluded/page/proof/protected/ring
+pixels and media box count), never pixels, content, identifiers or secret values.
+
+MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
+to keep its renderer awake. Native Chrome text admission must not confuse that
+logical state with the page physically owning the keys. After a kernel-observed
+toolbar click or Ctrl+L, the shared input owner orders a short physical focus
+read with emulation suspended. When Chrome physically owns the keys, the page
+stays physically blurred across later characters and screenshots; repeatedly
+restoring logical focus would synthesize page focus/repaint events while the
+person types in the omnibox. Ordinary page input resumes the retained renderer
+lease on the same ordered owner. A refused/failed focus read restores its prior
+state, and closing the display still releases the lease. Same-page
+input cannot overlap that read; a closing lease stays closed. The isolated
+world's real focus and sensitive-target checks still refuse typing into a
+protected field or foreign frame. No native-key path may skip those checks.
 
 Page scripts, event attributes, origin addresses, navigation/form destinations,
 active markup, custom CSS properties and executable/network CSS are absent from
@@ -196,7 +530,7 @@ Rust tests cross two authenticated local transport connections through productio
 terminal routing and the JS host adapter over synthetic CDP. They test stream
 privacy, transient receipts and the shared takeover ledger. Node/shared-client
 tests cover sanitization, decoded-resource bounds, protection resets, generation,
-stale input, drift, App exclusion and unknown-outcome replay. These complement
+stale input, drift, App Tab caller isolation and unknown-outcome replay. These complement
 rather than replace real Chromium, relay and independent semantic review.
 
 Round 2/3 fix the known fractional tiles, mask edges, native controls and
@@ -332,3 +666,27 @@ protocol minimum or push event is added (local433/relay79 retained). Cloud must
 copy the full renderer and repin matching kernel observer/service/input assets.
 Component evidence does not close ordinary/managed behavioural, hosted relay,
 Room/macOS/physical IME or current security-anchor review acceptance.
+
+## MP-08 / MP-10 / MP-11 App Tab v2 acceptance
+
+App Tabs (#992) are ordinary kernel browser Tabs at the installation's isolated
+App origin. The renderer carries author CSS, text nodes and live form controls
+through the existing v2 snapshot/delta contract. Notes selection uses the same
+kernel capture path; its public `observation` result remains distinct from the
+controller's private `_observation` ordering field. The client exposes the
+packet's CSS viewport and native pixel size to Notes and screenshot registries.
+
+Required real hosted drills, driven through the built web client's `/app open`
+flow with an installed signed or unsigned Todo or Docs App:
+
+- `MIRROR-APP-TEXT`: at DPR 1 and 2, App heading/status text is selectable text;
+  select it, save a Note, Ask with its quoted text, and resolve it. App page
+  content never receives trusted Notes chrome or the comment.
+- `MIRROR-APP-ECHO`: at DPR 1 and 2, click the author-styled field and type through
+  the normal kernel input path. Measure actual presented glyph changes over
+  hosted WSS with an approximately 8 Mbit/s client uplink and at least 60 ms
+  RTT; P95 must be at most 150 ms. The caret and source field value agree.
+
+Retain fail-first baseline and final-head screenshots, console/log captures,
+per-key timings, exact source/binary identities, shaping calibration and cleanup.
+Controller fixtures supplement these drills and do not close their acceptance.

@@ -1,4 +1,5 @@
 """MD-DISPLAY-02/04: owned encoder fallback, packet framing and signal guards."""
+import base64
 import importlib.util
 import io
 import json
@@ -81,6 +82,29 @@ class EncoderTest(unittest.TestCase):
                     self.assertLessEqual(max(plane[(y-row['y'])*stride+41*3:(y-row['y'])*stride+70*3]),32)
                 self.assertGreater(max(plane[:20*3]),100,'unrelated content stays visible')
             self.assertEqual(checked,29)
+
+    def test_MP08_MP11_public_desktop_border_remains_video(self):
+        width,height=1280,800
+        pixels=bytearray(width*height*4)
+        for y in range(507):
+            for x in range(642):pixels[(y*width+x)*4:(y*width+x)*4+3]=bytes([255 if (x+y)%2 else 0])*3
+        # A masked popup cuts into a public native editor beside an opaque browser.
+        for y in range(90,200):pixels[(y*width+258)*4:(y*width+642)*4]=bytes(384*4)
+        regions=[dict(x=0,y=507,width=1280,height=293),dict(x=642,y=0,width=638,height=507),dict(x=258,y=90,width=384,height=110)]
+        header=dict(raw=dict(width=width,height=height,format='bgr0',length=len(pixels),motion=True),protected_regions=regions,codec='avc1.420033',bitrate=4000000,reset=True)
+        run=subprocess.run([sys.executable,'-u',str(path)],input=json.dumps(header).encode()+b'\n'+pixels,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15)
+        self.assertEqual(run.returncode,0);reply=json.loads(run.stdout)
+        self.assertIn('data_base64',reply,'MP-08 protected native window border must not turn video into a PNG fallback')
+        frame=av.CodecContext.create('h264','r').decode(av.Packet(base64.b64decode(reply['data_base64'])))[0].reformat(format='rgb24')
+        plane=bytes(frame.planes[0]);stride=frame.planes[0].line_size
+        for region in regions:
+            for y in range(region['y'],region['y']+region['height']):self.assertLessEqual(max(plane[y*stride+region['x']*3:y*stride+(region['x']+region['width'])*3]),32)
+        self.assertGreater(max(plane[10*stride+10*3:10*stride+30*3]),64,'MP-08 unrelated public desktop remains visible')
+    def test_MP11_unmasked_raw_input_still_refused(self):
+        pixels=bytes([255])*128*128*4
+        header=dict(raw=dict(width=128,height=128,format='bgr0',length=len(pixels)),protected_regions=[dict(x=20,y=20,width=40,height=40)],codec='avc1.420033',bitrate=4000000,reset=True)
+        run=subprocess.run([sys.executable,'-u',str(path)],input=json.dumps(header).encode()+b'\n'+pixels,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15)
+        self.assertEqual(run.returncode,0);self.assertIn('error',json.loads(run.stdout),'MP-11 padding cannot grant unmasked input')
 
     def test_unsafe_signals(self):
         for pid in [None,0,1,-1,-2,float('nan'),2.5]:

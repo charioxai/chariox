@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { captureVisibleRegionRequest, type ScreenshotSurface, type VisibleRegionCapture } from "@chariox/kernel-client/ipc-requests"
+import { captureVisibleRegionRequest, visibleRegionCaptureMinimumProtocolVersion, type ScreenshotSurface, type VisibleRegionCapture } from "@chariox/kernel-client/ipc-requests"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 
 /** Terminal coordinate equivalent: desktop pixels, no inferred terminal-to-video
@@ -48,7 +48,7 @@ export async function withRegionScreenshot(input: {
     frameWidth=frame.width;frameHeight=frame.height
   }
   const captureId=randomUUID()
-  const response=await sendWithProtocolMinimum<{VisibleRegionCaptured?:{capture:VisibleRegionCapture}}>(input.send,captureVisibleRegionRequest(captureId,surface,{x:x!,y:y!,width:width!,height:height!,viewport_width:frameWidth,viewport_height:frameHeight,frame_width:frameWidth,frame_height:frameHeight}),{capability:"Visible region capture",requestVariant:"CaptureVisibleRegion",minimumProtocolVersion:443})
+  const response=await sendWithProtocolMinimum<{VisibleRegionCaptured?:{capture:VisibleRegionCapture}}>(input.send,captureVisibleRegionRequest(captureId,surface,{x:x!,y:y!,width:width!,height:height!,viewport_width:frameWidth,viewport_height:frameHeight,frame_width:frameWidth,frame_height:frameHeight}),{capability:"Visible region capture",requestVariant:"CaptureVisibleRegion",minimumProtocolVersion:visibleRegionCaptureMinimumProtocolVersion})
   const capture=response.VisibleRegionCaptured?.capture
   if(!capture || capture.capture_id!==captureId || capture.media_type!=="image/png" || capture.data_base64.length>6*1024*1024
     || !Object.entries(surface).every(([key,value])=>(capture.surface as unknown as Record<string,unknown>)[key]===value))throw new Error("Capture identity mismatch")

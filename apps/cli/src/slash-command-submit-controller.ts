@@ -13,6 +13,7 @@ export type SlashCommandSubmitControllerDeps = {
   getSessionId: () => string
   recordPromptAreaHistoryEntry: (sessionId: string, rawPrompt: string) => void
   clearPromptText: () => void
+  getPromptText?: () => string | null | undefined
   setPromptHistoryIndex: (index: number | null) => void
   setPromptHistoryDraft: (draft: string | null) => void
   clearCommandCenter: () => void
@@ -90,7 +91,11 @@ export function createSlashCommandSubmitController(
     }
   }
 
-  const clearHandledCommandUi = (command: ParsedSlashCommand) => {
+  const clearHandledCommandUi = (command: ParsedSlashCommand, submittedText: string) => {
+    // MP-08/MP-10/MP-11: slow slice/provider handlers may finish after the
+    // user starts another command. Its draft, history and selector belong
+    // to the new input and must survive the older handler's completion.
+    if (deps.getPromptText && deps.getPromptText() !== submittedText) return
     deps.clearPromptText()
     deps.setPromptHistoryIndex(null)
     deps.setPromptHistoryDraft(null)
@@ -111,7 +116,7 @@ export function createSlashCommandSubmitController(
       }
       if (slashCommand) {
         // Consume this command before awaiting it; a user may type the next draft.
-        clearHandledCommandUi(slashCommand)
+        clearHandledCommandUi(slashCommand, rawPrompt)
       }
       if (slashCommand && slashCommand.kind !== "approvals" && deps.handleSharedShellCommand) {
         try {

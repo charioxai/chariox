@@ -46,6 +46,12 @@ mkdir -p "$BROWSER_DOWNLOAD_DIR"
 mkdir -p "$KERNEL_HOME" /tmp/chariox-slice-state
 mkdir -p "$KERNEL_HOME/daemon"
 install -d -m 0700 "$PROVIDER_HOME" "$PRIVATE_RUNTIME_ROOT"
+# MP-08/MP-10/MP-11: download Cisco's binary at installation, outside the
+# source kit/image. A warm restart verifies and reuses the kernel-owned cache.
+if [[ "${CHARIOX_SLICE_DISPLAY_MODE:-}" == "headed" && -z "${CHARIOX_BROWSER_DISPLAY_OPENH264:-}" ]]; then
+  CHARIOX_BROWSER_DISPLAY_OPENH264="$(python3 "$ROOT/install-display-codec.py" --root "$PRIVATE_RUNTIME_ROOT/display-codecs")"
+  export CHARIOX_BROWSER_DISPLAY_OPENH264
+fi
 # A protected layout captures /home/slice, which must never hold provider state.
 # Every managed run also binds the shared provider HOME, so default accounts kept
 # there would be readable by runs that select another account. Keep them in the

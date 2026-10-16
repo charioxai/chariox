@@ -209,7 +209,6 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
             CloudTerminalClientOptions {
                 pair_account_client: true,
                 client_alias: Some(format!("{} terminal", terminal_type.as_str())),
-                target_alias: target_daemon_alias.clone(),
                 ..CloudTerminalClientOptions::default()
             },
         )
@@ -467,7 +466,6 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
             &terminal_id,
             &token.target_daemon_id,
             CloudTerminalClientOptions {
-                target_alias: token.target_daemon_alias.clone(),
                 public_key_thumbprint: Some(joined_thumbprint.clone()),
                 ..CloudTerminalClientOptions::default()
             },

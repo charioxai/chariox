@@ -108,14 +108,23 @@ client shows that Tab in its browser modal and needs no isolated App origin.
 With the App-view feature enabled, `/app open` uses this host both from the
 waiting room and while a Room is attached. The TUI projects the same Tab as
 text and sends its input through the kernel browser.
-A focused or granted agent may input in, navigate within the App origin and
-close an App Tab after the kernel claimed `UserDomainResource::AppView` in its
-own grant; the host refuses agent mutations without that claim. Each page call
+A focused or granted agent may input in (including a Vault fill), navigate
+within the App origin and close an App Tab after the kernel claimed
+`UserDomainResource::AppView` in its own grant; the host refuses agent
+mutations without that claim. Each page call
 carries who drove the Tab. An agent-driven call runs as that agent
 (`Actor::Agent`, `agent_id`, `room_id`, running turn) and only while the agent
 still holds the App view and its own App grant (rechecked at enqueue and
 reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
-authority. Critical effects still need the owner's validation and passkey.
+authority. Who a call runs as comes only from the input the kernel host
+dispatched into that Tab, recorded by the controller; the page cannot name it.
+Timers, browser-generated events (scroll, focus, load) and the App's own
+navigations can outlive the input that caused them by any delay, so once an
+agent drove the Tab, through any of its documents, every call from it runs as
+that agent (a person's own click there acts with no more than the agent's
+grants), and is refused with `APP_ACTOR_UNKNOWN` when several agents did. A Tab
+no agent drove is the person's; closing the App view and opening it again
+starts a clean Tab. Critical effects still need the owner's validation and passkey.
 Existing Room-hosted instances keep the Room rule below; opening an App from
 a client no longer selects that host merely because a Room is attached.
 
@@ -130,8 +139,8 @@ metadata exposes reachability.
 
 MP-08 / MP-10 / MP-11: agents reach App tabs through the existing kernel-browser
 tools and shared user-domain grant authority. No separate App-view MCP adapter
-or tool table is required. The kernel claims the exact App view before input,
-navigation or close, and authorizes resulting bridge calls with the agent's
+or tool table is required. The kernel claims the exact App view before input
+(including a Vault fill), navigation or close, and authorizes resulting bridge calls with the agent's
 own App binding. Browser mutations cannot borrow the human App channel. View
 ids remain routing ids; they cannot answer RuntimeInteractions, fetch Vault
 material or grant window access.

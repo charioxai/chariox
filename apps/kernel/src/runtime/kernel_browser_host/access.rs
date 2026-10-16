@@ -4,6 +4,16 @@ use crate::runtime::user_domain_access::{DEFAULT_GRANT_LIFETIME, MAX_GRANT_LIFET
 use std::time::Instant;
 
 impl KernelBrowserHost {
+    /// MP-08/MP-11: called only by the typed human/lease desktop grant adapter.
+    pub(crate) fn grant_desktop(&self, user: &str, agent: &str, surface: &str) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.access.grant_desktop(user, agent, surface);
+        state
+            .loaded
+            .insert((user.into(), agent.into(), KernelBrowserCapability::Computer));
+        drop(state);
+        crate::transport::mcp_server::catalog_changed();
+    }
     // MP-11: use while holding the grant lock; never run authority callbacks here.
     pub(super) fn check_admission_epoch(
         state: &HostState,
@@ -327,6 +337,14 @@ impl KernelBrowserHost {
             .unwrap_or_else(|e| e.into_inner())
             .access
             .acquisition_fence(user, agent)
+    }
+    // MP-08 / MP-10 / MP-11: Room permissions share the Access cursor.
+    pub(crate) fn access_projection_changed(&self, user: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .changed(user);
     }
     pub(crate) fn grant_snapshot(&self, user: &str, kernel: &str) -> Value {
         self.inner

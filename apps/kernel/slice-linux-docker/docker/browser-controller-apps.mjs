@@ -22,9 +22,6 @@ const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
-// MP-08/MP-11: calls a page makes this soon after an agent's input stay the
-// agent's even if a person touches the Tab meanwhile.
-const AGENT_CALL_WINDOW_MS = 5_000;
 const BINDING = "__charioxAppCall";
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
@@ -136,33 +133,26 @@ export class AppTabs {
     this.nextFullscreenCheck = 0;
     this.restoreGraceMs = restoreGraceMs;
     this.orphanRestores = new Map();
-    this.now = () => performance.now();
   }
 
-  // MP-08/MP-10/MP-11: the kernel host reports who drives an App Tab (an
-  // agent id, or null for a person). A call runs as the agent while its input
-  // is in flight, within a short window after it, and until a person's input
-  // follows; the kernel then authorizes it as that agent, never as the owner.
-  beginInput(targetId, agent) {
+  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
+  // the kernel dispatched into that Tab, never from the page: App code can
+  // rewrite anything in its realm, and its timers, browser-generated events
+  // (scroll, focus, load) and own navigations can outlive the input that
+  // caused them by any delay. So once an agent drove the Tab, through any of
+  // its documents, no call from it is the person's: with one such agent every
+  // call runs as that agent (a person's own click there acts with no more than
+  // the agent's grants), with several the call is refused. A Tab no agent
+  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
+  noteAgent(targetId, agent) {
     const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    if (!app) return () => {};
-    const mark = () => {
-      if (agent) Object.assign(app, { agent, agentAt: this.now() });
-      else app.humanAt = this.now();
-    };
-    mark();
-    if (agent) app.agentInputs = (app.agentInputs ?? 0) + 1;
-    return () => {
-      if (agent) app.agentInputs--;
-      mark();
-    };
+    app?.agents.add(agent);
   }
 
+  // undefined: the person; null: unknown, refused.
   callActor(app) {
-    if (!app.agent) return undefined;
-    const driving = app.agentInputs > 0 || this.now() - app.agentAt < AGENT_CALL_WINDOW_MS
-      || !(app.humanAt > app.agentAt);
-    return driving ? { kind: "agent", id: app.agent } : undefined;
+    if (!app.agents.size) return undefined;
+    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
   }
 
   async open(params) {
@@ -204,7 +194,7 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
+    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), agents: new Set() });
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -349,6 +339,11 @@ export class AppTabs {
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
+    if (actor === null) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
+        message: "More than one agent drove this App Tab: close the App view and open it again" });
+      return;
+    }
     if (this.calls.length >= MAX_PENDING_CALLS) {
       await this.resolve(sessionId, call.id, false, { code: "APP_BUSY",
         message: `App view call queue is full (${MAX_PENDING_CALLS} pending calls); retry after 500 ms` });

@@ -1,6 +1,7 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
-// MP-08/MP-11: shared Vault fill-target masks; unavailable geometry retries.
-import { deflateSync, inflateSync, crc32 } from 'node:zlib';
+// MP-08/MP-11: exact Vault fill masks through the shared trusted collector.
+// Unavailable/racing geometry refuses capture for retry. No generic masks.
+import { deflateSync, inflateSync, crc32 } from "node:zlib";
 import { locateBrowserRegions } from "./browser-observation-regions.mjs";
 
 // MP-11: preserve the complete viewport policy across protected crop merges.
@@ -219,4 +220,13 @@ export async function captureProtectedPage(browser, tab, values, targets, captur
     onMaskedRegions(before);
     return masked;
   } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
+}
+
+// MP-08/MP-10/MP-11: one exact raster extraction path for display refinement
+// and DOM fallback. Pixels must already have crossed the protection barrier.
+export function losslessRegion(frame,x,y,width,height) {
+  if(![x,y,width,height].every(Number.isSafeInteger)||x<0||y<0||width<1||height<1||x+width>frame.width||y+height>frame.height)throw Error('MP-11: invalid lossless raster region');
+  const pixels=Buffer.alloc(width*height*4);
+  for(let row=0;row<height;row++)frame.pixels.copy(pixels,row*width*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+width)*4);
+  return {x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)};
 }

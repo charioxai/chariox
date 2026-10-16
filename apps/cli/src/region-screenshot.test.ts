@@ -47,3 +47,11 @@ for (const kind of ["tab", "app"]) test(`region ${kind} capture uses native pixe
   await withRegionScreenshot({args:[kind,kind === "app" ? "view-1" : "host-tab-1","2000","1200","1","1"],sessionId:"s",attachmentId:"a",send,check:()=>{},attach:async()=>{attached=true}})
   assert.equal(attached,true)
 })
+// MP-08 / MP-10 / MP-11: room state exists on 487; capture does not.
+test("MP-08 region capture reports the shared 494 minimum on predecessor refusal", async () => {
+  const send=async<T>(request:unknown):Promise<T>=>{
+    if((request as {GetRoomEnvironmentState?:unknown}).GetRoomEnvironmentState)return {RoomEnvironmentState:{environment:{runtime_generation:1,viewport:{revision:1,desktop_pixel_width:1280,desktop_pixel_height:800}}}} as T
+    throw new Error("unknown variant `CaptureVisibleRegion`")
+  }
+  await assert.rejects(withRegionScreenshot({args:["room","0","0","1","1"],sessionId:"s",attachmentId:"a",send,check:()=>{},attach:async()=>{assert.fail("predecessor cannot attach")}}),/Visible region capture requires kernel protocol 494 or newer/)
+})

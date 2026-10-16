@@ -63,7 +63,33 @@ extern "C" {
         height: *mut i32,
     ) -> *mut u8;
 
+    pub(super) fn cx_capture_open_mode(
+        owner: libc::c_ulong,
+        width: i32,
+        height: i32,
+        automatic: i32,
+    ) -> *mut c_void;
     pub(super) fn cx_capture_open(owner: libc::c_ulong, width: i32, height: i32) -> *mut c_void;
+    pub(super) fn cx_capture_open_region(
+        owner: libc::c_ulong,
+        window_width: i32,
+        window_height: i32,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+    ) -> *mut c_void;
+    pub(super) fn cx_capture_open_selected_region(
+        owner: libc::c_ulong,
+        window: libc::c_ulong,
+        window_width: i32,
+        window_height: i32,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+    ) -> *mut c_void;
+    pub(super) fn cx_capture_inventory(owner: libc::c_ulong, out: *mut i64, limit: i32) -> i32;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
@@ -71,8 +97,14 @@ extern "C" {
     pub(super) fn cx_capture_motion_height(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_shift(c: *mut c_void, out: *mut i32) -> i32;
     pub(super) fn cx_capture_wheel(c: *mut c_void, x: i32, y: i32, dx: i32, dy: i32) -> i32;
-    pub(super) fn cx_capture_click(c: *mut c_void, x: i32, y: i32) -> i32;
+    pub(super) fn cx_capture_button(c: *mut c_void, x: i32, y: i32, button: i32) -> i32;
+    pub(super) fn cx_capture_drag(c: *mut c_void, x: i32, y: i32, tx: i32, ty: i32) -> i32;
     pub(super) fn cx_capture_key(c: *mut c_void, keysym: libc::c_ulong, shift: i32) -> i32;
+    pub(super) fn cx_capture_key_modifiers(
+        c: *mut c_void,
+        keysym: libc::c_ulong,
+        modifiers: i32,
+    ) -> i32;
     pub(super) fn cx_capture_plans(c: *mut c_void, enabled: i32);
     pub(super) fn cx_webp_lossless(
         bgrx: *const u8,
@@ -89,6 +121,7 @@ extern "C" {
     pub(super) fn cx_capture_fd(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_damage(c: *mut c_void) -> i32;
     pub(super) fn cx_capture_read(c: *mut c_void, out: *mut u8, bounds: *mut i32) -> i32;
+    pub(super) fn cx_codec_row_y(height: i32, count: i32, index: i32) -> i32;
     pub(super) fn cx_codec_open(
         width: i32,
         height: i32,

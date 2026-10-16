@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chariox_relay::protocol::RelayEnvelope;
@@ -14,10 +15,16 @@ pub(super) async fn send_relay_envelope_frame<S>(
     envelope: RelayEnvelope,
     lane: &'static str,
     binary_events: bool,
+    closing: &AtomicBool,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
 {
+    // MP-08/MP-10/MP-11: skip coalesced and queued stale stream events while
+    // preserving every bulk reply. Keep no sender inside its own writer task.
+    if !super::super::relay_envelope_should_write(&envelope, closing.load(Ordering::Acquire)) {
+        return true;
+    }
     let kind = relay_envelope_kind(&envelope);
     let frame = if binary_events {
         match chariox_relay::binary_event::from_envelope(&envelope) {
@@ -38,8 +45,11 @@ where
         }
     };
     let payload_len = frame.len();
+    let packet = chariox_relay::transport_timing::envelope_signature(&envelope);
+    chariox_relay::transport_timing::record("kernel_write_start", packet);
     let started = Instant::now();
     let sent = writer.send(frame).await.is_ok();
+    chariox_relay::transport_timing::record("kernel_write_end", packet);
     if kind == "daemon_event" {
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
     }

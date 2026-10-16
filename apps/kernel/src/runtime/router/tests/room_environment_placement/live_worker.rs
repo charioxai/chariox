@@ -24,6 +24,7 @@ mod controller_history_queue;
 mod controller_integrations;
 mod controller_lifecycle_cancellation;
 mod controller_mutations;
+mod controller_native_observation;
 mod controller_navigation_queue;
 mod controller_observations;
 mod controller_recovery;

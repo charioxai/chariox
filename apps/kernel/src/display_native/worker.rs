@@ -20,10 +20,118 @@ struct Config {
     width: i32,
     height: i32,
     pool: PathBuf,
+    /// MP-08/MP-11: read the kernel-owned desktop root instead of an owned
+    /// browser window; the kernel masks every frame before encode.
+    #[serde(default)]
+    desktop: bool,
+    /// MP-08/MP-10/MP-11: private kernel-resolved owned-window crop.
+    #[serde(default)]
+    window_region: Option<WindowRegion>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowRegion {
+    #[serde(default)]
+    id: Option<u32>,
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+}
+impl Config {
+    fn valid(&self) -> bool {
+        if self.pid <= 1 || !self.pool.is_absolute() || self.desktop && self.window_region.is_some()
+        {
+            return false;
+        }
+        match &self.window_region {
+            None => [(1280, 800), (2560, 1600), (1920, 1080)].contains(&(self.width, self.height)),
+            Some(window) => {
+                window.id.is_none_or(|id| id > 1)
+                    && (2..=2560).contains(&self.width)
+                    && (2..=1600).contains(&self.height)
+                    && self.width % 2 == 0
+                    && self.height % 2 == 0
+                    && (1..=2560).contains(&window.width)
+                    && (1..=2400).contains(&window.height)
+                    && window.left >= 0
+                    && window.top >= 0
+                    && window.left <= window.width - self.width
+                    && window.top <= window.height - self.height
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    // Protocol 530: the exact control lines kernel-browser-native.mjs and
+    // kernel-browser-window-region.mjs write (NativeWorkerControl adds `id`).
+    #[test]
+    fn mp08_band_gesture_and_inventory_control_lines_parse() {
+        for line in [
+            r#"{"click":{"id":1,"point":[10,20]}}"#,
+            r#"{"click":{"id":2,"point":[10,20],"button":3}}"#,
+            r#"{"drag":{"id":3,"point":[10,20],"to":[300,20]}}"#,
+            r#"{"windows":{"id":4}}"#,
+        ] {
+            assert!(serde_json::from_str::<Command>(line).is_ok(), "{line}");
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"windows":{"id":4}}"#),
+            Ok(Command::Windows { .. })
+        ));
+        // The worker's own bound owner is the only inventory owner.
+        assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
+    }
+    #[test]
+    fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
+        let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
+            "window_region":{"width":1280,"height":974,"left":0,"top":0}});
+        assert!(serde_json::from_value::<Config>(base.clone())
+            .unwrap()
+            .valid());
+        for (key, value) in [
+            ("id", 0),
+            ("id", 1),
+            ("left", -1),
+            ("top", 801),
+            ("width", 1279),
+            ("height", 2410),
+        ] {
+            let mut bad = base.clone();
+            bad["window_region"][key] = value.into();
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+        let mut legacy = base.clone();
+        legacy.as_object_mut().unwrap().remove("window_region");
+        assert!(!serde_json::from_value::<Config>(legacy).unwrap().valid());
+        for (key, value) in [
+            ("pid", json!(1)),
+            ("height", json!(175)),
+            ("pool", json!("relative")),
+        ] {
+            let mut bad = base.clone();
+            bad[key] = value;
+            assert!(
+                !serde_json::from_value::<Config>(bad).unwrap().valid(),
+                "{key}"
+            );
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Command {
+    // MP-08/MP-10/MP-11: upstream fences cannot be inferred from raster
+    // pixels. Count their fixed reasons at the native worker, never content.
+    Reject {
+        reject: Rejection,
+    },
     Encode {
         encode: Encode,
     },
@@ -60,12 +168,44 @@ enum Command {
     Click {
         click: Pointer,
     },
+    Drag {
+        drag: Pointer,
+    },
+    Windows {
+        windows: WindowsQuery,
+    },
     Key {
         key: [u32; 2],
+    },
+    KeyChord {
+        key_chord: [u32; 2],
     },
     Plans {
         plans: bool,
     },
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rejection {
+    StaleDocument,
+    Epoch,
+    RegionRevision,
+    SerialSkipped,
+    ShiftHold,
+}
+impl Rejection {
+    fn index(self) -> usize {
+        self as usize
+    }
+    fn label(self) -> &'static str {
+        [
+            "stale_document",
+            "epoch",
+            "region_revision",
+            "serial_skipped",
+            "shift_hold",
+        ][self.index()]
+    }
 }
 /// MP-08/MP-10/MP-11: pointer input is a request: the reply says whether the
 /// owned window received it, so Node falls back to CDP on a refusal.
@@ -76,11 +216,44 @@ struct Pointer {
     point: [i32; 2],
     #[serde(default)]
     notches: Option<[i32; 2]>,
+    /// Protocol 530: 2 (middle) or 3 (right); absent means the primary button.
+    #[serde(default)]
+    button: Option<i32>,
+    /// Protocol 530: a drag's end point.
+    #[serde(default)]
+    to: Option<[i32; 2]>,
+}
+/// Protocol 530: the bound owner's window inventory from the running worker.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsQuery {
+    id: u64,
 }
 fn admit_default() -> bool {
     true
 }
 const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
+// MP-08/MP-10: damage-driven FramePace semantics described in the Selkies
+// audit (pixelflux pace.rs). Independently implemented here; no upstream
+// code copied. Input wakes retain their immediate readback admission.
+const READBACK_MIN: Duration = Duration::from_millis(3);
+pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
+    dirty && (wake || elapsed >= READBACK_MIN)
+}
+pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> i32 {
+    if dirty && free_slot {
+        READBACK_MIN
+            .saturating_sub(elapsed)
+            .as_micros()
+            .div_ceil(1000) as i32
+    } else if free_slot {
+        // Upper bound only; XDamage/control readiness wakes poll sooner.
+        16
+    } else {
+        // No slot can be overwritten. Release/control/XDamage still wake us.
+        1000
+    }
+}
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -153,10 +326,7 @@ fn read_config() -> Result<Config, String> {
 pub(super) fn run() -> Result<(), String> {
     let config = read_config()?;
     let (w, h) = (config.width, config.height);
-    if config.pid <= 1
-        || ![(1280, 800), (2560, 1600), (1920, 1080)].contains(&(w, h))
-        || !config.pool.is_absolute()
-    {
+    if !config.valid() {
         return Err("MP-11: native admission".into());
     }
     let info =
@@ -173,6 +343,9 @@ pub(super) fn run() -> Result<(), String> {
     if !root_info.is_dir() || root_info.uid() != info.uid() || root_info.mode() & 0o077 != 0 {
         return Err("MP-11: native root owner".into());
     }
+    let owner = if config.desktop { 0 } else { config.pid };
+    // MP-08/MP-10: the existing owned-desktop environment presents the root.
+    let automatic = i32::from(std::env::var("CHARIOX_OWNED_VIRTUAL_DISPLAY").as_deref() == Ok("1"));
     super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
@@ -181,7 +354,30 @@ pub(super) fn run() -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(50));
         }
-        capture = Capture(unsafe { ffi::cx_capture_open(config.pid as libc::c_ulong, w, h) });
+        capture = Capture(unsafe {
+            match &config.window_region {
+                Some(window) if window.id.is_some() => ffi::cx_capture_open_selected_region(
+                    config.pid as libc::c_ulong,
+                    window.id.unwrap() as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
+                Some(window) => ffi::cx_capture_open_region(
+                    config.pid as libc::c_ulong,
+                    window.width,
+                    window.height,
+                    window.left,
+                    window.top,
+                    w,
+                    h,
+                ),
+                None => ffi::cx_capture_open_mode(owner as libc::c_ulong, w, h, automatic),
+            }
+        });
         if !capture.0.is_null() {
             break;
         }
@@ -197,6 +393,16 @@ pub(super) fn run() -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut control = Vec::new();
     let mut serial = 0u64;
+    let mut rejected = [0u64; 5];
+    for reason in [
+        Rejection::StaleDocument,
+        Rejection::Epoch,
+        Rejection::RegionRevision,
+        Rejection::SerialSkipped,
+        Rejection::ShiftHold,
+    ] {
+        eprintln!("MD-DISPLAY: native rejected {} 0", reason.label());
+    }
     let mut admitted = 0u64;
     let exact = ExactWorker::new();
     let mut dirty = true;
@@ -208,7 +414,8 @@ pub(super) fn run() -> Result<(), String> {
     // during x264; capture damage queues while that thread holds the sessions.
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
     let mut pending_rows = 0u8;
-    let (codec_tx, codec_rx) = std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease)>(4);
+    let (codec_tx, codec_rx) =
+        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64)>(4);
     let codec_sessions = sessions.clone();
     std::thread::spawn(move || {
         let lock = || {
@@ -216,7 +423,8 @@ pub(super) fn run() -> Result<(), String> {
                 .lock()
                 .map_err(|_| "MP-11: native sessions poisoned".to_string())
         };
-        while let Ok((q, lease)) = codec_rx.recv() {
+        while let Ok((q, lease, queued)) = codec_rx.recv() {
+            let started = epoch();
             // x264 runs between two short critical sections.
             let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
                 let outcome = Sessions::run_encode(&job, lease.pixels());
@@ -227,7 +435,16 @@ pub(super) fn run() -> Result<(), String> {
                 }
             });
             // Encoder failures stay fatal for the worker, as on the capture thread.
-            if result.and_then(|value| reply(q.id, value)).is_err() {
+            if result
+                .and_then(|mut value| {
+                    // MP-08/MP-10/MP-11: private numeric queue timing only.
+                    if let Some(spans) = value["timings"].as_array_mut() {
+                        spans.push(json!(["native_codec_queue", queued, started]));
+                    }
+                    reply(q.id, value)
+                })
+                .is_err()
+            {
                 std::process::exit(2);
             }
         }
@@ -240,7 +457,7 @@ pub(super) fn run() -> Result<(), String> {
             }
             dirty = true;
         }
-        let due = dirty && (wake.is_some() || last.elapsed() >= Duration::from_millis(16));
+        let due = readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -311,11 +528,7 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = if dirty && slots.iter().any(|s| s.available()) {
-            16u128.saturating_sub(last.elapsed().as_millis()).min(16) as i32
-        } else {
-            1000
-        };
+        let timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
         let mut fds = [
             libc::pollfd {
                 fd: 0,
@@ -362,6 +575,11 @@ pub(super) fn run() -> Result<(), String> {
                 Ok(s)
             };
             match command {
+                Command::Reject { reject } => {
+                    let count = &mut rejected[reject.index()];
+                    *count = count.saturating_add(1);
+                    eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
+                }
                 Command::Wake { wake: true } => wake = Some(epoch()),
                 Command::Refresh { refresh: true } => {
                     dirty = true;
@@ -395,18 +613,49 @@ pub(super) fn run() -> Result<(), String> {
                 }
                 Command::Click { click: p } => {
                     let [x, y] = p.point;
-                    let clicked = unsafe { ffi::cx_capture_click(capture.0, x, y) } == 0;
+                    let button = p.button.unwrap_or(1);
+                    let clicked = unsafe { ffi::cx_capture_button(capture.0, x, y, button) } == 0;
                     if clicked {
                         wake = Some(epoch());
                     }
                     reply(p.id, json!({ "clicked": clicked }))?;
                 }
+                Command::Drag { drag: p } => {
+                    let ([x, y], [tx, ty]) = (p.point, p.to.ok_or("MP-11: native drag")?);
+                    let dragged = unsafe { ffi::cx_capture_drag(capture.0, x, y, tx, ty) } == 0;
+                    if dragged {
+                        wake = Some(epoch());
+                    }
+                    reply(p.id, json!({ "dragged": dragged }))?;
+                }
+                // A failed read refuses this request only; the capture keeps running.
+                Command::Windows { windows: q } => match owner_windows(owner) {
+                    Ok(rows) => reply(q.id, json!({ "windows": rows }))?,
+                    Err(_) => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
+                },
                 // MP-08/MP-10: [keysym, shift] one key press/release.
                 Command::Key {
                     key: [keysym, shift],
                 } => {
                     if unsafe { ffi::cx_capture_key(capture.0, keysym.into(), shift as i32) } != 0 {
                         return Err("MP-11: native key refused".into());
+                    }
+                    wake = Some(epoch());
+                }
+                Command::KeyChord {
+                    key_chord: [keysym, modifiers],
+                } => {
+                    if modifiers > 15
+                        || !((0x20..=0x7e).contains(&keysym) || (0xff08..=0xffff).contains(&keysym))
+                        || unsafe {
+                            ffi::cx_capture_key_modifiers(
+                                capture.0,
+                                keysym.into(),
+                                modifiers as i32,
+                            )
+                        } != 0
+                    {
+                        return Err("MP-11: native key chord refused".into());
                     }
                     wake = Some(epoch());
                 }
@@ -438,9 +687,15 @@ pub(super) fn run() -> Result<(), String> {
                         .iter()
                         .find(|s| s.serial == Some(q.serial))
                         .ok_or("MP-11: native encode lease")?;
-                    codec_tx
-                        .try_send((q, slot.codec_lease()))
-                        .map_err(|_| "MP-11: native codec queue unavailable")?;
+                    // MP-10 (#933 review 7): a full codec queue refuses this
+                    // encode softly (Node skips one sample); never fatal.
+                    match codec_tx.try_send((q, slot.codec_lease(), epoch())) {
+                        Ok(()) => {}
+                        Err(std::sync::mpsc::TrySendError::Full((q, _, _))) => {
+                            reply(q.id, json!({"busy": true}))?
+                        }
+                        Err(_) => return Err("MP-11: native codec queue unavailable".into()),
+                    }
                 }
                 Command::Exact { exact: q } => {
                     let id = q.id;
@@ -457,7 +712,7 @@ pub(super) fn run() -> Result<(), String> {
                             |reason: String| json!({"shift_refused": true, "reason": reason});
                         match locked()?.shift(q, slot) {
                             Ok(job) => {
-                                if exact.submit_job(id, job).is_err() {
+                                if !matches!(exact.submit_job(id, job), Ok(true)) {
                                     reply(id, refused("MP-10: native exact queue busy".into()))?;
                                 }
                             }
@@ -472,8 +727,8 @@ pub(super) fn run() -> Result<(), String> {
                                 |_| json!({"error":"MP-11: exact preparation failed"}),
                             );
                             reply(id, value)?;
-                        } else {
-                            exact.submit(id, plan)?;
+                        } else if !exact.submit(id, plan)? {
+                            reply(id, json!({"busy": true}))?;
                         }
                     }
                 }
@@ -481,4 +736,34 @@ pub(super) fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// MP-08/MP-10/MP-11: one-shot numeric inventory, private owned-display ABI.
+pub(super) fn inventory() -> Result<(), String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Query {
+        pid: u32,
+    }
+    let mut line = String::new();
+    use std::io::Read;
+    std::io::stdin()
+        .take(8193)
+        .read_to_string(&mut line)
+        .map_err(|_| "MP-11: native window query")?;
+    if line.len() > 8192 {
+        return Err("MP-11: native window query bound".into());
+    }
+    let q: Query = serde_json::from_str(&line).map_err(|_| "MP-11: native window query")?;
+    serde_json::to_writer(std::io::stdout().lock(), &owner_windows(q.pid)?)
+        .map_err(|_| "MP-11: native window inventory reply".into())
+}
+fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
+    if pid <= 1 {
+        return Err("MP-11: native window owner".into());
+    }
+    let mut data = [0i64; 32 * 13];
+    let count = unsafe { ffi::cx_capture_inventory(pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    if count < 0 { return Err("MP-11: native window inventory".into()); }
+    Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }

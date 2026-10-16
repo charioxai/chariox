@@ -1,5 +1,12 @@
 // MP-08/MP-10/MP-11: control-only bridge to the kernel-owned native worker.
 // Frame pixels and compressed packets never pass through the motion bridge.
+import path from 'node:path';
+// MP-08/MP-10/MP-11: browser and desktop workers share the kernel reader's
+// private packet directory; the worker derives it from its raster pool parent.
+export function nativeWorkerResource(environment=process.env){
+ const executable=environment.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER,root=environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
+ return path.isAbsolute(executable??'')&&path.isAbsolute(root??'')?{executable,root}:null;
+}
 const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error(message),{dispatched:false});
 // MP-08/MP-10/MP-11: two full native RGB rasters (PNG + WebP repair),
 // base64 and metadata at the admitted 2560x1600 geometry fit within32 MiB.
@@ -23,9 +30,11 @@ export class NativeWorkerControl {
   const waiter=this.pending.get(header.reply);this.pending.delete(header.reply);
   try{
    const value=JSON.parse(bytes);
+   // MP-10 (#933 review 7): a full worker queue refuses one request softly.
+   if(value.busy===true&&Object.keys(value).length===1){waiter.reject(Object.assign(Error('MD-DISPLAY: native worker busy'),{busy:true}));return;}
    if(value.error){waiter.reject(notSent('MP-11: native worker refused'));return;}
    if(Array.isArray(value.timings)&&value.timings.length<=64){
-    const stages=new Set(['native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
+    const stages=new Set(['native_codec_queue','native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
     const spans=value.timings.filter(s=>Array.isArray(s)&&s.length===3&&stages.has(s[0])&&Number.isFinite(s[1])&&Number.isFinite(s[2])&&s[2]>=s[1]);
     if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
    }
@@ -49,6 +58,13 @@ export class NativeWorkerControl {
   try{this.child.stdin.write(bytes,error=>{if(error)this.close()});return true;}catch{this.close();return false;}
  }
  retire(encoder){this.notify({retire:encoder});}
+ // MP-08/MP-10/MP-11: diagnostic-only, ordered with native controls.
+ rejected(reason){
+  if(!['stale_document','epoch','region_revision','serial_skipped','shift_hold'].includes(reason))throw Error('MP-11: rejection reason');
+  // A document fence immediately closes this bridge: flush its diagnostic
+  // before cleanup discards the otherwise batched control notifications.
+  this.notify({reject:reason},true);
+ }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
  close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}

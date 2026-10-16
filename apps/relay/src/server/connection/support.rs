@@ -359,6 +359,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                             client_request_id: request_id.clone(),
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
+                                display: crate::frame_transport::is_display_scope(subscription_scope.as_deref()),
                                 subscription_id: subscription_id.clone(),
                                 client_public_key: client_public_key.clone(),
                             },

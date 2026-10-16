@@ -1,0 +1,30 @@
+{
+  "local": 532,
+  "peer": 140,
+  "capability": "chariox_transport=chunks-v2",
+  "chunk_bytes": 16384,
+  "window_bytes": 65536,
+  "max_message_bytes": 67108864,
+  "max_transfers": 4,
+  "max_assembly_bytes": 134217728,
+  "binary_checkpoint": {
+    "kind": "transport_chunk",
+    "transfer_id": 2,
+    "offset": 0,
+    "total_bytes": 0,
+    "payload": ""
+  },
+  "chunk": {
+    "kind": "transport_chunk",
+    "transfer_id": 1,
+    "offset": 0,
+    "total_bytes": 17000,
+    "payload": "public"
+  },
+  "ack": {
+    "kind": "transport_ack",
+    "transfer_id": 1,
+    "offset": 6
+  },
+  "bypass_scope": "kernel_browser_display"
+}

@@ -21,6 +21,32 @@ impl PreparedDaemonRequest {
         else {
             return None;
         };
+        // MP-08/MP-10/MP-11: native human chords and committed text use
+        // the same socket-order reservation; state/credits remain concurrent.
+        // A distinct domain and live native generation prevent key collisions.
+        if let C::Computer {
+            command: crate::local::KernelComputerCommand::Input { target, .. },
+        } = command
+        {
+            if target.surface_id.is_empty()
+                || target.surface_id.len() > 256
+                || target.generation.is_empty()
+                || target.generation.len() > 256
+            {
+                return None;
+            }
+            let caller = self.caller_identity.as_ref()?;
+            return serde_json::to_string(&(
+                &caller.realm_id,
+                &caller.subject,
+                &caller.user_id,
+                "desktop",
+                &target.surface_id,
+                &target.generation,
+            ))
+            .ok()
+            .map(|key| (key, false));
+        }
         // A mirror subscription binds one tab and viewer; its input and reads share it.
         let (tab, generation, read) = match command {
             C::Input {
@@ -147,6 +173,8 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },
@@ -168,7 +196,7 @@ mod tests {
             subscription_id: "mirror".into(),
             sequence: 3,
             action: A::Text {
-                node_id: "n1".into(),
+                node_id: Some("n1".into()),
                 text: "a".into(),
             },
         })
@@ -180,6 +208,8 @@ mod tests {
                 generation: 1,
                 after_sequence: 3,
                 drift_nodes: vec![],
+                wait_ms: Some(1500),
+                resend: None,
             })
             .browser_input_key()
             .unwrap()
@@ -203,7 +233,7 @@ mod tests {
                 subscription_id: "mirror".into(),
                 sequence,
                 action: A::Text {
-                    node_id: "n1".into(),
+                    node_id: Some("n1".into()),
                     text: "a".into(),
                 },
             })
@@ -215,6 +245,8 @@ mod tests {
             generation: 1,
             after_sequence: 3,
             drift_nodes: vec![],
+            wait_ms: Some(1500),
+            resend: None,
         })
         .browser_input_key()
         .unwrap();
@@ -261,11 +293,67 @@ mod tests {
             tab_id: "tab".into(),
             generation: 1,
             document_id: "doc".into(),
+            binding_id: None,
+            sequence: None,
             input: crate::local::KernelBrowserInput::Text {
                 text: "public".into(),
             },
         });
         input.caller_identity = None;
         assert!(input.browser_input_key().is_none());
+    }
+
+    // MP-08/MP-10/MP-11: Computer shares the authenticated KernelBrowser ingress.
+    fn computer_input(surface: &str, generation: &str) -> PreparedDaemonRequest {
+        prepared(
+            serde_json::from_value(serde_json::json!({
+                "op":"computer", "command":{"op":"input",
+                    "target":{"surface_id":surface,"generation":generation},
+                    "input":{"kind":"key","key":"Control+a"}}
+            }))
+            .unwrap(),
+        )
+    }
+    #[test]
+    fn mp08_computer_input_reserves_authenticated_surface_order() {
+        let mut first = computer_input("desktop", "generation");
+        let key = first
+            .browser_input_key()
+            .expect("MP-08/MP-10/MP-11: Computer input missing ingress order");
+        first.client_public_key = "another-ephemeral-key".into();
+        assert_eq!(first.browser_input_key().unwrap(), key);
+        first.caller_identity.as_mut().unwrap().user_id = Some("another-owner".into());
+        assert_ne!(first.browser_input_key().unwrap(), key);
+        first.caller_identity = None;
+        assert!(first.browser_input_key().is_none());
+    }
+    #[test]
+    fn mp08_computer_surface_generations_have_independent_order() {
+        let first = computer_input("desktop", "first")
+            .browser_input_key()
+            .unwrap();
+        assert_ne!(
+            computer_input("desktop", "second")
+                .browser_input_key()
+                .unwrap(),
+            first
+        );
+        assert_ne!(
+            computer_input("another-desktop", "first")
+                .browser_input_key()
+                .unwrap(),
+            first
+        );
+    }
+    #[test]
+    fn mp08_computer_state_does_not_take_an_input_turn() {
+        assert!(prepared(
+            serde_json::from_value(serde_json::json!({
+                "op":"computer", "command":{"op":"state"}
+            }))
+            .unwrap()
+        )
+        .browser_input_key()
+        .is_none());
     }
 }

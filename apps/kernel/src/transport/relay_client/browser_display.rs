@@ -11,6 +11,79 @@ pub(super) struct DisplaySubscription {
     pub(super) identity: Option<RelayCallerIdentity>,
     pub(super) public_key: String,
     pub(super) resume: Option<u64>,
+    pub(super) recover: bool,
+}
+
+// Room admission makes a peer round trip. Queue it in the connection's existing
+// subscription registry so its reader can receive that response; unsubscribe and
+// connection teardown can cancel an admission before it registers delivery.
+pub(super) async fn enqueue_subscribe(
+    router: &Arc<CommandRouter>,
+    outgoing: &RelayOutgoingSender,
+    tasks: &RelaySubscriptionTasks,
+    events: &Arc<RelayEventRuntime>,
+    subscription: DisplaySubscription,
+) -> Result<(), DaemonError> {
+    let router = Arc::clone(router);
+    let writer = outgoing.clone();
+    let owned_tasks = Arc::clone(tasks);
+    let events = Arc::clone(events);
+    let request_id = subscription.request_id.clone();
+    let queued = super::display_admission::enqueue(
+        tasks,
+        subscription.relay_id.clone(),
+        subscription.public_key.clone(),
+        async move {
+            if super::subscriptions::handle_relay_subscribe(
+                &router,
+                &writer,
+                &owned_tasks,
+                &events,
+                subscription.request_id,
+                subscription.relay_id,
+                subscription.display_id,
+                subscription.generation,
+                subscription.identity,
+                subscription.public_key,
+                Some(
+                    if subscription.recover {
+                        chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE
+                    } else {
+                        chariox_relay::frame_transport::DISPLAY_EVENT_SCOPE
+                    }
+                    .into(),
+                ),
+                subscription.resume,
+            )
+            .await
+            .is_err()
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "display admission response could not be delivered",
+                    serde_json::json!({}),
+                );
+            }
+        },
+    )
+    .await;
+    if !queued {
+        return send_outgoing_envelope(
+            outgoing,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: request_id,
+                encrypted_response: None,
+                error: Some(super::request_errors::map_relay_error(
+                    &DaemonError::LocalTransport {
+                        operation: "kernel_browser",
+                        message: "MD-DISPLAY: display admission is already pending or at capacity"
+                            .into(),
+                    },
+                )),
+            },
+        );
+    }
+    Ok(())
 }
 
 pub(super) async fn handle_subscribe(
@@ -27,6 +100,7 @@ pub(super) async fn handle_subscribe(
         identity,
         public_key,
         resume,
+        recover,
     } = subscription;
     use crate::runtime::command::{KernelCommand, KernelCommandSource};
     let request =
@@ -60,26 +134,72 @@ pub(super) async fn handle_subscribe(
     );
     let admission = match generation.parse::<u64>() {
         Ok(generation) if resume.is_none() => {
-            router
-                .runtime_state()
-                .kernel_browser_display_attach(&caller, display_id.clone(), generation)
-                .await
+            if recover {
+                router
+                    .runtime_state()
+                    .kernel_browser_display_resume_attach(&caller, display_id.clone(), generation)
+                    .await
+            } else {
+                router
+                    .runtime_state()
+                    .kernel_browser_display_attach(&caller, display_id.clone(), generation)
+                    .await
+            }
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "kernel_browser",
             message: "MD-DISPLAY: fresh generation-bound subscription required".into(),
         }),
     };
-    if let Err(error) = admission {
-        return send_outgoing_envelope(
-            outgoing_tx,
-            RelayEnvelope::DaemonResponse {
-                relay_request_id: request_id,
-                encrypted_response: None,
-                error: Some(super::request_errors::map_relay_error(&error)),
-            },
-        );
-    }
+    let binding = match admission {
+        Ok(binding) => binding,
+        Err(error) => {
+            return send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id: request_id,
+                    encrypted_response: None,
+                    error: Some(super::request_errors::map_relay_error(&error)),
+                },
+            )
+        }
+    };
+    let (display_id, generation) = if recover {
+        match resumed_delivery(&binding, &display_id) {
+            Some(delivery) => delivery,
+            None => {
+                // MP-11: answer the viewer and release whatever the attach just bound;
+                // a dropped registration would hang the viewer on a rotated lease.
+                if let (Some(id), Some(generation)) = (
+                    binding.get("subscription_id").and_then(|v| v.as_str()),
+                    binding.get("generation").and_then(|v| v.as_u64()),
+                ) {
+                    let release = crate::local::KernelBrowserCommand::Unsubscribe {
+                        subscription_id: id.into(),
+                        generation,
+                    };
+                    let _ = router
+                        .runtime_state()
+                        .kernel_browser_terminal_request(&caller, release)
+                        .await;
+                }
+                let error = DaemonError::LocalTransport {
+                    operation: "kernel_browser",
+                    message: "MP-11: invalid resumed delivery binding".into(),
+                };
+                return send_outgoing_envelope(
+                    outgoing_tx,
+                    RelayEnvelope::DaemonResponse {
+                        relay_request_id: request_id,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::map_relay_error(&error)),
+                    },
+                );
+            }
+        }
+    } else {
+        (display_id, generation.parse::<u64>().unwrap_or_default())
+    };
     let mut guard = tasks.lock().await;
     guard.retain(|_, task| task.display_id.is_none() || !task.handle.is_finished());
     let key = format!("display:{display_id}:{public_key}");
@@ -90,7 +210,6 @@ pub(super) async fn handle_subscribe(
         }
     }
     // MP-08/MP-10: protocol 491 push pump, dormant until the first ack.
-    let generation = generation.parse::<u64>().unwrap_or_default();
     let pump = super::display_pump::DisplayPump::new(generation);
     guard.insert(
         key.clone(),
@@ -119,6 +238,24 @@ pub(super) async fn handle_subscribe(
         None,
         &request,
     );
+    // Queue the authenticated binding response before granting initial credit.
+    // The relay commits its event route on that response; first frames cannot race it.
+    let mut response = serde_json::json!({"ok":true,"display_attached":true});
+    if recover {
+        response["binding"] = binding;
+    }
+    let encrypted = encrypt_json_response(router, &public_key, response).await?;
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonResponse {
+            relay_request_id: request_id,
+            encrypted_response: Some(encrypted),
+            error: None,
+        },
+    )?;
+    if recover {
+        pump.acknowledge(generation, 0, true);
+    }
     tokio::spawn(super::display_pump::run(
         super::display_pump::PumpRoute {
             router: router.clone(),
@@ -128,24 +265,11 @@ pub(super) async fn handle_subscribe(
             caller: pump_caller,
             display_id,
             relay_id,
-            public_key: public_key.clone(),
+            public_key,
         },
         pump,
     ));
-    let encrypted = encrypt_json_response(
-        router,
-        &public_key,
-        serde_json::json!({"ok":true,"display_attached":true}),
-    )
-    .await?;
-    send_outgoing_envelope(
-        outgoing_tx,
-        RelayEnvelope::DaemonResponse {
-            relay_request_id: request_id,
-            encrypted_response: Some(encrypted),
-            error: None,
-        },
-    )
+    Ok(())
 }
 
 pub(super) async fn browser_display_delivery_id(
@@ -241,6 +365,13 @@ mod tests {
 }
 
 // MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
+/// MP-11: a resumed (535) delivery is a new subscription id with its generation, marked resumed.
+fn resumed_delivery(binding: &serde_json::Value, previous: &str) -> Option<(String, u64)> {
+    let id = binding.get("subscription_id")?.as_str()?;
+    let generation = binding.get("generation")?.as_u64()?;
+    (id != previous && binding.get("resumed")?.as_bool()?).then(|| (id.to_string(), generation))
+}
+
 fn display_subscription_caller(
     router: &CommandRouter,
     identity: Option<RelayCallerIdentity>,
@@ -251,6 +382,40 @@ fn display_subscription_caller(
         Some(grant) => KernelCaller::from_paired_terminal(grant),
         None => KernelCaller::for_relay_request(identity),
     })
+}
+
+#[cfg(test)]
+mod resumed_delivery_tests {
+    use super::resumed_delivery;
+    use serde_json::json;
+    #[test]
+    fn mp11_resumed_delivery_requires_a_new_marked_generation_bound_id() {
+        let ok = json!({"subscription_id": "s2", "generation": 7, "resumed": true});
+        assert_eq!(resumed_delivery(&ok, "s1"), Some(("s2".into(), 7)));
+        // Review #1016 @57b49eac1 P3: RoomDisplayBinding.resumed is #[serde(default)].
+        assert_eq!(
+            resumed_delivery(&json!({"subscription_id": "s2", "generation": 7}), "s1"),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(
+                &json!({"subscription_id": "s2", "generation": 7, "resumed": false}),
+                "s1"
+            ),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(
+                &json!({"subscription_id": "s1", "generation": 7, "resumed": true}),
+                "s1"
+            ),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(&json!({"subscription_id": "s2", "resumed": true}), "s1"),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

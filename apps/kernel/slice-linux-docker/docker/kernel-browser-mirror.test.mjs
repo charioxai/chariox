@@ -17,10 +17,12 @@ function fixture() {
     if(method==='DOM.getDocument')return {root:{nodeId:1,children:[]}};
     if(method==='DOM.querySelectorAll')return {nodeIds:[]};
     if(method==='Emulation.setDeviceMetricsOverride')return {};
-    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+    if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+    if(method==='Runtime.evaluate')return {result:{value:params.expression.includes('dpr:devicePixelRatio')?{dpr:1,width:geometry.width,height:geometry.height,visible:true}:params.expression.includes('.read(')?structuredClone(state.snapshot):params.expression.includes('Object.fromEntries([...style]')?{}:true}};
     throw Error(`unexpected CDP method ${method}`);
   }};
-  const host={generation:1,scales:new Map(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(_tab,clip){const scale=hostViewport().device_scale_factor,width=(clip?.width??geometry.width)*scale,height=(clip?.height??geometry.height)*scale;return {data_base64:encodePng(width,height,Buffer.alloc(width*height*4,100)),protected_regions:[]};}};
+  const host={generation:1,scales:new Map(),viewport:()=>hostViewport(),protection:{values:[],targets:[],unknown:false},async target(){return {...tab,document_id:state.document};},async displayTarget(){return {...tab,document_id:state.document};},browser:{async resolvePageTarget(){return {connection,sessionId:'session'};},async ensureFocusWorld(){return {contextId:1};}},async screenshot(_tab,clip){const scale=hostViewport().device_scale_factor,width=(clip?.width??geometry.width)*scale,height=(clip?.height??geometry.height)*scale;return {data_base64:encodePng(width,height,Buffer.alloc(width*height*4,100)),protected_regions:[]};}};
   return {host,state,calls,service:new MirrorService(host)};
 }
 const next=(subscription_id,after_sequence=0,drift_nodes=[])=>({subscription_id,generation:1,after_sequence,drift_nodes});
@@ -313,6 +315,14 @@ test('MP-11: plain key refuses a display fallback without painted DOM focus',asy
  const packet=await service.next(next(s.subscription_id),'a');
  await assert.rejects(service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'key',key:'Backspace'}},'a'),/observed focus/);
 });
+test('MP-11 mirror attaches to another canonical geometry without overriding it',async()=>{
+ const {execFileSync}=await import('node:child_process');
+ const script=`import {MirrorService} from ${JSON.stringify(new URL('./kernel-browser-mirror.mjs',import.meta.url).href)};
+ const calls=[];const host={generation:1,scales:new Map(),viewport:()=>({device_scale_factor:1}),async target(){return {tab_id:'t',target_id:'x',document_id:'d'}},browser:{async resolvePageTarget(){return {connection:{send:async method=>{calls.push(method);return {}}},sessionId:'s'}}}};
+ try{await new MirrorService(host).subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');console.log('subscribed:'+calls.join())}catch(error){console.log('refused:'+calls.join())}`;
+ const output=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080'}}).toString().trim();
+ assert.equal(output,'subscribed:','an observer sends no device metrics override');
+});
 
 // MP-08/MP-10/MP-11: a viewer cannot resize a kernel-owned native browser.
 test('MP-10 DPR1 and DPR2 mirrors share native density with video and provider observations',async()=>{
@@ -353,4 +363,34 @@ test('MP-10 canonical mirror geometry at 1920x1080',()=>{
  const run=spawnSync(process.execPath,['--test','--test-name-pattern=^MP-10 canonical mirror geometry survives',import.meta.filename],{env:{...process.env,NODE_TEST_CONTEXT:undefined,CHARIOX_BROWSER_DISPLAY_GEOMETRY:'1920x1080',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'},encoding:'utf8'});
  assert.match(run.stdout,/ok 1 - MP-10 canonical mirror geometry survives/);
  assert.equal(run.status,0,run.stdout+run.stderr);
+});
+
+test('MP-08/MP-10/MP-11: a v2 view retains the existing render lease until close or clear',async()=>{
+ const {service,host}=fixture();let active=0,released=0;
+ host.browser.inputCapture={async hold(){active++;let closed=false;return async()=>{if(!closed){closed=true;active--;released++}}}};
+ const first=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'terminal:one');assert.equal(active,1);
+ service.drop(first.subscription_id);await Promise.resolve();assert.equal(active,0);assert.equal(released,1);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'terminal:two');assert.equal(active,1);
+ service.clear();await Promise.resolve();assert.equal(active,0);assert.equal(released,2);
+});
+
+// MP-08/MP-10 (owner A/B 2026-10-14, finding 8): a new Tab's v2 view subscribes without an all-tab reconcile.
+test('MP-08/MP-10 a v2 subscription reads its own Tab without an all-tab reconcile', async () => {
+ const {service,host}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};let reconciles=0;const target=host.target;host.target=async(...args)=>{reconciles++;return target(...args)};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
+ assert.ok(sub.subscription_id);assert.equal(reconciles,0);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');assert.equal(reconciles,1,'wire 1 keeps its reconcile');
+});
+// MP-08/MP-10/MP-11: merge #958's owned desktop with the v2 mirror observer.
+test('MP-08 mirror observes the owned desktop density without changing it for the viewer',async()=>{
+ const before=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+ try{for(const wire of [1,2])for(const device_scale_factor of [1,2]){
+  const {host,service,calls}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};host.viewport=()=>({...hostViewport(),device_scale_factor:1});
+  try{
+   const sub=await service.subscribe({tab_id:'t',generation:1,wire,device_scale_factor},'terminal:room-viewer');
+   assert.equal(sub.device_scale_factor,1,'the shared desktop renders at its admitted density');
+   assert.equal(host.scales.get('t'),1);
+   assert.equal(calls.filter(call=>call.method==='Emulation.setDeviceMetricsOverride').length,0,'an observer cannot resize the source');
+  }finally{service.clear()}
+ }}finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=before}
 });

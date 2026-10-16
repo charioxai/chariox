@@ -709,6 +709,7 @@ async fn run_daemon_relay_connector_inner(
                 let (transport_receipt_tx, mut transport_receipt_rx) = mpsc::channel::<String>(8);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
+                let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
@@ -741,7 +742,7 @@ async fn run_daemon_relay_connector_inner(
                                 envelope = priority_outgoing_rx.recv(), if priority_open => {
                                     match envelope {
                                         Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &writer_closing).await {
                                                 break;
                                             }
                                         }
@@ -752,7 +753,7 @@ async fn run_daemon_relay_connector_inner(
                                     match envelope {
                                         Some(envelope) => {
                                             if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
+                                                if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
                                                     break;
                                                 }
                                             }
@@ -762,7 +763,7 @@ async fn run_daemon_relay_connector_inner(
                                 }
                                 _ = tokio::time::sleep_until(ready_at) => {
                                     if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
                                             break 'writer_loop;
                                         }
                                     }
@@ -784,7 +785,7 @@ async fn run_daemon_relay_connector_inner(
                             envelope = priority_outgoing_rx.recv(), if priority_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events).await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &writer_closing).await {
                                             break;
                                         }
                                     }
@@ -795,7 +796,7 @@ async fn run_daemon_relay_connector_inner(
                                 match envelope {
                                     Some(envelope) => {
                                         if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events).await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
                                                 break;
                                             }
                                         }
@@ -1075,25 +1076,16 @@ async fn run_daemon_relay_connector_inner(
                                 Err(reason) => Some(reason),
                             };
                             if let Some(reason) = reconnect_reason {
-                                    crate::logging::warn_with_fields(
-                                        "daemon.relay_client",
-                                        "relay socket reconnect requested",
-                                        serde_json::json!({
-                                            "relay_url": relay_url,
-                                            "reason": reason,
-                                            "phase": "token_refresh",
-                                        }),
-                                    );
-                                    let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
-                                        reason: "relay configuration changed".to_string(),
-                                    });
-                                    abort_leased_projection_pump_task(&mut leased_projection_pump_task);
-                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&router, &subscription_tasks).await;
-                                    writer_task.abort();
-                                    clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&router, &state, "relay configuration changed", true).await;
-                                    break "relay configuration changed";
+                                crate::logging::warn_with_fields(
+                                    "daemon.relay_client",
+                                    "relay socket reconnect requested",
+                                    serde_json::json!({
+                                        "relay_url": relay_url,
+                                        "reason": reason,
+                                        "phase": "token_refresh",
+                                    }),
+                                );
+                                let _ = reconnect_gate.request_reconnect(&outgoing_tx, reason);
                             }
                         }
                         _ = heartbeat_interval.tick() => {
@@ -1122,18 +1114,8 @@ async fn run_daemon_relay_connector_inner(
                                                 "phase": "heartbeat",
                                             }),
                                         );
-                                        let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
-                                            reason: "relay configuration changed".to_string(),
-                                        });
-                                        abort_leased_projection_pump_task(
-                                            &mut leased_projection_pump_task,
-                                        );
-                                        abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                        abort_subscription_tasks(&router, &subscription_tasks).await;
-                                        writer_task.abort();
-                                        clear_remote_inventory_projection(&router);
-                                        disconnect_relay(&router, &state, "relay configuration changed", true).await;
-                                        break "relay configuration changed";
+                                        // Keep heartbeats flowing while in-flight work drains.
+                                        let _ = reconnect_gate.request_reconnect(&outgoing_tx, reason);
                                     }
                                 }
                                 if heartbeat_registration.is_some() {

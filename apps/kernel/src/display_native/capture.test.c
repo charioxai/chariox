@@ -15,15 +15,17 @@ static int counted_compare(const void *a,const void *b,size_t n){
 #undef memcmp
 
 /* The raster is supplied directly, without launching an X server. */
-Atom XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)name;(void)only;return 1;}
+Atom XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)only;return !strcmp(name,"_GTK_FRAME_EXTENTS")?2:!strcmp(name,"_NET_WM_STATE")?3:!strcmp(name,"_NET_WM_STATE_FULLSCREEN")?4:1;}
 int XGetWindowProperty(Display *d,Window w,Atom p,long off,long len,Bool del,Atom requested,
     Atom *actual,int *format,unsigned long *count,unsigned long *remaining,unsigned char **data){
-    (void)d;(void)w;(void)p;(void)off;(void)len;(void)del;(void)requested;
+    (void)d;(void)w;(void)off;(void)len;(void)del;(void)requested;
+    if(p==2||p==3){*actual=None;*format=0;*count=*remaining=0;*data=NULL;return Success;}
     *actual=XA_CARDINAL;*format=32;*count=1;*remaining=0;
     unsigned long *pid=malloc(sizeof(*pid));*pid=42;*data=(unsigned char*)pid;return Success;
 }
-Status XGetGeometry(Display *d,Drawable a,Window *root,int *x,int *y,unsigned *w,unsigned *h,unsigned *border,unsigned *depth){
-    (void)d;(void)a;*root=0;*x=*y=0;*w=1280;*h=800;*border=0;*depth=24;return 1;
+Status XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
+    (void)d;(void)w;memset(attributes,0,sizeof(*attributes));
+    attributes->width=1280;attributes->height=800;attributes->map_state=IsViewable;return 1;
 }
 Bool XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
     (void)d;(void)a;(void)image;(void)x;(void)y;(void)plane;return True;
@@ -32,7 +34,7 @@ int main(void){
     const int w=1280,h=800;const size_t size=(size_t)w*h*4;row_bytes=w*4;
     uint8_t *raw=malloc(size),*a=malloc(size),*b=malloc(size),*c=malloc(size);
     assert(raw&&a&&b&&c);memset(raw,255,size);
-    XImage image={.data=(char*)raw};struct Capture capture={.owner=42,.width=w,.height=h,.window_height=h,.image=&image,.previous=malloc(size)};
+    XImage image={.data=(char*)raw};struct Capture capture={.owner=42,.width=w,.height=h,.window_width=w,.window_height=h,.image=&image,.previous=malloc(size)};
     assert(capture.previous);int bounds[4];
     assert(cx_capture_read(&capture,a,bounds)==1);
     cx_capture_admit(&capture,a);

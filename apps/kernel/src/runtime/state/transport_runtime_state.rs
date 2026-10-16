@@ -36,6 +36,7 @@ impl KernelRuntimeState {
                 self.owned.agent_store.clone(),
                 self.owned.slice_store.clone(),
                 self.owned.metaagent_events.clone(),
+                self.owned.room_computer_revoked.clone(),
                 policy,
             ),
         )

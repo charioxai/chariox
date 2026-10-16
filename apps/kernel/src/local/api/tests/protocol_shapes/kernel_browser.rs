@@ -1,4 +1,4 @@
-//! MD-2: protocol 447 sessionless host-browser snapshots.
+//! MD-2: protocol 461 sessionless host-browser snapshots.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as Command, KernelBrowserInput as Input, KernelBrowserRequest,
@@ -74,7 +74,11 @@ fn kernel_browser_protocol_443_request_snapshots() {
             Command::Input {
                 tab_id: "t".into(),
                 generation: 2,
-                input: Input::Click { x: 12, y: 20 },
+                input: Input::Click {
+                    x: 12,
+                    y: 20,
+                    button: None,
+                },
             },
             serde_json::json!({"op":"input","tab_id":"t","generation":2,"input":{"kind":"click","x":12,"y":20}}),
         ),
@@ -92,7 +96,10 @@ fn kernel_browser_protocol_443_request_snapshots() {
             Command::Input {
                 tab_id: "t".into(),
                 generation: 2,
-                input: Input::Key { key: "Tab".into() },
+                input: Input::Key {
+                    key: "Tab".into(),
+                    modifiers: 0,
+                },
             },
             serde_json::json!({"op":"input","tab_id":"t","generation":2,"input":{"kind":"key","key":"Tab"}}),
         ),
@@ -161,6 +168,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
         Command::DisplaySubscribe {
             tab_id: "t".into(),
             generation: 2,
+            target: None,
             codecs: vec![
                 "avc1.420033".into(),
                 "png".into(),
@@ -184,6 +192,8 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             tab_id: "t".into(),
             generation: 2,
             document_id: "d".into(),
+            binding_id: None,
+            sequence: None,
             input: Input::Text {
                 text: "fixture".into(),
             },
@@ -258,5 +268,202 @@ fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "cf8e119de5af3e428663bdd2795f6f75e68ac8aa2d3d76291f7c95795b259b55"
+    );
+}
+
+// MP-08/MP-11: protocol517 bounds modifiers at deserialization, shared by
+// local, remote and provider input. Legacy keys still omit the zero mask.
+#[test]
+fn kernel_browser_protocol_517_bounded_modifiers() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 517);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let input = Input::Key {
+        key: "a".into(),
+        modifiers: 2,
+    };
+    let wire = serde_json::to_value(&input).unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("browser-key-modifiers-517.json")).unwrap();
+    assert_eq!(wire, expected);
+
+    assert_eq!(
+        wire,
+        serde_json::json!({"kind":"key","key":"a","modifiers":2})
+    );
+    assert_eq!(
+        serde_json::from_value::<Input>(wire.clone()).unwrap(),
+        input
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "1cdc9ff0b2391e8a184cad088c6b2fab792fd2f95b0ee37265cb600687e3cc8c"
+    );
+    for value in [
+        serde_json::json!(-1),
+        serde_json::json!(16),
+        serde_json::json!(256),
+        serde_json::json!(1.5),
+        serde_json::json!(null),
+        serde_json::json!("2"),
+    ] {
+        assert!(serde_json::from_value::<Input>(
+            serde_json::json!({"kind":"key","key":"a","modifiers":value})
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn mp08_mp10_mp11_browser_display_region_519_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 519);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("browser-display-region-519.json")).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "600c3e22c812a66ee7712a302b5889e83db4ba1f91b4d8affcc77281bb027b32"
+    );
+    for field in ["rect", "xid", "pid", "selector", "policy"] {
+        let mut request = snapshot["requests"][0].clone();
+        request["KernelBrowser"]["command"]["target"][field] = serde_json::json!(1);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
+    }
+}
+
+// MP-08/MP-10/MP-11 (BROWSER-UX-14/-16): allocated 528/136 adds the Browser state's
+// `chrome_window` (the native band's window epoch and active Tab, or null) and
+// `browser_lockdown`. The host's state keys are pinned to this fixture by a Node test.
+#[test]
+fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 528);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 136);
+    let bytes = include_bytes!("browser-chrome-state-528.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "ff8cb6bbc22c9002844ea72538a801501ef9fd8dacc870e56bd5e366086383e8"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): allocated 530/138 adds the band's middle/right
+// click and Tab drag, the `browser_auxiliary` display target (the band window's
+// menus, omnibox dropdown, extension popups and bubbles) and the state's
+// `chrome_window.auxiliary` list. The host's state keys are pinned to this fixture.
+#[test]
+fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let bytes = include_bytes!("browser-chrome-ui-530.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "e706cd0d428575d7f90932a4b89c5ad8872a4a73e60556edeba39a477027b071"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    // A primary click keeps its pre-530 shape; unknown buttons, a client-named window
+    // and an auxiliary without its window epoch are refused.
+    assert_eq!(
+        serde_json::to_value(Input::Click {
+            x: 1,
+            y: 2,
+            button: None
+        })
+        .unwrap(),
+        serde_json::json!({"kind":"click","x":1,"y":2})
+    );
+    for input in [
+        serde_json::json!({"kind":"click","x":1,"y":2,"button":"left"}),
+        serde_json::json!({"kind":"click","x":1,"y":2,"button":2}),
+        serde_json::json!({"kind":"drag","x":1,"y":2,"to_x":3}),
+        serde_json::json!({"kind":"drag","x":1,"y":2,"to_x":3,"to_y":-1}),
+    ] {
+        assert!(serde_json::from_value::<Input>(input).is_err());
+    }
+    for field in ["xid", "rect", "pid"] {
+        let mut request = snapshot["requests"][0].clone();
+        request["KernelBrowser"]["command"]["target"][field] = serde_json::json!(1);
+        assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
+    }
+    let mut request = snapshot["requests"][0].clone();
+    request["KernelBrowser"]["command"]["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("window_generation");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
+}
+
+#[test]
+fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 137);
+    let bytes = include_bytes!("browser-display-placement-529.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "1396cbd02821e79f5fa2f4166548d9d1f4c1ca554cf7100873d556205cbae47b"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
     );
 }

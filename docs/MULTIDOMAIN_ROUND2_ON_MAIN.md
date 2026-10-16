@@ -1,3 +1,39 @@
+# MP-08 / MP-10 / MP-11: mirror-first restack, 2026-10-14
+
+The owner selected kernel browser #900 + DOM mirroring v2 #941 for the
+multidomain merge, with video #950 deferred to a separate A/B decision.
+The successor starts at main `3fa70740f819cba561969dfb259d7ec91d7355c8`
+and reuses the resolved #998 union `96c84eaaff600d4dd97778b97ad125ae1393f687`.
+That union already contains review-clean #900 `eb9ac3af2`, the specified main,
+mirror v2 and App Tab grant/restore fixes. It retains the union's already
+allocated local517 / peer125 contract; this restack changes no serialized shape.
+The union also retains optional video source for the later lane; its presence
+is not video acceptance or a requirement for the kernel browser/mirror path.
+
+The mirror's lossless protected crops live with the shared PNG helpers.
+The host imports native capture, codec and video credit modules only when a
+video operation uses them. Headed mirror Chromium gets its kernel-owned
+private display even with `CHARIOX_KERNEL_BROWSER_DISPLAY=0`; it requires
+native Chromium, Node and Xvfb on Linux, but no video encoder or transport.
+The mirror retains the canonical browser density with video disabled; toggling
+video cannot change the shared page's DPR or capture geometry.
+Mirror v2 uses the existing controller, user profile, actor admission, Vault
+barrier, input/capture protection and relay contract. No parallel authority or
+provider execution path is introduced.
+
+MP-10 acceptance must use the paired mirror-first Cloud client, real hosted
+WSS with shaping, DPR1/2 and real providers/sites. Source regressions and
+historical union results below are supplementary and remain bound to their
+original heads. The restack's full protocol-shape suite found an inherited union fixture
+whose label said491/101 while its hash encoded516/124. Its current-version
+snapshot is now named/hashed for the already allocated517/125 pair. Request
+and response shapes are unchanged; no new number is assigned.
+The five multidomain-base rows require new exact-source live
+results; this documentation does not close them. Google runs belong to the
+coordinator's Mac under the 2026-10-13 owner rule.
+
+---
+
 # MP-08 / MP-10 / MP-11: multidomain round 2 on main
 
 Base: `e325afa580d81954e2c179757fc53fa02ed2a2b3` (#892). The actual source

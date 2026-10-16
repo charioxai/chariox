@@ -65,6 +65,16 @@ impl BrowserTabActivity {
                 Some(json!({"sequence":self.sequence,"tab_id":tab,"actor":actor_view(actor)}));
         }
     }
+    /// MP-08/MP-11: the native tab strip groups agent Tabs under the agent's name.
+    pub(super) fn agent_groups(&self) -> Value {
+        Value::Array(
+            self.openers
+                .iter()
+                .filter(|(_, actor)| actor.kind == EnvironmentActorKind::Agent)
+                .map(|(tab, actor)| json!({"tab_id":tab,"label":actor.display_label}))
+                .collect(),
+        )
+    }
     pub(super) fn activity(&self) -> Value {
         self.activity.clone().unwrap_or(Value::Null)
     }

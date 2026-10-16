@@ -1,0 +1,443 @@
+// MP-08/MP-10/MP-11 (INTEGRATION.md §2b): kernel-private binding of the kernel
+// Chromium's own windows. A viewer never names a window, rect, PID or role; the
+// kernel resolves them from CDP window bounds and the owned display's numeric
+// inventory, and every consumer re-checks isCurrent() before readback or input.
+import {nativePageRect} from './kernel-browser-page-geometry.mjs';
+import {ownsDisplay} from './kernel-browser-owned-display.mjs';
+import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
+import {assertCurrentDocument} from './browser-controller-actions.mjs';
+
+// MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
+// the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
+// pinned Chrome the list body is the widget less a 16 DIP side and 28 DIP bottom shadow, with 16 DIP
+// rounded bottom corners (measured at DPR 1 and 2). The part below the band streams as one more popup;
+// any other layout is not offered (the band still shows the top of it).
+export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
+const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
+export const POPUP_CORNER = 16;
+/** Chrome 155's suggestion list holds at most 8 rows of 40 DIP in an 8 DIP frame (observed 48..288). */
+export const OMNIBOX_LIST_HEIGHT = 344;
+/** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
+export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
+  if (!Array.isArray(state) || state[0] !== 'visible') return null;
+  const [, screenX, screenY, width, height, outerWidth, outerHeight] = state;
+  if (![screenX, screenY, width, height, outerWidth, outerHeight].every(Number.isSafeInteger) || outerWidth - width !== 2 * POPUP_SIDE || height < 2) return null;
+  const x = screenX - windowLeft + POPUP_SIDE, bottom = screenY - windowTop + outerHeight - POPUP_BOTTOM;
+  if (x < 0 || x + width > windowWidth || bottom > windowHeight || bottom - bandHeight < POPUP_CORNER + 2 || screenY - windowTop >= bandHeight) return null;
+  return {x, y: bandHeight, width, height: bottom - bandHeight};
+}
+
+// MP-08/MP-11 (coordinator 12:22Z): a browser-modal Chrome dialog (the Web Store's 'Add "…"?') draws a
+// scrim over the whole window, band included, and hangs from the toolbar: no X window, no CDP event.
+// The band tells: its tab strip row and its toolbar row just above the dialog, each a colour learned
+// while clear, both dimmed (real Chrome 155: 255 -> 102; the omnibox dropdown never covers the strip).
+// While it holds, the page area streams natively as one more popup (Vault-masked, attested).
+export const SCRIM_ROWS = [2, 81]; // DIP from the window top: the strip above its Tabs, the toolbar's bottom
+export function rowMode(bgr0) {
+  const counts = new Map();
+  for (let i = 0; i + 3 < bgr0.length; i += 4) { const key = bgr0[i] | bgr0[i + 1] << 8 | bgr0[i + 2] << 16; counts.set(key, (counts.get(key) ?? 0) + 1); }
+  let mode = 0, top = 0; for (const [key, n] of counts) if (n > top) { mode = key; top = n; }
+  return {luminance: (mode & 255) + (mode >> 8 & 255) + (mode >> 16 & 255), share: top / Math.max(1, bgr0.length / 4)};
+}
+
+// The owned display's numeric window inventory comes from the native producer
+// (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
+const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
+
+export class ChromeWindows {
+  constructor(host, {inventory = noInventory} = {}) {
+    this.host = host; this.inventory = inventory;
+    this.windowGeneration = 0; this.bound = null; this.listeners = new Set();
+    this.auxiliaryIds = new Map(); this.auxiliarySequence = 0;
+  }
+  onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  retire(reason) {
+    if (!this.bound) return;
+    const {window_generation} = this.bound.tabbed; this.bound = null;
+    for (const listener of this.listeners) listener({window_generation, reason});
+  }
+  current() {
+    if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
+    return this.bound;
+  }
+  /** Resolve the owned window set serially on the host mutation lane. */
+  resolve() {
+    const run = (this.resolving ?? Promise.resolve()).catch(() => {}).then(() => this.resolveNow());
+    this.resolving = run;
+    return run;
+  }
+  async resolveNow() {
+    const host = this.host, chromium = host.chromium, display = chromium.display, pid = chromium.browserPid ?? chromium.child?.pid, scale = chromium.scale;
+    const browserGeneration = host.generation;
+    const live = () => host.generation === browserGeneration && ownsDisplay(display) && (chromium.browserPid ?? chromium.child?.pid) === pid;
+    if (!live() || !Number.isSafeInteger(pid) || pid <= 1) throw new UserDomainRefusal('stale_reference');
+    const connection = host.browser.connection;
+    const viewport = await host.tabGroups?.viewport();
+    const page = [...host.tabs.values()].find(tab => tab.target_id === viewport?.target_id);
+    if (!page) { this.retire('last_tab_closed'); throw new UserDomainRefusal('stale_reference'); }
+    const {bounds} = await connection.send('Browser.getWindowForTarget', {targetId: page.target_id});
+    // Fullscreen/maximized windows hide or resize the band; only the launch geometry binds.
+    if (bounds?.windowState !== 'normal') throw new UserDomainRefusal('stale_reference');
+    const rows = await this.inventory(display, pid, live);
+    this.rows = rows;
+    const physical = {x: bounds.left * scale, y: bounds.top * scale, width: bounds.width * scale, height: bounds.height * scale};
+    const tabbed = rows.filter(r => r.visible && !r.override_redirect && r.transient_for === 0 &&
+      r.x === physical.x && r.y === physical.y && r.width === physical.width && r.height === physical.height);
+    // Exactly one match or no binding: never the "closest" window.
+    if (tabbed.length !== 1 || !live()) throw new UserDomainRefusal('stale_reference');
+    const row = tabbed[0];
+    const measure = async () => {
+      const next = await host.tabGroups?.viewport();
+      if (!next || ![...host.tabs.values()].some(tab => tab.target_id === next.target_id)) throw new UserDomainRefusal('stale_reference');
+      return nativePageRect(row, next, scale);
+    };
+    const pageRect = nativePageRect(row, viewport, scale);
+    // The page origin remains exact, including odd rows and GTK side insets.
+    // Only the disjoint Chrome video band rounds down to even codec rows.
+    const contentTop = Math.floor(pageRect.top / 2) * 2;
+    if (!(contentTop > 0 && contentTop < row.height)) throw new UserDomainRefusal('stale_reference');
+    const previous = this.bound?.tabbed;
+    const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration && JSON.stringify(previous.page_rect) === JSON.stringify(pageRect);
+    if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
+    const windowGeneration = this.windowGeneration;
+    const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    const isPageCurrent = async () => {
+      if (!isCurrent()) return false;
+      try { if (JSON.stringify(await measure()) === JSON.stringify(pageRect)) return isCurrent(); } catch {}
+      if (isCurrent()) this.retire('page_geometry_changed');
+      return false;
+    };
+    const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
+      parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
+      content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
+      scale, pid, isCurrent, isPageCurrent});
+    const tabbedBinding = binding('tabbed')(row);
+    this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
+    return this.bound;
+  }
+  // Menus, the omnibox dropdown, extension popups and bubbles: same PID (the inventory's
+  // filter), visible, transient for or anchored inside the tabbed window. Protocol 530: each
+  // gets a kernel-issued id, new whenever its window or geometry changes (fixed-size stream).
+  auxiliaryOf(tabbed, rows, bind) {
+    const row = {id: tabbed.xid, ...tabbed.bounds}, ids = new Map();
+    const auxiliary = rows.filter(r => r.id !== row.id && r.visible && r.width >= 2 && r.height >= 2 && (r.transient_for === row.id ||
+      r.override_redirect && r.x >= row.x && r.x < row.x + row.width && r.y >= row.y && r.y < row.y + row.height));
+    const bound = auxiliary.slice(0, 8).map(r => {
+      const key = `${tabbed.window_generation}:${r.id}:${r.x},${r.y},${r.width}x${r.height}`;
+      const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
+      ids.set(key, auxiliary_id);
+      const binding = bind(r);
+      return Object.freeze({...binding, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true});
+    });
+    // A browser-modal dialog over the page: the whole page area of the same X window.
+    if (this.modal && bound.length < 8) {
+      // Exactly the native page area (GTK frame insets and Chrome's own Tab size), even-sized.
+      const page = tabbed.page_rect, r = {id: row.id, x: row.x + page.left, y: row.y + page.top, width: page.width - page.width % 2, height: page.height - page.height % 2};
+      const key = `${tabbed.window_generation}:${r.id}:modal:${r.x},${r.y},${r.width}x${r.height}`;
+      const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
+      ids.set(key, auxiliary_id);
+      const binding = bind(r);
+      bound.push(Object.freeze({...binding, in_window: true, page_overlay: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+    }
+    // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
+    const live = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
+      tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), held = this.omniboxHeld;
+    // Chrome resizes the list on almost every key and each new stream left the person without a list
+    // for 0.4-1.3 s (r10, r11 profile): the stream opens at the list's full height and keeps it while the
+    // list stays open. Below the live list it shows the page (its masks apply); input there is refused.
+    const full = live && {...live, height: Math.max(live.height, Math.min(OMNIBOX_LIST_HEIGHT, Math.floor((tabbed.bounds.height / tabbed.scale - live.y) / 2) * 2))};
+    const popup = live && held?.window_generation === tabbed.window_generation && held.x === live.x && held.y === live.y
+      && held.width === live.width && live.height <= held.height ? held : full;
+    this.omniboxHeld = popup && {...popup, window_generation: tabbed.window_generation};
+    this.omniboxLive = live;
+    if (popup && bound.length < 8) {
+      const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
+      const key = `${tabbed.window_generation}:${r.id}:in-window:${r.x},${r.y},${r.width}x${r.height}`;
+      const auxiliary_id = this.auxiliaryIds.get(key) ?? ++this.auxiliarySequence;
+      ids.set(key, auxiliary_id);
+      const binding = bind(r);
+      bound.push(Object.freeze({...binding, in_window: true, omnibox: true, auxiliary_id, isCurrent: () => binding.isCurrent() && this.bound?.auxiliary.some(a => a.auxiliary_id === auxiliary_id) === true}));
+    }
+    this.auxiliaryIds = ids;
+    return bound;
+  }
+  /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
+  observeBand(raw) {
+    const tabbed = this.bound?.tabbed;
+    if (!tabbed?.isCurrent() || !raw || raw.width !== tabbed.bounds.width || raw.height < SCRIM_ROWS[1] * tabbed.scale) return;
+    const modes = [];
+    for (const dip of SCRIM_ROWS) {
+      const y = dip * tabbed.scale;
+      try { modes.push(rowMode(typeof raw.readRegion === 'function' ? raw.readRegion(0, y, raw.width, 1) : raw.pixels.subarray(y * raw.width * 4, (y + 1) * raw.width * 4))); } catch { return; }
+    }
+    if (modes.some(mode => mode.share < 0.6)) return;
+    this.clear ??= SCRIM_ROWS.map(() => 0);
+    if (!this.modal) modes.forEach((mode, i) => { this.clear[i] = Math.max(this.clear[i], mode.luminance); });
+    const modal = modes.every((mode, i) => this.clear[i] >= 384 && mode.luminance <= this.clear[i] * 0.75 && mode.luminance >= this.clear[i] * 0.2);
+    if (modal !== !!this.modal) { this.modal = modal; this.refreshAuxiliary(this.rows); }
+  }
+  /** The page overlay's attestation found no scrim (e.g. a darker theme): learn the band again. */
+  relearnToolbar() { this.clear = null; if (this.modal) { this.modal = false; this.refreshAuxiliary(this.rows); } }
+  /** The omnibox dropdown's WebUI: visibility and geometry only (never its content). */
+  async readOmnibox() {
+    const connection = this.host.browser.connection;
+    if (!connection) return null;
+    try {
+      if (!this.omniboxSession) {
+        const target = (await connection.send('Target.getTargets')).targetInfos.find(t => t.type === 'browser_ui' && t.url === OMNIBOX_POPUP_URL);
+        if (!target) return null;
+        this.omniboxSession = (await connection.send('Target.attachToTarget', {targetId: target.targetId, flatten: true})).sessionId;
+      }
+      const {result} = await connection.send('Runtime.evaluate', {expression: 'JSON.stringify([document.visibilityState,screenX,screenY,innerWidth,innerHeight,outerWidth,outerHeight])', returnByValue: true}, this.omniboxSession);
+      return JSON.parse(result.value);
+    } catch { this.omniboxSession = null; return null; }
+  }
+  /** Protocol 530: refresh the auxiliary windows of the current tabbed binding (a live band polls
+   * its own worker's inventory). A moved or resized tabbed window (e.g. fitted for a native page
+   * capture) retires the band at once and is rebound at its real geometry. */
+  refreshAuxiliary(rows) {
+    const bound = this.bound, tabbed = bound?.tabbed;
+    if (!tabbed?.isCurrent() || !Array.isArray(rows)) return;
+    this.rows = rows;
+    const row = rows.find(r => r.id === tabbed.xid);
+    if (!row) return;
+    if (row.x !== tabbed.bounds.x || row.y !== tabbed.bounds.y || row.width !== tabbed.bounds.width || row.height !== tabbed.bounds.height) {
+      this.retire('window_changed'); this.resolve().catch(() => {}); return;
+    }
+    const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
+      bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
+    this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
+  }
+  /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
+   * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
+  async inWindowCurrent(source, point = null) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    if (source.isCurrent() !== true) return false;
+    if (!point) return true;
+    const live = this.omniboxLive, scale = this.bound.tabbed.scale, region = source.region.window_region;
+    const x = region.left / scale + point.x, y = region.top / scale + point.y;
+    return !!live && x >= live.x && x < live.x + live.width && y >= live.y && y < live.y + live.height;
+  }
+  /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
+   * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
+  inWindowOver(rect) {
+    const tabbed = this.bound?.tabbed, live = this.omniboxLive, scale = tabbed?.scale;
+    // The list's stream is taller than a short list: only the live list covers the page.
+    const over = b => !!b && b.x < rect.left + rect.width && rect.left < b.x + b.width && b.y < rect.top + rect.height && rect.top < b.y + b.height;
+    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && over(omnibox
+      ? live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}
+      : {x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height}));
+  }
+  /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
+  async inWindowOverNow(rect) {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return this.inWindowOver(rect);
+  }
+  /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
+  watch(read, interval = 150) {
+    const watcher = this.watcher ??= {reads: new Set(), timer: null};
+    watcher.reads.add(read);
+    const tick = async () => {
+      const [first] = watcher.reads;
+      try { if (first) { const rows = await first(); this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } } catch {}
+        if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
+    };
+    if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
+    return () => {
+      watcher.reads.delete(read);
+      if (!watcher.reads.size) { clearTimeout(watcher.timer); this.watcher = null; }
+    };
+  }
+  /** Protocol 530 state: popups of the band's window, CSS px from the window's top-left. */
+  auxiliaryState() {
+    const tabbed = this.bound?.tabbed;
+    if (!tabbed?.isCurrent()) return [];
+    // The omnibox list's stream keeps its grown size; the viewer shows only the live list (r10).
+    const live = this.omniboxLive;
+    return this.bound.auxiliary.map(({auxiliary_id, bounds, omnibox}) => ({auxiliary_id,
+      x: Math.round((bounds.x - tabbed.bounds.x) / tabbed.scale), y: Math.round((bounds.y - tabbed.bounds.y) / tabbed.scale),
+      width: (bounds.width - bounds.width % 2) / tabbed.scale,
+      height: Math.min((bounds.height - bounds.height % 2) / tabbed.scale, omnibox && live ? Math.floor(live.height / 2) * 2 : Infinity)}));
+  }
+  auxiliary(auxiliaryId) {
+    const binding = this.current().auxiliary.find(a => a.auxiliary_id === auxiliaryId);
+    if (!binding?.isCurrent()) throw new UserDomainRefusal('stale_reference');
+    return binding;
+  }
+  /** Constructor arguments of vidlat's NativeWindowRegionCapture for the band. */
+  band(binding = this.current().tabbed) {
+    return {surface: 'browser_chrome', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
+      rect: {left: 0, top: 0, width: binding.bounds.width, height: binding.content_top},
+      contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isCurrent};
+  }
+  auxiliaryRegion(binding) {
+    const tabbed = this.current().tabbed;
+    if (binding?.role !== 'auxiliary' || binding.parent_xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+    if (binding.page_overlay) {
+      if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+      return {surface: 'browser_auxiliary', inWindow: true, pageOverlay: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
+        rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width: binding.bounds.width, height: binding.bounds.height},
+        contentHeight: tabbed.bounds.height - (binding.bounds.y - tabbed.bounds.y), isCurrent: binding.isCurrent};
+    }
+    if (binding.in_window) {
+      // Below the band only (the band streams the rest). Its rect lies over the page (around its rounded
+      // corners, below a shrunk list): the active Tab's masks apply there on every readback (see the page rect).
+      if (binding.xid !== tabbed.xid) throw new UserDomainRefusal('stale_reference');
+      const width = binding.bounds.width - binding.bounds.width % 2, height = binding.bounds.height - binding.bounds.height % 2;
+      return {surface: 'browser_auxiliary', inWindow: true, window: {id: tabbed.xid, width: tabbed.bounds.width, height: tabbed.bounds.height},
+        rect: {left: binding.bounds.x - tabbed.bounds.x, top: binding.bounds.y - tabbed.bounds.y, width, height},
+        contentHeight: tabbed.bounds.height - tabbed.content_top,
+        pageRect: tabbed.page_rect, isCurrent: binding.isCurrent};
+    }
+    return {surface: 'browser_auxiliary', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
+      rect: {left: 0, top: 0, width: binding.bounds.width - binding.bounds.width % 2, height: binding.bounds.height - binding.bounds.height % 2}, isCurrent: binding.isCurrent};
+  }
+}
+
+// vidlat chord modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8; keysyms are X keysyms.
+const ALT = 1, CTRL = 2, SHIFT = 8, key = c => c.charCodeAt(0);
+const lower = keysym => keysym >= 0x41 && keysym <= 0x5a ? keysym + 0x20 : keysym;
+const matches = chords => (keysym, modifiers) => chords.some(([k, m]) => k === lower(keysym) && m === modifiers);
+// Chords that open surfaces the lockdown blocks (view-source, incognito, open file,
+// task manager). DevTools, print, save, downloads, history and settings are allowed (Miguel 2026-10-15).
+export const refusedChord = matches([[key('u'), CTRL], [key('n'), CTRL | SHIFT], [key('o'), CTRL], [0xff1b, SHIFT]]);
+// Browser chords always go to the band, whatever the page focus.
+export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'), CTRL], [0xff09, CTRL], [0xff09, CTRL | SHIFT],
+  [key('t'), CTRL | SHIFT], [0xff51, ALT], [0xff53, ALT]]);
+
+// The native tab strip's height in the band (DIP); the toolbar row starts below it.
+const STRIP_HEIGHT = 41;
+
+export class InputArbiter {
+  constructor(host, windows) { this.host = host; this.windows = windows; }
+  static agent(command) { return command._agent_input === true || command.focused_agent === true; }
+  /** A native click into the page puts the keys back in the page. */
+  pageFocused() { this.chromeFocus = null; }
+  /** The kernel-observed active Tab of the tabbed window, or null (fail closed). */
+  async activeTab() {
+    const target = await this.host.tabGroups?.active().catch(() => null);
+    return target ? [...this.host.tabs.values()].find(tab => tab.target_id === target) ?? null : null;
+  }
+  async isActiveTab(tab, binding) {
+    if (!binding?.isCurrent?.()) return false;
+    const active = await this.activeTab();
+    return !!active && active.target_id === tab?.target_id && binding.isCurrent();
+  }
+  /** BrowserChrome input acts on the active Tab: the ledger admits it against that Tab. */
+  async resolveDisplayInput(command) {
+    if (command.window_generation === undefined) return {tab_id: command.tab_id, document_id: command.document_id, generation: command.generation};
+    if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
+    const binding = this.windows.current().tabbed;
+    if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
+    const tab = await this.activeTab();
+    if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
+    return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
+  }
+  /** After ledger admission: band input reaches Chrome's own UI through the band
+   * source, for the Tab the ledger admitted (rechecked right before dispatch). Only
+   * the browser shortcuts go to Chrome's UI whatever the focus; every other key, text
+   * or chord may land in the page (X focus decides), so it passes the page's own
+   * text-target fence first (Vault-only fields, cross-origin frames fail closed). */
+  async input({stream, command, signal}) {
+    if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
+    const source = stream?.regionSource, input = command.input ?? {};
+    // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
+    // pixels): they need the admitted active Tab, not its document, so a strip click while the
+    // page loads is not dropped. Text and other keys may reach the page: document fenced too.
+    const activeAdmitted = async () => {
+      if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
+      const tab = await this.activeTab();
+      if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
+      if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
+      return tab;
+    };
+    const current = async () => {
+      const tab = await activeAdmitted();
+      if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
+      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
+      await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      return {connection, sessionId, tab};
+    };
+    // Isolated world: the page cannot redefine what it reports. The shared
+    // input owner suspends a mirror's focus emulation for the physical read.
+    const textTarget = async () => {
+      const {connection, sessionId, tab} = await current();
+      const {frameTree} = await connection.send('Page.getFrameTree', {}, sessionId);
+      const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+      const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
+      // The person's own native action (a toolbar click, Ctrl+L) puts them in Chrome's UI; the page's
+      // physical focus confirms it (read with focus emulation suspended: a mirror keeps it on, so
+      // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
+      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) {
+        const capture = this.host.browser.inputCapture;
+        if (typeof capture?.physicalFocus !== 'function') return;
+        if (!await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true)) return;
+        this.chromeFocus = null;
+      }
+
+      const {result} = await evaluate(sensitiveFocusExpression(false));
+      if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
+    };
+    // At most once: a native action without a reply may have run; never replayed.
+    const dispatched = async action => {
+      let done;
+      try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      if (!done) throw new UserDomainRefusal('stale_reference');
+      return {dispatched: true};
+    };
+    // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
+    const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
+    const popup = source?.surface === 'browser_auxiliary';
+    const chord = async (keysym, modifiers) => {
+      if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
+      let tab;
+      // Review #1016 P2: an admitted native popup (menu, dropdown, dialog) owns the keys while it is
+      // current (rechecked here): Chrome's UI, not the page's remembered field.
+      if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
+      // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
+      if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
+      else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
+      return dispatched(() => source.chord(keysym, modifiers));
+    };
+    const band = source?.surface === 'browser_chrome';
+    if (input.kind === 'click') {
+      // Protocol 530: middle (close a Tab) and right (Chrome's context menu) clicks reach the band only.
+      const button = input.button === undefined ? 1 : band ? {middle: 2, right: 3}[input.button] : undefined;
+      if (button === undefined) throw new Error('MD-2: unsupported input');
+      // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
+      // A popup item (menu, dropdown) may navigate or switch Tabs: the keys return to the page.
+      const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? `${tab.tab_id}:${tab.document_id}` : null;
+      return dispatched(() => source.click(input.x, input.y, button));
+    }
+    if (input.kind === 'drag') {
+      // Protocol 530: reorder Tabs within the strip; leaving it would tear a Tab into a new window.
+      if (!band || ![input.x, input.y, input.to_x, input.to_y].every(Number.isSafeInteger) || input.y >= STRIP_HEIGHT || input.to_y >= STRIP_HEIGHT) throw new Error('MD-2: unsupported input');
+      await switching(); this.chromeFocus = null;
+      return dispatched(() => source.drag(input.x, input.y, input.to_x, input.to_y));
+    }
+    if (input.kind === 'scroll') {
+      const nx = notches(input.delta_x), ny = notches(input.delta_y);
+      if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
+      await switching(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
+    }
+    if (input.kind === 'key') {
+      const key = typeof input.key === 'string' ? input.key : '';
+      const keysym = /^[\x20-\x7e]$/.test(key) ? key.charCodeAt(0) : keysyms[key];
+      if (keysym === undefined) throw new Error('MD-2: unsupported key');
+      // MP-08/MP-10/MP-11: an accelerator's key label may be upper-case
+      // without Shift (Caps Lock). Do not let X11 infer an extra modifier.
+      const modifiers = input.modifiers ?? 0;
+      return chord(modifiers & 7 ? lower(keysym) : keysym, modifiers);
+    }
+    if (input.kind === 'text') {
+      if (typeof input.text !== 'string' || input.text.length > 2048 || !/^[\x20-\x7e]*$/.test(input.text)) throw new Error('MD-2: unsupported text');
+      for (const c of input.text) await chord(c.charCodeAt(0), 0);
+      return {dispatched: true};
+    }
+    throw new Error('MD-2: unsupported input');
+  }
+}

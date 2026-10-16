@@ -25,6 +25,7 @@ mod external_provider_session;
 mod history;
 mod kernel_access;
 mod kernel_browser;
+mod kernel_computer;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -66,6 +67,7 @@ pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
+pub use kernel_computer::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -267,6 +269,15 @@ pub use workspace::*;
 /// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
 /// host browser, App views, Notes, grants, captures and DOM mirror contract.
+/// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
+/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to that contract.
+/// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
+/// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+/// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
 /// Version 450 adds immutable room spawn/object creators and regular room tools
 /// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
 /// Version 462 adds user-requested capability grant causes, absolute grant
@@ -301,7 +312,18 @@ pub use workspace::*;
 /// Version 506 integrates those contracts, including main's 491, with the 493
 /// agent-model union; generated consumers follow this coordinator-allocated
 /// acceptance version.
-/// Version 513 normalizes paired display callers and historical workflow projections.
-/// Version 516 orders mirror reads behind earlier input from the same viewer;
-/// the allocated floor is above the unordered target's 513 (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 516;
+/// Version 511 orders a DOM mirror read behind its viewer's earlier mirror input,
+/// so a client sends the read with the key and gets its echo in one round trip
+/// (MP-08/MP-10/MP-11).
+/// Version 517 combines App Tab calls/grants and ordered reads with DOM mirror v2
+/// author CSS, live controls, compact deltas, native density and long-poll credits.
+/// MP-08/MP-10/MP-11: allocated 525 carries shared producer resumption on
+/// the display integration train (519 region clients precede this final step).
+/// MP-08/MP-10/MP-11: allocated 528 adds the Browser state's `chrome_window` (the
+/// native band's window epoch and active Tab) and `browser_lockdown` fields.
+/// MP-08/MP-10/MP-11: allocated 529 adds page display region_offset placement.
+/// Allocated 530 adds band middle/right click and drag (`KernelBrowserInput`), the
+/// `browser_auxiliary` display target and the state's `chrome_window.auxiliary`.
+/// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
+/// Allocated 535 registers525 resumption, worker attach and initial push credit once.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 535;

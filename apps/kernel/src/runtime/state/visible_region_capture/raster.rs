@@ -31,7 +31,9 @@ pub(super) fn validate_region(r: &ScreenshotRegion) -> Result<(), DaemonError> {
         || r.frame_height == 0
         || u64::from(r.frame_width) * u64::from(r.frame_height) > MAX_PIXELS
     {
-        return Err(capture_error("Region must fit the visible painted surface"));
+        return Err(capture_error(
+            "Region must fit the visible painted surface [capture:kernel-raster-1]",
+        ));
     }
     Ok(())
 }
@@ -42,7 +44,9 @@ pub(super) fn crop_png(
 ) -> Result<Cropped, DaemonError> {
     validate_region(r)?;
     if bytes.len() > MAX_PNG || masks.len() > 1024 {
-        return Err(capture_error("Capture exceeds limit"));
+        return Err(capture_error(
+            "Capture exceeds limit [capture:kernel-raster-2]",
+        ));
     }
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_limits(png::Limits {
@@ -51,25 +55,29 @@ pub(super) fn crop_png(
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
-        .map_err(|_| capture_error("Invalid screenshot PNG"))?;
+        .map_err(|_| capture_error("Invalid screenshot PNG [capture:kernel-raster-3]"))?;
     if reader.info().width != r.frame_width
         || reader.info().height != r.frame_height
         || reader.info().animation_control.is_some()
     {
         return Err(capture_error(
-            "Screenshot dimensions changed or animated PNG refused",
+            "Screenshot dimensions changed or animated PNG refused [capture:kernel-raster-4]",
         ));
     }
     let mut decoded = vec![0; reader.output_buffer_size()];
     let info = reader
         .next_frame(&mut decoded)
-        .map_err(|_| capture_error("Invalid screenshot pixels"))?;
+        .map_err(|_| capture_error("Invalid screenshot pixels [capture:kernel-raster-5]"))?;
     let channels = match info.color_type {
         png::ColorType::Rgb => 3,
         png::ColorType::Rgba => 4,
         png::ColorType::Grayscale => 1,
         png::ColorType::GrayscaleAlpha => 2,
-        _ => return Err(capture_error("Unsupported PNG pixels")),
+        _ => {
+            return Err(capture_error(
+                "Unsupported PNG pixels [capture:kernel-raster-6]",
+            ))
+        }
     };
     // Mask full source before cropping: neither crop nor scaling can reveal
     // protected edge pixels. Never store the unmasked host image.
@@ -78,7 +86,9 @@ pub(super) fn crop_png(
             || m.width < 0.0
             || m.height < 0.0
         {
-            return Err(capture_error("Invalid protection region"));
+            return Err(capture_error(
+                "Invalid protection region [capture:kernel-raster-7]",
+            ));
         }
         let x0 = m.x.floor().max(0.0).min(r.frame_width as f64) as usize;
         let y0 = m.y.floor().max(0.0).min(r.frame_height as f64) as usize;
@@ -117,14 +127,14 @@ pub(super) fn crop_png(
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder
             .write_header()
-            .map_err(|_| capture_error("PNG encoder unavailable"))?;
+            .map_err(|_| capture_error("PNG encoder unavailable [capture:kernel-raster-8]"))?;
         writer
             .write_image_data(&pixels)
-            .map_err(|_| capture_error("PNG encoding failed"))?;
+            .map_err(|_| capture_error("PNG encoding failed [capture:kernel-raster-9]"))?;
     }
     if output.len() > 4 * 1024 * 1024 {
         return Err(capture_error(
-            "Selected PNG exceeds attachment capture limit",
+            "Selected PNG exceeds attachment capture limit [capture:kernel-raster-10]",
         ));
     }
     Ok(Cropped {

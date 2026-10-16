@@ -3,18 +3,16 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // Linux XDamage/XShm implementation; macOS unsupported until ScreenCaptureKit.
 import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
-import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
-import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
-import {NativeWorkerControl} from './kernel-browser-native-worker.mjs';
+import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {safeChildPid} from './kernel-browser-display.mjs';
+import {fitNativeViewport} from './kernel-browser-native-viewport.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create,refused=()=>{}}){
  if(platform!=='linux'||!ownsDisplay(display)){refused(platform!=='linux'?'platform':'display_not_owned');return null;}
  try{return await create()}catch{return null}
@@ -46,12 +44,15 @@ export function attestationMask(regions,width,height){
 }
 export class LinuxCapture {
  constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
- valid(){return !this.closed&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
+ valid(){return !this.closed&&this.connection?.isOpen?.()!==false&&ownsDisplay(this.display)&&this.allowed(this.policy)}
+ rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
-  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId)this.fence();
+  if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.fence();}
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
   // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
@@ -60,9 +61,16 @@ export class LinuxCapture {
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
    // region metadata, and mask any readback older than that new fence in full.
-   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
-   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
+   this.retireFrames();
   }
+ }
+ /** A cached readback masked under the current projection (startup admits only such a sample). */
+ currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
+ // Retire every published, queued and in-flight pixel of the current mask projection.
+ retireFrames(){
+  if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
+  this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
+  this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
  }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
@@ -72,58 +80,16 @@ export class LinuxCapture {
    // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
    // Page emulation owns negotiated DPR; keep the crop exact at both scales.
    // Window bounds are host DIPs: the negotiated raster divided by host scale.
-   const bounds={width:geometry.width*this.scale/this.hostScale,height:geometry.height*this.scale/this.hostScale+87};
-   // The X window resize is asynchronous; the worker needs its final size.
-   // Chromium can drop a bounds change (the first DPR1 viewer after a browser
-   // launch kept 1280x887 DIPs): re-send until it reports the requested size.
-   for(let n=0;n<50;n++){if(n%10===0)await this.connection.send('Browser.setWindowBounds',{windowId,bounds});const {bounds:actual}=await this.connection.send('Browser.getWindowBounds',{windowId});if(actual?.width===bounds.width&&actual?.height===bounds.height)break;await delay(20);}
-   await this.connection.send('Page.bringToFront',{},this.sessionId);
-   await delay(100);
-   // Force the emulated viewport to paint before establishing its native crop.
-   await this.screenshot();
+   await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:geometry.width*this.scale,height:geometry.height*this.scale,hostScale:this.hostScale,
+    measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
-   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale});
+   this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
-   this.poolRoot=await mkdtemp(path.join(this.display.root,'raster-'));
-   this.phase='readback';const executable=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER;
-   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...this.display.environment},stdio:['pipe','pipe','pipe']});this.child=child;if(executable)this.nativeWorker=new NativeWorkerControl(child,this.timing);
-   const fail=()=>this.fence();child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
-   // MP-08/MP-10: fixed-label stage and owned-window sizes only.
-   child.stderr.on('data',b=>{for(const line of b.toString().split('\n')){
-    if(/^MD-DISPLAY: native stage [a-z_]+$/.test(line))this.helperStage=line.split(' ').at(-1);
-    else if(/^MD-DISPLAY: native geometry requested \d+x\d+ owned (none|\d+x\d+(,\d+x\d+){0,7})$/.test(line))this.timing(line.replace('MD-DISPLAY: native geometry ','native_geometry '),performance.timeOrigin+performance.now());
-   }});
-   const raster=new NativeRaster();
-   const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.control({release:slot,serial}));
-   const pipe=new NativePipe(header=>{
-    if(header.reply!==undefined){this.nativeWorker?.validate(header);if(!this.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
-    if(header.width!==geometry.width*this.scale||header.height!==geometry.height*this.scale||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
-   },(header,pixels)=>{
-    if(header.reply!==undefined){this.nativeWorker.receive(header,pixels);return;}
-    const received=performance.timeOrigin+performance.now();
-    if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)this.timing(stage,header.captured_ms,header.captured_ms+cpu);}
-    if(Number.isFinite(header.native_read_ms))this.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
-    // MP-08/MP-10: proved scroll plans offered by this readback (telemetry only).
-    if(header.shift_adjacent)this.timing('native_shift_adjacent',header.captured_ms,header.native_read_ms??header.captured_ms);
-    for(const [name,start,end] of [['input_wake_to_capture',header.input_wake_ms,header.captured_ms],['native_damage_coalesce',header.damage_ready_ms,header.captured_ms],['native_window_fence',header.captured_ms,header.get_image_ms],['native_xshm_get_image',header.get_image_ms,header.image_ready_ms],['native_readback_copy',header.image_ready_ms,header.readback_ms],['native_readback',header.captured_ms,header.readback_ms],['native_fingerprint',header.readback_ms,header.fingerprint_ms],['native_damage_scan',header.fingerprint_ms,header.damage_ms]]){
-     if(Number.isFinite(start)&&Number.isFinite(end)&&end>=start)this.timing(name,start,end);
-    }
-    if(Number.isFinite(header.damage_ms))this.timing('native_pipe',header.damage_ms,received);
-    const at=performance.timeOrigin+performance.now(),raw=header.slot==null?raster.apply(header,pixels):pool.apply(header);this.timing('native_raster_copy',at);
-    if(this.nativeWorker){
-     raw.nativeEncode=values=>this.nativeWorker.request('encode',{...values,serial:raw.serial});
-     raw.nativeExact=values=>this.nativeWorker.request('exact',{...values,serial:raw.serial});
-     raw.nativeRetire=encoder=>this.nativeWorker.retire(encoder);
-     raw.nativeDelivered=(encoder,revision)=>this.nativeWorker.delivered(encoder,revision);
-     raw.nativeCommit=(encoder,admit)=>this.nativeWorker.commit(encoder,raw.serial,admit);
-    }
-    if(this.valid()){raw.format='bgr0';this.pending?.release?.();this.pending=raw;void this.publish()}else raw.release?.()
-   });
-   child.stdout.on('data',b=>{try{pipe.push(b)}catch{this.fence()}});
-   child.stdin.write(JSON.stringify({pid:this.pid,width:geometry.width*this.scale,height:geometry.height*this.scale,pool:this.poolRoot})+'\n');
+   this.poolRoot=await this.createRasterPool();
+   startNativeReadback(this,{width:geometry.width*this.scale,height:geometry.height*this.scale});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw Error('MD-DISPLAY: native readback unavailable');
+   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.
@@ -158,36 +124,47 @@ export class LinuxCapture {
  async publish(){
   if(this.publishing)return;this.publishing=true;
   try{while(this.pending&&this.valid()){
-   let raw=this.pending;this.pending=null;this.publishingRaw=raw;
+   // MP-11: mirror geometry is live authority, not a cached synchronous epoch.
+   // Refuse a readback before any mask, encoder offer or delivery can consume it.
+   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
+   // A retire during that await took the readback (r10: it threw and fenced the source).
+   let raw=this.pending;if(!raw)continue;this.pending=null;this.publishingRaw=raw;
+   // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
+   // last frame, never Chrome's pixels; its popup stream shows them over the page. Checked live
+   // after the capture: a readback holding the list's pixels always sees it open.
+   if(this.occluded&&await this.occluded()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
+   if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
+    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
+   }
    const revision=this.regionRevision;
-   // MP-08/MP-10/MP-11: no per-readback CDP round trip. Navigation and new
-   // page targets fence this source by event (onCdp); every delivered frame
-   // still passes the credit's document check, which CDP orders after those
-   // events. The owned single-tab window is never occluded or hidden.
+   // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
+   // and geometry. Document changes also retire the source through onCdp.
    let at=performance.timeOrigin+performance.now();let regions;
    try{
     if(!this.regions.guard)await this.regions.refresh();
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
    }catch(error){
-    if(/fill-target capture unavailable/.test(error?.message??'')){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
+    if(error.code==='fill_capture_retry'){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);
-   if(revision!==this.regionRevision){raw.release?.();this.publishingRaw=null;continue;}
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // Attribute-only changes need a new readback even if XDamage/pixels did
    // not change. The first readback may precede the refreshed metadata.
    if(raw.captured_ms<this.regions.beforeAt){this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
-   if(!this.valid())break;
+   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())break;
+   // Review #1016 @05a700a84 P1: a re-projection during that await retired this raster's masks.
+   if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
-   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
+   this.latest={raw,revision,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
-  }}catch{this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
+  }}catch(error){this.timing(`native_publish_failed ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,60)}`,performance.timeOrigin+performance.now());this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}
  }
  // MP-08/MP-10: notch wheel input on the owned private X display (native
  // smooth scrolling). CSS coordinates; callers fence document and actor first.
@@ -211,14 +188,24 @@ export class LinuxCapture {
    this.timing?.('native_input_uncertain',performance.timeOrigin+performance.now());this.fence();
    throw Object.assign(Error('MP-11: native input outcome uncertain'),{code:'native_input_uncertain'});
   }
-  return reply?.[operation==='wheel'?'wheeled':'clicked']===true;
+  return reply?.[{wheel:'wheeled',drag:'dragged'}[operation]??'clicked']===true;
  }
- // MP-08/MP-10: primary click on the owned display (CSS coordinates).
- click(x,y){
-  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+ // MP-08/MP-10: click on the owned display (CSS coordinates); protocol 530
+ // buttons 2 (middle) and 3 (right) only where the caller admitted them.
+ devicePoint(x,y){
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
-  if(![px,py].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale)return false;
-  return this.pointer('click',{point:[px,py]});
+  return [px,py].every(Number.isSafeInteger)&&px>=0&&py>=0&&px<geometry.width*this.scale&&py<geometry.height*this.scale?[px,py]:null;
+ }
+ click(x,y,button=1){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed||![1,2,3].includes(button))return false;
+  const point=this.devicePoint(x,y);
+  return point?this.pointer('click',{point,...(button===1?{}:{button})}):false;
+ }
+ // Protocol 530: primary-button drag between two owned points.
+ drag(x,y,toX,toY){
+  if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
+  const point=this.devicePoint(x,y),to=this.devicePoint(toX,toY);
+  return point&&to?this.pointer('drag',{point,to}):false;
  }
  // MP-08/MP-10: one key press/release on the owned display (X keysym:
  // printable ASCII or a named editing key); callers fence the text target.
@@ -247,10 +234,12 @@ export class LinuxCapture {
  async close(){this.fence();return this.closing}
  async cleanup(){
   this.off?.();this.nativeWorker?.close();const child=this.child;this.child=null;
-  if(!child||child.pid===undefined)return;safeChildPid(child);child.stdin.end();
-  for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
-  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
-  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
+  if(child&&child.pid!==undefined){
+   safeChildPid(child);child.stdin.end();
+   for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
+   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
+   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
+  }
   if(this.poolRoot){await rm(this.poolRoot,{recursive:true,force:true});this.poolRoot=null}
  }
 }

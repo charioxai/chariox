@@ -4,6 +4,23 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// MP-08/MP-11 local500: human grants only the leased worker's observed desktop.
+    GrantLeasedComputer {
+        agent_id: String,
+        target: KernelDesktopTarget,
+    },
+    RevokeLeasedComputer {
+        agent_id: String,
+    },
+    Computer {
+        command: KernelComputerCommand,
+    },
+    /// MP-08 / MP-11 (local 461): explicit `null` restores every owned agent after
+    /// "revoke all"; the field is required so an omitted agent cannot restore everyone.
+    GrantRoomComputer {
+        #[serde(deserialize_with = "Option::deserialize")]
+        agent_id: Option<String>,
+    },
     ListGrants,
     SubscribeGrants {
         after: u64,
@@ -12,16 +29,30 @@ pub enum KernelBrowserCommand {
     RevokeGrants {
         agent_id: Option<String>,
     },
+    /// MP-08/MP-10: protocol 482 `wire: 2` selects the author-CSS snapshot
+    /// plus delta mirror; absent keeps the 443 computed-style packets.
     MirrorSubscribe {
         tab_id: String,
         generation: u64,
         device_scale_factor: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wire: Option<u32>,
     },
+    /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
+    /// poll answered by the next page change; credits apply in sequence.
     MirrorNext {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+        #[serde(default)]
         drift_nodes: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u32>,
+        /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply
+        /// lost with its socket, or a failed credit): the controller resends it from
+        /// its history at once, ending earlier long polls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resend: Option<bool>,
     },
     MirrorClose {
         subscription_id: String,
@@ -51,6 +82,8 @@ pub enum KernelBrowserCommand {
     DisplaySubscribe {
         tab_id: String,
         generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<KernelBrowserDisplayTarget>,
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
@@ -59,6 +92,16 @@ pub enum KernelBrowserCommand {
         subscription_id: String,
         generation: u64,
         after_sequence: u64,
+    },
+    /// MP-08/MP-10/MP-11: protocol 525. A resume hint does not carry authority;
+    /// current terminal/source admission is repeated before a fresh stream ID.
+    DisplaySuspend {
+        subscription_id: String,
+        generation: u64,
+    },
+    DisplayResume {
+        subscription_id: String,
+        generation: u64,
     },
     /// MP-08/MP-10: protocol 491 pushed display. Acknowledges the newest
     /// presented sequence on a relay display subscription (the first ack
@@ -73,6 +116,10 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
         document_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<u64>,
         input: KernelBrowserInput,
     },
     Start,
@@ -117,18 +164,65 @@ pub enum KernelBrowserCommand {
     },
 }
 
+/// MP-08/MP-10/MP-11: allocated519; only owner-issued references select regions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KernelBrowserDisplayTarget {
+    Region {
+        mirror_subscription_id: String,
+        document_id: String,
+        sequence: u64,
+        region_id: String,
+    },
+    BrowserChrome {
+        window_generation: u64,
+    },
+    /// MP-08/MP-10/MP-11 protocol 530: one popup of the band's window (menu,
+    /// omnibox dropdown, extension popup, bubble) by its kernel-issued id from
+    /// the Browser state's `chrome_window.auxiliary`.
+    BrowserAuxiliary {
+        window_generation: u64,
+        auxiliary_id: u64,
+    },
+}
+
+/// MP-08/MP-10/MP-11 protocol 530: non-primary buttons reach only Chrome's own UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelBrowserButton {
+    Middle,
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserInput {
     Click {
         x: u32,
         y: u32,
+        /// Protocol 530: absent means the primary button.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<KernelBrowserButton>,
+    },
+    /// Protocol 530: a primary-button drag (the band's Tab reorder).
+    Drag {
+        x: u32,
+        y: u32,
+        to_x: u32,
+        to_y: u32,
     },
     Text {
         text: String,
     },
     Key {
         key: String,
+        /// MP-08/MP-11 protocol517: bounded CDP modifier bitset (carried from 498).
+        #[serde(
+            default,
+            deserialize_with = "deserialize_key_modifiers",
+            skip_serializing_if = "key_modifiers_empty"
+        )]
+        modifiers: u8,
     },
     Scroll {
         x: u32,
@@ -148,20 +242,40 @@ pub struct KernelBrowserRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserMirrorAction {
+    /// Protocol 482: `x`/`y` are the viewer's CSS offset inside the node's box;
+    /// the kernel clamps them to the live box and hit-tests before dispatch.
     Click {
         node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
     },
     Focus {
         node_id: String,
     },
+    /// Protocol 482: without `node_id`, text goes to the live native focus.
     Text {
-        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
         text: String,
     },
     Scroll {
         node_id: String,
         delta_x: i32,
         delta_y: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+    },
+    /// Protocol 482 viewer-owned scroll: the kernel follows the viewer's
+    /// position (window when `node_id` is absent).
+    ScrollTo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+        x: f64,
+        y: f64,
     },
     Key {
         key: String,
@@ -172,13 +286,49 @@ pub enum KernelBrowserMirrorAction {
         focus_id: String,
         focus_offset: u32,
     },
-    Composition {
+    /// Protocol 492: the viewer's focus left this control; the kernel blurs it
+    /// only while it is still the live focus.
+    Blur {
         node_id: String,
-        text: String,
-        selection_start: u32,
-        selection_end: u32,
+    },
+    /// Protocol 492: a control state committed by the viewer's own UI (a select
+    /// pick, a date/time/color/range picker, a multiple select's option).
+    Set {
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_index: Option<i32>,
     },
     Coordinate {
         input: KernelBrowserInput,
     },
+}
+
+fn key_modifiers_empty(value: &u8) -> bool {
+    *value == 0
+}
+fn deserialize_key_modifiers<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u8, D::Error> {
+    let value = u8::deserialize(deserializer)?;
+    if value > 15 {
+        return Err(serde::de::Error::custom("invalid key modifiers"));
+    }
+    Ok(value)
+}
+
+/// MP-08/MP-10/MP-11: kernel-private §2a target, ready for the 519 adapter.
+/// This type is not yet a command field; adding it to the public request belongs
+/// to the coordinated 519/127 protocol bump. Clients never choose crop geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBrowserMirrorRegionTarget {
+    pub mirror_subscription_id: String,
+    pub generation: u64,
+    pub document_id: String,
+    pub sequence: u64,
+    pub region_id: String,
 }

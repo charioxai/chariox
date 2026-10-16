@@ -297,7 +297,7 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
@@ -488,6 +488,75 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     let after = call(f, PASTE, paste_args(&handle)).await.unwrap_err();
     assert!(needs_focus(after));
     assert_eq!(inserted(&login), None);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+// MP-08/MP-11 #1001 P1: a Vault fill into the owner's App Tab is the agent's
+// input to it. It needs the same App view claim as the agent's other input,
+// and the host receives that claim, so the App's field handlers run as the agent.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn a06_vault_fill_into_an_app_tab_is_claimed_agent_input() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    let views = f.state.app_control().user_views();
+    let view = views
+        .open(
+            "local",
+            crate::runtime::app_views::AppViewBinding {
+                owner: "local".into(),
+                installation: "vault-app".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "vault-app",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            "local",
+            &view.view_id,
+            "target-login".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-new".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    unlock(f);
+    let _turn = elevated(f);
+    let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let app_view_tab = || std::fs::read_to_string(login.root.path().join("app_view_tab")).ok();
+    // An unfocused agent has not claimed this App view: nothing reaches it.
+    assert!(call(f, PASTE, paste_args(&handle)).await.is_err());
+    assert_eq!(inserted(&login), None);
+    assert_eq!(app_view_tab(), None);
+    // Focused, it claims the view as for any other input; then the sudo fill
+    // carries that claim to the host.
+    let host = &f.state.owned.kernel_browser_host;
+    let agent = f.request.target_agent_id.clone().unwrap();
+    host.set_focus("local", Some(&agent));
+    call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"snapshot","tab_id":"host-tab-new","generation":1}}),
+    )
+    .await
+    .unwrap();
+    host.set_focus("local", None);
+    assert_eq!(
+        call(f, PASTE, paste_args(&handle)).await.unwrap(),
+        json!({"inserted": true})
+    );
+    assert_eq!(
+        app_view_tab().as_deref().map(str::trim_end),
+        Some("host-tab-new")
+    );
     f.state.shutdown_cleanup().await.unwrap();
 }
 

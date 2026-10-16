@@ -1,0 +1,47 @@
+{
+  "local": 529,
+  "relay_peer": 137,
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "display_subscribe",
+        "tab_id": "t",
+        "generation": 2,
+        "codecs": [
+          "png",
+          "avc1.420033"
+        ],
+        "bitrate": 2000000,
+        "device_scale_factor": 2,
+        "target": {
+          "kind": "region",
+          "mirror_subscription_id": "m",
+          "document_id": "d",
+          "sequence": 3,
+          "region_id": "n1"
+        }
+      }
+    }
+  },
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "generation": 2,
+        "subscription_id": "s",
+        "codec": "avc1.420033",
+        "bitrate": 2000000,
+        "device_scale_factor": 2,
+        "source_kind": "region",
+        "binding_id": "r",
+        "document_id": "d",
+        "sequence": 3,
+        "css_width": 100,
+        "css_height": 50,
+        "region_offset": {
+          "x": 10.5,
+          "y": 5.25
+        }
+      }
+    }
+  }
+}

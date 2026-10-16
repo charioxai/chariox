@@ -1,3 +1,4 @@
+import { KernelCatalogReads } from './kernel-catalog-reads.js'
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -247,6 +248,7 @@ type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  private readonly catalogReads = new KernelCatalogReads()
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
   private readonly relayIssuerDaemonId: string | null
@@ -393,7 +395,7 @@ export class LocalIpcClient {
       return this.sendWebSocket(query, "control", admittedSocket)
     }, request)
     if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
+    return this.catalogReads.run(request, this.socketPath, () => this.sendUnchecked<TResponse>(request))
   }
 
   private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
@@ -570,6 +572,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.catalogReads.clear()
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
       await this.unsubscribeFromKernelEvents()
@@ -721,7 +724,8 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+      // target_not_connected: the kernel or relay refused before starting it.
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
@@ -1624,6 +1628,7 @@ export class LocalIpcClient {
 
 function runsAgainOnReplay(request: unknown): boolean {
   if (request === null || typeof request !== "object") return false
+  if ((request as {GetSliceDisplayEndpoint?:{shared_display?:unknown}}).GetSliceDisplayEndpoint?.shared_display) return true
   if (Object.keys(request).some(kind => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))) return true
   // MD-3: reconnect creates another browser actor. Never repeat an uncertain
   // mutation on that connection; observations can be fetched again safely.

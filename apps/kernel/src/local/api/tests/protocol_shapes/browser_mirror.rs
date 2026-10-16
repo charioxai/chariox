@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: protocol 447 mirroring shape and rejection contract.
+//! MP-08/MP-10/MP-11: protocol 447/492/501/503/517 mirroring shape and rejection contract.
 use super::*;
 use crate::local::{
     KernelBrowserCommand as C, KernelBrowserInput, KernelBrowserMirrorAction as A,
@@ -27,12 +27,37 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             tab_id: "t".into(),
             generation: 2,
             device_scale_factor: 2,
+            wire: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
+            wait_ms: None,
+            resend: None,
+        },
+        C::MirrorSubscribe {
+            tab_id: "t".into(),
+            generation: 2,
+            device_scale_factor: 2,
+            wire: Some(2),
+        },
+        C::MirrorNext {
+            subscription_id: "s".into(),
+            generation: 2,
+            after_sequence: 3,
+            drift_nodes: vec![],
+            wait_ms: Some(1500),
+            resend: None,
+        },
+        C::MirrorNext {
+            subscription_id: "s".into(),
+            generation: 2,
+            after_sequence: 3,
+            drift_nodes: vec![],
+            wait_ms: Some(1500),
+            resend: Some(true),
         },
         C::MirrorClose {
             subscription_id: "s".into(),
@@ -40,18 +65,36 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         },
         binding(A::Click {
             node_id: "n1".into(),
+            x: None,
+            y: None,
+        }),
+        binding(A::Click {
+            node_id: "n1".into(),
+            x: Some(4.5),
+            y: Some(2.0),
         }),
         binding(A::Focus {
             node_id: "n1".into(),
         }),
         binding(A::Text {
-            node_id: "n1".into(),
+            node_id: Some("n1".into()),
+            text: "fixture".into(),
+        }),
+        binding(A::Text {
+            node_id: None,
             text: "fixture".into(),
         }),
         binding(A::Scroll {
             node_id: "n1".into(),
             delta_x: 0,
             delta_y: 10,
+            x: None,
+            y: None,
+        }),
+        binding(A::ScrollTo {
+            node_id: None,
+            x: 0.0,
+            y: 640.5,
         }),
         binding(A::Key { key: "Tab".into() }),
         binding(A::Selection {
@@ -60,14 +103,33 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             focus_id: "n2".into(),
             focus_offset: 3,
         }),
-        binding(A::Composition {
+        binding(A::Blur {
             node_id: "n1".into(),
-            text: "abc".into(),
-            selection_start: 0,
-            selection_end: 3,
+        }),
+        binding(A::Set {
+            node_id: "n1".into(),
+            value: None,
+            checked: None,
+            selected_index: Some(1),
+        }),
+        binding(A::Set {
+            node_id: "n2".into(),
+            value: Some("2026-10-10".into()),
+            checked: None,
+            selected_index: None,
+        }),
+        binding(A::Set {
+            node_id: "n3".into(),
+            value: None,
+            checked: Some(true),
+            selected_index: None,
         }),
         binding(A::Coordinate {
-            input: KernelBrowserInput::Click { x: 1, y: 2 },
+            input: KernelBrowserInput::Click {
+                x: 1,
+                y: 2,
+                button: None,
+            },
         }),
     ];
     let values: Vec<_> = commands
@@ -83,11 +145,11 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value.clone()).is_ok());
     }
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("browser-mirror-443.json")).unwrap();
+        serde_json::from_str(include_str!("browser-mirror-517.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "132d2e5e41482d79c1aadf1b6b89b80f5185163f540eb7ebbffb17efc29ad5f8"
+        "11b80a68517f28e8b03508f786b044aa88175c3b004a858178c1f930ca88c6e5"
     );
     let next = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
         command: C::MirrorNext {
@@ -95,6 +157,8 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            wait_ms: Some(1500),
+            resend: Some(true),
         },
     });
     assert!(
@@ -108,6 +172,11 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_subscribe","tab_id":"t","generation":1,"device_scale_factor":1,"user_id":"foreign"}}}),
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"subscription_id":"s","sequence":1,"action":{"kind":"click","node_id":"n1"}}}}),
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"evaluate","script":"unsafe"}}}}),
+        // Protocol 492 retired the never-sent composition action; `set` names only control state.
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"composition","text":"a","selection_start":0,"selection_end":1}}}}),
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_input","tab_id":"t","generation":1,"document_id":"d","subscription_id":"s","sequence":1,"action":{"kind":"set","node_id":"n1","value":"x","script":"unsafe"}}}}),
+        // Protocol 501: `resend` is a flag, nothing else.
+        serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_next","subscription_id":"s","generation":1,"after_sequence":1,"drift_nodes":[],"resend":"1"}}}),
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value).is_err());
     }

@@ -23,6 +23,12 @@ pub(crate) enum KernelBrowserDisplayRequest {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
         input: crate::local::KernelBrowserInput,
     },
+    RegionInput {
+        binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
+        binding_id: String,
+        sequence: u64,
+        input: crate::local::KernelBrowserInput,
+    },
     Takeover {
         tab_id: String,
         generation: u64,
@@ -36,6 +42,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
     NegotiatedSubscribe {
         tab_id: String,
         generation: u64,
+        target: Option<crate::local::KernelBrowserDisplayTarget>,
         codecs: Vec<String>,
         bitrate: u32,
         device_scale_factor: u32,
@@ -48,6 +55,14 @@ pub(crate) enum KernelBrowserDisplayRequest {
         push: Option<KernelBrowserPushCredit>,
     },
     Attach {
+        subscription_id: String,
+        generation: u64,
+    },
+    Suspend {
+        subscription_id: String,
+        generation: u64,
+    },
+    Resume {
         subscription_id: String,
         generation: u64,
     },
@@ -83,10 +98,13 @@ struct BrowserToolArguments {
 }
 fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
     let request: BrowserToolArguments = serde_json::from_value(arguments)
-        .map_err(|_| host_error("MD-3: invalid browser command".into()))?;
+        .map_err(|error| host_error(super::kernel_browser_command_error::public_reason(&error)))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::ListGrants
+        KernelBrowserCommand::GrantLeasedComputer { .. }
+            | KernelBrowserCommand::RevokeLeasedComputer { .. }
+            | KernelBrowserCommand::GrantRoomComputer { .. }
+            | KernelBrowserCommand::ListGrants
             | KernelBrowserCommand::SubscribeGrants { .. }
             | KernelBrowserCommand::RevokeGrants { .. }
             | KernelBrowserCommand::MirrorSubscribe { .. }
@@ -96,11 +114,14 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayCapture { .. }
             | KernelBrowserCommand::DisplaySubscribe { .. }
             | KernelBrowserCommand::DisplayNext { .. }
+            | KernelBrowserCommand::DisplaySuspend { .. }
+            | KernelBrowserCommand::DisplayResume { .. }
             | KernelBrowserCommand::DisplayAck { .. }
             | KernelBrowserCommand::DisplayInput { .. }
             | KernelBrowserCommand::DisplayTakeover { .. }
             | KernelBrowserCommand::DisplayRelease { .. }
             | KernelBrowserCommand::DisplayActors
+            | KernelBrowserCommand::Computer { .. }
     ) {
         return Err(host_error(
             "MD-DISPLAY: terminal display adapter required".into(),
@@ -137,6 +158,25 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if let KernelBrowserCommand::Unsubscribe {
+            subscription_id,
+            generation,
+        } = &command
+        {
+            if self.is_room_display(subscription_id) {
+                return self
+                    .room_display_control(
+                        &caller.caller,
+                        subscription_id,
+                        *generation,
+                        crate::transport::room_shared_display::RoomDisplayCommand::Close {},
+                    )
+                    .await;
+            }
+        }
+        if let KernelBrowserCommand::Computer { command } = command {
+            return self.kernel_computer_terminal_request(caller, command).await;
+        }
         if matches!(
             &command,
             KernelBrowserCommand::MirrorSubscribe { .. }
@@ -153,12 +193,14 @@ impl KernelRuntimeState {
             KernelBrowserCommand::DisplaySubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
@@ -173,6 +215,20 @@ impl KernelRuntimeState {
                 after_sequence,
                 push: None,
             },
+            KernelBrowserCommand::DisplaySuspend {
+                subscription_id,
+                generation,
+            } => KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            },
+            KernelBrowserCommand::DisplayResume {
+                subscription_id,
+                generation,
+            } => KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
             KernelBrowserCommand::DisplayAck { .. } => {
@@ -184,15 +240,34 @@ impl KernelRuntimeState {
                 tab_id,
                 generation,
                 document_id,
+                binding_id,
+                sequence,
                 input,
-            } => KernelBrowserDisplayRequest::Input {
-                binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
+            } => {
+                let binding = crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding {
                     tab_id,
                     generation,
                     document_id,
-                },
-                input,
-            },
+                };
+                match (binding_id, sequence) {
+                    (None, None) => KernelBrowserDisplayRequest::Input { binding, input },
+                    (Some(binding_id), Some(sequence))
+                        if !binding_id.is_empty() && binding_id.len() <= 256 && sequence > 0 =>
+                    {
+                        KernelBrowserDisplayRequest::RegionInput {
+                            binding,
+                            binding_id,
+                            sequence,
+                            input,
+                        }
+                    }
+                    _ => {
+                        return Err(host_error(
+                            "MP-11: region input requires its binding and epoch".into(),
+                        ))
+                    }
+                }
+            }
             KernelBrowserCommand::DisplayTakeover { tab_id, generation } => {
                 KernelBrowserDisplayRequest::Takeover { tab_id, generation }
             }
@@ -204,10 +279,30 @@ impl KernelRuntimeState {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
                 self.refresh_user_domain_grants();
                 match &command {
-                    KernelBrowserCommand::ListGrants
+                    KernelBrowserCommand::GrantLeasedComputer { agent_id, target } => {
+                        return self
+                            .grant_leased_computer(&user, agent_id, target.clone())
+                            .await;
+                    }
+                    KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
+                        self.revoke_leased_computer(&user, agent_id).await?;
+                        let kernel = self.owned.config_projection.snapshot().daemon_id;
+                        return self.room_computer_grant_snapshot(&user, &kernel);
+                    }
+                    KernelBrowserCommand::GrantRoomComputer { .. }
+                    | KernelBrowserCommand::ListGrants
                     | KernelBrowserCommand::RevokeGrants { .. }
                     | KernelBrowserCommand::SubscribeGrants { .. } => {
+                        if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
+                            self.set_room_computer_access(&user, agent_id.as_deref(), true)?;
+                        }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
+                            self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
+                            self.owned
+                                .kernel_browser_host
+                                .revoke_grants(&user, agent_id.as_deref());
+                            self.revoke_user_leased_computer(&user, agent_id.as_deref())
+                                .await?;
                             self.owned
                                 .kernel_browser_host
                                 .revoke_grants(&user, agent_id.as_deref());
@@ -231,10 +326,7 @@ impl KernelRuntimeState {
                             }
                         }
                         let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return Ok(self
-                            .owned
-                            .kernel_browser_host
-                            .grant_snapshot(&user, &kernel));
+                        return self.room_computer_grant_snapshot(&user, &kernel);
                     }
                     _ => {}
                 }
@@ -280,7 +372,17 @@ impl KernelRuntimeState {
                 return Ok(result);
             }
         };
-        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
+        let room_control = match &request {
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id, ..
+            }
+            | KernelBrowserDisplayRequest::Resume {
+                subscription_id, ..
+            } => self.is_room_display(subscription_id),
+            _ => false,
+        };
+        if !room_control
+            && std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
             && !(std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() == Ok("1")
                 && matches!(
                     &request,
@@ -309,6 +411,44 @@ impl KernelRuntimeState {
             },
         )
         .await
+    }
+    /// MP-08/MP-10/MP-11:535 registration keeps525 as the sole resume authority.
+    pub(crate) async fn kernel_browser_display_resume_attach(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        subscription_id: String,
+        generation: u64,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if self.is_room_display(&subscription_id) {
+            return self
+                .room_display_control(
+                    &caller.caller,
+                    &subscription_id,
+                    generation,
+                    crate::transport::room_shared_display::RoomDisplayCommand::ResumeAttach {},
+                )
+                .await;
+        }
+        let binding = self
+            .kernel_browser_display_request(
+                caller,
+                KernelBrowserDisplayRequest::Resume {
+                    subscription_id,
+                    generation,
+                },
+            )
+            .await?;
+        let id = binding
+            .get("subscription_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| host_error("MP-11: missing resumed binding".into()))?;
+        let generation = binding
+            .get("generation")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| host_error("MP-11: missing resumed generation".into()))?;
+        self.kernel_browser_display_attach(caller, id.into(), generation)
+            .await?;
+        Ok(binding)
     }
     pub(crate) fn kernel_browser_terminal_context(
         &self,
@@ -350,7 +490,48 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
+        let room_control = match &request {
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
+            )),
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Suspend {},
+            )),
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
+            )),
+            _ => None,
+        };
+        if let Some((id, generation, command)) = room_control {
+            if self.is_room_display(id) {
+                return self
+                    .room_display_control(&caller.caller, id, generation, command)
+                    .await;
+            }
+        }
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
+        // MP-08/MP-10/MP-11: ingress-to-admission timing contains no binding.
+        let input_at = matches!(
+            &request,
+            KernelBrowserDisplayRequest::Input { .. }
+                | KernelBrowserDisplayRequest::RegionInput { .. }
+        )
+        .then(std::time::Instant::now);
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;
         let host = &self.owned.kernel_browser_host;
         let admission =
@@ -359,11 +540,17 @@ impl KernelRuntimeState {
             KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
+                target,
                 codecs,
                 bitrate,
                 device_scale_factor,
             } => {
-                serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor})
+                let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
+                if let Some(target) = target {
+                    params["target"] = serde_json::to_value(target)
+                        .map_err(|_| host_error("MP-11: invalid display target".into()))?;
+                }
+                params
             }
             KernelBrowserDisplayRequest::EncodedCapture {
                 subscription_id,
@@ -384,6 +571,18 @@ impl KernelRuntimeState {
             } => {
                 serde_json::json!({"op":"display_attach","subscription_id":subscription_id,"generation":generation})
             }
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => {
+                serde_json::json!({"op":"display_suspend","subscription_id":subscription_id,"generation":generation})
+            }
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => {
+                serde_json::json!({"op":"display_resume","subscription_id":subscription_id,"generation":generation})
+            }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
@@ -400,6 +599,19 @@ impl KernelRuntimeState {
                 // MP-08/MP-10/MP-11: only this admitted human display path may
                 // use asynchronous wheel dispatch; agent calls keep their ack.
                 serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"input":input})
+            }
+            KernelBrowserDisplayRequest::RegionInput {
+                binding,
+                binding_id,
+                sequence,
+                input,
+            } => {
+                if binding.document_id.is_empty() || binding.document_id.len() > 256 {
+                    return Err(host_error(
+                        "MP-11: observed region document required".into(),
+                    ));
+                }
+                serde_json::json!({"op":"input","_display_input":true,"tab_id":binding.tab_id,"generation":binding.generation,"document_id":binding.document_id,"binding_id":binding_id,"sequence":sequence,"input":input})
             }
             KernelBrowserDisplayRequest::Takeover { tab_id, generation } => {
                 let outcome = host
@@ -424,6 +636,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(at) = input_at {
+            crate::transport::kernel_browser_display::timing("input_admission", at);
+        }
         self.kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await
     }
@@ -477,7 +692,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let loader = RuntimeToolSpec { name: LOADER.into(),
-            description: "MD-3: load the user's kernel browser tools. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation.".into(),
+            description: "MD-3: load the user's kernel browser tools. Use only when the user asked you to use their browser in this turn, or after they focused you. The grant covers tabs you open (not their existing tabs) for lifetime_hours (default 8, max 24) and is retained until expiry, idle lapse or revocation. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"lifetime_hours":{"type":"integer","minimum":1,"maximum":24}},"additionalProperties":false}), };
         let Some(agent) = self.kernel_browser_agent(run) else {
             // MP-08/MP-11: an owner-requested turn may acquire access without focus.
@@ -500,7 +715,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","enum":["Tab","Enter","Escape","Backspace","Delete","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"]},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools.extend(self.notes_tool_specs(run, &agent));
         tools
@@ -511,6 +726,12 @@ impl KernelRuntimeState {
         name: &str,
         arguments: serde_json::Value,
     ) -> Option<Result<RuntimeToolResult, DaemonError>> {
+        if let Some(result) = self
+            .try_kernel_computer_tool(token, name, arguments.clone())
+            .await
+        {
+            return Some(result);
+        }
         if Self::is_note_tool(name) {
             return Some(Box::pin(self.notes_tool(token, name, arguments)).await);
         }
@@ -569,7 +790,7 @@ impl KernelRuntimeState {
         let mut admission = host
             .admit(&user, agent.id())
             .map_err(host_error)?
-            .with_agent_label(agent.alias().unwrap_or(agent.agent_ref()))
+            .with_agent_label(agent.alias())
             .with_authority(move || {
                 let runs = authority
                     .owned
@@ -619,13 +840,33 @@ impl KernelRuntimeState {
                         .scrub_error(&scope, error)
                 });
         }
-        #[allow(unused_mut)]
         let mut params = browser_tool_params(arguments)?;
+        self.claim_app_view_tab(&user, &admission, &mut params)?;
+        let payload = self
+            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
+            .await?;
+        Ok(RuntimeToolResult { ok: true, payload })
+    }
+}
+impl KernelRuntimeState {
+    /// MP-08/MP-11: an agent drives an owner's App Tab (input or Vault fill)
+    /// only after claiming that App view in its own grant; the host then runs
+    /// the Tab's bridge calls as the agent.
+    #[cfg_attr(
+        not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+        allow(unused_variables)
+    )]
+    pub(super) fn claim_app_view_tab(
+        &self,
+        user: &str,
+        admission: &crate::runtime::kernel_browser_host::KernelBrowserAdmission,
+        params: &mut serde_json::Value,
+    ) -> Result<(), DaemonError> {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if let Some(tab) = params["tab_id"].as_str().map(str::to_owned) {
             let views = self.app_control().user_views();
             for view in self
-                .user_domain_owner_aliases(&user)
+                .user_domain_owner_aliases(user)
                 .iter()
                 .flat_map(|owner| views.browser_views(owner))
             {
@@ -634,27 +875,22 @@ impl KernelRuntimeState {
                     .as_ref()
                     .is_some_and(|browser| browser.tab_id == tab)
                 {
-                    host.claim_resource(
-                        Some(&admission),
-                        crate::local::UserDomainResource::AppView {
-                            view_id: view.view_id,
-                        },
-                        false,
-                    )
-                    .map_err(host_error)?;
-                    // MP-08/MP-11: the host lets an agent drive an App Tab
-                    // only with this claim; its bridge calls run as the agent.
+                    self.owned
+                        .kernel_browser_host
+                        .claim_resource(
+                            Some(admission),
+                            crate::local::UserDomainResource::AppView {
+                                view_id: view.view_id,
+                            },
+                            false,
+                        )
+                        .map_err(host_error)?;
                     params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }
-        let payload = self
-            .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
-            .await?;
-        Ok(RuntimeToolResult { ok: true, payload })
+        Ok(())
     }
-}
-impl KernelRuntimeState {
     /// MP-08/MP-11: focus or the owner's running request loads browser tools;
     /// otherwise only an already-loaded grant is retained. Agents cannot self-grant.
     async fn kernel_browser_loader(
@@ -671,7 +907,9 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let host = &self.owned.kernel_browser_host;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        if !host.is_focused(&user, agent.id()) && !host.is_loaded(&user, agent.id()) {
+        let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
+        let already_loaded = host.is_loaded(&user, agent.id());
+        if !host.is_focused(&user, agent.id()) && !already_loaded {
             let prompt = self.owner_requested_prompt(&agent).ok_or_else(|| {
                 host_error(crate::runtime::user_domain_access::NOT_REQUESTED_LOAD.into())
             })?;
@@ -718,10 +956,12 @@ impl KernelRuntimeState {
                     agent.session_id(),
                 )
                 .map_err(host_error)?;
-            return Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
-            });
+            return Ok(self.runtime_catalog_loader_result(
+                &agent,
+                &previous_catalog,
+                already_loaded,
+                serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
+            ));
         }
         if arguments.lifetime_hours.is_some() {
             return Err(host_error(
@@ -732,10 +972,12 @@ impl KernelRuntimeState {
             self.user_domain_agent_authority(run)?;
             host.load(&user, agent.id()).map_err(host_error)?;
         }
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"loaded": BROWSER}),
-        })
+        Ok(self.runtime_catalog_loader_result(
+            &agent,
+            &previous_catalog,
+            already_loaded,
+            serde_json::json!({"loaded": BROWSER}),
+        ))
     }
 }
 
@@ -810,6 +1052,44 @@ mod document_tests {
     }
 
     #[test]
+    fn mcp_browser_command_errors_explain_safe_fields_without_reflecting_values() {
+        // MP-08/MP-10/MP-11: the provider schema lists shared parameters, but
+        // each strict command has its own required and accepted fields.
+        for (arguments, reason) in [
+            (
+                serde_json::json!({"command":{"op":"open","url":"https://example.com","generation":1}}),
+                "unexpected field generation",
+            ),
+            (
+                serde_json::json!({"command":{"op":"navigate","url":"https://example.com","tab_id":"tab"}}),
+                "missing required field generation",
+            ),
+            (
+                serde_json::json!({"command":{"op":"PRIVATE_VALUE"}}),
+                "unsupported operation or input kind",
+            ),
+            (
+                serde_json::json!({"command":{"op":"open","url":2}}),
+                "invalid parameter type",
+            ),
+            (
+                serde_json::json!({"command":{"op":"open","url":"https://example.com","PRIVATE_FIELD":"PRIVATE_VALUE"}}),
+                "unexpected parameter",
+            ),
+        ] {
+            let error = browser_tool_params(arguments).unwrap_err().to_string();
+            assert!(
+                error.contains(reason),
+                "MP-10: missing safe decode reason: {error}"
+            );
+            assert!(
+                !error.contains("PRIVATE"),
+                "MP-11: never reflect arbitrary parameters or values"
+            );
+        }
+    }
+
+    #[test]
     fn mcp_input_requires_an_observed_document_without_changing_terminal_protocol() {
         let input = serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1,"y":2}}});
         assert!(browser_tool_params(input.clone()).is_err());
@@ -820,5 +1100,14 @@ mod document_tests {
         assert_eq!(params["focused_agent"], true);
         assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
+    }
+    #[test]
+    fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {
+        for op in ["display_suspend", "display_resume"] {
+            assert!(browser_tool_params(serde_json::json!({"command":{
+                "op":op,"subscription_id":"human-display","generation":7
+            }}))
+            .is_err());
+        }
     }
 }

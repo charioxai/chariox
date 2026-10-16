@@ -94,3 +94,5 @@ impl TransportService {
         })
     }
 }
+
+pub(crate) mod room_shared_display;

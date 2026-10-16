@@ -152,3 +152,18 @@ test('MD-N2 / MP-11: fallback still fences frame navigation before returning an 
   await assert.rejects(f.read(), /frame changed during capture/);
   assert.equal(f.calls.filter(c => c.method === 'Target.detachFromTarget').length, 1);
 });
+
+// MP-08/MP-10/MP-11: the real BBC flow exceeds the old 64-root cap.
+// Keep global contextual priority and ambiguity checks through the whole bound.
+test('MP-08/MP-10/MP-11 Notes searches late roots before exact-only fallback',async()=>{
+ const texts=Array(256).fill('no matching quote');texts[255]=contextual;
+ const result=await fixture([texts,[unrelated]]).read();
+ assert.equal(result.anchoring.anchor_state,'attached');
+ assert.equal(result.anchoring.box_css.x,25510);
+ texts[200]=contextual;
+ assert.equal((await fixture([texts]).read()).anchoring.anchor_state,'ambiguous');
+});
+test('MP-11 Notes refuses a root beyond the complete 256-root search bound',async()=>{
+ const texts=Array(257).fill('no matching quote');texts[0]=contextual;
+ await assert.rejects(fixture([texts]).read(),/MD-N2: shadow root limit reached/);
+});

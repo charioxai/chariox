@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { inputHostTab, protectedPointExpression } from "./kernel-browser-input.mjs";
 
 function fixture(protectedTarget = false) {
   const sent = [];
@@ -55,7 +55,7 @@ test("MP-08: retained wheel and focused clicks proceed",async()=>{
   await inputHostTab(browser,tab,{kind:'click',x:1,y:2});
   assert.deepEqual(sent.filter(call=>call.method.startsWith('Input.')).map(call=>call.params.type),['mouseWheel','mousePressed','mouseReleased']);
 });
-test("MP-08/MP-11: focused paired Tab still checks revocation on release",async()=>{
+test("MP-08/MP-11: focused paired Tab releases before reporting revocation",async()=>{
   const {browser,sent}=fixture(false);
   const cancellation=new AbortController();
   const {connection}=await browser.resolvePageTarget();
@@ -66,7 +66,7 @@ test("MP-08/MP-11: focused paired Tab still checks revocation on release",async(
     return result;
   };
   await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'Tab'},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
-  assert.equal(sent.filter(call=>call.method==='Input.dispatchKeyEvent').length,1);
+  assert.equal(sent.filter(call=>call.method==='Input.dispatchKeyEvent').length,2);
 });
 
 // MP-11: the public Rust key is an arbitrary string; the advertised MCP enum is not authority.
@@ -94,7 +94,7 @@ test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()
   const browser={async resolvePageTarget(){return {connection,sessionId:'s'}},inputCapture:{async run(_connection,_session,operation){captured=true;return operation()}}};
   const pending=inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'mirror'},{onDispatch(){dispatches++},resolveMirror:async()=>({input:{kind:'click',x:10,y:10},guard(){assert(captured);guards++;entered();return held}})});
   try{await started;await new Promise(resolve=>setImmediate(resolve));assert.equal(dispatches,0,'MP-11: live guard must settle before either physical event');}finally{release();await pending;}
-  assert.equal(dispatches,2);assert.equal(guards,2,'MP-08: release remains paired with press');
+  assert.equal(dispatches,1);assert.equal(guards,1,'MP-08/MP-11: the final admission guard precedes the ordered press/release pair');
 });
 
 test('MP-11: IME shares the text protection preflight before the final mirror guard',async()=>{
@@ -136,23 +136,32 @@ test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch 
   assert.equal(await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120}),undefined,'synchronous callers still await the ack');
 });
 // MP-08/MP-10: wheel notches use the owned display after the same fences;
-// precise deltas and unavailable native input keep CDP or fail closed.
+// unavailable native input keeps precise CDP deltas or fails closed.
 test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{
   const {browser,sent}=fixture();const wheels=[];let dispatched=0;
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>{dispatched++;}});
   assert.deepEqual(wheels,[[10,20,0,-2]]);assert.equal(dispatched,1);
   assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'document fence ran');assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
-  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>assert.fail('precise deltas stay on CDP')});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:37},{nativeWheel:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,1);
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{nativeWheel:()=>false});
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,2,'MP-11: refused native input falls back to CDP');
 });
 
 // MP-08/MP-10: line-sized wheel deltas from real viewers animate natively.
-test('MP-08/MP-10 viewer wheel deltas map to native notches; fine trackpad deltas stay precise',async()=>{
+test('MP-08/MP-10 viewer wheel deltas map to native notches including fine trackpad input',async()=>{
  const {notches}=await import('./kernel-browser-input.mjs');
  assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,1,-1,2,1,-1,0]);
- for(const delta of [1,-12,37,49])assert.equal(notches(delta),null,String(delta));
+ assert.deepEqual([1,-12,37,49].map(notches),[1,-1,1,1]);
+});
+
+test('MP-08/MP-10 fine viewer wheel starts native animation without a CDP wheel acknowledgement',async()=>{
+ const {browser,sent}=fixture(),wheels=[];let dispatched=0;
+ for(const dy of [16,-16,1,-1])await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:dy},{nativeWheel:(...a)=>{wheels.push(a);return true},onDispatch:()=>dispatched++});
+ assert.deepEqual(wheels,[[10,20,0,1],[10,20,0,-1],[10,20,0,1],[10,20,0,-1]]);
+ assert.equal(dispatched,4);
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,0);
+ assert.ok(sent.some(x=>x.method==='Page.getFrameTree'),'MP-11 document fence retained');
 });
 // MP-08/MP-10: viewer clicks on the owned display use XTest after the fence.
 test('MP-08/MP-10 viewer click routes to the owned display after the document fence; refusal falls back to CDP',async()=>{
@@ -177,7 +186,7 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // text-target and focus fences; anything else stays on CDP.
 test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non-sensitive page',async()=>{
-  const run=async({sensitive=false,focused=true,native=()=>true,key='a'})=>{
+  const run=async({sensitive=false,focused=true,native=()=>true,key='a',raw=false})=>{
     const sent=[],keys=[];let dispatched=0;
     const connection={send:async(method,params)=>{sent.push({method,params});
       if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'doc'}}};
@@ -186,15 +195,197 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
       return {};}};
     const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
     const result=await inputHostTab(browser,tab,{kind:'key',key},{nativeKey:(...a)=>{keys.push(a);return native(...a)},onDispatch:()=>{dispatched++;}}).then(()=>'ok',e=>e.code??e.message);
-    return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length};
+    return {result,keys,dispatched,cdp:sent.filter(x=>x.method==='Input.dispatchKeyEvent').length,...(raw?{sent}:{})};
   };
   assert.deepEqual(await run({}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:0});
   assert.deepEqual(await run({key:'Shift+Tab'}),{result:'ok',keys:[[0xff09,true]],dispatched:1,cdp:0});
+  assert.deepEqual(await run({key:'Shift+ArrowLeft'}),{result:'ok',keys:[[0xff51,true]],dispatched:1,cdp:0},'MP-08: review #941-2 Shift extends the selection');
+  for (const key of ['Shift+Enter','Shift+Backspace','Shift+a','Ctrl+ArrowLeft','Shift+Shift+Home','Ctrl+a','Ctrl+Shift+Backspace','Ctrl+Ctrl+Delete']) assert.equal((await run({key})).result,'MD-2: unsupported key',key);
+  for (const key of ['Ctrl+Backspace','Ctrl+Delete']) {
+    const {result,keys,cdp,sent}=await run({key,raw:true});
+    assert.deepEqual([result,keys,cdp],['ok',[],2],`MP-08: review #320-2 ${key} deletes a word through CDP (XTest presses no Ctrl)`);
+    assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.key,x.params.modifiers,x.params.windowsVirtualKeyCode]),[['keyDown',key.slice(5),2,key==='Ctrl+Delete'?46:8],['keyUp',key.slice(5),2,key==='Ctrl+Delete'?46:8]]);
+  }
   assert.deepEqual(await run({key:'Enter'}),{result:'ok',keys:[[0xff0d,false]],dispatched:1,cdp:0});
   const refused=await run({sensitive:true});
   assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');
   assert.match(String(refused.result),/sensitive/);
-  assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:2,cdp:2},'unfocused page (browser UI focus) stays on CDP');
-  assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:2,cdp:2},'non-ASCII text stays on CDP');
-  assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:2,cdp:2},'MP-11: refused native key falls back to CDP');
+  assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:1,cdp:2},'unfocused page (browser UI focus) stays on CDP');
+  assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:1,cdp:2},'non-ASCII text stays on CDP');
+  assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:2},'MP-11: refused native key falls back to CDP');
+});
+test("MP-08/MP-10: CDP pointer input follows the emulated view scale (DPR1 page on a scale-2 host)",async()=>{
+  // Hosted mirror h3: a DPR1 page on a scale-2 window is emulated at view
+  // scale 1/2; unscaled CDP coordinates landed at twice the CSS position.
+  const {browser,sent}=fixture(false);
+  await inputHostTab(browser,tab,{kind:'click',x:1051,y:541},{viewScale:0.5});
+  await inputHostTab(browser,tab,{kind:'scroll',x:100,y:200,delta_x:0,delta_y:120},{viewScale:0.5});
+  assert.deepEqual(sent.filter(c=>c.method==='Input.dispatchMouseEvent').map(c=>[c.params.type,c.params.x,c.params.y]),[['mousePressed',525.5,270.5],['mouseReleased',525.5,270.5],['mouseWheel',50,100]]);
+  const plain=fixture(false);await inputHostTab(plain.browser,tab,{kind:'click',x:1051,y:541});
+  assert.deepEqual(plain.sent.filter(c=>c.method==='Input.dispatchMouseEvent').map(c=>[c.params.x,c.params.y]),[[1051,541],[1051,541]]);
+});
+
+// MP-08/MP-10: a press acknowledgement is renderer/frame paced. Its matching
+// release must already be ordered on the same CDP connection, not wait a frame.
+test('MP-08/MP-10: click release is queued before the press acknowledgement', async () => {
+  const { browser, sent } = fixture();
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send;
+  const pressed = Promise.withResolvers(), ack = Promise.withResolvers();
+  connection.send = async (method, params) => {
+    const reply = await send(method, params);
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+      pressed.resolve(); await ack.promise;
+    }
+    return reply;
+  };
+  const pending = inputHostTab(browser, tab, { kind: 'click', x: 10, y: 20 });
+  try {
+    await pressed.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(sent.filter(x => x.method === 'Input.dispatchMouseEvent').map(x => x.params.type), ['mousePressed', 'mouseReleased']);
+  } finally { ack.resolve(); await pending; }
+});
+
+for (const fault of ['cancel', 'navigate', 'press-error'])
+test(`MP-08/MP-11: an admitted click pairs its release after ${fault} without replay`, async () => {
+  const { browser, sent } = fixture();
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send, cancellation = new AbortController();
+  let navigated = false, releaseSettled = false;
+  connection.send = async (method, params) => {
+    if (method === 'Page.getFrameTree' && navigated) return { frameTree: { frame: { loaderId: 'new' } } };
+    const reply = await send(method, params);
+    if (method === 'Input.dispatchMouseEvent') {
+      if (params.type === 'mousePressed') {
+        if (fault === 'cancel') cancellation.abort();
+        if (fault === 'navigate') navigated = true;
+        if (fault === 'press-error') throw Error('press outcome uncertain');
+      } else { await new Promise(resolve => setImmediate(resolve)); releaseSettled = true; }
+    }
+    return reply;
+  };
+  const pending = inputHostTab(browser, tab, { kind: 'click', x: 10, y: 20 }, { signal: cancellation.signal });
+  if (fault === 'cancel') await assert.rejects(pending, { code: 'browser_action_cancelled' });
+  else if (fault === 'press-error') await assert.rejects(pending, /press outcome uncertain/);
+  else await pending;
+  assert.deepEqual(sent.filter(x => x.method === 'Input.dispatchMouseEvent').map(x => x.params.type), ['mousePressed', 'mouseReleased']);
+  assert(releaseSettled, 'the input lane holds ownership until the paired release settles');
+});
+
+test('MP-08/MP-10/MP-11: a fenced mirror click leaves its document fence to the live guard, the last call before the press; an unfenced one keeps the input fence', async () => {
+  for (const fenced of [true, false]) {
+    const { browser, sent } = fixture();
+    let captured = false, guardAt = -1;
+    browser.inputCapture.run = async (_c, _s, operation) => { captured = true; return operation(); };
+    await inputHostTab(browser, tab, { kind: 'mirror' }, { resolveMirror: async () => ({ input: { kind: 'click', x: 10, y: 20 }, fenced, guard: async () => { assert(captured); guardAt = sent.length; } }) });
+    const first = sent.findIndex(call => call.method === 'Input.dispatchMouseEvent');
+    assert.equal(guardAt, first, 'nothing separates the guard from the press');
+    assert.equal(sent.slice(0, first).filter(call => call.method === 'Page.getFrameTree').length, fenced ? 0 : 2);
+  }
+});
+
+test('MP-08/MP-11: a mirror click without a guard still fences navigation during capture before press', async () => {
+  const { browser, sent } = fixture();
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send;
+  let captured = false;
+  browser.inputCapture.run = async (_c, _s, operation) => { captured = true; return operation(); };
+  connection.send = (method, params) => method === 'Page.getFrameTree' && captured ? Promise.resolve({ frameTree: { frame: { loaderId: 'new' } } }) : send(method, params);
+  await assert.rejects(inputHostTab(browser, tab, { kind: 'mirror' }, { resolveMirror: async () => ({ input: { kind: 'click', x: 10, y: 20 } }) }), { code: 'stale_document_reference' });
+  assert.equal(sent.filter(call => call.method === 'Input.dispatchMouseEvent').length, 0);
+});
+
+test('MP-08/MP-10 protocol498 Ctrl+A is a chord with paired releases and no inserted a',async()=>{
+ const {browser,sent}=fixture(false);
+ await inputHostTab(browser,tab,{kind:'key',key:'a',modifiers:2},{nativeKey:()=>{throw Error('modifiers require fenced CDP')}});
+ const events=sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>x.params);
+ assert.equal(events.length,2);assert.equal(events[0].modifiers,2);assert.equal(events[1].modifiers,2);
+ assert.equal(events[0].windowsVirtualKeyCode,65);assert.equal(events[0].code,'KeyA');assert.equal(events[0].text,undefined);
+});
+test('MP-11 protocol498 modifier chords cannot copy or paste protected fields',async()=>{
+ for(const key of ['a','c','v','x','ArrowLeft'])for(const modifiers of [2,4,10]){
+  const {browser,sent}=fixture(true);
+  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key,modifiers}),{code:'user_domain_sensitive_requires_focus'});
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
+ }
+});
+test('MP-11 protocol498 malformed modifiers are refused before input',async()=>{
+ for(const modifiers of [-1,16,NaN,null,1.5,'2']){
+  const {browser,sent}=fixture(false);
+  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'a',modifiers}),/modifiers/);
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
+ }
+});
+// Review #1016 @f0ccdb5c2 P2: undo/redo in a mirrored iframe editor. The bare display path refuses any
+// focused iframe; the mirror path (observed frames, live focus) admits an ordinary same-origin editor.
+test('MP-08/MP-11 mirrored undo/redo chords keep the mirror\'s observed-frame admission',async()=>{
+  const element=(fields={})=>({tagName:'TEXTAREA',closest:()=>null,...fields});
+  for(const [modifiers,observedMirror] of [[2,true],[10,true],[2,false]]){
+    const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+    connection.send=async(method,params)=>method==='Runtime.evaluate'
+      ? {result:{value:runInNewContext(params.expression,{document:{activeElement:element({tagName:'IFRAME',contentDocument:{activeElement:element()}})}})}}
+      : send(method,params);
+    const input={kind:'key',key:'z',modifiers};
+    const pending=observedMirror?inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input,guard:async()=>{},observedFrameInput:true})}):inputHostTab(browser,tab,input);
+    if(!observedMirror){await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'});continue;}
+    await pending;
+    assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.code,x.params.modifiers]),[['keyDown','KeyZ',modifiers],['keyUp','KeyZ',modifiers]]);
+  }
+});
+
+for(const fault of ['navigation','cancel','press-error'])test(`MP-08/MP-10/MP-11 a key pairs its release after ${fault}`,async()=>{
+ const {browser,sent}=fixture(false);const {connection}=await browser.resolvePageTarget();const original=connection.send;
+ const cancellation=new AbortController();let navigated=false,releaseSettled=false;
+ connection.send=async(method,params)=>{
+  if(method==='Page.getFrameTree'&&navigated)return {frameTree:{frame:{id:'f',loaderId:'next'}}};
+  const result=await original(method,params);
+  if(method==='Input.dispatchKeyEvent'){
+   if(params.type==='keyDown'){
+    navigated=fault==='navigation';if(fault==='cancel')cancellation.abort();
+    if(fault==='press-error')throw Error('key press reply failed');
+   }else{await new Promise(resolve=>setImmediate(resolve));releaseSettled=true;}
+  }return result;
+ };
+ const task=inputHostTab(browser,tab,{kind:'key',key:'Enter'},{signal:cancellation.signal});
+ if(fault==='cancel')await assert.rejects(task,{code:'browser_action_cancelled'});
+ else if(fault==='press-error')await assert.rejects(task,/key press reply failed/);
+ else await task;
+ assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>x.params.type),['keyDown','keyUp']);
+ assert(releaseSettled,'release must settle before another actor acquires input');
+});
+
+// Coordinator 15:08Z (mdmain r11 Notes on the video fallback): protocol 530 page drag.
+test("MP-08/MP-11 (530): a page drag presses, moves and releases in the view scale; the release is queued with the press", async () => {
+  const { browser, sent } = fixture(false);
+  const { connection } = await browser.resolvePageTarget();
+  const send = connection.send, pressed = Promise.withResolvers(), ack = Promise.withResolvers();
+  connection.send = async (method, params) => { const reply = await send(method, params); if (params?.type === "mousePressed") { pressed.resolve(); await ack.promise; } return reply; };
+  const pending = inputHostTab(browser, tab, { kind: "drag", x: 100, y: 40, to_x: 300, to_y: 60 }, { viewScale: 0.5 });
+  try {
+    await pressed.promise; await new Promise(resolve => setImmediate(resolve));
+    const mouse = sent.filter(x => x.method === "Input.dispatchMouseEvent").map(x => x.params);
+    assert.deepEqual(mouse.map(p => p.type), ["mousePressed", ...Array(8).fill("mouseMoved"), "mouseReleased"], "moves and release ordered behind the press");
+    assert.deepEqual([mouse[0].x, mouse[0].y, mouse.at(-1).x, mouse.at(-1).y], [50, 20, 150, 30]);
+    assert(mouse.slice(1, -1).every(p => p.buttons === 1), "the primary button stays down while moving");
+  } finally { ack.resolve(); await pending; }
+  const before = sent.filter(x => x.method === "Runtime.evaluate").length;
+  assert(before >= 1, "protected endpoints are checked before the press");
+  await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 1, y: 1, to_x: 99999, to_y: 1 }), /outside viewport/);
+});
+test("MP-11 (530): a drag from or onto a protected field dispatches nothing", async () => {
+  const { browser, sent } = fixture(true);
+  await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 10, y: 10, to_x: 200, to_y: 10 }), error => error.code === "user_domain_sensitive_requires_focus");
+  assert.equal(sent.filter(x => x.method === "Input.dispatchMouseEvent").length, 0);
+});
+test("MP-11 (530): drag endpoints read through same-origin frames and fail closed on cross-origin ones", () => {
+  const el = (props = {}) => ({ tagName: "DIV", autocomplete: "", closest: () => null, ...props });
+  const run = (top) => runInNewContext(protectedPointExpression(30, 40), { document: { elementFromPoint: () => top } });
+  assert.equal(run(el()), false, "ordinary text");
+  assert.equal(run(el({ tagName: "INPUT", type: "password" })), true, "a password field");
+  assert.equal(run(el({ closest: () => ({}) })), true, "inside a Vault-filled/protected field");
+  const frame = inner => Object.defineProperty(el({ tagName: "IFRAME", clientLeft: 0, clientTop: 0, getBoundingClientRect: () => ({ left: 10, top: 10 }) }),
+    "contentDocument", { get() { if (!inner) throw Error("cross-origin"); return inner; } });
+  assert.equal(run(frame({ elementFromPoint: (x, y) => (x === 20 && y === 30 ? el() : null) })), false, "same-origin frame: its own element at the frame offset");
+  assert.equal(run(frame({ elementFromPoint: () => el({ tagName: "INPUT", type: "password" }) })), true, "a password field inside a same-origin frame");
+  assert.equal(run(frame(null)), true, "a cross-origin frame cannot be inspected");
 });

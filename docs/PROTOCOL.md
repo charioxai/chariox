@@ -11,14 +11,23 @@ never substitute for a terminal grant. Transient target loss reconnects and
 retries within the admitted grant lifetime. The existing relay peer protocol
 and `client_connect` frames remain unchanged.
 
-Client grants retain the existing 30-minute lifetime, including keyed issuance
-and renewal. Initial `/relay cloud client-token` commands issued by a local
+Account-session CLIENT grants are capped at Cloud’s 15-minute ceiling, including
+keyed issuance and renewal. Machine-capability grants retain their existing
+30-minute lifetime; clients use the returned expiry. Initial `/relay cloud client-token` commands issued by a local
 account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
 The shared client authenticates that local endpoint from the same private CLI
 profile, checks the issuing kernel ID and renewal capability, and renews the
 admitted subject, key, session and target through that kernel. Runtime requests
 and events still travel directly to the target over the encrypted relay lanes.
 A machine-only managed target must never replace the account issuer.
+
+MP-08/MP-10/MP-11: an issuing kernel grants one canonical kernel target. For
+this account's own kernels (the issuing kernel or its relay inventory) a Room
+ID stays in the kernel attachment path and is not sent as a Cloud
+shared-session identity. A foreign target keeps the Cloud shared-session scope
+that admits the grant, and the client reports the session the grant carries.
+Pairing aliases label the invitation and never appear in the grant’s allowed
+targets.
 
 If the original issuer is unavailable, the client displays a notice and retries
 within the existing grant lifetime without changing authority or dropping the
@@ -1095,42 +1104,60 @@ OpenCode current runtime note:
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 
-### MP-08 / MP-10 / MP-11: bounded relay transport (local 490, peer 100)
+### MP-08 / MP-10 / MP-11: bounded multiplexed relay transport (local 532, peer 140)
 
-Updated browser, TUI, kernel and temporary peer/metadata sockets opt in with
-`chariox_transport=chunks-v1` on the relay URL. This is socket-local framing
-around the existing opaque relay envelope; it grants no runtime or relay
-admission authority and does not change encryption or request correlation.
-Direct local kernel sockets retain their existing transport.
+Browser, TUI, kernel and temporary peer/metadata relay sockets negotiate
+`chariox_transport=chunks-v2`. This socket-local framing wraps the existing
+opaque encrypted envelopes. It grants no admission authority, changes no
+request correlation, and does not apply to direct local kernel sockets.
 
-Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
-frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
-totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
-most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written. The
-receiver immediately returns `transport_ack` with the same transfer ID and the
-exclusive byte offset received, then dispatches only the completely reassembled
-original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
-and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
-cross-transfer receipts, overlap, unknown chunk fields, and nested transport
-frames terminate the connection without retaining payloads in errors.
+Every egress text envelope, including the connection acknowledgment, uses JSON
+`transport_chunk` frames with `transfer_id`, `offset`, `total_bytes` and `payload`.
+Offsets/totals count UTF-8 bytes of the original envelope. Each serialized frame
+is at most 16 KiB. The receiver immediately sends `transport_ack` with that ID
+and the exclusive offset received; only a complete original envelope reaches
+application dispatch. Small binary encrypted events remain binary, followed by
+a zero-total/zero-offset/empty-payload chunk checkpoint with its own increasing
+ID. Its receipt accounts for both the preceding binary envelope and checkpoint.
+Larger binary events use the existing encrypted JSON envelope and bounded
+chunks; the ciphertext is never decrypted or inspected by the relay.
 
-Ping/Pong have a separate bounded writer control queue. Small correlation-addressed
-requests/responses and admission acknowledgments may interleave with bulk
-responses/events; requests retain their order relative to earlier bulk requests.
-Subscription events retain their original order. Close takes precedence over
-unfinished data. Receipts are ordinary inbound transport progress for the
-existing heartbeat check. The 30-second heartbeat interval, 15-second Pong
-deadline, token expiry and revocation enforcement remain unchanged; a silent
-peer cannot keep a transfer alive.
+A socket admits at most four active transfers and 128 MiB of aggregate declared
+assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
+bytes. IDs increase in first-wire-write order, not completion order; an earlier
+active stream may finish after a later one. Unknown/reused IDs, changed totals,
+overlapping offsets, unknown fields, nested transport frames and invalid
+checkpoints close the connection without including payloads in errors.
 
-An older relay ignores the opt-in and uses its existing envelopes. Updated
-receivers accept those envelopes, but the bounded-drain guarantee requires the
-updated relay. An unopted receiver on the updated relay still accepts small
-traffic; a large envelope closes explicitly with an updated-client requirement
-rather than sending chunk frames that receiver cannot decode. All deployed
-relay consumers must therefore be upgraded for large-envelope traffic. The
-local 490 and peer 100 snapshots bind this framing change; existing API-specific
-minimums remain applicable because no new daemon operation is introduced.
+All data shares one 64 KiB unacknowledged wire window, including frame metadata,
+small replies, binary envelopes and checkpoints. Receipts must match the oldest
+outstanding wire frame, across IDs; a receipt for another stream cannot release
+credit. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
+can progress concurrently (e.g. catalog plus first viewport), with one lane each
+reserved for requests and events. Requests and display events retain FIFO within their
+respective lanes. Only events of this socket's acknowledged `kernel_browser_display`
+route may pass an unfinished correlated response; ordinary terminal/peer events
+still wait behind the earlier snapshot. The relay uses its existing route scope
+and sender binding, never decrypted payloads, to choose the scheduling lane. Unknown
+lifecycle envelopes are ordering barriers for requests/events. Correlated replies
+can pass barriers to avoid request/reply deadlock. Chunks rotate fairly among
+active streams, so display events do not wait for an entire snapshot and a
+continuous event stream does not starve the snapshot.
+
+Ping/Pong and Close retain the separate bounded control queue. Close takes
+precedence over unfinished data. Transport receipts do not acknowledge kernel
+operations. Heartbeat, token expiry, revocation, routing scopes and encrypted
+payload admission remain unchanged.
+
+The updated relay rejects an explicit older/unknown `chariox_transport` capability
+with HTTP 426 before switching protocols. Unopted legacy sockets can receive
+small envelopes; a large envelope closes with an actionable updated-client
+reason. An older relay can ignore the new opt-in; updated receivers still accept
+its ordinary envelopes, but multiplex/window guarantees require the updated
+relay. Kernel API-specific client minimums remain unchanged because this changes
+relay framing rather than daemon operations. The 532/140 transport snapshot
+binds capability, wire fields, checkpoints and limits; generated protocol pins
+must match the runtime constants.
 
 ## 4.1.1 Unified Node-Transport Direction
 
@@ -3766,3 +3793,355 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+## MP-08 / MP-10 / MP-11 combined App Tab DOM mirror contract (517 / peer 125)
+
+Coordinator-allocated local protocol 517 combines the App Tab call, grant and
+input-attribution contract with DOM mirror v2 author CSS, text, live controls,
+compact deltas, per-document protection, native density, long-poll credits and
+resend. Mirror reads retain the shared per-viewer input ordering. Clients enable
+App echo pipelining only at the allocated ordering floor 516 or later; the
+v2 renderer requires 517 to admit inert layout-attribute deltas on opaque tiles. Old clients keep their existing
+minimum-version checks. App authority remains in the kernel App host; Cloud
+projects the kernel's Tab and surface geometry.
+
+The combined request snapshot is browser-mirror-517.json with a canonical SHA-256
+shape guard. Run the installed signed Todo App through the real /app open client
+flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
+These tests supplement exact-head review and real hosted acceptance.
+### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-10 / MP-11: protected desktop display (local 474, peer 96)
+
+A human terminal subscribes with `KernelBrowser` Computer `display_subscribe`,
+its current native `surface_id` and generation, video codecs, bounded bitrate,
+and DPR 1 or 2. The kernel returns the native source identity and physical
+geometry alongside the existing numeric controller generation and viewer lease.
+Only this new desktop viewer requires protocol 474. Agent MCP retains bounded,
+on-demand protected observations and cannot subscribe to continuous video.
+
+The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
+credit window and encrypted CXD1 relay transport. It has no separate streaming
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
+
+Multiple admitted viewers share one protected capture source. Each lease remains
+bound to its authenticated terminal, native generation and controller generation;
+disconnect, expiry and last-viewer close release its resources. Per-credit
+cancellation does not own the encoder lifetime. The existing display attach,
+next and unsubscribe operations address these leases. This section adds no
+relay frame of its own; its events use the display encoding below. Peer 97
+remains unused.
+
+Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
+events change; every other event stays JSON. On the local WebSocket they are
+binary messages; over the relay they are the encrypted plaintext. The format is
+`CXD1`, a big-endian u32 header length, the JSON event header naming its
+segments, then the raw segment bytes in order. JSON plaintexts never start with
+`CXD1`. These events are sent only on a display delivery: a local
+`display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
+that never register display delivery never receive `CXD1`. Peer 96 adds an
+optional `CXR1` WebSocket binary relay envelope, negotiated with the
+`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
+relay reads only the routing header. Kernels fall back to JSON/base64 for older
+relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
+that decodes `CXD1` before kernels at 466 or later serve it Browser display;
+an older bundle cannot parse these frames.
+
+The shared presenter accepts desktop pixels only at the exact admitted physical
+geometry, with CSS dimensions divided by the selected DPR. It converts viewer
+coordinates to native coordinates and routes input, takeover and release through
+the existing kernel Computer admission and actor ledger. Browser viewports retain
+their existing path. A Cloud client must expose the native source and use this
+shared presenter before the desktop feature is user-visible.
+
+
+### MP-08 / MP-10 / MP-11: shared display resumption (local525 / peer133)
+
+`KernelBrowser` commands `display_suspend` and `display_resume` carry only
+`subscription_id` and numeric `generation`. They address the existing shared
+Browser/Desktop display producer, including region producers using that stream.
+They are human terminal operations; provider MCP cannot invoke them. A prior ID
+is a resume hint, never an admission credential. Resume repeats current terminal
+admission, caller ownership, controller generation, protected source/document
+binding and protection policy checks. Revocation, source replacement or a changed
+policy refuses resumption and retires the retained producer.
+
+Suspension keeps the encoder and a bounded independently decodable protected
+frame in the shared motion queue for at most five seconds. Repeated suspension
+cannot extend that grace. An unannounced transport loss can resume only within
+five seconds of the last admitted display request. Resume replaces the delivery
+ID, resets its sequence and fences old outstanding credits; encrypted relay
+delivery uses fresh packet nonces and a new delivery registration. Old packets,
+opening grants and input gestures are never replayed. Explicit unsubscribe,
+terminal retirement and expiry retain their permanent cleanup behavior.
+
+The shared presenter keeps the painted canvas on transient teardown and exposes
+a bounded resume hint to its application adapter. A replacement passes that hint
+through `display_resume` before registering the fresh delivery. Only adapters
+using this behavior require local525. Older adapters retain their existing
+minimum versions. Desktop ownership moves atomically from the old viewer lease
+to the new one after admission; suspension bounds that lease to the same grace.
+It does not take control anew or change session membership, attachments or history.
+
+Snapshot/hash: `mp08_mp10_mp11_display_resumption_525_133_snapshot_hash`.
+Shared producer/presenter lifetime tests supplement the required hosted live
+network-change drill; they do not establish its one-second repaint gate.
+
+### MP-08 / MP-10 / MP-11: combined delivery registration (local 535 / peer 143)
+
+A client that feature-detects local 535 may send one ordinary `ClientSubscribe`
+with scope `kernel_browser_display_resume`, the 525 hint as `session_id`, numeric
+old generation as `attachment_id`, a fresh relay subscription ID and its admitted
+viewer key. `resume_from_event_id` must be null: this is never event replay.
+The existing authenticated relay caller and pairing checks still apply. The
+relay treats both display scopes as opaque CXR1 delivery; it has no resume policy.
+
+The kernel repeats current display admission. For Room leases the home sends
+`RoomSharedDisplay.command={op:"resume_attach"}` to the exact bound worker,
+which invokes existing 525 `DisplaySessions.resume` and ordinary `display_attach`
+under the same protection/capture barriers. This neither opens a replacement
+producer nor creates another input authority. Home and worker rotate the lease
+only on the validated new binding. The encrypted registration reply contains
+`{ok:true,display_attached:true,binding:<resumed binding>}`. The home queues this
+reply before starting the sender-bound pump with independent-frame credit;
+subsequent acknowledgements retain the existing push contract.
+
+Clients retain at most eight early encrypted events and 8 MiB while establishing
+the new binding, then recheck current socket, target, key and binding before
+delivery to the installed presenter. Presenter registration also retains a
+bounded initial frame batch so its listener transition cannot discard the key.
+Failures and close clear these batches. Kernels without 535 support refuse the
+new scope; 525 adapters continue their separate resume/attach path. There is no
+replacement-open retry or cursor-based shortcut. The new snapshot/hash is
+`mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
+remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
+
+### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
+
+The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
+agent_id,target:{surface_id,generation}}` for the agent's bound ordinary Linux
+desktop worker. `revoke_leased_computer` names the same agent; ordinary Access
+revoke also retires it. The TUI exposes `/access grant-computer <agent-id>
+<surface-id> <generation>` and `/access revoke-computer <agent-id>`, requiring
+local500 and worker peer109 before sending the new contract.
+
+`SetLeasedComputerGrant` uses the existing authenticated home lease caller gate.
+It binds HOME kernel/session/agent, leased agent, desktop kernel, surface,
+generation and epoch. The desktop validates the current observed generation
+and grants only the Computer resource; it does not change focus or grant
+Browser, Vault, video, shell, Room access or authority over another kernel.
+Before every provider Computer invocation, `CheckLeasedComputerGrant` returns
+to HOME through the authenticated forwarded-worker/run gate. HOME requires
+the current explicit grant epoch, owner membership and live session/lease/run.
+The desktop then uses its ordinary protected Computer service, mutation ledger
+and human takeover. Queued admissions retain the epoch and provider run.
+
+HOME commits revocation before sending it to the worker; failed delivery cannot
+authorize a subsequent call. Delivered revocation cancels in-flight admission.
+Delayed revocations name their epoch and cannot retire a newer grant. Idle
+expiry, ended runs/sessions, changed leases and worker restarts fail closed.
+Ordinary focus cannot revive an expired or revoked explicit grant. No grant
+is restored from disk or inferred from Room membership. Agent `start` reads the
+already granted desktop and cannot create a replacement generation.
+
+### MP-08 / MP-11: installed graphical application launch (local494)
+
+`KernelBrowser.command={op:"computer",command:...}` and the official provider
+`chariox.kernel_computer` tool share two bounded commands:
+
+- `installed_applications`: current `target={surface_id,generation}`; returns
+  eligible installed desktop application IDs and names (at most256).
+- `launch_application`: the same current target plus one `application_id` from
+  that inventory. No command string, caller arguments, files, URLs or environment
+  are accepted. The kernel resolves the installed entry in its desktop user's
+  normal application inventory, starts its fixed Exec without a shell on the
+  existing owned display/bus, and retains process cleanup ownership. Unsupported
+  shell/env launchers and invalid desktop field codes refuse.
+
+Launch is a normal Computer mutation: provider capability/resource admission,
+current desktop generation, human takeover, cancellation and native observation
+protection all apply. Its reply identifies the application and includes a
+protected native observation; it never grants process control. Cancellation or
+failed launch observation settles the newly started process. Successful apps
+live until ordinary owned-desktop cleanup. No peer frame changes; peer103 is
+unused. Supplementary descriptor, command-shape and takeover tests cannot close
+MP-10 Drill D; that requires an official agent, real TUI/web/hostedWSS and public
+native document work at DPR1/2.
+
+### MP-08 / MP-10 / MP-11 bounded host-browser keys (517 / peer125)
+
+`KernelBrowserInput` keys accept an optional `modifiers` integer in 0..15,
+using Chromium's Alt=1, Control=2, Meta=4 and Shift=8 bits. Omitted/zero
+modifiers preserve the legacy key wire shape. Modified keys dispatch paired
+CDP key events under the existing document, cancellation, mirror and live
+sensitive-focus fences. Control/Meta/Alt chords emit no inserted text and
+cannot read or modify protected fields. Native input remains available for
+unmodified and Shift keys on the admitted owned display. Canvas clients send
+modifiers only to protocol517 or newer; trusted local paste retains the
+existing text-ingress path. The kernel remains the input authority.
+
+
+## MP-08 / MP-10 / MP-11 display region contract (519 / peer 127)
+
+Allocated local519/peer127 preserves the mirror517 snapshot and its modifier
+contract. `display_subscribe` accepts an optional `target`: `{kind:"region",
+mirror_subscription_id,document_id,sequence,region_id}` or
+`{kind:"browser_chrome",window_generation}`. The enclosing tab/generation and
+caller admission remain mandatory. No client rectangle, selector, PID or XID
+is accepted. The mirror resolver owns canonical live geometry, identity and
+protection; ChromeWindows owns the tabbed window, band and lifetime.
+
+A successful crop negotiation returns `source_kind:"region"`, `binding_id`,
+`document_id`, `sequence`, canonical crop `css_width`/`css_height`, scale and
+the existing subscription/codec/bitrate fields. Fractional page clips round
+inward to even device dimensions; input retains the canonical clip offset.
+Page document epochs and Chrome window epochs are distinct. Native readbacks,
+encoded delivery and input await the mirror's live geometry fence as well as
+checking its cheap synchronous lifetime predicate. Refusal never becomes a
+whole-page crop or PNG-polling source.
+
+Region `display_input` adds paired `binding_id` and `sequence`. The crop is
+caller-bound; agents cannot use this terminal-only path. A read-only private
+preflight resolves Chrome input to the owner arbiter's active page before the
+existing Rust actor ledger admits the action. Page-region input uses the same
+mirror hit/document/Vault fences. Frame credits and `display_ack` use the
+ordinary display sequence, independent of the region's applied mirror/window
+epoch. No second pump, grant, history or resumption mechanism is introduced.
+
+`browser-display-region-519.json` pins both targets, region input, ACK and
+response metadata. The focused drill is
+`docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`. The region client's floor is519;
+whole-page and mirror clients retain their existing floors. This contract is
+source implementation, not real-path acceptance.
+
+## MP-08 / MP-10 / MP-11 Browser chrome state (528 / peer 136)
+
+Allocated local528/peer136 adds two fields to the `KernelBrowser` `state`
+result. `chrome_window` is `{window_generation, active_tab_id}` when the kernel
+has a live, bound native tabbed window and its display is enabled, otherwise
+`null`; a viewer uses `window_generation` for the 519
+`{kind:"browser_chrome",window_generation}` subscription and follows
+`active_tab_id` when the person switches Tabs in Chrome's own strip.
+`browser_lockdown` is `"managed"` when the kernel's managed Chromium policies
+apply and `"unavailable"` when only the kernel's CDP fail-closed layer applies
+(for example Ubuntu ≥23.10 without the Setup's AppArmor profile); viewers show
+the second case. Clients feature-detect both fields, so no client floor moves.
+`browser-chrome-state-528.json` pins the public state keys (Rust hash test
+`mp08_mp10_mp11_browser_chrome_state_528_snapshot`; the host's Node test
+compares its real state keys to the fixture). The focused drill is the native
+band section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+
+
+## MP-08 / MP-10 / MP-11 page display placement (529 / peer 137)
+
+Allocated local529/peer137 extends a page `display_subscribe` result for
+`target.kind:"region"` with `region_offset:{x,y}`. Both values are finite,
+nonnegative CSS pixels relative to the original opaque element's border box.
+The kernel computes this from the private mirror lease's `element_offset`
+(viewport and ancestor-frame clipping) plus the producer's inward rounding:
+`x = element_offset.x + ceil(rect.x * scale) / scale - rect.x`, with the
+corresponding formula for `y`. Existing `css_width`, `css_height` and
+`device_scale_factor` describe the inward-rounded encoded crop. Placement may
+be fractional; a client must not round it or reuse PNG tile offsets, which
+have a different origin. No request accepts client-selected crop geometry.
+
+The page consumer uses this placement for paint and subtracts it before
+sending region-local input through the existing binding. The producer adds
+only its inward-rounding offset when translating that input into the private
+lease's canonical clip. Clipping must not be added twice. Missing, nonfinite,
+negative or out-of-element placement refuses video and preserves the existing
+still. Geometry, identity, protection and current-window fences remain kernel
+owned. Stream resumption retains the same admitted placement.
+
+The native producer derives the visible page rectangle from the owned window's
+validated GTK frame insets and the browser-owned active Tab dimensions, independently
+of page emulation. Its exact native page origin can have odd device-pixel coordinates;
+only the disjoint Chrome band rounds inward to even codec rows. Native page readback
+adds that origin, while protected CDP reference crops and mirror input remain page
+relative. The native origin is not added to element-relative `region_offset`.
+Missing or changed native page geometry refuses or retires the page stream; crops
+remain inside the visible native page. Exact pixel attestation remains required.
+
+Only page opaque-region video requires529. Native Chrome band clients retain
+519; whole-page video and mirror clients retain their existing floors. The
+historical519 snapshot is unchanged. `browser-display-placement-529.json`,
+its Rust hash/round-trip test and `scripts/browser-display-placement-529.test.mjs`
+pin the additive response and allocated pair. The focused real-path drill is
+the page-placement section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+The contract snapshot alone does not establish producer emission or acceptance.
+
+## MP-08 / MP-10 / MP-11 Browser chrome gestures and popups (530 / peer 138)
+
+Allocated local530/peer138 lets the band behave like Chromium's own strip.
+`KernelBrowserInput` `click` takes an optional `button: "middle" | "right"`
+(absent is the primary button, so pre-530 clicks keep their shape) and a new
+`{kind:"drag",x,y,to_x,to_y}` is a primary-button drag. The buttons reach only
+the `browser_chrome` band: middle-click closes a Tab and right-click opens
+Chrome's context menu. On the band a drag must start and end in the tab strip
+(Tab reorder; a Tab is never torn into a new window). A page `display_input`
+drag (selecting text while the page shows video, e.g. for a Note) is admitted
+only for the person watching that Tab through a live display lease: both points
+lie in the viewport, neither may be on a protected field (a cross-origin frame
+counts as protected), it passes the document fences, and its moves and release
+are queued with the press so cancellation cannot strand the button. Page
+regions and popups refuse drags. Agents remain refused on every band, popup and
+page drag path.
+
+`display_subscribe` accepts `{kind:"browser_auxiliary",window_generation,
+auxiliary_id}` for one popup of the band's window: Chrome's menus, the omnibox
+dropdown, extension popups and bubbles (same browser PID, transient for or
+anchored inside the tabbed window). The kernel issues `auxiliary_id`; the
+Browser state's `chrome_window.auxiliary` lists the current popups as
+`{auxiliary_id,x,y,width,height}` in CSS px from the window's top-left so a
+viewer paints each one where Chrome shows it. An id is new whenever its
+window or size changes, and the popup's stream retires when it closes. While
+a band stream is live the kernel follows the window's popups from the band's
+own native worker inventory. Popups take primary clicks, wheel, keys and text
+through the same arbiter and fences as the band, under the managed lockdown
+only. `browser-chrome-ui-530.json` pins the new requests and state keys (Rust
+hash test `mp08_mp10_mp11_browser_chrome_ui_530_snapshot`; the host's Node
+test compares its state keys to the fixture). Mirrored undo and redo travel as
+the mirror keys `"Ctrl+Z"` and `"Ctrl+Shift+Z"` (`mirror_input` `key`, no new
+field): the kernel's mirror resolver turns them into the editor's own chords
+under its observed-frame, live-focus and epoch guards (before 530 they were
+document-bound `display_input` chords, which refuse any focused frame). Clients
+feature-detect 530; no client floor moves.
+
+MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
+existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
+metadata enters the same sender-authenticated display decrypt/binding path;
+text chunks remain compatible with peers that do not select that capability.
+No additional resume, input, or relay authority is introduced.
+
+Protected completion checks omit public privacy markers from their evidence.
+The existing neutral, tool-free assessment utility receives a bounded,
+exact-turn kernel-private assistant result only through an ephemeral internal
+envelope field excluded from serialization and Debug output. Known values and
+secret-shaped text are scrubbed before submission. Public prompts, history and
+durable hidden context never receive it. Missing, expired, oversized or unbound
+results fail closed; protected leased results unavailable at home cannot establish
+success. No native-thread/workspace/tool authority is inherited. The kernel-private
+structured response and public receipt/terminal/history privacy fences still apply.

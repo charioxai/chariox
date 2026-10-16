@@ -65,6 +65,7 @@ fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
             stream_protocol: None,
             stream_id: None,
             peer_public_key: None,
+            shared_display: None,
         },
     };
     let value = serde_json::to_value(response).expect("endpoint should encode");
@@ -162,6 +163,7 @@ fn room_selkies_viewer_admission_contract_is_versioned() {
         stream_protocol: Some("chariox-display-v1".to_string()),
         stream_id: Some("display-1".to_string()),
         peer_public_key: Some("worker-public-key".to_string()),
+        shared_display: None,
     };
     let value = serde_json::to_value(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
         .expect("viewer endpoint should encode");
@@ -199,6 +201,7 @@ fn room_selkies_worker_admission_contract_is_versioned() {
         stream_protocol: Some("chariox-display-v1".to_string()),
         stream_id: Some("display-1".to_string()),
         peer_public_key: Some("worker-public-key".to_string()),
+        shared_display: None,
     };
     assert_eq!(
         serde_json::to_value((
@@ -238,5 +241,23 @@ fn room_selkies_worker_admission_contract_is_versioned() {
                 }
             }
         ])
+    );
+}
+
+#[test]
+fn mp08_mp10_mp11_room_shared_display_offer_survives_the_wire() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let value = serde_json::json!({"GetSliceDisplayEndpoint":{
+      "slice_ref":"slice-1","session_id":"room-1","attachment_id":"attachment-1","viewer_public_key":"viewer-key",
+      "shared_display":{"codecs":["avc1.420033","png","chariox-relay-binary-v96"],"bitrate":8000000,"device_scale_factor":2,"resume_hint":"room-display-old"}
+    }});
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        value,
+        "MP-08: the kernel must negotiate the shared producer instead of silently opening Selkies"
     );
 }

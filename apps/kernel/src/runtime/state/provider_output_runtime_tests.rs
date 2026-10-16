@@ -262,6 +262,7 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     let continuation = PendingMcpContinuation {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
+        source_prompt_id: None,
         mcp_name: "mid_session_script".into(),
         previous_prompt: "invoke the granted script".into(),
         reload_reason: ProviderReloadReason::RuntimeToolCatalog,
@@ -393,3 +394,5 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
 mod credential_copy_recovery;
 
 mod popup_notices;
+
+mod catalog_continuation;

@@ -1,20 +1,23 @@
 // MP-08/MP-10: real built Cloud entry, hosted WSS and public sites.
 // Headless/shaped b3 evidence remains separate from geographic desktop acceptance.
+// Requires MD_HOSTED_ORIGIN; MD_HOSTED_NETNS shaping also requires MD_HOSTED_UPSTREAM
+// (Caddy IP) and MD_HOSTED_RELAY_HOST.
 import {createRequire} from 'node:module';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {sourceIdentity} from './source-identity.mjs';
 import {driveHostedWheel} from './hosted-wheel.mjs';
 import {shapeHostedViewer} from './hosted-network.mjs';
+const origin=process.env.MD_HOSTED_ORIGIN;
+if(!origin)throw Error('MP-10: MD_HOSTED_ORIGIN is required; there is no default hosted target');
 const [output,tools]=process.argv.slice(2),require=createRequire(tools+'/package.json');
 const {chromium}=require('playwright-core');
-const origin=process.env.MD_HOSTED_ORIGIN??'https://pr893-perf.val.51-255-87-178.sslip.io';
 const dpr=Number(process.env.MD_DPR??2),r={MP:'MP-08/MP-10/MP-11',origin,dpr,status:'RED',...await sourceIdentity(),kernel_build_source:process.env.MD_KERNEL_SOURCE,cloud_source:process.env.MD_CLOUD_SOURCE,sites:[],errors:[],wire:[],resources:[]};
 const sites=[['article','https://en.wikipedia.org/wiki/Computer'],['portal','https://www.wikipedia.org/'],['github','https://github.com/charioxai/chariox'],['google','https://www.google.com/search?q=chromium+display+transport'],['bbc','https://www.bbc.com/news'],['mdn','https://developer.mozilla.org/en-US/docs/Web/JavaScript']].filter(([site])=>!process.env.MD_SITES||process.env.MD_SITES.split(',').includes(site));
 await mkdir(output,{recursive:true});let browser,page,shaped,stage='launch';
 const sample=async()=>{const text=await readFile('/proc/meminfo','utf8');const mem=Number(text.match(/^MemAvailable:\s+(\d+)/m)[1])*1024;r.resources.push({at:Date.now(),mem_available:mem});if(mem<12*1024**3)throw Error('MP-10: memory floor')};
 const save=()=>writeFile(output+'/results.json',JSON.stringify(r,null,2)+'\n');
 try{
- await sample();if(process.env.MD_HOSTED_NETNS){shaped=await shapeHostedViewer({namespace:process.env.MD_HOSTED_NETNS});r.network=shaped.info}
+ await sample();if(process.env.MD_HOSTED_NETNS){shaped=await shapeHostedViewer({namespace:process.env.MD_HOSTED_NETNS,upstream:process.env.MD_HOSTED_UPSTREAM,hosts:[new URL(origin).hostname,process.env.MD_HOSTED_RELAY_HOST]});r.network=shaped.info}
  browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage',...(shaped?['--host-resolver-rules='+shaped.resolverRules]:[])]});
  const ctx=await browser.newContext({viewport:{width:1440,height:1200},deviceScaleFactor:dpr});page=await ctx.newPage();page.setDefaultTimeout(30000);
  r.bootstrap_protocol=[];page.on('response',async response=>{if(new URL(response.url()).pathname!=='/browser/relay-kernel/bootstrap')return;try{const value=await response.json();r.bootstrap_protocol.push({at:Date.now(),status:response.status(),protocol:value.target?.localDaemonProtocolVersion,daemon_id:value.target?.daemonId})}catch{r.bootstrap_protocol.push({at:Date.now(),status:response.status(),code:'unreadable'})}});

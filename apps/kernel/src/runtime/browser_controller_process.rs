@@ -34,6 +34,7 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
 mod display_packets;
@@ -319,6 +320,7 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_KERNEL_BROWSER_HEADLESS",
                 "CHARIOX_KERNEL_BROWSER_DISPLAY",
                 "CHARIOX_KERNEL_BROWSER_MIRROR",
+                "CHARIOX_KERNEL_BROWSER_HOME_URL",
                 "CHARIOX_BROWSER_DISPLAY_PYTHON",
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
                 "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
@@ -336,7 +338,7 @@ impl BrowserControllerProcessStdioBackend {
             }
         }
         #[cfg(all(feature = "native-display", target_os = "linux"))]
-        if self.host {
+        {
             // Production uses this exact kernel ELF. Test harnesses provide the
             // separately built production ELF because libtest owns their entry.
             let executable = if cfg!(test) {
@@ -349,7 +351,7 @@ impl BrowserControllerProcessStdioBackend {
             }
         }
         // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
-        let display_packets = if self.host && cfg!(unix) {
+        let display_packets = if cfg!(unix) {
             Some(Arc::new(display_packets::DisplayPackets::create()?))
         } else {
             None
@@ -555,7 +557,9 @@ impl BrowserControllerProcessStdioBackend {
     ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
-            "host.browser"
+            "host.computer"
+                | "host.computer.reset"
+                | "host.browser"
                 | "host.secret"
                 | "browser.action"
                 | "browser.upload"
@@ -2315,6 +2319,19 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
+    // MP-08/MP-10/MP-11: safe host causes must survive the Rust RPC boundary.
+    #[test]
+    fn browser_host_specific_reason_survives_rpc_reply() {
+        for reason in ["browser_cdp_timeout Page.captureScreenshot", "mirror_subscription_retired"] {
+            let message = format!("MD-2: browser operation failed: Error {reason}");
+            let response: super::BrowserControllerRpcResponse = serde_json::from_value(serde_json::json!({
+                "id": 1, "ok": false, "error": {"code": "kernel_browser_failed", "message": message}
+            })).unwrap();
+            let error = response.into_result::<serde_json::Value>("host.browser").unwrap_err();
+            assert!(error.contains(&message));
+            assert!(error.contains("failed with kernel_browser_failed:"));
+        }
+    }
     // MP-08/MP-10/MP-11: controller seeds live only as long as their Room lease.
     #[test]
     fn releasing_room_drops_its_scrub_values_without_dropping_other_rooms() {

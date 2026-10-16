@@ -4,6 +4,12 @@ use crate::session::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// MP-08/MP-11: a human actor's Desktop ownership lasts while one of its
+/// desktop video subscriptions is live; the host display lease is 60 s.
+pub(crate) const DESKTOP_VIEWER_LEASE: Duration = Duration::from_secs(60);
+pub(crate) const DISPLAY_RESUME_GRACE: Duration = Duration::from_secs(5);
 
 mod tabs;
 use tabs::BrowserTabActivity;
@@ -12,6 +18,8 @@ pub(crate) struct KernelBrowserActors {
     tab_activity: BrowserTabActivity,
     generation: u64,
     observation: u64,
+    desktop: Option<(String, String)>,
+
     viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
@@ -20,6 +28,8 @@ pub(crate) struct KernelBrowserActors {
     pointers: BTreeMap<String, EnvironmentPointer>,
     pointer_tabs: BTreeMap<String, String>,
     host_tabs: BTreeMap<String, String>,
+    /// Desktop video subscription -> (human actor, lease expiry).
+    desktop_viewers: BTreeMap<String, (String, Instant)>,
 }
 
 /// Internal display seam: the adapter must derive the user/actor from its caller.
@@ -37,6 +47,8 @@ impl Default for KernelBrowserActors {
             tab_activity: BrowserTabActivity::default(),
             generation: 0,
             observation: 0,
+            desktop: None,
+
             viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
@@ -45,6 +57,7 @@ impl Default for KernelBrowserActors {
             pointers: BTreeMap::new(),
             pointer_tabs: BTreeMap::new(),
             host_tabs: BTreeMap::new(),
+            desktop_viewers: BTreeMap::new(),
         }
     }
 }
@@ -66,8 +79,9 @@ impl KernelBrowserActors {
         // MP-08/MP-10/MP-11: concurrent controller reads finish out of order; the
         // controller numbers its observations within a generation.
         let observation = state["_observation"].as_u64();
-        if generation == self.generation
-            && observation.is_some_and(|observation| observation <= self.observation)
+        if generation < self.generation
+            || generation == self.generation
+                && observation.is_some_and(|observation| observation <= self.observation)
         {
             return Ok(());
         }
@@ -196,8 +210,9 @@ impl KernelBrowserActors {
         actor: EnvironmentActor,
         params: &Value,
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
+        self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
-        let request = if let Some(host_tab) = params["tab_id"].as_str() {
+        let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
             let binding = self
                 .tabs
@@ -220,7 +235,11 @@ impl KernelBrowserActors {
                 params["op"].as_str().unwrap_or("browser_mutation"),
                 None,
             );
-            request.mode = EnvironmentMode::Browser;
+            request.mode = if params["_native"] == true {
+                EnvironmentMode::Computer
+            } else {
+                EnvironmentMode::Browser
+            };
             if params["op"] == "stop" {
                 request.targets.extend(
                     self.tabs
@@ -232,6 +251,21 @@ impl KernelBrowserActors {
             }
             request
         };
+        if !request.targets.contains(&InputTarget::Desktop) {
+            request.targets.push(InputTarget::Desktop);
+        }
+        // Whole-desktop native input can affect any foreground browser tab.
+        // Honor existing tab-scoped human takeovers without widening ordinary
+        // Browser-to-Browser ownership to unrelated tabs.
+        if params["_native"] == true {
+            request.targets.extend(
+                self.tabs
+                    .snapshot()
+                    .0
+                    .into_iter()
+                    .map(|tab| InputTarget::BrowserTab(tab.tab_id)),
+            );
+        }
         // Store counts and coordinates only; payloads/secret bytes never enter the ledger.
         let outer = &params["input"];
         let input = if outer["kind"] == "mirror" {
@@ -244,13 +278,10 @@ impl KernelBrowserActors {
             outer
         };
         let request = match input["kind"].as_str() {
-            Some("text" | "composition") => {
-                request.with_arguments(EnvironmentActionArguments::KeyboardText {
-                    utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
-                    character_count: input["text"].as_str().unwrap_or_default().chars().count()
-                        as u32,
-                })
-            }
+            Some("text") => request.with_arguments(EnvironmentActionArguments::KeyboardText {
+                utf8_byte_count: input["text"].as_str().unwrap_or_default().len() as u32,
+                character_count: input["text"].as_str().unwrap_or_default().chars().count() as u32,
+            }),
             Some("click") => request.with_arguments(EnvironmentActionArguments::PointerClick {
                 x: input["x"].as_u64().unwrap_or_default() as u32,
                 y: input["y"].as_u64().unwrap_or_default() as u32,
@@ -318,6 +349,88 @@ impl KernelBrowserActors {
         self.tab_activity
             .retain_actions(|id| self.ledger.action(id).is_some());
     }
+    pub(crate) fn reconcile_desktop(&mut self, state: &Value) -> Result<(), String> {
+        let binding = (
+            state["surface_id"]
+                .as_str()
+                .ok_or("MP-11: invalid desktop surface")?
+                .to_string(),
+            state["generation"]
+                .as_str()
+                .ok_or("MP-11: invalid desktop generation")?
+                .to_string(),
+        );
+        if self.desktop.as_ref().is_some_and(|old| old != &binding) {
+            for cancel in self.active.values() {
+                cancel.request_cancel();
+            }
+            // A fresh desktop never adopts prior desktop ownership or pending input.
+            self.ledger.clear_ownership();
+        }
+        self.desktop = Some(binding);
+        Ok(())
+    }
+    fn desktop_current(&self, surface: &str, generation: &str) -> Result<(), String> {
+        if self
+            .desktop
+            .as_ref()
+            .is_none_or(|(s, g)| s != surface || g != generation)
+        {
+            return Err("MP-11: stale native desktop".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn takeover_desktop(
+        &mut self,
+        actor: EnvironmentActor,
+        surface: &str,
+        generation: &str,
+    ) -> Result<TakeoverOutcome, String> {
+        self.desktop_current(surface, generation)?;
+        self.retire_lapsed_desktop_viewers(Instant::now());
+        self.register(actor.clone())?;
+        let effect = self
+            .ledger
+            .request_takeover(
+                &actor.actor_id,
+                InputTarget::Desktop,
+                &self.actors,
+                &self.tabs,
+            )
+            .map_err(|_| "MP-11: desktop takeover denied")?;
+        for action in effect.cancellation_requested_action_ids {
+            if let Some(cancel) = self.active.get(&action) {
+                cancel.request_cancel();
+            }
+        }
+        Ok(effect.outcome)
+    }
+    pub(crate) fn check_desktop_release(
+        &self,
+        actor: &str,
+        surface: &str,
+        generation: &str,
+    ) -> Result<(), String> {
+        self.desktop_current(surface, generation)?;
+        if !self.desktop_owner_is(actor) {
+            return Err("MP-11: only the desktop owner may release".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn desktop_owner_is(&self, actor: &str) -> bool {
+        self.ledger.owner(&InputTarget::Desktop) == Some(actor)
+    }
+    pub(crate) fn release_desktop(
+        &mut self,
+        actor: &str,
+        surface: &str,
+        generation: &str,
+    ) -> Result<(), String> {
+        self.desktop_current(surface, generation)?;
+        self.ledger
+            .release(actor, &InputTarget::Desktop)
+            .map_err(|_| "MP-11: only the desktop owner may release".into())
+    }
     pub(crate) fn takeover(
         &mut self,
         actor: EnvironmentActor,
@@ -328,6 +441,7 @@ impl KernelBrowserActors {
             return Err("MD-3: stale browser generation".into());
         }
         let tab = self.tab(host_tab)?;
+        self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
         let effect = self
             .ledger
@@ -360,7 +474,97 @@ impl KernelBrowserActors {
             .release(actor_id, &InputTarget::BrowserTab(tab))
             .map_err(|_| "MD-3: only the input owner may release takeover".into())
     }
+    /// MP-08/MP-11: a human actor's desktop video subscription (lease start).
+    pub(crate) fn desktop_viewer(&mut self, actor_id: &str, subscription: &str, now: Instant) {
+        if self.desktop_viewers.len() < 256 || self.desktop_viewers.contains_key(subscription) {
+            self.desktop_viewers.insert(
+                subscription.into(),
+                (actor_id.into(), now + DESKTOP_VIEWER_LEASE),
+            );
+        }
+    }
+    /// Any display request on a tracked desktop subscription renews it.
+    pub(crate) fn renew_desktop_viewer(&mut self, subscription: &str, now: Instant) {
+        if let Some((_, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            *expiry = now + DESKTOP_VIEWER_LEASE;
+        }
+    }
+    /// An unsubscribed desktop video ends its lease now.
+    pub(crate) fn end_desktop_viewer(&mut self, subscription: &str, now: Instant) {
+        if let Some((_, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            *expiry = now;
+        }
+    }
+    /// MP-08/MP-11: retain this actor's ownership during the bounded display gap.
+    pub(crate) fn suspend_desktop_viewer(
+        &mut self,
+        actor: &str,
+        subscription: &str,
+        now: Instant,
+    ) -> Result<(), String> {
+        if let Some((owner, expiry)) = self.desktop_viewers.get_mut(subscription) {
+            if owner != actor {
+                return Err("MP-11: foreign desktop viewer".into());
+            }
+            *expiry = (*expiry).min(now + DISPLAY_RESUME_GRACE);
+        }
+        Ok(())
+    }
+    /// Fresh protected host admission has already returned the replacement ID.
+    /// Moving its lease must not create a moment with no live owner lease.
+    pub(crate) fn resume_desktop_viewer(
+        &mut self,
+        actor: &str,
+        old: &str,
+        new: &str,
+        now: Instant,
+    ) -> Result<(), String> {
+        if let Some((owner, expiry)) = self.desktop_viewers.get(old) {
+            if owner != actor || *expiry <= now {
+                return Err("MP-11: stale or foreign desktop viewer".into());
+            }
+        }
+        self.desktop_viewers.remove(old);
+        self.desktop_viewer(actor, new, now);
+        Ok(())
+    }
+    /// MP-08/MP-11 (option b, 2026-10-09): relay clients have no gone
+    /// notification. When a human actor's last desktop video subscription
+    /// lapses or ends, its Desktop ownership retires (in-flight input is
+    /// cancelled first) so a fresh client is never refused by a stale owner.
+    pub(crate) fn retire_lapsed_desktop_viewers(&mut self, now: Instant) {
+        let lapsed = self
+            .desktop_viewers
+            .values()
+            .filter(|(_, expiry)| *expiry <= now)
+            .map(|(actor, _)| actor.clone())
+            .collect::<Vec<_>>();
+        self.desktop_viewers.retain(|_, (_, expiry)| *expiry > now);
+        for actor in lapsed {
+            if self
+                .desktop_viewers
+                .values()
+                .any(|(live, _)| live == &actor)
+                || !self.desktop_owner_is(&actor)
+            {
+                continue;
+            }
+            for action in self
+                .ledger
+                .actions()
+                .iter()
+                .filter(|action| action.actor_id == actor)
+            {
+                if let Some(cancellation) = self.active.get(&action.action_id) {
+                    cancellation.request_cancel();
+                }
+            }
+            let _ = self.ledger.release(&actor, &InputTarget::Desktop);
+        }
+    }
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
+        self.desktop_viewers
+            .retain(|_, (actor, _)| actor != actor_id);
         self.ledger.release_actor_input(actor_id);
         for action in self
             .ledger
@@ -379,6 +583,9 @@ impl KernelBrowserActors {
 
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
+    }
+    pub(crate) fn agent_tab_groups(&self) -> Value {
+        self.tab_activity.agent_groups()
     }
     pub(crate) fn project_tabs(&self, state: &mut Value) {
         self.tab_activity.project(state);

@@ -1,3 +1,4 @@
+import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
@@ -130,6 +131,7 @@ export class BrowserCdpClient {
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
     this.networkRequestsBySession = new Map();
+    this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     this.inputCapture = new BrowserInputCapture();
@@ -241,6 +243,7 @@ export class BrowserCdpClient {
     this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
+        this.responseBodies.clear();
         this.cookieWriterFence = null;
         this.cookieWriterFenceInUse = false;
       }
@@ -271,6 +274,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.responseBodies.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     if (connection) {
@@ -391,6 +395,7 @@ export class BrowserCdpClient {
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
+    this.responseBodies.clear();
     this.cookieWriterFence = null;
     this.cookieWriterFenceInUse = false;
     // A relaunched Chromium numbers its windows from 1 again.
@@ -434,6 +439,7 @@ export class BrowserCdpClient {
     const sessionId = this.sessionsByTarget.get(targetId);
     this.targetsBySession.delete(sessionId);
     this.networkRequestsBySession.delete(sessionId);
+    this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId);
     this.documentIdsByTarget.delete(targetId);
@@ -474,16 +480,22 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
-    const focus = await this.readFocus(connection, sessionId, target.targetId, frame);
+    // MP-08/MP-10/MP-11: overlap independent observations, retaining both
+    // fences and draining their work before a failed observation returns.
+    const [focus, frames] = await Promise.allSettled([
+      this.readFocus(connection, sessionId, target.targetId, frame),
+      registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame),
+    ]);
+    if (focus.status === "rejected") throw focus.reason;
+    if (frames.status === "rejected") throw frames.reason;
     this.documentIdsByTarget.set(target.targetId, documentId);
-    await registerBrowserFrameTargets(connection, sessionId, target.targetId, documentId, this.targetsByFrame);
     return {
       target_id: target.targetId,
       ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
       document_id: documentId,
       url: typeof target.url === "string" ? target.url : "",
       title: typeof target.title === "string" ? target.title : "",
-      focused: focus === true,
+      focused: focus.value === true,
     };
   }
 
@@ -709,7 +721,14 @@ export class BrowserCdpClient {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          try { return await performBrowserAction(options); } finally { finishBrowserFill(connection, target); }
+          // MP-11: bind the completed value before releasing in-flight coverage.
+          // A failed action still fingerprints whatever it inserted; an
+          // unprovable completion keeps the fill pending (covered).
+          let result;
+          try { result = await performBrowserAction(options); }
+          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+          await finishBrowserFill(connection, target);
+          return result;
         }
         return performBrowserAction(options);
       });
@@ -1144,6 +1163,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
         && typeof message.params?.requestId === "string") {
       const requests = this.networkRequestsBySession.get(message.sessionId) ?? new Set();
@@ -1169,6 +1189,7 @@ export class BrowserCdpClient {
       if (typeof sessionId === "string") {
         this.targetsBySession.delete(sessionId);
         this.networkRequestsBySession.delete(sessionId);
+        this.responseBodies.drop(sessionId);
       }
       if (typeof targetId === "string") {
         this.appliedViewport = null;
@@ -1302,7 +1323,7 @@ export class CdpConnection {
     return !this.closed && this.socket.readyState === 1;
   }
 
-  send(method, params = {}, sessionId) {
+  send(method, params = {}, sessionId, { timeoutMs = this.requestTimeoutMs } = {}) {
     if (!this.isOpen()) {
       return Promise.reject(
         new BrowserControllerError("browser_cdp_disconnected", "browser CDP connection is closed"),
@@ -1319,10 +1340,10 @@ export class CdpConnection {
         reject(
           new BrowserControllerError(
             "browser_cdp_timeout",
-            `browser CDP method ${method} timed out after ${this.requestTimeoutMs}ms`,
+            `browser CDP method ${method} timed out after ${timeoutMs}ms`,
           ),
         );
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {
         this.socket.send(JSON.stringify(payload));

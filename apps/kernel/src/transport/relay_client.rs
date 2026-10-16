@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,7 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
+mod display_admission;
 mod browser_input_order;
 mod connection_config;
 mod connection_state;
@@ -70,7 +71,7 @@ pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
 pub(crate) use peer_client::{
     enqueue_peer_request_via_connected_relay_authorized,
-    enqueue_peer_request_via_connected_relay_with_timeout,
+    enqueue_peer_request_via_connected_relay_with_timeout, managed_slice_home_public_key,
     send_peer_request_to_known_kernel_via_relay,
     send_peer_request_to_known_kernel_via_relay_with_timeout,
     send_peer_request_via_connected_relay_authenticated,
@@ -164,6 +165,7 @@ const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 pub(crate) struct RelayOutgoingSender {
     priority_tx: mpsc::Sender<RelayEnvelope>,
     event_tx: mpsc::Sender<RelayEnvelope>,
+    closing: Arc<AtomicBool>,
 }
 
 impl RelayOutgoingSender {
@@ -189,6 +191,7 @@ impl RelayOutgoingSender {
         Self {
             priority_tx,
             event_tx,
+            closing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -226,9 +229,56 @@ impl RelayOutgoingSender {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
     }
+
+    /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.
+    /// Returns false only when the writer is closed.
+    async fn send(&self, envelope: RelayEnvelope) -> bool {
+        if relay_envelope_uses_event_lane(&envelope) {
+            self.event_tx.send(envelope).await.is_ok()
+        } else {
+            self.priority_tx.send(envelope).await.is_ok()
+        }
+    }
+
+    // MP-08/MP-10/MP-11: discard stale stream events during reconnect,
+    // including coalesced events, but retain every queued reply and Close.
+    #[cfg(test)]
+    fn should_write(&self, envelope: &RelayEnvelope) -> bool {
+        relay_envelope_should_write(envelope, self.closing.load(Ordering::Acquire))
+    }
+
+    /// MP-08/MP-10/MP-11: a deferred reconnect Close follows every queued bulk
+    /// reply through the FIFO event lane instead of overtaking it.
+    /// Returns false only when the writer is closed.
+    fn send_after_queued_events(&self, envelope: RelayEnvelope) -> bool {
+        self.closing.store(true, Ordering::Release);
+        match self.event_tx.try_send(envelope) {
+            Err(mpsc::error::TrySendError::Full(envelope)) => {
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move { event_tx.send(envelope).await });
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Ok(()) => true,
+        }
+    }
+}
+
+fn relay_envelope_should_write(envelope: &RelayEnvelope, closing: bool) -> bool {
+    // Leased peer events carry projections whose cursor already advanced.
+    !closing || !matches!(envelope, RelayEnvelope::DaemonEvent { .. })
 }
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
+    // MP-08 / MP-10 / MP-11: bulk encrypted replies (catalogues, history,
+    // captures) must not fill the priority queue ahead of Computer control.
+    // The relay remains opaque; classify size without inspecting the payload.
+    if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonIncomingPeerResponse { encrypted_response: Some(payload), .. }
+        if payload.ciphertext.len() > 64 * 1024)
+    {
+        return true;
+    }
     matches!(
         envelope,
         RelayEnvelope::DaemonEvent { .. }

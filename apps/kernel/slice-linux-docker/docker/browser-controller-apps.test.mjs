@@ -664,37 +664,53 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: an App receives who drove each bridge call.
-test("bridge calls an agent's input drives run as that agent until a person drives the Tab", async () => {
+// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
+// own record of the input it dispatched there, never from the page.
+const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
+  params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
+const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
+const agentOf = (id) => ({ kind: "agent", id });
+
+test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
   const { tabs, connection } = await opened();
-  let now = 1_000;
-  tabs.now = () => now;
-  const bind = id => connection.emit({ method: "Runtime.bindingCalled", sessionId: "s1",
-    params: { name: "__charioxAppCall", payload: JSON.stringify({ id, method: "delete_todo" }) } });
-  const actors = async () => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
-  const agent = { kind: "agent", id: "agent-7" };
-  await bind("load");
-  assert.deepEqual(await actors(), [null]);
-  const done = tabs.beginInput("t1", "agent-7");
-  await bind("during");
-  done();
-  now += 60_000;
-  // A timer the agent's click armed still runs as the agent.
-  await bind("later");
-  assert.deepEqual(await actors(), [agent, agent]);
-  const human = tabs.beginInput("t1", null);
-  human();
-  await bind("person");
-  assert.deepEqual(await actors(), [null]);
-  // A person's input right after the agent's does not take its calls over.
-  tabs.beginInput("t1", "agent-7")();
-  now += 1_000;
-  tabs.beginInput("t1", null)();
-  await bind("too-soon");
-  now += 5_000;
-  await bind("person-again");
-  assert.deepEqual(await actors(), [agent, null]);
-  assert.equal(typeof tabs.beginInput("unknown", "agent-7"), "function");
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  tabs.noteAgent("t1", "agent-7");
+  // Timers, browser-generated events and the person's own clicks look alike to
+  // the controller: after the agent, none of them is the person's.
+  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+  tabs.noteAgent("unknown", "agent-7");
+});
+
+test("the page cannot name who a call runs as", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
+  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
+});
+
+test("a new document of the Tab keeps the agents that drove it", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  await navigated(connection, "doc-2");
+  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+});
+
+test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
+  const { tabs, connection } = await opened();
+  const answers = [];
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, id) => {
+    if (method === "Runtime.evaluate") answers.push(params.expression);
+    return send(method, params, id);
+  };
+  tabs.noteAgent("t1", "agent-7");
+  tabs.noteAgent("t1", "agent-8");
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), []);
+  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
 });
 
 // MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.

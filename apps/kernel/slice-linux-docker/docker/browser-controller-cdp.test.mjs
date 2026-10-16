@@ -16,6 +16,45 @@ const viewport = {
   desktop_pixel_height: 1440,
 };
 
+test("MP-08/MP-10 page reconciliation overlaps independent focus and frame reads", async () => {
+  const connection = new FakeConnection(), ready = Promise.withResolvers();
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, sessionId) => {
+    const value = await send(method, params, sessionId);
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") await ready.promise;
+    return value;
+  };
+  const browser = new BrowserCdpClient({connectionFactory:async()=>connection});
+  await browser.ensureConnection();
+  const inspected = browser.inspectPage(connection, {targetId:"target-a"}, {});
+  try {
+    for (let n=0;n<20;n++) await new Promise(setImmediate);
+    assert.equal(connection.calls.filter(c=>c.method==="Page.getFrameTree").length,2,
+      "frame registration must progress while the renderer focus reply is pending");
+  } finally { ready.resolve(); await inspected; await browser.close(); }
+});
+
+test("MP-08/MP-10/MP-11 failed focus drains pending frame observation before returning", async () => {
+  const connection = new FakeConnection(), ready = Promise.withResolvers();
+  const send = connection.send.bind(connection); let frames=0,settled=false;
+  connection.send = async (method, params, sessionId) => {
+    const value = await send(method, params, sessionId);
+    if (method === "Page.getFrameTree" && ++frames === 2) await ready.promise;
+    if (method === "Runtime.evaluate" && params.expression === "document.visibilityState === 'visible'") throw Error("Execution context was destroyed");
+    return value;
+  };
+  const browser = new BrowserCdpClient({connectionFactory:async()=>connection});
+  await browser.ensureConnection();
+  const inspected = browser.inspectPage(connection,{targetId:"target-a"},{}).then(
+    ()=>{settled=true;assert.fail("stale focus must fail closed");},
+    error=>{settled=true;assert.equal(error.code,"stale_document_reference");});
+  try {
+    for (let n=0;n<20;n++) await new Promise(setImmediate);
+    assert.equal(settled,false,"a rejected focus read must not leave frame work behind the caller");
+  } finally { ready.resolve();await inspected;await browser.close(); }
+  assert.equal(browser.documentIdsByTarget.has("target-a"),false);
+});
+
 test("concurrent reads share connection initialization", async () => {
   const ready = Promise.withResolvers();
   const connection = new FakeConnection();
@@ -1683,4 +1722,11 @@ test("MP-08 CDP reconciliation retains Chromium popup creation origins", async (
   const state = await browser.reconcile(viewport)
   assert.equal(state.tabs.find(tab => tab.target_id === "target-b").opener_target_id, "target-a")
   assert(!Object.hasOwn(state.tabs.find(tab => tab.target_id === "target-a"), "opener_target_id"))
+})
+
+// MP-08/MP-10/MP-11: fail-first real BBC seam: snapshot_frame_limit during state.
+test('ordinary tab reconciliation survives more than64 unrelated advertising frame targets',async()=>{
+ const connection=new FakeConnection();connection.extraTargets=Array.from({length:80},(_,i)=>({targetId:'ad-'+i,type:'iframe'}));
+ const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ try{const state=await browser.reconcile(viewport);assert.equal(state.tabs.length,2);assert.equal(connection.calls.filter(c=>c.method==='Target.attachToTarget'&&c.params.targetId.startsWith('ad-')).length,0,'state must not attach unrelated iframe targets; isolated listeners own bounded child sessions')}finally{await browser.close()}
 })

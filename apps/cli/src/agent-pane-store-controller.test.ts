@@ -117,7 +117,7 @@ test("agent pane store uses shared projection for collapsed turn state", () => {
     paneEntries["agent-a"]?.map((item) => [item.id, item.role, item.hidden ?? false, item.toggleMode ?? null]),
     [
       [1, "user", false, null],
-      [4, "turn_toggle", false, "expand"],
+      [-1, "turn_toggle", false, "expand"],
       [2, "reasoning", true, null],
       [3, "assistant", false, null],
     ],
