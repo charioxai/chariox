@@ -3204,8 +3204,13 @@ fn claude_skill_hook_block_leaves_no_running_prompt_and_next_turn_can_start() {
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
         .unwrap();
     let mut results = Vec::new();
-    for prompt in ["$review inspect source", "ordinary next task"] {
-        fs::write(&context, "").unwrap();
+    for (index, prompt) in ["$review inspect source", "ordinary next task"]
+        .into_iter()
+        .enumerate()
+    {
+        // MP-08 / MP-10 / MP-11: the fixture supplies a resolved failure.
+        // An unresolved dollar token alone must never block an ordinary turn.
+        fs::write(&context, if index == 0 { "<chariox-skill-selection-error>selected skill unavailable</chariox-skill-selection-error>" } else { "" }).unwrap();
         fs::write(&events, "").unwrap();
         let mut child = Command::new("node")
             .arg(&script)
@@ -3229,9 +3234,13 @@ fn claude_skill_hook_block_leaves_no_running_prompt_and_next_turn_can_start() {
             )
             .unwrap();
         while child.try_wait().unwrap().is_none() {
-            ProviderOutputClaudeNativeBridge::new(&mut app)
-                .process(session.id(), run.id(), &run, None)
-                .unwrap();
+            // Let the explicit-error hook consume its prepared context before
+            // draining its context request; the ordinary hook needs the bridge.
+            if index != 0 {
+                ProviderOutputClaudeNativeBridge::new(&mut app)
+                    .process(session.id(), run.id(), &run, None)
+                    .unwrap();
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let output = child.wait_with_output().unwrap();
