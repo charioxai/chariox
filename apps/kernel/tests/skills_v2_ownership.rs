@@ -163,3 +163,51 @@ fn skills_v2_transfer_cache_probe_miss_does_not_poison_the_following_transfer() 
     assert!(!worker.join("skills").exists());
     assert!(!worker.join("state/skills").exists());
 }
+
+#[test]
+fn skills_v2_missing_installed_package_probe_does_not_prevent_exact_repair() {
+    // MP-08 / MP-10 / MP-11: failed dispatch reads must not create immutable bytes.
+    let f = Fixture::new();
+    let service =
+        SkillCatalogService::new(SkillCatalogStorage::new(&f.0, f.journal("first")).unwrap());
+    let mutation = f.mutation();
+    let prepared = service.prepare(&mutation).unwrap();
+    let published = service.publish_authorized(&mutation, &prepared).unwrap();
+    let record = &published.catalogs[0].skills[0];
+    let root = service.package_root(record);
+    assert!(root.starts_with(&f.0));
+    fs::remove_dir_all(&root).unwrap();
+    assert!(service
+        .pinned_turn(
+            None,
+            "agent",
+            "session",
+            "Use $review",
+            &[],
+            &[],
+            Some(1_000_000),
+            1.0,
+            1_000_000,
+            "generation"
+        )
+        .is_err());
+    let source = match &mutation.actions[0] {
+        SkillCatalogAction::Install { source, .. } => source.clone(),
+        _ => unreachable!(),
+    };
+    let repair = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: published.revision,
+        actions: vec![SkillCatalogAction::Update {
+            skill_id: record.id.clone(),
+            source,
+            expected_digest: record.digest.clone(),
+        }],
+    };
+    let replacement = service.prepare(&repair).unwrap();
+    let repaired = service.publish_authorized(&repair, &replacement).expect(
+        "failed instruction reads must leave the immutable path available for exact repair",
+    );
+    assert_eq!(repaired.record(&record.id).unwrap().digest, record.digest);
+    assert!(root.join("SKILL.md").is_file());
+}

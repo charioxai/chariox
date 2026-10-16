@@ -155,6 +155,22 @@ impl SkillCatalogService {
             .join(&record.id)
             .join(&record.digest)
     }
+    /// Reads never reserve an immutable digest directory. A missing/corrupt
+    /// package can be repaired through the normal reviewed update path.
+    pub(crate) fn verified_package_root(
+        &self,
+        record: &SkillRecord,
+    ) -> Result<PathBuf, DaemonError> {
+        super::paths::existing_owned_directory(
+            self.storage.home(),
+            &Path::new("skills/packages")
+                .join(&record.id)
+                .join(&record.digest),
+        )
+        .map_err(|_| {
+            failure("installed skill package is missing or invalid; reinstall before submitting")
+        })
+    }
     pub fn pinned_turn(
         &self,
         project_id: Option<&str>,
@@ -279,11 +295,7 @@ impl SkillCatalogService {
                 });
                 continue;
             }
-            let root = self.storage.directory(
-                &Path::new("skills/packages")
-                    .join(&row.skill.id)
-                    .join(&row.skill.digest),
-            )?;
+            let root = self.verified_package_root(&row.skill)?;
             let current = package_skill_directory(&root)?;
             if current.version_hash != row.skill.digest {
                 return Err(failure("selected immutable skill package failed verification; reinstall before submitting"));
