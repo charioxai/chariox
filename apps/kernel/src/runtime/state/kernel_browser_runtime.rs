@@ -181,7 +181,9 @@ impl KernelRuntimeState {
             return self.kernel_computer_terminal_request(caller, command).await;
         }
         if let KernelBrowserCommand::StateWait { after, wait_ms } = command {
-            return self.kernel_browser_state_wait(caller, &after, wait_ms).await;
+            return self
+                .kernel_browser_state_wait(caller, &after, wait_ms)
+                .await;
         }
         if matches!(
             &command,

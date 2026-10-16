@@ -495,8 +495,12 @@ fn mp08_mp10_browser_state_wait_541_snapshot() {
         serde_json::to_value(omitted).unwrap(),
         snapshot["first_request"]
     );
-    let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
-    assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
 }
 
 #[test]

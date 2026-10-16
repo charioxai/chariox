@@ -901,7 +901,6 @@ impl KernelBrowserHost {
             .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
             .clone())
     }
-    #[cfg(test)]
     /// Protocol 541: park, outside the protection barrier, until a Browser state read could differ from
     /// the one taken at `after` (the host's signal count). `None`: no browser is running, nothing to wait for.
     pub(crate) fn state_signal(
@@ -922,11 +921,14 @@ impl KernelBrowserHost {
             }
             backend.begin_cancellable_mutation("host.browser", &params, &signal)?
         };
-        let reply = pending
-            .wait(&signal)
-            .and_then(|response| response.into_host_result("host.browser").map_err(|e| e.to_string()))?;
+        let reply = pending.wait(&signal).and_then(|response| {
+            response
+                .into_host_result("host.browser")
+                .map_err(|error| error.to_string())
+        })?;
         Ok(reply["signal"].as_u64())
     }
+    #[cfg(test)]
     pub(crate) fn request_takeover(
         &self,
         user: &str,

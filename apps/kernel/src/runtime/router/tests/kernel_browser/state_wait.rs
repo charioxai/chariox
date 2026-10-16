@@ -35,13 +35,19 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
             // No revision yet: answered at once, with the revision to send next.
             let first = wait(&router, "", 0).await;
             let revision = first["revision"].as_str().unwrap().to_string();
-            assert!(first.get("_state_signal").is_none(), "the host's signal stays private");
+            assert!(
+                first.get("_state_signal").is_none(),
+                "the host's signal stays private"
+            );
             assert_eq!(first["tabs"][0]["title"], "first");
 
             // Nothing changed: the read parks for its wait and then answers with the same revision.
             let started = std::time::Instant::now();
             let idle = wait(&router, &revision, 400).await;
-            assert!(started.elapsed() >= std::time::Duration::from_millis(350), "idle waits last their deadline");
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(350),
+                "idle waits last their deadline"
+            );
             assert_eq!(idle["revision"], revision.as_str());
 
             // A signal without a content change (a wake that read the same state) keeps it parked.

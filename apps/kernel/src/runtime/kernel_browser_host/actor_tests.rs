@@ -1310,7 +1310,12 @@ done
     // No browser running: nothing to wait for, and the wait never starts one.
     assert_eq!(host.state_signal("alice", Some(4), 1000).unwrap(), None);
     assert!(!root.join("parked").exists());
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let (tx, rx) = std::sync::mpsc::channel();
     let (early, parked) = std::thread::scope(|scope| {
@@ -1335,7 +1340,9 @@ done
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(parked.unwrap(), Some(5));
     assert_eq!(
-        early.expect("input waited behind the parked state wait").unwrap()["input_completed"],
+        early
+            .expect("input waited behind the parked state wait")
+            .unwrap()["input_completed"],
         true
     );
 }

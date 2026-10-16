@@ -19,7 +19,10 @@ fn revision(state: &Value, signal: Option<u64>) -> String {
     format!("{}.{}", hex_prefix(&digest), signal.unwrap_or(0))
 }
 fn hex_prefix(digest: &[u8]) -> String {
-    digest[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 fn parse(after: &str) -> Option<(&str, u64)> {
     let (digest, signal) = after.split_once('.')?;
@@ -116,15 +119,28 @@ mod tests {
         let first = revision(&state, Some(7));
         let (digest, signal) = parse(&first).unwrap();
         assert_eq!(signal, 7);
-        assert!(revision(&state, Some(9)).starts_with(digest), "the signal alone is not content");
+        assert!(
+            revision(&state, Some(9)).starts_with(digest),
+            "the signal alone is not content"
+        );
         let other = json!({"generation":1,"tabs":[{"tab_id":"a","title":"y"}]});
-        assert!(!revision(&other, Some(7)).starts_with(digest), "a retitled Tab is a new revision");
+        assert!(
+            !revision(&other, Some(7)).starts_with(digest),
+            "a retitled Tab is a new revision"
+        );
         assert_eq!(parse(&revision(&state, None)).unwrap().1, 0);
     }
 
     #[test]
     fn a_caller_with_no_valid_revision_reads_at_once() {
-        for after in ["", "x", "short.1", "0123456789abcdef", "0123456789abcdef.x", "0123456789abcdef.-1"] {
+        for after in [
+            "",
+            "x",
+            "short.1",
+            "0123456789abcdef",
+            "0123456789abcdef.x",
+            "0123456789abcdef.-1",
+        ] {
             assert!(parse(after).is_none(), "{after:?}");
         }
         assert_eq!(parse("0123456789abcdef.12"), Some(("0123456789abcdef", 12)));
