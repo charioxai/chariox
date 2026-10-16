@@ -25,7 +25,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type TextareaRenderable } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createEffect, createSignal, onCleanup } from "solid-js"
+import { batch, createEffect, createSignal, on, onCleanup } from "solid-js"
 import { reconcile } from "solid-js/store"
 
 import type {
@@ -671,6 +671,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setFooterFlash,
     onFooterFlashChange: () => updateSessionChrome(),
   })
+  // A transport error flash must not outlive the reconnect that resolved it.
+  createEffect(on(daemonDisconnected, (disconnected) => {
+    if (!disconnected) footerFlashController.clearIf(flash => flash.tone === "error" && flash.message.startsWith("kernel transport `"))
+  }, { defer: true }))
   let blockedAccountTarget: {sessionId: string; agentId: string} | undefined
   const providerAccountRecovery = createProviderAccountRecoveryController({
     renderer,
