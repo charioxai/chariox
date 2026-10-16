@@ -50,3 +50,27 @@ fn mp08_owner19_named_project_selection_protocol_542() {
         crate::session::SessionProjectSelection::New { name: None }
     ));
 }
+
+#[test]
+fn mp02_mp08_workspace_metadata_and_pin_responses_542_are_hashed() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 542);
+    let wire = serde_json::json!([{"WorkspaceDirectoriesSearched":{"directories":["/ordinary"],"workspace_git":[{"workspace_id":"/ordinary","repository_state":"not-repository","workspace_label":null}]}},{"ProjectPinned":{"project":{"id":"project","owner_user_id":"local","workspace_id":"/ordinary","workspace_ids":["/ordinary"],"name":"Release","pinned":true,"kind":"named","status":"active","created_at_ms":1,"updated_at_ms":2}}}]);
+    let responses = wire
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| {
+            let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
+            serde_json::to_value(response).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_value(responses).unwrap();
+    assert_eq!(encoded, wire);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+        ),
+        "26c6c23ba15393999780f42302efa7532cc190ad3b66a4449e96926b863f1073"
+    );
+}
