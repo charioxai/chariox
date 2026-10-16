@@ -20,7 +20,7 @@ export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
  return source?.native===true&&source.attested===true&&source.valid?.()===true;
 }
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
- return reserveDisplay(host,async reservation=>{
+ return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);
   if(command.generation!==host.generation||command.target||
    !command.codecs?.includes('png')||!command.codecs.includes('avc1.420033')||command.codecs.length>8||
@@ -28,7 +28,6 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   // MP-08/MP-10/MP-11: the mirror and its native preview use the same
   // event-bound document owner. Stored state may lag a committed navigation.
   const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation,document=tab.document_id;
-  reservation.reference={kind:'visible_page',tab_id:tab.tab_id,document_id:document,generation,scope};
   const window=host.chromeWindows.current().tabbed;
   const frameProof=host.browser.currentPageFrame?.(tab.target_id);
   const {connection,sessionId}=frameProof??await host.browser.resolvePageTarget(tab.target_id);
@@ -54,7 +53,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});
 
- },{kind:'visible_page',tab_id:command.tab_id,generation:command.generation,scope});
+ });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
 // crop. It grants no input authority; ordinary admission and the final guard run.
