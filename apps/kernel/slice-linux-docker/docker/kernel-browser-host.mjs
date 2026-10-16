@@ -21,6 +21,7 @@ import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_R
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
+import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
@@ -50,6 +51,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport())
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && request.params.target) && browser?.canReconcileConcurrently?.(viewport) === true ||
+    request.params?.op === 'state_signal' ||
     request.params?.op === 'chrome_window_follow')
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -98,6 +100,7 @@ export class KernelBrowserHost {
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments();
+    this.stateSignal = new StateSignal();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -115,6 +118,7 @@ export class KernelBrowserHost {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
     this.nativeAccessibility.clear();
     this.mirror.invalidate();
@@ -193,7 +197,7 @@ export class KernelBrowserHost {
       await this.lockdown(connection);
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
-      this.tabGroups = new ChromeTabGroups(connection);
+      this.tabGroups = new ChromeTabGroups(connection, () => this.stateSignal.notify());
       try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
@@ -238,6 +242,8 @@ export class KernelBrowserHost {
     }
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
+      // Protocol 541: the same subscription wakes parked state reads (a Tab or document changed).
+      if (stateChangingEvent(message)) this.stateSignal.notify();
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
       if (blockedUrl(info.url)) void this.closeBlocked(connection, info.targetId);
@@ -342,6 +348,7 @@ export class KernelBrowserHost {
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
     this.lockdownOff?.(); this.lockdownOff = null;
+    this.stateSignal.notify();
     await this.closeCompositors();
     this.sampleLanes.clear();
 
@@ -662,10 +669,15 @@ export class KernelBrowserHost {
     }
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
+    // Protocol 541: the signal count is taken before the read, so a change during it wakes the next wait.
+    const stateSignal = this.stateSignal.count;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
-    if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
+    if (["start", "state"].includes(command.op)) {
+      const state = this.observe(await this.reconcile(), null, scope);
+      return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
+    }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
     if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
@@ -943,12 +955,21 @@ export class KernelBrowserHost {
         await this.nativeComputer.reset();
         return { id: request.id, ok: true, result: { released: true } };
       }
+      // Protocol 541: the kernel parks here, outside its protection barrier, until a state read could differ.
+      if (request.method === "host.browser" && request.params?.op === "state_signal") {
+        const {after, wait_ms} = request.params;
+        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);
+        return { id: request.id, ok: true, result: { signal: parked } };
+      }
       if (request.method === "host.browser") {
         if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
         const { _tab_groups: groups, ...params } = request.params ?? {};
-        const result = await this.request(params, { signal });
+        let result;
+        try { result = await this.request(params, { signal }); }
+        // A person's keys and wheel never wake a state read; Tab changes and an agent acting do.
+        finally { if (['open', 'close', 'navigate', 'stop'].includes(params.op) || params.op === 'input' && (params._agent_input || params.focused_agent)) this.stateSignal.notify(); }
         if (Array.isArray(groups)) void this.syncTabGroups(groups).catch(() => {});
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);

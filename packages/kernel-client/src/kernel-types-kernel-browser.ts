@@ -20,6 +20,8 @@ export type KernelBrowserCommand =
   | { op: "computer"; command: KernelComputerCommand }
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
+  // Protocol 541: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
+  | { op: "state_wait"; after: string; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2 }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[] }
@@ -77,7 +79,9 @@ export type KernelBrowserResult = {
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;
   kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;
-  reachable_by_focused_agent?: boolean
+  reachable_by_focused_agent?: boolean;
+  // Protocol 541: a `state_wait` reply's opaque revision, echoed back as the next `after`.
+  revision?: string
 } | KernelBrowserFrame | UserDomainGrantEvent
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.

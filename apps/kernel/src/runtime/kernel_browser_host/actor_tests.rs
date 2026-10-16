@@ -1279,6 +1279,67 @@ done
     );
 }
 
+// MP-08/MP-10 (protocol 541): a viewer's parked state wait holds neither the controller lock nor
+// the protection barrier path: input and the following read proceed while it is parked.
+#[test]
+fn mp08_parked_state_signal_does_not_hold_input() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-mp08-state-signal-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"state_signal"'*)
+   printf 'parked\n' > "$root/parked"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"signal":5}}\n' "$id") & ;;
+ *'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"input_completed":true}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    // No browser running: nothing to wait for, and the wait never starts one.
+    assert_eq!(host.state_signal("alice", Some(4), 1000).unwrap(), None);
+    assert!(!root.join("parked").exists());
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (early, parked) = std::thread::scope(|scope| {
+        let wait = scope.spawn(|| host.state_signal("alice", Some(4), 1000));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("parked").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("parked").exists());
+        let input = scope.spawn(|| {
+            tx.send(host.protected_request("alice", None, "host.browser",
+                json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"key","key":"a"}}),
+                policy.clone())).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(500));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        let parked = wait.join().unwrap();
+        input.join().unwrap();
+        (early, parked)
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(parked.unwrap(), Some(5));
+    assert_eq!(
+        early.expect("input waited behind the parked state wait").unwrap()["input_completed"],
+        true
+    );
+}
+
 // MP-08/MP-10 (owner A/B 2026-10-14): a navigation waits for the page's load;
 // mirror credits and state reads must not queue behind it, or every viewer
 // freezes (white or stale) for the whole load.

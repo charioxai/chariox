@@ -59,6 +59,7 @@ export class ChromeWindows {
     const {window_generation} = this.bound.tabbed; this.bound = null;
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
+    this.host.stateSignal?.notify();
   }
   current() {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
@@ -263,6 +264,9 @@ export class ChromeWindows {
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
+    // Protocol 541: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    const popups = JSON.stringify(this.auxiliaryState());
+    if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }
   /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
    * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */

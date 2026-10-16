@@ -779,3 +779,19 @@ test('MP-08/MP-10/MP-11 a retired window or an unsupported owner never publishes
   const before=g.reads();assert.equal(await (await g.windows.resolve()).tabbed.isPagePublishable('tb'),true);assert(g.reads()>before,'no native observer: always fresh');
  }finally{await g.close()}
 });
+
+// Protocol 541: a parked state read wakes on a window retirement or a change of the popups, not on every poll.
+test('MP-08/MP-10 window retirement and popup changes wake a parked state read once per change',async()=>{
+ const f=await publishFixture(),woken=[];
+ try{
+  f.windows.host.stateSignal={notify:()=>woken.push(1)};
+  const rows=[...f.windows.rows];
+  assert.equal(f.windows.bound.auxiliary.length,1,'the fixture window has a popup');
+  f.windows.refreshAuxiliary(rows);const first=woken.length;f.windows.refreshAuxiliary(rows);f.windows.refreshAuxiliary(rows);
+  assert.equal(woken.length,first,'an unchanged inventory poll wakes nothing after the first report');
+  f.windows.refreshAuxiliary(rows.filter(r=>!r.override_redirect));
+  assert.equal(woken.length,first+1,'a popup closing wakes it');
+  f.windows.refreshAuxiliary(rows.filter(r=>!r.override_redirect));assert.equal(woken.length,first+1);
+  f.windows.retire('test');assert.equal(woken.length,first+2,'a retirement wakes it');
+ }finally{await f.close()}
+});
