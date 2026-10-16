@@ -214,6 +214,8 @@ mod tests {
     mod m23_metaagent_runtime_tools;
     mod provider_projection;
     #[cfg(unix)]
+    mod provider_login_copy;
+    #[cfg(unix)]
     mod provider_setup_token;
     mod relay_leased_prompt_steer;
     mod remote_agent_message_origin;

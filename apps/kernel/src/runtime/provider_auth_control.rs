@@ -829,6 +829,14 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
         &request.provider,
         request.method.as_deref(),
     )?;
+    if request.method.as_deref() != Some(CLAUDE_SETUP_TOKEN_METHOD) {
+        release_shared_credential(
+            runtime_state,
+            owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+    }
     if crate::provider::canonical_provider_family(&request.provider) != Some("codex") {
         return start_terminal_provider_auth(
             runtime_state,
@@ -958,6 +966,28 @@ pub(crate) async fn execute_logout_provider_request(
         )
         .await;
     }
+    if !request.end_everywhere
+        && release_shared_credential(
+            runtime_state,
+            &owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?
+    {
+        let profile = registry.mark_logged_out(
+            &owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        return Ok(LocalDaemonResponse::ProviderLoggedOut {
+            provider: profile.provider,
+            account_profile: profile.profile_id,
+            local_only: true,
+        });
+    }
     let response = tokio::task::spawn_blocking(move || {
         let provider = request.provider.clone();
         let account_profile = request.account_profile.clone();
@@ -971,6 +1001,33 @@ pub(crate) async fn execute_logout_provider_request(
         .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
         .await;
     Ok(response)
+}
+
+/// MP-08/MP-10/MP-11: the provider's own sign-in and sign-out revoke the stored refresh token,
+/// which ends the session on every machine holding a copy of it. For a shared login, remove only
+/// this machine's credential so the provider starts from nothing and revokes nothing.
+fn release_shared_credential(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<bool, DaemonError> {
+    let Some(family) = crate::provider::canonical_provider_family(provider)
+        .filter(|family| matches!(*family, "codex" | "claude"))
+    else {
+        return Ok(false);
+    };
+    let registry = runtime_state.provider_account_profile_registry();
+    if !registry.credential_is_shared(owner_user_id, family, account_profile)? {
+        return Ok(false);
+    }
+    registry.discard_local_credential(owner_user_id, family, account_profile)?;
+    if family == "codex" {
+        // The account endpoint keeps the removed login in memory.
+        let profile = registry.get(owner_user_id, family, account_profile)?;
+        crate::provider::invalidate_codex_account_endpoint(owner_user_id, &profile.profile_id);
+    }
+    Ok(true)
 }
 
 /// Reads a login record, holding a `claude setup-token` login's serialization

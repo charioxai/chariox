@@ -39,9 +39,33 @@ pub(crate) fn claude_api_auth_failure(error: &str) -> bool {
                 .any(|marker| error.contains(marker))))
 }
 
+/// Codex words a refused refresh as prose ("...because your refresh token was
+/// already used. Please log out and sign in again."), not as the OAuth code.
+fn codex_refresh_refusal(error: &str) -> bool {
+    error.contains("your access token could not be refreshed")
+        || error.contains("refresh token has expired")
+        || error.contains("refresh token was already used")
+        || error.contains("refresh token was revoked")
+}
+
+/// Short, credential-free reason for the user, derived from the provider's refusal.
+pub(crate) fn renewal_failure_reason(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if error.contains("reused") || error.contains("already used") {
+        "another machine renewed this login first"
+    } else if error.contains("expired") {
+        "the saved login expired"
+    } else if error.contains("revoked") || error.contains("invalidated") {
+        "the login was signed out elsewhere"
+    } else {
+        "the provider no longer accepts the saved login"
+    }
+}
+
 pub(crate) fn oauth_renewal_evidence(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
-    error.contains("refresh_token_reused")
+    codex_refresh_refusal(&error)
+        || error.contains("refresh_token_reused")
         || error.contains("refresh_token_expired")
         || error.contains("refresh_token_invalidated")
         || ((error.contains("refresh") || error.contains("renew"))
@@ -75,6 +99,31 @@ mod tests {
             "opencode",
             "workspace service: Token refresh failed"
         ));
+    }
+
+    #[test]
+    fn credfix_codex_prose_refusals_are_renewal_failures() {
+        for error in [
+            "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+            "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
+            "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+            "Your access token could not be refreshed. Please log out and sign in again.",
+        ] {
+            assert!(renewal_failed("codex", error), "{error}");
+            assert!(oauth_renewal_evidence(error), "{error}");
+        }
+        assert_eq!(
+            renewal_failure_reason("because your refresh token was already used"),
+            "another machine renewed this login first"
+        );
+        assert_eq!(
+            renewal_failure_reason("because your refresh token has expired"),
+            "the saved login expired"
+        );
+        assert_eq!(
+            renewal_failure_reason("refresh_token_invalidated"),
+            "the login was signed out elsewhere"
+        );
     }
 
     #[test]
