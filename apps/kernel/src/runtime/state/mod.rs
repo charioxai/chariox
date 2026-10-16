@@ -284,6 +284,7 @@ struct KernelRuntimeOwnedState {
     pending_mcp_continuations: PendingMcpContinuationStore,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
+    private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
@@ -852,6 +853,27 @@ impl KernelRuntimeState {
         }));
         let room_secret_observations =
             room_secret_observations.with_public_history(operational_history_store.clone());
+        let private_assessment_dispatch = {
+            let started = Instant::now();
+            loop {
+                if let Ok(mut app) = app.try_lock() {
+                    break app
+                        .private_assessment_dispatch
+                        .get_or_insert_with(|| {
+                            PrivateAssessmentDispatch::new(
+                                config_projection.clone(),
+                                durable_state_store.clone(),
+                                room_secret_observations.clone(),
+                            )
+                        })
+                        .clone();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("KernelRuntimeState could not bind private assessment dispatch");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         let runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -967,7 +989,8 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 private_assessment_results: Default::default(),
-                private_work_results: Default::default(),
+                private_work_results: private_assessment_dispatch.work_results.clone(),
+                private_assessment_dispatch,
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
@@ -1298,8 +1321,9 @@ impl KernelRuntimeState {
 
 mod room_agent_admission;
 
-mod agent_delegation_runtime;
 mod agent_assessment_result;
+mod agent_delegation_runtime;
+pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;

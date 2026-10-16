@@ -525,6 +525,7 @@ impl RuntimeProviderRun {
                 "--output-format".into(),
                 "stream-json".into(),
                 "--verbose".into(),
+                "--no-session-persistence".into(),
                 "--tools".into(),
                 "".into(),
                 "--strict-mcp-config".into(),

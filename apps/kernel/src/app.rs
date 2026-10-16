@@ -158,6 +158,8 @@ pub struct DaemonApp {
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
     // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
     pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) private_assessment_dispatch:
+        Option<crate::runtime::state::PrivateAssessmentDispatch>,
     pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
@@ -375,6 +377,7 @@ impl DaemonApp {
                 config.private_runtime_state_root(),
             ),
             room_computer_revoked: Default::default(),
+            private_assessment_dispatch: None,
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
