@@ -9,6 +9,15 @@ use crate::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct HomeProjectionSettlement {
+    pub(crate) prompt_id: String,
+    pub(crate) provider_run_id: String,
+    pub(crate) settled_at_ms: u64,
+    pub(crate) status: crate::git_observer::CompletedTurnSettlementStatus,
+    pub(crate) termination: Option<crate::provider::ProviderRunTermination>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HomeProjectionResult {
     pub(crate) completions: Vec<PromptCompletion>,
@@ -16,6 +25,7 @@ pub(crate) struct HomeProjectionResult {
     pub(crate) advance_queue: bool,
     pub(crate) queue_head: Option<crate::session::PromptQueueItem>,
     pub(crate) retain_native_binding: bool,
+    pub(crate) settlement: Option<HomeProjectionSettlement>,
 }
 
 impl OperationalHistoryStore {

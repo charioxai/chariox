@@ -15,54 +15,118 @@ pub(super) fn item_identity(
 }
 
 impl RemoteLeaseRuntime<'_> {
+    pub(super) fn home_workflow_prompt_is_terminal(
+        &self,
+        session: &str,
+        prompt: &PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let (Some(run), Some(node)) = (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(false);
+        };
+        let snapshot = self.app.sessions.get_session(session)?;
+        if let Some(run) = snapshot.workflow_run(run) {
+            return Ok(run
+                .node_runs()
+                .iter()
+                .find(|n| n.id() == node)
+                .is_some_and(|n| {
+                    matches!(
+                        n.status(),
+                        crate::session::WorkflowNodeRunStatus::Completed
+                            | crate::session::WorkflowNodeRunStatus::Failed
+                            | crate::session::WorkflowNodeRunStatus::Stopped
+                    )
+                }));
+        }
+        crate::app::workflow_runtime::workflow_prompt_run_is_archived_terminal(
+            self.app, session, prompt,
+        )
+    }
+
+    pub(super) fn fail_home_workflow_prompt(
+        &self,
+        session: &str,
+        prompt: &PromptQueueItem,
+        failure: crate::session::WorkflowFailureEvent,
+    ) -> Result<(), DaemonError> {
+        if self.home_workflow_prompt_is_terminal(session, prompt)? {
+            return Ok(());
+        }
+        let (Some(run), Some(node)) = (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(());
+        };
+        self.app
+            .sessions_mut()
+            .record_workflow_failure_event(session, run, failure)?;
+        self.app
+            .sessions_mut()
+            .fail_workflow_node_run(session, run, node)?;
+        Ok(())
+    }
+
+    fn persist_home_workflow_results(
+        &self,
+        completions: &[PromptCompletion],
+    ) -> Result<(), DaemonError> {
+        for completion in completions {
+            let prompt = &completion.completed;
+            if prompt.workflow_run_id().is_none() {
+                continue;
+            }
+            let agent = self.app.agents.get_agent(prompt.target_agent_id())?;
+            let durable = self.app.durable_state_store();
+            durable.with_workflow_runtime_transition_lock(|| {
+                let session = crate::app::KernelSessionReadService::new(self.app)
+                    .session_snapshot(agent.session_id())?;
+                durable
+                    .persist_workflow_runtime_transition(&session, "home_projection_application")?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn restore_home_projection_settlements(
         &self,
         session: &str,
         agent: &str,
-        run: &str,
-        receipts: &[RelayProjectedCompletion],
         result: &crate::history::leased_projection::HomeProjectionResult,
     ) -> Result<(), DaemonError> {
-        // Runtime settlement projections are in memory. A ready journal must
-        // restore them too, even when durable prompt removal survived the crash.
-        let binding = self.app.agents.get_agent(agent)?;
-        let leased = binding.remote_execution().expect("admitted remote page");
-        let run = crate::provider::projected_leased_provider_run_id(&leased.leased_agent_id, run);
+        // Resume the locally accepted outcome, not a second interpretation of
+        // packet completions that may include unrelated or unscoped receipts.
         for completion in &result.completions {
             let prompt = &completion.completed;
-            let receipt = receipts
-                .iter()
-                .filter(|receipt| {
-                    receipt
-                        .home_prompt_id
-                        .as_deref()
-                        .is_none_or(|id| id == prompt.id())
-                })
-                .max_by_key(|receipt| receipt.completed_at_ms);
-            let status = receipt
-                .and_then(|receipt| receipt.settlement_status)
-                .unwrap_or_else(|| {
-                    if prompt.status() == PromptStatus::Cancelled {
-                        crate::git_observer::CompletedTurnSettlementStatus::Cancelled
-                    } else if result.provider_failed {
-                        crate::git_observer::CompletedTurnSettlementStatus::Failed
-                    } else {
-                        crate::git_observer::CompletedTurnSettlementStatus::Completed
-                    }
-                });
+            let saved = result
+                .settlement
+                .as_ref()
+                .filter(|saved| saved.prompt_id == prompt.id())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "restore home projection outcome",
+                    message: "journal has no exact admitted prompt outcome".into(),
+                })?;
             self.record_projected_prompt_settlement(
                 session,
                 agent,
                 prompt,
-                &run,
-                receipt
-                    .map(|receipt| receipt.completed_at_ms)
-                    .unwrap_or(prompt.created_at_ms()),
-                receipt.and_then(|receipt| receipt.provider_termination.clone()),
-                status,
+                &saved.provider_run_id,
+                saved.settled_at_ms,
+                saved.termination.clone(),
+                saved.status,
             )?;
         }
-        if result.provider_failed {
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent_snapshot(session, agent)?;
+        if result.provider_failed
+            && active.as_ref().is_none_or(|active| {
+                result
+                    .completions
+                    .iter()
+                    .any(|completion| completion.completed.id() == active.id())
+            })
+        {
             self.app
                 .agents()
                 .mark_unexpected_provider_exit_error(agent, true)?;
@@ -88,6 +152,10 @@ impl RemoteLeaseRuntime<'_> {
                 }
             }
             if let Some(ack) = ack.as_ref() {
+                // A ready journal skips workflow mutation on replay. Its effects
+                // must already survive restart; terminal-node guards also make
+                // a crash between this transition and result save repeatable.
+                self.persist_home_workflow_results(&outcome.completions)?;
                 let run = crate::provider::projected_leased_provider_run_id(
                     &ack.binding.leased_agent_id,
                     &ack.provider_run_id,
@@ -111,6 +179,7 @@ impl RemoteLeaseRuntime<'_> {
                             advance_queue: outcome.advance_queue,
                             queue_head: outcome.queue_head.clone(),
                             retain_native_binding: outcome.retain_native_binding,
+                            settlement: outcome.settlement.clone(),
                         },
                     )?;
             }

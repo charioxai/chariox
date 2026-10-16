@@ -52,6 +52,7 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
     advance_queue: bool,
     queue_head: Option<PromptQueueItem>,
     retain_native_binding: bool,
+    settlement: Option<crate::history::leased_projection::HomeProjectionSettlement>,
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
@@ -1257,14 +1258,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         outcome.accepted = true;
         if let Some(Some(result)) = pending_application {
-            self.restore_home_projection_settlements(
-                session_id, agent_id, provider_run_id, &completions, &result,
-            )?;
+            self.restore_home_projection_settlements(session_id, agent_id, &result)?;
             outcome.completions = result.completions;
             outcome.provider_failed = result.provider_failed;
             outcome.advance_queue = result.advance_queue;
             outcome.queue_head = result.queue_head;
             outcome.retain_native_binding = result.retain_native_binding;
+            outcome.settlement = result.settlement;
             outcome.application_result_ready = true;
             return Ok(outcome);
         }
@@ -1423,6 +1423,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if let Some(active_prompt) = active_prompt {
+            let workflow_already_settled =
+                self.home_workflow_prompt_is_terminal(session_id, &active_prompt)?;
             let workflow_output_ready = active_prompt.workflow_run_id().is_some()
                 && crate::app::workflow_runtime::workflow_prompt_has_completion_output_from_runtime(
                     self.app,
@@ -1510,16 +1512,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         Vec::new(),
                         failure_message,
                     );
-                    let _ = self.app.sessions_mut().record_workflow_failure_event(
-                        session_id,
-                        workflow_run_id,
-                        failure,
-                    );
-                    self.app.sessions_mut().fail_workflow_node_run(
-                        session_id,
-                        workflow_run_id,
-                        workflow_node_run_id,
-                    )?;
+                    self.fail_home_workflow_prompt(session_id, &active_prompt, failure)?;
                     self.project_home_notice(
                         session_id,
                         agent_id,
@@ -1533,7 +1526,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     )?;
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
-                    self.record_projected_prompt_settlement(
+                    outcome.settlement = Some(self.record_projected_prompt_settlement(
                         session_id,
                         agent_id,
                         &active_prompt,
@@ -1541,7 +1534,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                         settlement_status,
-                    )?;
+                    )?);
                     let mut completed = active_prompt.clone();
                     completed.set_status(PromptStatus::Completed);
                     outcome.provider_failed = provider_failed;
@@ -1570,7 +1563,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 // Snapshot readers use the shared stores without the app mutex.
                 // Publish the worker's receipt before clearing the active prompt,
                 // so an Ended run cannot appear idle with its previous completion.
-                self.record_projected_prompt_settlement(
+                outcome.settlement = Some(self.record_projected_prompt_settlement(
                     session_id,
                     agent_id,
                     &active_prompt,
@@ -1578,9 +1571,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                     projected_termination.clone(),
                     settlement_status,
-                )?;
+                )?);
             }
-            if intentionally_cancelled {
+            if intentionally_cancelled && !workflow_already_settled {
                 crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
                     self.app,
                     session_id,
@@ -1594,7 +1587,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 PromptStatus::Completed
             });
             if intentionally_cancelled {
-                self.record_projected_prompt_settlement(
+                outcome.settlement = Some(self.record_projected_prompt_settlement(
                     session_id,
                     agent_id,
                     &completed,
@@ -1602,7 +1595,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                     projected_termination.clone(),
                     settlement_status,
-                )?;
+                )?);
             }
             if !intentionally_cancelled && (explicitly_failed || projected_termination.is_some()) {
                 outcome.provider_failed = true;
@@ -1623,18 +1616,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .map(|termination| termination.reason.clone())
                             .unwrap_or_else(|| "worker provider turn failed".into()),
                     );
-                    let _ = self.app.sessions_mut().record_workflow_failure_event(
-                        session_id,
-                        workflow_run_id,
-                        failure,
-                    );
-                    self.app.sessions_mut().fail_workflow_node_run(
-                        session_id,
-                        workflow_run_id,
-                        workflow_node_run_id,
-                    )?;
+                    self.fail_home_workflow_prompt(session_id, &completed, failure)?;
                 }
-            } else if !intentionally_cancelled {
+            } else if !intentionally_cancelled && !workflow_already_settled {
                 crate::app::workflow_runtime::complete_workflow_prompt_from_runtime(
                     self.app,
                     session_id,
@@ -1660,7 +1644,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<crate::history::leased_projection::HomeProjectionSettlement, DaemonError> {
+        let settlement = crate::history::leased_projection::HomeProjectionSettlement {
+            prompt_id: prompt.id().into(),
+            provider_run_id: provider_run_id.into(),
+            settled_at_ms,
+            status: settlement_status,
+            termination: provider_termination.clone(),
+        };
         self.record_home_projection_settlement(
             session_id,
             agent_id,
@@ -1681,7 +1672,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 settlement_status,
                 provider_termination,
             );
-        Ok(())
+        Ok(settlement)
     }
 
     fn project_remote_native_prompt_started(

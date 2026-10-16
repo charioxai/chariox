@@ -22,9 +22,26 @@ fn mp08_projection_paged_workflow_waits_for_final_failure_with_valid_output() {
     assert_failed_projection(Some(true), true);
 }
 
+#[test]
+fn mp08_home_workflow_page_fault_preserves_durable_failure_once() {
+    for boundary in ["receipt", "result"] {
+        for valid_output in [false, true] {
+            assert_failed_projection_at_boundary(Some(valid_output), false, Some(boundary));
+        }
+    }
+}
+
 fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
-    let mut app =
-        crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    assert_failed_projection_at_boundary(workflow_output, paged, None);
+}
+
+fn assert_failed_projection_at_boundary(
+    workflow_output: Option<bool>,
+    paged: bool,
+    boundary: Option<&str>,
+) {
+    let config = crate::config::DaemonConfig::for_tests();
+    let mut app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new("home", "home"))
         .unwrap();
@@ -145,7 +162,11 @@ fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
         &crate::provider::projected_leased_provider_run_id("leased", "run"),
     );
     let event = RelayPeerEvent::LeasedRuntimeProjection {
-        delivery: None,
+        delivery: boundary.map(|_| crate::transport::relay_peer::RelayProjectionDelivery {
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased".into(),
+            sequence: 1,
+        }),
         home_session_id: session.id().into(),
         home_agent_id: agent.id().into(),
         provider_run_id: "run".into(),
@@ -186,6 +207,9 @@ fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
     if paged {
         assert!(pages.len() > 1);
     }
+    if boundary.is_some() {
+        app.save_durable_state_snapshot().unwrap();
+    }
     let total = pages.len();
     let mut outcome = RemoteRuntimeProjectionOutcome::default();
     let mut observed_bytes = 0;
@@ -195,6 +219,32 @@ fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
             .iter()
             .map(|chunk| chunk.bytes.len())
             .sum::<usize>();
+        if let Some(boundary) = boundary {
+            app.operational_history_store()
+                .leased_projection_delivery_sequence("probe")
+                .unwrap();
+            let connection =
+                rusqlite::Connection::open(app.operational_history_store().path()).unwrap();
+            connection.execute_batch(if boundary == "receipt" {
+                "CREATE TRIGGER fail_workflow_page BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'receipt fault'); END;"
+            } else {
+                "CREATE TRIGGER fail_workflow_page BEFORE UPDATE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'result fault'); END;"
+            }).unwrap();
+            assert!(RemoteLeaseRuntime::new(&mut app)
+                .project_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::test_projection_authority(
+                        "worker-kernel-1"
+                    ),
+                    event.clone()
+                )
+                .is_err());
+            connection
+                .execute_batch("DROP TRIGGER fail_workflow_page")
+                .unwrap();
+            drop(connection);
+            drop(app);
+            app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        }
         outcome = RemoteLeaseRuntime::new(&mut app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
@@ -276,7 +326,13 @@ fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
     );
     if let Some((workflow_id, node_id)) = workflow {
         let snapshot = app.sessions().get_session(session.id()).unwrap();
-        let run = snapshot.workflow_run(&workflow_id).unwrap();
+        // Terminal runs leave the hot snapshot after restart. Read the normal
+        // durable archive as clients do instead of requiring a hot cache entry.
+        let run = snapshot.workflow_run(&workflow_id).cloned().or_else(|| {
+            app.durable_state_store().resolve_workflow_run(
+                snapshot.host_daemon_id(), session.id(), &workflow_id,
+            ).unwrap()
+        }).unwrap();
         assert_eq!(run.status(), crate::session::WorkflowRunStatus::Failed);
         assert_eq!(
             run.node_runs()
@@ -286,6 +342,13 @@ fn assert_failed_projection(workflow_output: Option<bool>, paged: bool) {
                 .status(),
             crate::session::WorkflowNodeRunStatus::Failed
         );
+        if boundary.is_some() {
+            assert_eq!(
+                run.failure_events().len(),
+                1,
+                "MP-08 one durable workflow failure across page replay"
+            );
+        }
         assert_eq!(
             run.failure_events().last().unwrap().kind(),
             crate::session::WorkflowFailureKind::ProviderFailure

@@ -323,7 +323,8 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 agent.id(),
                 "question",
                 PromptStatus::Queued,
-            ),
+            )
+            .with_durable_operation("original-operation", "original-fingerprint"),
             false,
         )
         .unwrap();
@@ -377,13 +378,31 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
             }],
             notices: vec!["notice exactly once".into()],
             completions: if final_page {
-                vec![RelayProjectedCompletion {
-                    message_id: "done".into(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(original.id().into()),
-                    settlement_status: status,
-                    provider_termination: None,
-                }]
+                vec![
+                    RelayProjectedCompletion {
+                        message_id: "done".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(original.id().into()),
+                        settlement_status: status,
+                        provider_termination: None,
+                    },
+                    RelayProjectedCompletion {
+                        message_id: "unscoped-other-turn".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms() + 2000,
+                        home_prompt_id: None,
+                        settlement_status: Some(if status == Some(Status::Cancelled) {
+                            Status::Failed
+                        } else {
+                            Status::Cancelled
+                        }),
+                        provider_termination: Some(
+                            crate::provider::ProviderRunTermination::runtime_failure(
+                                "unscoped receipt must not own this prompt",
+                                crate::session::unix_epoch_ms() + 2000,
+                            ),
+                        ),
+                    },
+                ]
             } else {
                 vec![]
             },
@@ -420,6 +439,13 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                     .id(),
                 successor.id()
             );
+        }
+        if boundary == "cleanup" && final_page {
+            // A successor may already start before an old journal cleanup retry.
+            app.agents
+                .set_agent_state(agent.id(), crate::agent::AgentState::Working)
+                .unwrap();
+            app.save_durable_state_snapshot().unwrap();
         }
         connection
             .execute_batch("DROP TRIGGER fail_home_receipt")
@@ -487,6 +513,10 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 .projection_for_prompt(session.id(), agent.id(), original.id())
                 .expect("restart restores the exact runtime settlement");
             assert_eq!(settled.settlement_status, status.unwrap());
+            assert!(
+                settled.provider_termination.is_none(),
+                "only the accepted worker outcome may be restored"
+            );
         }
         let settlements = history
             .iter()
@@ -529,6 +559,13 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                     .as_deref(),
                 Some("run"),
                 "ready journal must retain the running native binding after restart"
+            );
+        }
+        if boundary == "cleanup" && final_page {
+            assert_ne!(
+                app.agents.get_agent(agent.id()).unwrap().state(),
+                crate::agent::AgentState::Error,
+                "old failed receipt must not mark a successor Error"
             );
         }
         let duplicate = RemoteLeaseRuntime::new(&mut app)

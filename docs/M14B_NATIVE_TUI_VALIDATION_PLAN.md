@@ -568,3 +568,5 @@ alone does not establish this live acceptance. Run the separate lost-page-ACK
 cell without the home receipt-write fault; prove the home-applied/worker-unacked
 sequence gap and single history/settlement after re-ACK. Clean up exact owned
 processes, temporary provider copies, network controls and stack.
+
+MP-08 / MP-10 / MP-11 workflow repeat: interrupt receipt/result saves on a failed workflow page, reopen both real stores, and require the exact node failure and one failure event to survive. Workflow transitions must commit before the page result becomes ready; replay must skip a node already terminal without replaying handoffs or failure events.

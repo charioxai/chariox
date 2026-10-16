@@ -1,7 +1,7 @@
 //! Worker-local projection bookkeeping. No fields here are part of the relay protocol.
 mod application;
 mod delivery;
-pub(crate) use application::HomeProjectionResult;
+pub(crate) use application::{HomeProjectionResult, HomeProjectionSettlement};
 mod tools;
 pub(crate) use tools::{tool_identity, ProjectedToolState};
 
