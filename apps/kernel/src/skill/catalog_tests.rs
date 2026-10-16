@@ -479,6 +479,30 @@ fn service_install(
     (service, published)
 }
 #[test]
+fn skills_v2_cold_start_explicit_body_fits_the_supported_context_floor() {
+    let f = StorageFixture::new();
+    let body = "x".repeat(24_000);
+    let (service, _) = service_install(
+        &f,
+        &format!("---\nname: big\ndescription: |\n  Large reference skill.\n---\n{body}\n"),
+    );
+    // No provider usage yet: no window, no context tokens, 4 KB already carried.
+    let remaining = super::resolver::remaining_turn_budget(None, None, 4_096);
+    let turn = service
+        .pinned_turn(
+            None, "agent1", "session1", "Use $big", &[], &[], None, 1.0, remaining, "g1",
+        )
+        .unwrap();
+    assert!(turn.loaded[0].body.len() > 24_000);
+    // A smaller reported window still bounds the same body.
+    let small = super::resolver::remaining_turn_budget(Some(16_000), Some(1_000), 4_096);
+    assert!(service
+        .pinned_turn(
+            None, "agent1", "session1", "Use $big", &[], &[], Some(16_000), 1.0, small, "g1",
+        )
+        .is_err());
+}
+#[test]
 fn skills_v2_prepared_bytes_and_dispatch_revision_are_pinned() {
     let f = StorageFixture::new();
     let (service, set) = service_install(

@@ -173,17 +173,16 @@ impl SkillPromptBridge for SkillDispatchService {
             .map(|inventory| inventory.entries.as_slice())
             .unwrap_or_default();
         let usage = run.usage();
-        let capacity = usage
-            .context_window
-            .unwrap_or(crate::skill::resolver::UNKNOWN_MODEL_CONTEXT_FLOOR);
         let attachment_bytes = envelope.attachments.iter().fold(0u64, |total, attachment| {
             total.saturating_add(attachment.contents_base64().map(str::len).unwrap_or(0) as u64)
         });
-        let remaining = capacity
-            .saturating_sub(usage.context_tokens.unwrap_or(0))
-            .saturating_sub(envelope.hidden_system_context.len() as u64)
-            .saturating_sub(envelope.visible_user_prompt.len() as u64)
-            .saturating_sub(attachment_bytes);
+        let remaining = crate::skill::resolver::remaining_turn_budget(
+            usage.context_window,
+            usage.context_tokens,
+            (envelope.hidden_system_context.len() as u64)
+                .saturating_add(envelope.visible_user_prompt.len() as u64)
+                .saturating_add(attachment_bytes),
+        );
         let generation = prompt
             .skill_turn_authority()
             .filter(|authority| authority.provider_run_id == run.id())

@@ -206,8 +206,10 @@ expose the effective setting in Skills details. Config reload uses the existing
 kernel settings path and refreshes the next turn. Count Chariox's rendered wrapper
 and metadata (not independent harness-native context) with
 the provider tokenizer where available, otherwise a conservative UTF-8 byte upper
-bound. Use the provider's known context capacity; if unknown, use a documented
-conservative supported floor and show the estimate. Never assume a larger window.
+bound. Use the provider's known context capacity; if unknown (a run's first
+turn, before the provider reports its window), use the documented supported floor
+of 128,000 tokens, the smallest window of any supported provider model, and show
+the estimate. Never assume a larger window.
 Prefer supplied short descriptions, then deterministically shorten descriptions
 at token boundaries. If all Auto name/description pairs cannot fit, include a
 bounded discovery instruction plus a stable paged `list_skills` cursor; disclose

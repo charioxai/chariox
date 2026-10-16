@@ -5,9 +5,22 @@ use super::{
 };
 use crate::error::DaemonError;
 
-/// Unknown model capacity uses 8K, a conservative supported floor. UTF-8 bytes
-/// are a token upper bound; provider adapters may replace it with a tokenizer.
-pub const UNKNOWN_MODEL_CONTEXT_FLOOR: u64 = 8_192;
+/// Before a run reports its model window (cold start), capacity is the smallest
+/// window of any supported provider model (128K), never a larger guess. UTF-8
+/// bytes are a token upper bound; provider adapters may replace it with a tokenizer.
+pub const UNKNOWN_MODEL_CONTEXT_FLOOR: u64 = 128_000;
+
+/// Context left for selected skill bodies after what the turn already carries.
+pub(crate) fn remaining_turn_budget(
+    context_window: Option<u64>,
+    context_tokens: Option<u64>,
+    carried_bytes: u64,
+) -> u64 {
+    context_window
+        .unwrap_or(UNKNOWN_MODEL_CONTEXT_FLOOR)
+        .saturating_sub(context_tokens.unwrap_or(0))
+        .saturating_sub(carried_bytes)
+}
 
 pub fn effective_state(skill: &SkillRecord, project_override: Option<SkillState>) -> SkillState {
     project_override
