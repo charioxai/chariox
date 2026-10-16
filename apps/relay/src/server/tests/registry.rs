@@ -432,7 +432,7 @@ fn relay_aliases_differentiate_kernels_on_same_machine() {
     assert_eq!(machines.len(), 1);
     assert_eq!(machines[0].machine_id, "shared-machine");
     assert_eq!(machines[0].kernel_count, 2);
-    assert_eq!(machines[0].machine_alias.as_deref(), Some("shared-machine"));
+    assert_eq!(machines[0].machine_alias.as_deref(), Some("macOS computer"));
 
     let kernels = registry.live_kernels_for_machine("shared-machine");
     assert_eq!(kernels.len(), 2);
@@ -613,16 +613,16 @@ fn registered_machine_name_is_shared_by_every_presence_projection() {
     }
 }
 
-// MP-08 / MP-11: unnamed machines retain an identity-based label across reloads.
+// MP-08 / MP-11: an unnamed machine shows a plain label, never its raw machine id.
 #[test]
-fn unnamed_machine_label_does_not_depend_on_inventory_order() {
+fn unnamed_machine_label_is_friendly_and_does_not_depend_on_inventory_order() {
     let mut registry = RelayRegistry::default();
     let mut registration = test_registration("kernel-a", "stable-machine-id", "Linux", 20);
     registration.machine_alias = Some("   ".into());
     insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, registration, 11004);
     assert_eq!(
         registry.live_machines()[0].machine_alias.as_deref(),
-        Some("stable-machine-id")
+        Some("Linux computer")
     );
     assert_eq!(
         registry
@@ -630,6 +630,24 @@ fn unnamed_machine_label_does_not_depend_on_inventory_order() {
             .unwrap()
             .machine_alias
             .as_deref(),
-        Some("stable-machine-id")
+        Some("Linux computer")
+    );
+    let mut nameless = test_registration("kernel-b", "other-machine-id", "Linux", 10);
+    nameless.os_name = None;
+    insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, nameless, 11005);
+    let label = |machine_id: &str| {
+        registry
+            .live_machines()
+            .into_iter()
+            .find(|machine| machine.machine_id == machine_id)
+            .and_then(|machine| machine.machine_alias)
+    };
+    assert_eq!(
+        label("other-machine-id").as_deref(),
+        Some("Unnamed computer")
+    );
+    assert_eq!(
+        label("stable-machine-id").as_deref(),
+        Some("Linux computer")
     );
 }
