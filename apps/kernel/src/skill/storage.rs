@@ -20,7 +20,7 @@ pub struct SkillCatalogStorage {
 }
 
 impl SkillCatalogStorage {
-    pub fn new(home: &Path, durable: DurableKernelStateStore) -> Result<Self, DaemonError> {
+    fn unclaimed(home: &Path, durable: DurableKernelStateStore) -> Result<Self, DaemonError> {
         if !home.is_absolute() {
             return Err(failure(
                 "Skills v2 requires a resolved absolute CHARIOX_HOME",
@@ -28,13 +28,28 @@ impl SkillCatalogStorage {
         }
         let home = fs::canonicalize(home)
             .map_err(|_| failure("Chariox home must exist before loading skills"))?;
-        let storage = Self { home, durable };
-        // MP-08 / MP-10 / MP-11: JSON paths are home-wide while ordinary
-        // durable journals may be daemon-specific. Claim the existing home
-        // journal under the same publication lock before any catalog work.
+        Ok(Self { home, durable })
+    }
+    pub fn new(home: &Path, durable: DurableKernelStateStore) -> Result<Self, DaemonError> {
+        let storage = Self::unclaimed(home, durable)?;
         let _lock = storage.lock()?;
         super::home_journal::claim(&storage)?;
         Ok(storage)
+    }
+    /// The returned lock keeps global cleanup and catalog publication mutually
+    /// exclusive. Other journals only retire their own state after the owning
+    /// kernel completed global cleanup; they never rewrite its new workflows.
+    pub(crate) fn startup_scope(
+        home: &Path,
+        durable: DurableKernelStateStore,
+    ) -> Result<(Self, Option<File>, std::collections::BTreeSet<String>), DaemonError> {
+        let storage = Self::unclaimed(home, durable)?;
+        let lock = storage.lock()?;
+        if let Some(names) = super::home_journal::completed_foreign_reset(&storage)? {
+            return Ok((storage, None, names));
+        }
+        super::home_journal::claim(&storage)?;
+        Ok((storage, Some(lock), Default::default()))
     }
     pub(super) fn journal(&self) -> &DurableKernelStateStore {
         &self.durable

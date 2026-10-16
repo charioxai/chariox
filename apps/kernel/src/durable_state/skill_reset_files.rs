@@ -43,6 +43,11 @@ pub(super) fn collect(roots: &[LegacySkillRoot]) -> io::Result<Vec<OwnedSkillCop
             _ => {}
         }
         let root = fs::canonicalize(&source.path)?;
+        // Startup supplies canonical owned anchors. A symlink inserted under
+        // that anchor must not turn a product cache into a repository deletion.
+        if root != source.path {
+            return Err(refused());
+        }
         walk(
             &root,
             &root,
@@ -112,57 +117,125 @@ fn walk(
 }
 /// The caller journals this exact plan before invoking cleanup. A crash after
 /// SKILL.md was removed still retries the recorded directory, not discovery.
+fn verified_copy_path(copy: &OwnedSkillCopy) -> io::Result<Option<PathBuf>> {
+    if !copy.root.is_absolute() || copy.relative.as_os_str().is_empty() {
+        return Err(refused());
+    }
+    let root_metadata = fs::symlink_metadata(&copy.root)?;
+    if root_metadata.file_type().is_symlink()
+        || !root_metadata.is_dir()
+        || fs::canonicalize(&copy.root)? != copy.root
+    {
+        return Err(refused());
+    }
+    let mut path = copy.root.clone();
+    // Recheck every component at deletion, rejecting a swapped ancestor.
+    for part in copy.relative.components() {
+        let std::path::Component::Normal(part) = part else {
+            return Err(refused());
+        };
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(m) if !m.is_dir() || m.file_type().is_symlink() => return Err(refused()),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        }
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+        Ok(m) => m,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != copy.device
+            || metadata.ino() != copy.inode
+            || metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return Err(refused());
+        }
+    }
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(refused());
+    }
+    Ok(Some(path))
+}
+
 pub(super) fn remove(copies: &[OwnedSkillCopy]) -> io::Result<()> {
     for copy in copies {
-        if !copy.root.is_absolute() || copy.relative.as_os_str().is_empty() {
-            return Err(refused());
-        }
-        let root_metadata = fs::symlink_metadata(&copy.root)?;
-        if root_metadata.file_type().is_symlink()
-            || !root_metadata.is_dir()
-            || fs::canonicalize(&copy.root)? != copy.root
-        {
-            return Err(refused());
-        }
-        let mut path = copy.root.clone();
-        // Recheck every component at deletion, rejecting a swapped ancestor.
-        for part in copy.relative.components() {
-            let std::path::Component::Normal(part) = part else {
-                return Err(refused());
-            };
-            path.push(part);
-            match fs::symlink_metadata(&path) {
-                Ok(m) if !m.is_dir() || m.file_type().is_symlink() => return Err(refused()),
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => break,
-                Err(e) => return Err(e),
+        if let Some(path) = verified_copy_path(copy)? {
+            fs::remove_dir_all(&path)?;
+            if let Some(parent) = path.parent() {
+                fs::File::open(parent)?.sync_all()?;
             }
-        }
-        let metadata = match fs::symlink_metadata(&path) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-            Ok(m) => m,
-        };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if metadata.dev() != copy.device
-                || metadata.ino() != copy.inode
-                || metadata.uid() != unsafe { libc::geteuid() }
-            {
-                return Err(refused());
-            }
-        }
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(refused());
-        }
-        fs::remove_dir_all(&path)?;
-        if let Some(parent) = path.parent() {
-            fs::File::open(parent)?.sync_all()?;
         }
     }
     Ok(())
 }
+
+/// Capture names before deletion, then keep them in the same durable cleanup
+/// checkpoint. Missing SKILL.md after a partial deletion never loses the plan.
+pub(super) fn retired_names(
+    copies: &[OwnedSkillCopy],
+) -> io::Result<std::collections::BTreeSet<String>> {
+    use std::io::Read;
+    let mut names = std::collections::BTreeSet::new();
+    for copy in copies {
+        let Some(path) = verified_copy_path(copy)? else {
+            continue;
+        };
+        if copy.relative.components().count() == 1 {
+            if let Some(name) = copy.relative.file_name().and_then(|name| name.to_str()) {
+                if let Ok(name) = crate::skill::catalog::collision_key(name) {
+                    names.insert(name);
+                }
+            }
+        }
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = match options.open(path.join("SKILL.md")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(refused());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(refused());
+            }
+        }
+        const MAX_BYTES: u64 = 10 * 1024 * 1024;
+        if metadata.len() > MAX_BYTES {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err(refused());
+        }
+        if let Ok(text) = String::from_utf8(bytes) {
+            if let Ok(metadata) = crate::skill::frontmatter::parse_frontmatter(&text) {
+                if let Ok(name) = crate::skill::catalog::collision_key(&metadata.name) {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,7 +251,7 @@ mod tests {
                     .as_nanos()
             ));
             fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(fs::canonicalize(path).unwrap())
         }
         fn package(&self, relative: &str) -> PathBuf {
             let p = self.0.join(relative);
@@ -261,5 +334,38 @@ mod tests {
         let recovered: Vec<OwnedSkillCopy> = serde_json::from_str(&journal).unwrap();
         remove(&recovered).unwrap();
         assert!(!old.exists());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn skill_reset_files_refuses_a_symlink_above_the_selected_root() {
+        let root = std::env::temp_dir().join(format!(
+            "skillsk-reset-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        std::fs::create_dir_all(root.join("product")).unwrap();
+        std::fs::create_dir_all(root.join("unrelated/cache/review")).unwrap();
+        std::fs::write(
+            root.join("unrelated/cache/review/SKILL.md"),
+            "preserve source",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(root.join("unrelated"), root.join("product/state")).unwrap();
+        let result = collect(&[LegacySkillRoot {
+            path: root.join("product/state/cache"),
+            kind: LegacySkillRootKind::Installed,
+        }]);
+        let preserved = root.join("unrelated/cache/review/SKILL.md").exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            result.is_err(),
+            "symlinked ancestors cannot authorize a deletion plan"
+        );
+        assert!(preserved);
     }
 }

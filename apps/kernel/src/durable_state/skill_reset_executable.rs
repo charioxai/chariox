@@ -9,7 +9,7 @@ fn remember(name: &str, names: &mut BTreeSet<String>) {
     }
 }
 
-pub(super) fn collect_names(value: &Value, names: &mut BTreeSet<String>) {
+pub(crate) fn collect_names(value: &Value, names: &mut BTreeSet<String>) {
     match value {
         Value::Array(values) => values.iter().for_each(|value| collect_names(value, names)),
         Value::Object(fields) => {
@@ -78,7 +78,7 @@ pub(super) fn capture_replay_names(
     Ok(())
 }
 
-pub(super) fn load_names(connection: &rusqlite::Connection) -> rusqlite::Result<BTreeSet<String>> {
+pub(crate) fn load_names(connection: &rusqlite::Connection) -> rusqlite::Result<BTreeSet<String>> {
     use rusqlite::OptionalExtension;
     let encoded: Option<String> = connection.query_row(
         "SELECT metadata_value FROM durable_state_metadata WHERE owner_id='skills-v2' AND metadata_key='retired_names'",
@@ -100,7 +100,7 @@ pub(super) fn load_names(connection: &rusqlite::Connection) -> rusqlite::Result<
 /// The definition stays usable after removing instructions; a binding to old
 /// generated launch code cannot attest the rewritten definition. Source files
 /// are regenerated separately by the normal workflow-code publisher.
-pub(super) fn retire_definition(value: &mut Value, names: &BTreeSet<String>) {
+pub(crate) fn retire_definition(value: &mut Value, names: &BTreeSet<String>) {
     if let Some(values) = value.as_array_mut() {
         values
             .iter_mut()

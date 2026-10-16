@@ -55,6 +55,7 @@ mod owner;
 pub(crate) mod room_environment;
 pub(crate) mod skill_reset;
 pub(crate) mod skill_reset_fence;
+mod skill_reset_startup;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
@@ -77,6 +78,7 @@ pub struct DurableKernelStateStore {
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<owner::OwnerLease>>,
+    skill_catalog_owner: bool,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -333,6 +335,28 @@ pub(crate) struct DurableCheckpointEntity {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn open_kernel_owned(
+        config: &crate::config::DaemonConfig,
+    ) -> Result<Self, DaemonError> {
+        let mut store = Self::open_owned(config.durable_state_path())?;
+        let mut connection =
+            Connection::open(store.path()).map_err(|_| DaemonError::LocalTransport {
+                operation: "skills.v2.reset",
+                message: "cannot open the owned startup connection".into(),
+            })?;
+        skill_reset_fence::register_writer(&connection).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "skills.v2.reset",
+                message: "cannot configure the owned startup writer".into(),
+            }
+        })?;
+        store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        Ok(store)
+    }
+    pub(crate) fn owns_skill_catalog(&self) -> bool {
+        self.skill_catalog_owner
+    }
+
     pub(crate) fn open_owned(path: PathBuf) -> Result<Self, DaemonError> {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
@@ -435,6 +459,7 @@ impl DurableKernelStateStore {
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
             app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
+            skill_catalog_owner: false,
         })
     }
 

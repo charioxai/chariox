@@ -279,7 +279,7 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_kernel_owned(&config)?;
         let worker_prompt_receipts =
             crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
                 durable_state.clone(),

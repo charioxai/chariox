@@ -8,6 +8,10 @@ mod executable;
 mod files;
 #[path = "skill_reset_publications.rs"]
 mod publications;
+pub(crate) use executable::{
+    collect_names as collect_retired_skill_names, load_names as retired_skill_names,
+    retire_definition as retire_workflow_skill_references,
+};
 pub(crate) use files::{LegacySkillRoot, LegacySkillRootKind};
 
 const REPLAY_TABLES: &[(&str, &str)] = &[
@@ -25,6 +29,7 @@ const REPLAY_TABLES: &[(&str, &str)] = &[
 pub(crate) fn reset(
     connection: &mut Connection,
     roots: &[LegacySkillRoot],
+    external_names: &std::collections::BTreeSet<String>,
 ) -> rusqlite::Result<()> {
     use rusqlite::{params, OptionalExtension, TransactionBehavior};
     connection.pragma_update(None, "synchronous", "FULL")?;
@@ -35,7 +40,7 @@ pub(crate) fn reset(
         ).optional()?;
         if previous.as_deref() == Some("complete") {
             tx.rollback()?;
-            return initialize(connection);
+            return initialize_with_names(connection, external_names);
         }
         let plan: Vec<files::OwnedSkillCopy> = match previous {
             Some(encoded) => {
@@ -48,19 +53,32 @@ pub(crate) fn reset(
         tx.commit()?;
         plan
     };
-    initialize(connection)?;
+    let mut names = files::retired_names(&plan).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    names.extend(external_names.iter().cloned());
+    initialize_with_names(connection, &names)?;
+    crate::logging::info_with_fields(
+        "skills.v2.reset",
+        "retired durable skill authority; removing owned legacy copies",
+        serde_json::json!({"phase":"authority_complete","cleanup_target_count":plan.len()}),
+    );
     files::remove(&plan).map_err(|_| rusqlite::Error::InvalidQuery)?;
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute("UPDATE durable_state_metadata SET metadata_value=?1 WHERE owner_id=?2 AND metadata_key='filesystem_reset'", params!["complete","skills-v2"])?;
     tx.commit()
 }
 
-/// Called with the owning startup connection, before the durable writer starts.
+/// Called with the owning startup connection while runtime admission is closed.
 /// Existing events and all checkpoint generations are retired in one FULL-sync
 /// SQLite transaction, so an older checkpoint cannot resurrect a grant on retry.
 /// Filesystem cleanup and startup admission are a separate phase; callers must
 /// not mistake this authority checkpoint for completion of the whole reset.
 pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
+    initialize_with_names(connection, &std::collections::BTreeSet::new())
+}
+fn initialize_with_names(
+    connection: &mut Connection,
+    external_names: &std::collections::BTreeSet<String>,
+) -> rusqlite::Result<()> {
     use rusqlite::{params, OptionalExtension, TransactionBehavior};
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let complete: Option<String> = tx.query_row(
@@ -86,6 +104,7 @@ pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
     // Only replayable kernel-owned stores. No App data, credentials, Vault,
     // provider history or transcript database is traversed.
     let mut names = executable::load_names(&tx)?;
+    names.extend(external_names.iter().cloned());
     executable::capture_replay_names(&tx, &mut names)?;
     tx.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms) VALUES('skills-v2','retired_names',?1,0) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value",[serde_json::to_string(&names).map_err(|_| rusqlite::Error::InvalidQuery)?])?;
     for &(table, kind_column) in REPLAY_TABLES {
@@ -338,7 +357,7 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir(&root).unwrap();
-            Self(root)
+            Self(std::fs::canonicalize(root).unwrap())
         }
         fn roots(&self) -> Vec<LegacySkillRoot> {
             vec![LegacySkillRoot {
@@ -367,13 +386,13 @@ mod tests {
         )
         .unwrap();
         std::fs::remove_file(path.join("SKILL.md")).unwrap();
-        reset(&mut db, &root.roots()).unwrap();
+        reset(&mut db, &root.roots(), &Default::default()).unwrap();
         assert!(!path.exists());
         // New v2 data is outside the retired layout and survives the marker.
         let new = root.0.join("skills/packages/skill-v2/digest");
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join("SKILL.md"), "new").unwrap();
-        reset(&mut db, &root.roots()).unwrap();
+        reset(&mut db, &root.roots(), &Default::default()).unwrap();
         assert!(new.join("SKILL.md").exists());
     }
     #[test]
@@ -392,7 +411,7 @@ mod tests {
         .unwrap();
         std::fs::rename(&path, root.0.join("original")).unwrap();
         std::os::unix::fs::symlink(root.0.join("original"), &path).unwrap();
-        assert!(reset(&mut db, &root.roots()).is_err());
+        assert!(reset(&mut db, &root.roots(), &Default::default()).is_err());
         let marker:String=db.query_row("SELECT metadata_value FROM durable_state_metadata WHERE metadata_key='filesystem_reset'",[],|r|r.get(0)).unwrap();
         assert_ne!(marker, "complete");
         assert!(root.0.join("original/SKILL.md").exists());

@@ -168,3 +168,60 @@ pub(super) fn verify(storage: &SkillCatalogStorage) -> Result<(), DaemonError> {
     }
     Ok(())
 }
+
+/// MP-08 / MP-10 / MP-11: a named daemon must not apply its old names to
+/// another journal's already upgraded global packages or workflow artifacts.
+/// The owner is read only for this bounded cleanup certificate, never sessions.
+pub(super) fn completed_foreign_reset(
+    storage: &SkillCatalogStorage,
+) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
+    let directory = storage.directory(Path::new("state/skills"))?;
+    let Some(binding) = file_pin(&directory.join(FILE))? else {
+        return Ok(None);
+    };
+    let journal = fs::canonicalize(storage.journal().path())
+        .map_err(|_| failure("cannot resolve the Skills home journal"))?;
+    if binding.journal == journal {
+        return Ok(None);
+    }
+    if binding.schema != 2
+        || binding.home != storage.home()
+        || binding.id.is_empty()
+        || !binding.journal.is_absolute()
+        || fs::canonicalize(&binding.journal).ok().as_ref() != Some(&binding.journal)
+    {
+        return Err(failure(
+            "invalid Skills home ownership; recover the owning kernel",
+        ));
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        &binding.journal,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|_| {
+        failure("the Skills home owner is unavailable; restore its journal before retrying startup")
+    })?;
+    use rusqlite::OptionalExtension;
+    let encoded:Option<String>=connection.query_row(
+        "SELECT payload_json FROM durable_state_events WHERE kind=?1 AND subject_id=?2 ORDER BY sequence DESC LIMIT 1",
+        [KIND,SUBJECT],|row|row.get(0)).optional().map_err(|_|failure("cannot verify the Skills home owner"))?;
+    let pinned: HomeJournal = encoded
+        .and_then(|encoded| serde_json::from_str(&encoded).ok())
+        .ok_or_else(|| failure("cannot verify the Skills home owner"))?;
+    if pinned != binding {
+        return Err(failure(
+            "Skills home ownership changed; recover the owning kernel",
+        ));
+    }
+    let complete:i64=connection.query_row(
+        "SELECT count(*) FROM durable_state_metadata WHERE owner_id='skills-v2' AND ((metadata_key='writer_epoch' AND metadata_value='2') OR (metadata_key='executable_reference_reset' AND metadata_value='complete') OR metadata_key='retired_names')",
+        [],|row|row.get(0)).map_err(|_|failure("cannot verify the Skills home reset"))?;
+    if complete != 3 {
+        return Err(failure(
+            "the owning kernel must finish Skills cleanup before this kernel can start",
+        ));
+    }
+    crate::durable_state::skill_reset::retired_skill_names(&connection)
+        .map(Some)
+        .map_err(|_| failure("cannot verify retired names from the Skills home owner"))
+}

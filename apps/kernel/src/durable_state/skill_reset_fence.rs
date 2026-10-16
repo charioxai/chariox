@@ -32,6 +32,8 @@ pub(super) fn arm(connection: &mut Connection) -> rusqlite::Result<()> {
     for key in [
         "authority_reset",
         "filesystem_reset",
+        "publication_reference_reset",
+        "executable_database_reset",
         "executable_reference_reset",
     ] {
         let status: Option<String> = tx.query_row(
@@ -62,6 +64,17 @@ pub(super) fn arm(connection: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+/// Runtime readiness is a durable startup certificate, not protocol support.
+impl crate::durable_state::DurableKernelStateStore {
+    pub(crate) fn skills_v2_reset_complete(&self) -> Result<bool, crate::error::DaemonError> {
+        let connection = self.lock_connection("skills.v2.reset_status")?;
+        let count:i64=connection.query_row(
+            "SELECT count(*) FROM durable_state_metadata WHERE owner_id='skills-v2' AND ((metadata_key IN ('authority_reset','filesystem_reset','publication_reference_reset','executable_reference_reset') AND metadata_value='complete') OR (metadata_key='writer_epoch' AND metadata_value='2'))",
+            [],|row|row.get(0)).map_err(|_|crate::error::DaemonError::LocalTransport {operation:"skills.v2.reset_status",message:"cannot verify the Skills reset checkpoints".into()})?;
+        Ok(count == 5)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +99,8 @@ mod tests {
         for key in [
             "authority_reset",
             "filesystem_reset",
+            "publication_reference_reset",
+            "executable_database_reset",
             "executable_reference_reset",
         ] {
             connection
