@@ -156,7 +156,7 @@ pub(super) async fn admit(
             daemon_public_key,
         },
     )?;
-    if let Some((_pin, registration)) = initial {
+    if let Some((pin, registration)) = initial {
         // Composition has no second inbound-message boundary. Recheck token
         // expiry/revocation immediately before the ordinary route admission.
         verify_relay_token(
@@ -170,7 +170,7 @@ pub(super) async fn admit(
         )?;
         // Transport composition only: reuse every ordinary subscribe action,
         // target, identifier, caller, capacity and response-ownership check.
-        if handle_client_packet_route_envelope(
+        if handle_client_packet_route_envelope_with_target_pin(
             RelayEnvelope::ClientSubscribe {
                 request_id: registration.request_id,
                 subscription_id: registration.subscription_id,
@@ -187,6 +187,7 @@ pub(super) async fn admit(
             peer_addr,
             outgoing_tx,
             relay_request_counter,
+            Some(&pin),
         )
         .await?
         .should_break()

@@ -3963,7 +3963,10 @@ authority and the expected home key pin. It sends normal `ClientConnected`,
 rechecks expiry/revocation, then passes a normal `ClientSubscribe` with fixed
 `kernel_browser_display_resume` scope and null cursor to the existing route
 handler. Packet-route permission, identifiers, capacity, caller projection,
-response ownership and subscription cleanup remain there. Repeated combined
+response ownership and subscription cleanup remain there. The expected home
+key is rechecked in the transaction that selects the subscription sender, so
+a registration replaced after `ClientConnected` cannot receive the initial
+registration. Repeated combined
 connects and unnegotiated combined envelopes refuse. Normal `ClientConnect`
 continues to renew authorization without triggering a resume.
 
