@@ -364,6 +364,7 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     // r10final 1920x1080@2: the viewer shows only the live list; its stream keeps its size (no page copy below it).
     assert.equal(windows.auxiliaryState()[0].height, 88, "the live list's height");
     assert.equal(windows.auxiliaryRegion(grown).rect.height, 2 * OMNIBOX_LIST_HEIGHT, "the stream keeps its size");
+    windows.host.arbiter = { chromeFocus: { generation: windows.host.generation, window_generation: windows.bound.tabbed.window_generation } };
     windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
     const source = { isCurrent: grown.isCurrent, region: { window_region: windows.auxiliaryRegion(grown).rect } };
     assert.equal(await windows.inWindowCurrent(source, { x: 40, y: 80 }), true, "on the live list");
@@ -379,6 +380,7 @@ test("MP-08/MP-11 the omnibox dropdown drawn in the window is one more popup bel
     // Review #1016 P1: input re-reads the dropdown; a closed one retires before the next poll.
     windows.omnibox = ["visible", 103, 25, 1078, 90, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     const open = windows.auxiliary(windows.auxiliaryState()[0].auxiliary_id);
+    windows.host.arbiter = { chromeFocus: { generation: windows.host.generation, window_generation: windows.bound.tabbed.window_generation } };
     windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
     assert.equal(await windows.inWindowCurrent(open), true, "still open: admitted");
     windows.readOmnibox = async () => ["hidden", 103, 25, 1078, 1, 1110, 178];
@@ -500,6 +502,7 @@ test("MP-08/MP-11 a page region under in-window Chrome UI is known by geometry o
     windows.omnibox = ["hidden", 103, 25, 1078, 1, 1110, 178]; windows.refreshAuxiliary([tabbed]);
     assert.equal(windows.inWindowOver(video), false, "closed");
     // r10 union2: Chrome paints the list before the 150 ms poll sees it; a readback checks it live.
+    windows.host.arbiter = { chromeFocus: { generation: windows.host.generation, window_generation: windows.bound.tabbed.window_generation } };
     windows.readOmnibox = async () => ["visible", 103, 25, 1078, 90, 1110, 178];
     assert.equal(windows.inWindowOver(video), false, "the poll has not seen it");
     assert.equal(await windows.inWindowOverNow(video), true, "the live read has");
@@ -553,3 +556,25 @@ for (const physical of [false,true]) test(`MP-11 a document retired during physi
  await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});
  assert.deepEqual(sent,[],'no key uses a retired physical focus proof');
 });
+
+// MP-08/MP-10/MP-11 review#1023: no steady-state CDP/auxiliary mutation per page frame.
+for (const bound of [false, true]) test(`MP-10 region occlusion skips Chrome reads without UI focus bound=${bound}`, async () => {
+  const host = { generation: 3, arbiter: { chromeFocus: null } }, windows = new ChromeWindows(host)
+  windows.bound = bound ? { tabbed: { isCurrent: () => true, window_generation: 7, scale: 1 }, auxiliary: [] } : null
+  let reads = 0, refreshes = 0
+  windows.readOmnibox = async () => { reads++; return ["hidden"] }
+  windows.refreshAuxiliary = () => { refreshes++ }
+  assert.equal(await windows.inWindowOverNow({ left: 0, top: 100, width: 20, height: 20 }), false)
+  assert.equal(reads, 0); assert.equal(refreshes, 0)
+})
+
+test("MP-11 concurrent occlusion probes share a focused read and never mutate window bindings", async () => {
+  const host = { generation: 3, arbiter: { chromeFocus: { generation: 3, window_generation: 7 } } }, windows = new ChromeWindows(host)
+  windows.bound = { tabbed: { isCurrent: () => true, window_generation: 7, scale: 1, bounds: { x: 0, y: 0, width: 1280, height: 887 }, page_rect: { top: 87 } }, auxiliary: [] }
+  let reads = 0, refreshes = 0, release
+  const gate = new Promise(resolve => { release = resolve })
+  windows.readOmnibox = async () => { reads++; await gate; return ["hidden"] }
+  windows.refreshAuxiliary = () => { refreshes++ }
+  const rect = { left: 0, top: 100, width: 20, height: 20 }, pending = [windows.inWindowOverNow(rect), windows.inWindowOverNow(rect)]
+  release(); assert.deepEqual(await Promise.all(pending), [false, false]); assert.equal(reads, 1); assert.equal(refreshes, 0)
+})

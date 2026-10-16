@@ -1017,3 +1017,18 @@ test('MP-10 empty-document hold never releases a head-only continuation',async()
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
  }finally{await page.close();}
 });
+
+// MP-08/MP-10/MP-11 review#1023: a transient refusal must allow the same visible selection again.
+test('MP-11 a refused selection can be settled again without changing its range', async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The witness has called'}])));
+  const result=await page.evaluate(async()=>{
+   let calls=0;window.r.send=async action=>{if(action.kind==='selection'&&++calls===1)throw Error('transient refusal')};
+   const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild;d.getSelection().setBaseAndExtent(t,0,t,t.length);
+   const first=await window.r.settleInput().then(()=>null,e=>e.message);
+   const second=await window.r.settleInput().then(()=>null,e=>e.message);
+   return {first,second,calls,range:d.getSelection().toString()};
+  });
+  assert.equal(result.first,'MP-10: mirror selection refused');assert.equal(result.second,null);assert.equal(result.calls,2);assert.equal(result.range,'The witness has called');
+ }finally{await page.close()}
+});

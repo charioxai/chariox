@@ -222,19 +222,31 @@ export class ChromeWindows {
   }
   /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
    * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
-  inWindowOver(rect) {
-    const tabbed = this.bound?.tabbed, live = this.omniboxLive, scale = tabbed?.scale;
+  inWindowOver(rect, live = this.omniboxLive) {
+    const tabbed = this.bound?.tabbed, scale = tabbed?.scale;
     // The list's stream is taller than a short list: only the live list covers the page.
     const over = b => !!b && b.x < rect.left + rect.width && rect.left < b.x + b.width && b.y < rect.top + rect.height && rect.top < b.y + b.height;
-    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && over(omnibox
-      ? live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}
-      : {x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height}));
+    return !!tabbed?.isCurrent() && (over(live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}) ||
+      this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && !omnibox &&
+        over({x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height})));
   }
   /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
   async inWindowOverNow(rect) {
-    this.omnibox = await this.readOmnibox();
-    this.refreshAuxiliary(this.rows);
-    return this.inWindowOver(rect);
+    const binding = this.bound?.tabbed, focus = this.host.arbiter?.chromeFocus;
+    if (!binding?.isCurrent()) return false;
+    // Steady page frames use the shared watcher. Chrome-UI input is the narrow
+    // interval in which a dropdown can paint before that watcher observes it.
+    if (!focus || focus.generation !== this.host.generation || focus.window_generation !== binding.window_generation) return this.inWindowOver(rect);
+    const read = this.occlusionRead?.binding === binding ? this.occlusionRead :
+      (this.occlusionRead = {binding, promise: this.readOmnibox()});
+    let state;
+    try { state = await read.promise; } finally { if (this.occlusionRead === read) this.occlusionRead = null; }
+    if (this.bound?.tabbed !== binding || !binding.isCurrent()) return false;
+    // A capture probe observes geometry; auxiliary publication/retirement stays
+    // on the watcher/input paths rather than mutating bindings inside readback.
+    const live = omniboxPopupRect(state, binding.bounds.x / binding.scale, binding.bounds.y / binding.scale,
+      binding.page_rect.top / binding.scale, binding.bounds.width / binding.scale, binding.bounds.height / binding.scale);
+    return this.inWindowOver(rect, live);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
   watch(read, interval = 150) {

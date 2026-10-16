@@ -137,7 +137,7 @@ export class BrowserMirror2Renderer {
         const replied:Promise<void> = Promise.resolve().then(() => {
           if (!this.disposed) return this.send(next.action, next.epoch, written)
         }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
-          .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
+          .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null; this.selectionSent = '' } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
             this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
@@ -643,9 +643,9 @@ export class BrowserMirror2Renderer {
       if (!this.pendingInputs && !this.pointerFocus && !this.focusHold && !this.pointerDown) {
         this.takeFocus(packet.focused)
         if (!this.selectionHold && !rangeRestored) {
-          // Once the kernel's selection clears (or moves to another document) its old range goes too.
-          // Only there: a viewer's own range the kernel never had stays, and so does a focused text
-          // control's range (removeAllRanges would collapse it).
+          // Once the local hold expires, the kernel's selection is authoritative,
+          // including a cleared range. A focused editing control keeps its own
+          // range because removeAllRanges would collapse its active selection.
           const s = packet.selection, a = s && this.dom.get(s.anchor_id), b = s && this.dom.get(s.focus_id), doc = a && b ? a.ownerDocument : null
           if (this.selectionDoc && this.selectionDoc !== doc && !this.editing(this.selectionDoc)) this.selectionDoc.getSelection()?.removeAllRanges()
           this.selectionSent = selectionKey
