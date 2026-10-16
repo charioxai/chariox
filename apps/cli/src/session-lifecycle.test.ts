@@ -8,6 +8,19 @@ import { createBaseDeps } from "./session-lifecycle.test-support.js"
 import type { ProviderPreferences } from "./preferences.js"
 import type { SessionListEntry } from "./sessions.js"
 
+test("MP-08 / MP-10 OWNER-24 clears the old session before a slow detach", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const { deps, calls } = createBaseDeps({ detachAttachment: () => pending })
+  const joining = createSessionLifecycleController(deps as never).attachBinding({ id: "next" }, false)
+  try {
+    assert.equal(calls.includes("clearTranscript"), true, "previous session output must disappear synchronously")
+    assert.equal(calls.includes("clearAgentPaneRuntime"), true)
+    assert.equal(calls.includes("requestRender"), true)
+  } finally { release() }
+  await assert.rejects(joining, /should not be called/)
+})
+
 test("attachBinding is a no-op when already attached to the target session", async () => {
   const { deps, calls } = createBaseDeps()
   const controller = createSessionLifecycleController(deps as never)

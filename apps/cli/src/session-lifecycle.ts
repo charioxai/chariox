@@ -250,8 +250,32 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     if (currentAttachment?.session_id === session.id) {
       return
     }
+    // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
+    // Move display ownership now, with no attachment or launch authority.
     if (currentAttachment) {
-      await detachCurrentAttachment()
+      const pending = deps.deriveDetachedCliTransitionState({
+        cliOptions: deps.cliOptions,
+        waitingRoomState: deps.waitingRoomState(),
+        message: `Loading session ${session.alias?.trim() || session.id}…`,
+      })
+      deps.setAttachmentState(null)
+      deps.setProviderRunState(null)
+      deps.setSessionState({ ...pending.session, ...session, active_prompt: null, queued_prompts: [], attachment_ids: [] })
+      deps.clearTranscript()
+      deps.clearAgentPaneRuntime()
+      deps.setAgentPaneEntries({})
+      deps.setAgentPanePreviews({})
+      deps.setAgentActivityLabels({})
+      deps.clearWorkflows()
+      deps.clearActiveToolLabels()
+      deps.clearDirectoryTree()
+      deps.resetWorkspaceScreen()
+      deps.setWorking(false)
+      deps.setSubmitting(false)
+      deps.setStreamingAgentId(null)
+      deps.setStatusLine(`Loading session ${session.alias?.trim() || session.id}…`)
+      deps.updateSessionChrome()
+      deps.requestRender()
     }
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
@@ -265,6 +289,13 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     deps.setSessionHydratingState(true)
     try {
+      if (currentAttachment) {
+        try {
+          await deps.detachAttachment(currentAttachment.id)
+        } catch (error) {
+          if (!formatError(error).includes(`attachment \`${currentAttachment.id}\` was not found`)) throw error
+        }
+      }
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
 
       const provisionalSession = isCompleteSessionSnapshot(session)
