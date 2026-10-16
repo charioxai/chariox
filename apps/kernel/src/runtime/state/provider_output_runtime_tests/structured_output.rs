@@ -819,6 +819,13 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
         .await
         .expect("structured output batch should be accepted");
     assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(
+            record.prompt_id.as_deref(),
+            Some(active_prompt.id()),
+            "live provider chunks must identify their kernel-owned prompt"
+        );
+    }
 
     let events = runtime
         .owned

@@ -81,6 +81,7 @@ pub struct TerminalOutputAppend {
     pub session_id: String,
     pub provider_run_id: String,
     pub agent_id: Option<String>,
+    pub prompt_id: Option<String>,
     pub prompt_origin: Option<PromptOrigin>,
     pub source_attachment_id: Option<String>,
     pub kind: TerminalOutputKind,
