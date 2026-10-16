@@ -17,13 +17,15 @@ async function fixture({ desktop, libraries }) {
   const bin = join(root, 'usr/bin')
   await mkdir(bin, { recursive: true })
   const put = async (path, body) => { await writeFile(path, body); await chmod(path, 0o755) }
-  const state = join(root, 'libraries-installed'), calls = join(root, 'apt-calls')
+  const state = join(root, 'libraries-installed'), calls = join(root, 'apt-calls'), updated = join(root, 'apt-updated')
   if (desktop) for (const name of ['Xvfb', 'openbox', 'bwrap', 'dbus-daemon', 'setxkbmap']) await put(join(bin, name), '#!/bin/sh\n')
   if (libraries) await writeFile(state, '')
   await put(join(bin, 'python3'), '#!/bin/sh\nexit 0\n')
-  await put(join(bin, 'apt-cache'), `#!/bin/sh\ncase "$2" in ${t64.map(name => `${name}t64`).join('|')}) exit 0 ;; *) exit 100 ;; esac\n`)
+  // A fresh image has empty package lists: apt-cache learns the archive only after `apt-get update`.
+  await put(join(bin, 'apt-cache'), `#!/bin/sh\n[ -e '${updated}' ] || exit 100\ncase "$2" in ${t64.map(name => `${name}t64`).join('|')}) exit 0 ;; *) exit 100 ;; esac\n`)
   await put(join(bin, 'apt-get'), `#!/bin/sh
 echo "$@" >> '${calls}'
+[ "$1" = update ] && : > '${updated}'
 if [ "$1" = install ]; then
   for name in Xvfb openbox bwrap dbus-daemon setxkbmap; do : > '${bin}'/$name; chmod 755 '${bin}'/$name; done
   : > '${state}'
@@ -34,7 +36,7 @@ fi
 }
 const run = f => spawnSync('bash', [script], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', CHARIOX_LOCAL_INSTALL_ROOT: f.root, CHARIOX_LOCAL_INSTALL_LDCONFIG: f.ldconfig } })
 
-test('a server image with the desktop tools but no Chromium libraries installs them (t64 names resolved)', async () => {
+test('a fresh server image with the desktop tools but no Chromium libraries and empty APT lists installs them (t64 names resolved after update)', async () => {
   const f = await fixture({ desktop: true, libraries: false })
   try {
     const result = run(f)

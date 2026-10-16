@@ -34,8 +34,9 @@ if [[ ! -x "$apt" ]]; then
   exit 1
 fi
 printf '[chariox-install] install system browser dependencies\n'
+# A fresh image has empty package lists: only after the update can apt-cache see the t64 names.
+DEBIAN_FRONTEND=noninteractive "$apt" update
 libraries=()
 for name in "${chromium_packages[@]}"; do libraries+=("$(resolve_package "$name")"); done
-DEBIAN_FRONTEND=noninteractive "$apt" update
 DEBIAN_FRONTEND=noninteractive "$apt" install -y --no-install-recommends python3-xlib python3-pil xvfb openbox bubblewrap dbus-daemon x11-xkb-utils "${libraries[@]}"
 probe && probe_libraries || { printf '[chariox-install] browser dependencies still missing after installation\n' >&2; exit 1; }
