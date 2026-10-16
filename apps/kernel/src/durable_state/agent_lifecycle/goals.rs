@@ -298,6 +298,12 @@ pub(super) fn evaluate(
         }
     } else {
         match assessment {
+        None if valid && t.goal.is_none() && !t.correction_used
+            && work_answer.as_deref().is_some_and(|answer| !answer.trim().is_empty())
+            && !t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            && serde_json::from_str::<serde_json::Value>(result).is_err() => {
+                again = continue_work(&mut t, "The completion check returned malformed JSON. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check");
+        }
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {

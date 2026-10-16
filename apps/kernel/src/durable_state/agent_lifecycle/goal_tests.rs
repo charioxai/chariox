@@ -1261,10 +1261,13 @@ fn r16_continue_with_public_reference_keeps_bounded_correction() {
     plain(&f);
     f.register();
     f.settle("p", true);
-    let t = check(&f, serde_json::json!({
-        "status":"continue", "reason":"Return the requested findings",
-        "evidence":["history:room:prompt:p"]
-    }));
+    let t = check(
+        &f,
+        serde_json::json!({
+            "status":"continue", "reason":"Return the requested findings",
+            "evidence":["history:room:prompt:p"]
+        }),
+    );
     assert_eq!(t.state, ExecutionState::Working, "{}", t.reason);
     assert!(t.correction_used);
     assert_eq!(t.obligations[0].status, "open");
@@ -1273,12 +1276,91 @@ fn r16_continue_with_public_reference_keeps_bounded_correction() {
 
 #[test]
 fn r16_continue_still_rejects_unknown_authority_or_invalid_reference_type() {
-    for extra in [serde_json::json!({"sudo":true}), serde_json::json!({"evidence":true})] {
+    for extra in [
+        serde_json::json!({"sudo":true}),
+        serde_json::json!({"evidence":true}),
+    ] {
         let f = Fixture::new();
         plain(&f);
         f.settle("p", true);
         let mut result = assessment("continue");
-        result.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        result
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         assert_eq!(check(&f, result).state, ExecutionState::Blocked);
+    }
+}
+
+// MP-08 / MP-10 / MP-11: real r22 Codex emitted a syntactically broken first
+// assessment after reporting and acknowledging the exact new child result.
+#[test]
+fn r22_malformed_plain_assessment_uses_one_bounded_correction() {
+    let malformed = r#"{"status":"continue","reason":"The tracked registration is inactive.",""}"#;
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: malformed.into(),
+        work_answer: Some(
+            "Fresh child timestamp, worker, HEAD and HTTP200; receipt handled".into(),
+        ),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    assert_eq!(
+        task.state,
+        ExecutionState::Working,
+        "a malformed advisory check cannot strand a complete plain answer"
+    );
+    assert!(correction && task.correction_used);
+    let correction_id = task.pending_prompt_id.unwrap();
+    assert_eq!(correction_id, "task-correction-p");
+    f.begin(&correction_id);
+    f.settle(&correction_id, true);
+    let task = check(&f, serde_json::json!({"invalid":"second assessment"}));
+    assert_eq!(task.state, ExecutionState::Done);
+    assert!(task.pending_prompt_id.is_none());
+    assert_eq!(task.completion_check.as_ref().unwrap().check_count, 2);
+    f.settle(&task.prompt_id, true);
+    assert_eq!(
+        f.task(),
+        task,
+        "duplicate settlement cannot add a correction"
+    );
+
+    for (is_goal, expired, answer) in [
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let f = Fixture::new();
+        if is_goal {
+            goal(&f, 1);
+        } else {
+            plain(&f);
+        }
+        f.settle("p", true);
+        let task = f.task();
+        let e = completion::evaluation(&task).unwrap();
+        let id = e.prompt_id.clone();
+        let now = if expired { e.deadline_ms + 1 } else { 4 };
+        f.begin(&id);
+        let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: id,
+            result: malformed.into(),
+            work_answer: answer.then(|| "public answer".into()),
+            now,
+        }) else {
+            panic!()
+        };
+        assert_eq!(task.state, ExecutionState::Blocked);
+        assert!(!correction && !task.correction_used);
     }
 }
