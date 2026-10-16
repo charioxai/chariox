@@ -29,7 +29,7 @@ When a serialized shape a client depends on changes:
 ## Runtime rules
 
 1. The kernel is the authority for sessions, agents, provider runs, workspaces, history and state. Put behaviour in the kernel and the shared protocol, not in one client.
-2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Chariox never stores provider credentials.
+2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (chariox `docs/PROVIDER_ACCOUNTS.md`).
 3. The relay only carries encrypted traffic. It never reads prompts, outputs or data, and never decides session state.
 4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
 5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
@@ -54,7 +54,7 @@ A change is done when it works on the real path a user takes: real kernel, relay
 ## State, secrets and safety
 
 - Keep local state in `~/.chariox/dev/<task>/` with `CHARIOX_HOME` set to it, and checkouts outside `~/.chariox`. Never put state, logs or test data in a repository.
-- Never print, copy or commit credentials, tokens or keys.
+- Never print, log or commit credentials, tokens or keys, and move them only through the product's account transfer.
 - Stop processes by exact PID, never by name.
 - Don't touch the reviewer's services and state (`~/.chariox-reviewer`).
 - Clean up what you started.
