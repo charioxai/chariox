@@ -67,6 +67,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
     attestationState:lease.attestationState,
     // The owner's fresh viewport query proves geometry and the active target
     // together; a second active() query repeats the same native admission.
+    cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>lease.isAlive()&&window.isPageCurrentCached(tab.target_id):undefined,
     isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent(tab.target_id)&&await lease.isCurrent()};
    args.occluded=async()=>await host.chromeWindows?.inWindowOverNow?.(args.rect)===true;
   }catch(error){await lease.close();throw error;}
@@ -82,6 +83,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
    const active=await host.arbiter?.activeTab?.();
    if(!active||typeof host.arbiter?.isActiveTab!=='function'||!await host.arbiter.isActiveTab(active,window))refuse();
    overlayTab=active;args.validateCurrent=async()=>current()&&await host.arbiter.isActiveTab(active,window);
+   if(host.tabGroups?.nativeStateSupported?.()===true)args.cachedCurrent=()=>current()&&host.tabGroups.cachedActive()===active.target_id;
   }
   const binding_id=`host-chrome-region-${randomUUID()}`;
   lease={binding_id,generation,document_id:`chrome-window-${generation}-${window.window_generation}${popup?`-${popup.auxiliary_id}`:''}`,sequence:window.window_generation,

@@ -113,10 +113,18 @@ export class ChromeWindows {
       if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
       return false;
     };
+    // MP-11: source publication still calls the fresh check above. Delivery
+    // can reuse its native snapshot until the extension/resize observer retires it.
+    const isPageCurrentCached=host.tabGroups?.nativeStateSupported?.()===true?target_id=>{
+      if(!isCurrent())return false;
+      const cached=host.tabGroups.cachedViewport();
+      if(!cached||(target_id!==undefined&&cached.target_id!==target_id))return false;
+      try{return JSON.stringify(nativePageRect(row,cached,scale))===JSON.stringify(pageRect)&&isCurrent();}catch{return false;}
+    }:undefined;
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent});
+      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;

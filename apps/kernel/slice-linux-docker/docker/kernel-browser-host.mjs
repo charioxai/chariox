@@ -159,6 +159,7 @@ export class KernelBrowserHost {
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
+    this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
@@ -192,7 +193,7 @@ export class KernelBrowserHost {
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection);
-      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
+      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
@@ -352,6 +353,7 @@ export class KernelBrowserHost {
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear();
+    this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }

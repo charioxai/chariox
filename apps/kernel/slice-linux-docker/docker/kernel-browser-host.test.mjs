@@ -1840,3 +1840,14 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
   assert.deepEqual(keys,[[97,false]]);assert.equal(sent.filter(call=>call.method==='Page.getFrameTree').length,0);
  }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));
+
+// MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
+test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
+ const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
+ await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,1,'failed extension load leaves only lockdown');
+ const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,2);
+ chromium.child.exitCode=1;await host.request({op:'start'});
+ assert.equal(groups.nativeState.closed,true);assert.equal(groups.nativeState.off,null);assert.equal(host.tabGroups,null);
+ assert.equal(handlers.size,1,'only lockdown remains after the unsupported extension reload; the retired native observer is gone');
+ await host.request({op:'stop'});assert.equal(handlers.size,0);
+}));
