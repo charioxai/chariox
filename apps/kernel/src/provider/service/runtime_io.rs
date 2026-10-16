@@ -229,13 +229,8 @@ impl ProviderProcessService {
         provider_run_id: String,
         agent_id: String,
         prompt_id: String,
-        origin_prompt_id: &str,
         run: &RuntimeProviderRun,
-        prompt: &str,
-        hidden_system_context: &str,
-        attachments: &[PromptAttachment],
-        mode: PromptAssemblyMode,
-        steering: bool,
+        envelope: crate::prompt_assembly::PromptEnvelope,
     ) -> Result<(), DaemonError> {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
             active_run.clear_terminal_diagnostic();
@@ -249,26 +244,6 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let mode = if mode == PromptAssemblyMode::MetaagentProviderTurn {
-            mode
-        } else if run.client_interface().is_chariox() {
-            PromptAssemblyMode::NormalProviderTurn
-        } else {
-            PromptAssemblyMode::NativeTuiProviderTurn
-        };
-        let hidden_system_context = format!(
-            "{hidden_system_context}\n\n{}",
-            crate::prompt_assembly::agent_message_origin_context(origin_prompt_id)
-        );
-        let envelope = PromptAssemblyService::from_env()?
-            .assemble_provider_turn(
-                run,
-                prompt,
-                Some(&hidden_system_context),
-                attachments.to_vec(),
-                mode,
-            )?
-            .with_steering(steering);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

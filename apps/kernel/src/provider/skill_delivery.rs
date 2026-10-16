@@ -10,6 +10,32 @@ use crate::{
     },
 };
 
+/// Kernel-owned instruction preparation before the existing provider mailbox.
+/// Implementations retain the ordinary catalog and prompt owners, never credentials.
+pub(crate) trait SkillPromptBridge: Send + Sync {
+    fn acknowledge_prompt(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError>;
+    fn acknowledge_tools(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        batch: &crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError>;
+    fn prepare(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        origin_prompt_id: &str,
+        envelope: &crate::prompt_assembly::PromptEnvelope,
+    ) -> Result<Option<ProviderSkillDelivery>, DaemonError>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSkillDelivery {
     pub visible_prompt: String,

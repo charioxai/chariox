@@ -56,12 +56,14 @@ pub fn inventory_for_run(
     let cwd = run
         .working_directory()
         .ok_or_else(|| failure("native inventory requires the actual provider cwd"))?;
+    let provider = crate::provider::canonical_provider_family(run.provider())
+        .ok_or_else(|| failure("unsupported native skill inventory provider"))?;
     let environment = run.native_skill_discovery_environment();
     if environment.is_empty() {
         return Err(failure("restored provider has no resolved launch inventory environment; refresh or reattach the provider"));
     }
     let binding = SkillInventoryBinding {
-        provider: run.provider().into(),
+        provider: provider.into(),
         provider_version: request.provider_version.into(),
         account_profile: run.account_profile().into(),
         execution_id: request.execution_id.into(),
@@ -81,7 +83,7 @@ pub fn inventory_for_run(
                 request.configured_skill_roots,
             )
         };
-        match run.provider() {
+        match provider {
             "codex" => CodexClient::new(
                 run.id(),
                 run.structured_endpoint()

@@ -10,7 +10,6 @@ use super::resolve_codex_executable;
 mod approval_bodies;
 mod auth;
 mod catalog;
-mod skills;
 mod health;
 mod interrupt_cleanup;
 mod json_rpc;
@@ -21,6 +20,7 @@ mod permission;
 mod runtime_mcp;
 mod runtime_trace;
 mod server_requests;
+mod skills;
 mod socket_io;
 mod thread_runtime;
 

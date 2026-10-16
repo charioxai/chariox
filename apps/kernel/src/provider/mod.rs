@@ -1,3 +1,5 @@
+mod skill_ack;
+pub use skill_ack::SkillToolDeliveryAcknowledgement;
 pub mod skill_delivery;
 pub mod skill_inventory;
 use std::time::Duration;
@@ -61,8 +63,8 @@ pub(crate) use claude::{
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 pub(crate) use claude::{
-    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    probe_claude_account_usage, probe_claude_skill_version, verify_claude_account_credential,
+    verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

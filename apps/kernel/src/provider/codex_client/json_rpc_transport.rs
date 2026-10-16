@@ -23,6 +23,29 @@ fn codex_websocket_config() -> WebSocketConfig {
 
 impl CodexClient {
     pub fn connect_initialized(&self) -> Result<CodexSocket, DaemonError> {
+        self.connect_initialized_with_info()
+            .map(|(socket, _)| socket)
+    }
+    // MP-08 / MP-10 / MP-11: identify the actual account-bound app-server,
+    // rather than probing an ambient CLI executable which may have changed.
+    pub(crate) fn native_skill_server_version(&self) -> Result<String, DaemonError> {
+        let (_, info) = self.connect_initialized_with_info()?;
+        info.get("userAgent")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.trim().is_empty()
+                    && value.len() <= 512
+                    && !value.chars().any(char::is_control)
+            })
+            .map(str::to_string)
+            .ok_or_else(|| {
+                self.protocol_error(
+                    "codex_skill_inventory_version",
+                    "app-server did not report a valid version identity".into(),
+                )
+            })
+    }
+    fn connect_initialized_with_info(&self) -> Result<(CodexSocket, Value), DaemonError> {
         let (mut socket, _) =
             connect_with_config(self.endpoint.as_str(), Some(codex_websocket_config()), 3)
                 .map_err(|error| self.protocol_error("codex_connect", error.to_string()))?;
@@ -31,8 +54,8 @@ impl CodexClient {
             Some(Duration::from_secs(10)),
             Some(Duration::from_secs(10)),
         )?;
-        self.initialize_socket(&mut socket)?;
-        Ok(socket)
+        let info = self.initialize_socket(&mut socket)?;
+        Ok((socket, info))
     }
 
     pub fn send_request<T: for<'de> Deserialize<'de>>(
@@ -230,7 +253,7 @@ impl CodexClient {
         }
     }
 
-    fn initialize_socket(&self, socket: &mut CodexSocket) -> Result<(), DaemonError> {
+    fn initialize_socket(&self, socket: &mut CodexSocket) -> Result<Value, DaemonError> {
         let initialize = json!({
             "jsonrpc": "2.0",
             "id": 0,
@@ -266,7 +289,7 @@ impl CodexClient {
         socket
             .send(Message::Text(initialized.to_string().into()))
             .map_err(|error| self.protocol_error("codex_initialized", error.to_string()))?;
-        Ok(())
+        Ok(message.result.expect("initialize result checked above"))
     }
 
     pub(super) fn read_next_message(
