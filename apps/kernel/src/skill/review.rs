@@ -15,6 +15,9 @@ use std::{
     path::Path,
 };
 
+#[path = "review_retention.rs"]
+mod retention;
+
 const REVIEW_KIND: &str = "skills.v2.review";
 const REVIEW_TTL_MS: u64 = 30 * 60 * 1000;
 struct PendingReview(Option<std::path::PathBuf>);
@@ -76,6 +79,7 @@ impl SkillCatalogService {
                 "a home owner identity is required for skill review",
             ));
         }
+        retention::sweep(self, crate::session::unix_epoch_ms())?;
         let prepared = self.prepare(mutation)?;
         let records: BTreeMap<_, _> = prepared
             .iter()
@@ -155,12 +159,14 @@ impl SkillCatalogService {
         receipt_id: &str,
     ) -> Result<SkillCatalogSet, crate::error::DaemonError> {
         let stored = self.checked_review(caller_user_id, mutation, receipt_id)?;
-        let root = self
-            .storage
-            .directory(&Path::new("state/skill-reviews").join(receipt_id))?;
+        let root = super::paths::existing_owned_directory(
+            self.storage.home(),
+            &Path::new("state/skill-reviews").join(receipt_id),
+        )?;
         let mut prepared = BTreeMap::<usize, (SkillRecord, CharioxSkillPackage)>::new();
         for (index, record) in &stored.prepared {
-            let source = self.storage.directory(
+            let source = super::paths::existing_owned_directory(
+                self.storage.home(),
                 &Path::new("state/skill-reviews")
                     .join(receipt_id)
                     .join(format!("member-{index}"))
@@ -195,6 +201,7 @@ impl SkillCatalogService {
         receipt_id: &str,
     ) -> Result<StoredReview, crate::error::DaemonError> {
         validate_id(receipt_id)?;
+        retention::sweep(self, crate::session::unix_epoch_ms())?;
         let events =
             self.storage
                 .journal()

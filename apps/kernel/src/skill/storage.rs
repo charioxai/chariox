@@ -167,7 +167,7 @@ impl SkillCatalogStorage {
         }
         Ok(())
     }
-    fn lock(&self) -> Result<File, DaemonError> {
+    pub(super) fn lock(&self) -> Result<File, DaemonError> {
         let directory = self.directory(Path::new("state/skills"))?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);

@@ -158,3 +158,70 @@ fn skills_v2_review_never_attests_a_caller_supplied_unresolved_revision() {
     assert!(error.to_string().contains("cannot attest a revision"));
     assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
 }
+
+// MP-08 / MP-10 / MP-11: staged instruction bytes have bounded review retention.
+fn expire_review(f: &Fixture, receipt: &SkillReviewReceipt) {
+    let store = DurableKernelStateStore::open(f.home.join("state.db")).unwrap();
+    let mut event = store
+        .load_subject_events_by_kind(&receipt.id, "skills.v2.review", 1)
+        .unwrap()
+        .pop()
+        .unwrap();
+    event.payload["receipt"]["expires_at_ms"] = serde_json::json!(0);
+    store
+        .append_event("skills.v2.review", Some(receipt.id.clone()), event.payload)
+        .unwrap();
+}
+#[test]
+fn skills_v2_review_next_preview_reclaims_expired_bytes_but_preserves_fresh_and_unrelated_paths() {
+    let f = Fixture::new();
+    let mutation = f.mutation();
+    let expired = f.preview(&mutation);
+    let fresh = f.preview(&mutation);
+    let base = f.home.join("state/skill-reviews");
+    let unrelated = base.join("operator-note");
+    fs::create_dir(&unrelated).unwrap();
+    fs::write(unrelated.join("keep"), "unrelated user data").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &f.source,
+        base.join("review-00000000000000000000000000000000"),
+    )
+    .unwrap();
+    expire_review(&f, &expired);
+    let next = f.preview(&mutation);
+    assert!(
+        !base.join(&expired.id).exists(),
+        "expired reviewed instruction bytes must be reclaimed"
+    );
+    assert!(base.join(&fresh.id).is_dir());
+    assert!(base.join(&next.id).is_dir());
+    assert_eq!(
+        fs::read_to_string(unrelated.join("keep")).unwrap(),
+        "unrelated user data"
+    );
+    assert_eq!(
+        fs::read_to_string(f.source.join("SKILL.md")).unwrap(),
+        FIRST
+    );
+    assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
+}
+#[test]
+fn skills_v2_review_expired_mutation_reclaims_its_bytes_without_publishing() {
+    let f = Fixture::new();
+    let mutation = f.mutation();
+    let expired = f.preview(&mutation);
+    expire_review(&f, &expired);
+    assert!(f
+        .service
+        .publish_reviewed("owner", &mutation, &expired.id)
+        .is_err());
+    assert!(
+        !f.home
+            .join("state/skill-reviews")
+            .join(&expired.id)
+            .exists(),
+        "an expired receipt must not keep staged bytes forever"
+    );
+    assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
+}
