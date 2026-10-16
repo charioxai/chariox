@@ -373,6 +373,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-readback.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-tab-state.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-viewport.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs \
