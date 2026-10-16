@@ -1,3 +1,4 @@
+import {NativeTabState,nativeWindowChangedBinding} from "./kernel-browser-native-tab-state.mjs";
 // MP-08/MP-11 (Miguel 2026-10-14 19:54Z): a built-in component extension of the
 // kernel's own Chromium groups each agent's Tabs in the native tab strip under the
 // agent's name; the person's Tabs stay ungrouped. The kernel writes it, loads it
@@ -12,6 +13,8 @@ const key = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwYnjYNb6F8Ak7OPn0a85KRh
 export const TAB_GROUPS_EXTENSION_ID = "ecideajikgeiboaphimcgeahicjgcfea";
 const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1", key, permissions: ["tabs", "tabGroups", "debugger"], background: { service_worker: "sw.js" } };
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
+const invalidateNativeState = () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.('');
+for (const event of [chrome.tabs.onActivated, chrome.tabs.onRemoved, chrome.tabs.onZoomChange, chrome.windows.onBoundsChanged, chrome.windows.onRemoved]) event?.addListener?.(invalidateNativeState);
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
@@ -81,7 +84,7 @@ const colors = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "ora
 const colorOf = label => colors[[...label].reduce((sum, c) => (sum * 31 + c.codePointAt(0)) >>> 0, 7) % colors.length];
 
 export class ChromeTabGroups {
-  constructor(connection) { this.connection = connection; this.session = null; this.signature = "[]"; }
+  constructor(connection) { this.connection = connection; this.session = null; this.signature = "[]"; this.nativeState=new NativeTabState(connection,()=>{this.session=null;}); }
   async load(directory) {
     const { id } = await this.connection.send("Extensions.loadUnpacked", { path: directory });
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");
@@ -96,31 +99,39 @@ export class ChromeTabGroups {
     }
     return null;
   }
-  async evaluate(expression) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (!this.session) {
-        // The person can remove or disable it in chrome://extensions (no policy locks an unpacked
-        // extension): the kernel installs it again (loading alone does not re-enable a disabled
-        // one) and re-sends the groups; until it is back, band input fails closed.
-        let worker = await this.worker(10);
-        if (!worker && this.directory) {
-          await this.connection.send("Extensions.uninstall", { id: TAB_GROUPS_EXTENSION_ID }).catch(() => {});
-          await this.load(this.directory); this.signature = "[]"; worker = await this.worker(40);
-        }
-        if (!worker) throw new Error("MP-11: kernel tab-groups extension unavailable");
-        this.session = (await this.connection.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true })).sessionId;
+  async ensureSession() {
+    if(this.nativeState.closed)throw Error('MP-11: native state observer closed');
+    if(this.session)return this.session;
+    return this.connecting??=(async()=>{
+      // Removal/disablement never revives a cached native owner snapshot.
+      let worker=await this.worker(10);
+      if(!worker&&this.directory){
+        await this.connection.send("Extensions.uninstall",{id:TAB_GROUPS_EXTENSION_ID}).catch(()=>{});
+        await this.load(this.directory);this.signature="[]";worker=await this.worker(40);
       }
-      try {
-        const { result, exceptionDetails } = await this.connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, this.session);
-        if (exceptionDetails) throw new Error("MP-11: kernel tab-groups extension failed");
-        return result?.value;
-      } catch (error) { this.session = null; if (attempt) throw error; }
+      if(!worker)throw Error("MP-11: kernel tab-groups extension unavailable");
+      const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
+      await this.nativeState.attach(sessionId);this.session=sessionId;return sessionId;
+    })().finally(()=>{this.connecting=null;});
+  }
+  async evaluate(expression,kind) {
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        const session=await this.ensureSession(),epoch=this.nativeState.epoch;
+        const {result,exceptionDetails}=await this.connection.send("Runtime.evaluate",{expression,awaitPromise:true,returnByValue:true},session);
+        if(exceptionDetails)throw Error("MP-11: kernel tab-groups extension failed");
+        this.nativeState.remember(kind,result?.value,epoch);return result?.value;
+      }catch(error){this.nativeState.detach();if(attempt)throw error;}
     }
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
-  active() { return this.evaluate("charioxTabs.active()"); }
-  /** Native Tab area in host pixels/DIPs; page emulation cannot supply it. */
-  viewport(target) { return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`); }
+  active(){return this.evaluate("charioxTabs.active()",'active');}
+  /** A target-specific read is geometry only, never active-Tab authority. */
+  viewport(target){return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`,target===undefined?'viewport':undefined);}
+  nativeStateSupported(){return this.nativeState.supported;}
+  cachedActive(){return this.nativeState.cachedActive();}
+  cachedViewport(){return this.nativeState.cachedViewport();}
+  close(){this.nativeState.close();}
   /** groups: [{target_ids, label}] — one native group per agent label. */
   async sync(groups) {
     const spec = groups.map(({ target_ids, label }) => ({ target_ids: [...target_ids].sort(), title: label, color: colorOf(label) }))

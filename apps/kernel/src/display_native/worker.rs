@@ -720,14 +720,10 @@ pub(super) fn run() -> Result<(), String> {
                         }
                     } else {
                         let plan = locked()?.exact(q, slot)?;
-                        // Input echo patches are bounded and latency-critical:
-                        // finish them here rather than behind queued repairs.
-                        if plan.patch {
-                            let value = plan.finish().unwrap_or_else(
-                                |_| json!({"error":"MP-11: exact preparation failed"}),
-                            );
-                            reply(id, value)?;
-                        } else if !exact.submit(id, plan)? {
+                        // MP-08/MP-10/MP-11: PNG work must not stall input or
+                        // readback. The plan owns its masked patch pixels;
+                        // the existing bounded worker finishes all exact jobs.
+                        if !exact.submit(id, plan)? {
                             reply(id, json!({"busy": true}))?;
                         }
                     }

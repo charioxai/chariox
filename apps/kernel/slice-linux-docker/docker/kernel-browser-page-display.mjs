@@ -38,7 +38,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};
   return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current},window,tab,policy,generation,Capture});
+   args:{window,viewport,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});
  });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live

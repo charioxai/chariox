@@ -123,3 +123,11 @@ for(const change of ['generation','window','cancellation'])test(`MP-08/MP-10/MP-
  f.stream.producer.waitReady=async()=>{if(change==='generation')host.generation++;else if(change==='window')window=false;else abort.abort()};
  await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1},abort.signal),change==='cancellation'?{code:'browser_action_cancelled'}:/region lease retired/);
 });
+
+test('MP-08/MP-10/MP-11 a native event retires cached delivery after asynchronous encoding without another query',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture();let cached=true,checks=0;
+ Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});f.stream.previous=null;
+ Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>assert.fail('delivery must not repeat the source query'),regionFrameCurrent:()=>{checks++;return cached}});
+ const host=regionCreditHost(f);host.compositorFor=async()=>{cached=false;return f.source};
+ assert.equal((await displayCredit(host,f.stream,{generation:1,after_sequence:1})).frame_sent,false);assert.equal(checks,1);
+});

@@ -18,7 +18,8 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   // Browser UI survives page navigation; the frame document is its window epoch.
   // A dialog overlay's frames belong to the window epoch too; its page document fences it separately.
   const sourceTab=chromeUi(target)?{...pageTab,document_id:lease.document_id}:pageTab;
-  source=new Capture({...args,validateCurrent,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
+  const {cachedCurrent,...captureArgs}=args;
+  source=new Capture({...captureArgs,validateCurrent,...(overlayTab?{pageDocument:overlayTab.document_id}:{}),display:host.chromium.display,pid:window.pid??host.chromium.browserPid??host.chromium.child?.pid,connection,sessionId,tab:sourceTab,scale,
    hostScale:host.chromium.scale??1,policy,browser:host.browser,frames:id=>host.browser.frameSession?.(id,connection),
    screenshot:()=>host.displayScreenshot(pageTab,null,false),allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,timing:host.timing});
   source.captureKind=sourceKind;
@@ -36,7 +37,10 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},
    {timing:host.timing,encoder:new PortableEncoder()});
   Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,regionPlacement:placement,
-   regionCurrent:validateCurrent?()=>validateCurrent(2):lease.isCurrent});
+   regionCurrent:validateCurrent?()=>validateCurrent(2):lease.isCurrent,
+   // Input keeps the fresh regionCurrent path. Only frame delivery reuses the
+   // source-publication snapshot, bounded by native owner and document events.
+   ...(cachedCurrent?{regionFrameCurrent:()=>{host.timing.event?.('native_cached_lease',{source_kind:sourceKind,lease_phase:2});return lease.isAlive()&&window.isCurrent()&&cachedCurrent();}}:{})});
   const close=stream.close.bind(stream);let closing,offRetire;
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
