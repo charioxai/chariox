@@ -768,7 +768,7 @@ export class BrowserMirror2Renderer {
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
-    const owner = this.frame.ownerDocument
+    const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
     owner.defaultView?.removeEventListener('blur', this.releasePointer)

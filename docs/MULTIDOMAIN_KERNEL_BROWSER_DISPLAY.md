@@ -638,6 +638,16 @@ write. Cloud keeps the painted frame while resuming; it does not request a
 replacement opening as a network recovery strategy. An explicit new target or
 user reconnect performs a new admitted open.
 
+MP-08/MP-10/MP-11: allocated535/143 also permits the authenticated delivery
+registration to invoke525 resume, fresh bound-worker attach and initial push
+credit together, returning the new binding. The new display subscription scope
+is `kernel_browser_display_resume`; event cursors stay null. The old525 hint,
+current home admission and worker `DisplaySessions` remain the only resume
+authority. Bounded early-frame retention covers registration until the presenter
+is installed. Numeric-only Room producer and presenter timing diagnostics
+separate capture/encode, queue, decode and commit; a presenter callback is not
+by itself proof of physical video scanout. See `docs/PROTOCOL.md` for the contract.
+
 The 525/133 hash fixture is `room-shared-display-525.json` beside the protocol
 shape tests. Source regressions are supplementary. Acceptance requires the
 actual Room View on the integrated shared producer: four window/density network

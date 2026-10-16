@@ -16,6 +16,8 @@ import {assertCurrentDocument} from './browser-controller-actions.mjs';
 export const OMNIBOX_POPUP_URL = 'chrome://omnibox-popup.top-chrome/';
 const POPUP_SIDE = 16, POPUP_BOTTOM = 28;
 export const POPUP_CORNER = 16;
+/** Chrome 155's suggestion list holds at most 8 rows of 40 DIP in an 8 DIP frame (observed 48..288). */
+export const OMNIBOX_LIST_HEIGHT = 344;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
@@ -141,11 +143,12 @@ export class ChromeWindows {
     // The omnibox dropdown drawn in the window: its rect of the same X window (physical px).
     const live = omniboxPopupRect(this.omnibox, tabbed.bounds.x / tabbed.scale, tabbed.bounds.y / tabbed.scale, tabbed.page_rect.top / tabbed.scale,
       tabbed.bounds.width / tabbed.scale, tabbed.bounds.height / tabbed.scale), held = this.omniboxHeld;
-    // While the list stays open its rect only grows: Chrome resizes it on almost every key, and a new
-    // fixed-size stream per size never painted while the person typed (r10). Below a shrunk list the
-    // stream shows the page (its masks apply); input there is refused against the live list.
+    // Chrome resizes the list on almost every key and each new stream left the person without a list
+    // for 0.4-1.3 s (r10, r11 profile): the stream opens at the list's full height and keeps it while the
+    // list stays open. Below the live list it shows the page (its masks apply); input there is refused.
+    const full = live && {...live, height: Math.max(live.height, Math.min(OMNIBOX_LIST_HEIGHT, Math.floor((tabbed.bounds.height / tabbed.scale - live.y) / 2) * 2))};
     const popup = live && held?.window_generation === tabbed.window_generation && held.x === live.x && held.y === live.y
-      && held.width === live.width && live.height <= held.height ? held : live;
+      && held.width === live.width && live.height <= held.height ? held : full;
     this.omniboxHeld = popup && {...popup, window_generation: tabbed.window_generation};
     this.omniboxLive = live;
     if (popup && bound.length < 8) {
@@ -220,10 +223,12 @@ export class ChromeWindows {
   /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
    * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
   inWindowOver(rect) {
-    const tabbed = this.bound?.tabbed;
-    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, bounds: b}) => in_window
-      && b.x - tabbed.bounds.x < rect.left + rect.width && rect.left < b.x - tabbed.bounds.x + b.width
-      && b.y - tabbed.bounds.y < rect.top + rect.height && rect.top < b.y - tabbed.bounds.y + b.height);
+    const tabbed = this.bound?.tabbed, live = this.omniboxLive, scale = tabbed?.scale;
+    // The list's stream is taller than a short list: only the live list covers the page.
+    const over = b => !!b && b.x < rect.left + rect.width && rect.left < b.x + b.width && b.y < rect.top + rect.height && rect.top < b.y + b.height;
+    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && over(omnibox
+      ? live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}
+      : {x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height}));
   }
   /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
   async inWindowOverNow(rect) {

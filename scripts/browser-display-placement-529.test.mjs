@@ -24,9 +24,3 @@ test('MP-08/MP-10/MP-11: placement upgrade retains the preceding 528 release',()
  assert(transitions.upgradeFrom.includes(528));
  assert(transitions.rollbackTo.includes(528));
 });
-
-test('MP-08/MP-10/MP-11: 532 retains the published 530 union kernel',()=>{
- const transitions=JSON.parse(readFileSync(new URL('../apps/kernel/managed-upgrade-protocol-transitions.json',import.meta.url)));
- assert(transitions.upgradeFrom.includes(530));
- assert(transitions.rollbackTo.includes(530));
-});

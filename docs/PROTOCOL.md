@@ -3905,6 +3905,35 @@ Snapshot/hash: `mp08_mp10_mp11_display_resumption_525_133_snapshot_hash`.
 Shared producer/presenter lifetime tests supplement the required hosted live
 network-change drill; they do not establish its one-second repaint gate.
 
+### MP-08 / MP-10 / MP-11: combined delivery registration (local 535 / peer 143)
+
+A client that feature-detects local 535 may send one ordinary `ClientSubscribe`
+with scope `kernel_browser_display_resume`, the 525 hint as `session_id`, numeric
+old generation as `attachment_id`, a fresh relay subscription ID and its admitted
+viewer key. `resume_from_event_id` must be null: this is never event replay.
+The existing authenticated relay caller and pairing checks still apply. The
+relay treats both display scopes as opaque CXR1 delivery; it has no resume policy.
+
+The kernel repeats current display admission. For Room leases the home sends
+`RoomSharedDisplay.command={op:"resume_attach"}` to the exact bound worker,
+which invokes existing 525 `DisplaySessions.resume` and ordinary `display_attach`
+under the same protection/capture barriers. This neither opens a replacement
+producer nor creates another input authority. Home and worker rotate the lease
+only on the validated new binding. The encrypted registration reply contains
+`{ok:true,display_attached:true,binding:<resumed binding>}`. The home queues this
+reply before starting the sender-bound pump with independent-frame credit;
+subsequent acknowledgements retain the existing push contract.
+
+Clients retain at most eight early encrypted events and 8 MiB while establishing
+the new binding, then recheck current socket, target, key and binding before
+delivery to the installed presenter. Presenter registration also retains a
+bounded initial frame batch so its listener transition cannot discard the key.
+Failures and close clear these batches. Kernels without 535 support refuse the
+new scope; 525 adapters continue their separate resume/attach path. There is no
+replacement-open retry or cursor-based shortcut. The new snapshot/hash is
+`mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
+remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
+
 ### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
 
 The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",

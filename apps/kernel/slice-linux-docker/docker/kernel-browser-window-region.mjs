@@ -3,7 +3,7 @@
 // geometry. This is not a client API for naming windows, PIDs or policies.
 import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
-import {startNativeReadback} from './kernel-browser-native-readback.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {attestNativeRegion,regionProtection} from './kernel-browser-region-attestation.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
@@ -130,11 +130,11 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw Error('MP-08: native region readback unavailable');
+   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
    if(this.pageOverlay){
     await this.attestOverlay();
-    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-    if(!this.latest)throw Error('MP-08: native region readback unavailable');
+    for(let n=0;n<200&&!this.currentSample()&&!this.closed;n++)await delay(10);
+    if(!this.currentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
    }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;

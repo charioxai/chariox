@@ -194,3 +194,32 @@ test('MP-11 a dialog overlay retires its zero-offset frames when the attestation
   assert.deepEqual(await source.regions.regions({captured_ms:performance.timeOrigin+performance.now()+1}),[{x:104,y:40,width:80,height:30}],'the field at the attested offset');
  }finally{NativeRegionProtection.prototype.measure=measure;}
 });
+
+// Review #1016 @05a700a84 P1: a readback masked under the old projection can be suspended in publication's final
+// lease check while the attestation re-projects the masks; it must not become the latest frame when the check returns.
+test('MP-11 a readback masked before a mask re-projection is not published after the final lease check',async()=>{
+ let release,checks=0,released=0,encoded=0;
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
+  isCurrent:()=>true,validateCurrent:()=>++checks===2?new Promise(resolve=>{release=resolve;}):Promise.resolve(true),policy:{},allowed:()=>true,connection:{},tab:{tab_id:'t',document_id:'d'},timing:()=>{}});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};
+ source.pending={width:100,height:50,pixels:Buffer.alloc(100*50*4),captured_ms:1,serial:1,release:()=>{released++;}};
+ source.subscribe(()=>{encoded++;});
+ const publishing=source.publish();
+ for(let n=0;n<50&&!release;n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.ok(release,'publication waits in its final lease check');
+ source.retireFrames();source.regions={guard:{},beforeAt:0,regions:async()=>[],retire(){}};// the attestation's new projection
+ release(true);await publishing;
+ assert.equal(source.latest,null,'the old projection\'s raster is not cached');
+ assert.equal(encoded,0,'nor delivered');assert.equal(released,1,'and is released');
+ await source.close();
+});
+
+test('MP-11 overlay startup admits only a readback of the attested projection',async()=>{
+ const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
+  isCurrent:()=>true,policy:{},allowed:()=>true,connection:{},timing:()=>{}});
+ source.latest={raw:{release(){}},revision:source.regionRevision};
+ assert.equal(source.currentSample(),true);
+ source.regionRevision++;
+ assert.equal(source.currentSample(),false,'a frame of the previous projection does not satisfy startup');
+});

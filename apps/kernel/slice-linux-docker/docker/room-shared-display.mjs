@@ -4,8 +4,8 @@ import {DesktopDisplay} from './kernel-desktop-display.mjs';
 import {DisplaySessions} from './kernel-display-resumption.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 export class RoomSharedDisplay {
- constructor(desktop,{desktop:options,sessions}={}) {
-  this.desktop=desktop;this.generation=1;this.displays=new Map();this.timers=new Map();this.timing=()=>{};this.pending=Promise.resolve();
+ constructor(desktop,{desktop:options,sessions,timing=()=>{}}={}) {
+  this.desktop=desktop;this.generation=1;this.displays=new Map();this.timers=new Map();this.timing=timing;this.pending=Promise.resolve();
   this.chromium={desktop:{binding:()=>this.surface}};
   this.display=new DesktopDisplay(this,options);this.sessions=new DisplaySessions(this,sessions);
  }
@@ -18,7 +18,7 @@ export class RoomSharedDisplay {
   const result=this.pending.then(()=>this.run(command,options));this.pending=result.catch(()=>{});return result;
  }
  async run(command,{signal}={}) {
-  if(!['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume'].includes(command?.op)
+  if(!['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach'].includes(command?.op)
    ||typeof command.observed_by!=='string'||!command.observed_by||command.observed_by.length>256
    ||command.policy?.unknown!==false||!Array.isArray(command.policy.targets)||!Array.isArray(command.policy.values))throw new UserDomainRefusal('not_granted');
   const surface=await this.desktop.binding(command.viewport),policy=JSON.stringify(command.policy);
@@ -34,12 +34,13 @@ export class RoomSharedDisplay {
    return result;
   }
   const id=command.display_subscription_id??command.subscription_id;
-  if(['display_suspend','display_resume'].includes(command.op)){const result=await this.sessions[command.op==='display_suspend'?'suspend':'resume'](id,command.observed_by,command.generation,async stream=>{
+  if(['display_suspend','display_resume','display_resume_attach'].includes(command.op)){const result=await this.sessions[command.op==='display_suspend'?'suspend':'resume'](id,command.observed_by,command.generation,async stream=>{
    if(stream.source_kind!=='desktop'||stream.tab_id!==surface.surface_id||stream.desktop_generation!==surface.generation)throw new UserDomainRefusal('stale_reference');
    return surface;
   });
    // A Room lease owns its observer scope; a resumed delivery receives a new one.
-   if(command.op==='display_resume'&&command.observed_by===id)this.displays.get(result.subscription_id).observed_by=result.subscription_id;
+   if(command.op!=='display_suspend'&&command.observed_by===id)this.displays.get(result.subscription_id).observed_by=result.subscription_id;
+   if(command.op==='display_resume_attach')await this.display.request({...command,op:'display_attach',subscription_id:result.subscription_id,generation:result.generation},this.displays.get(result.subscription_id).observed_by,{signal});
    return result;
   }
   if(command.op==='unsubscribe'){

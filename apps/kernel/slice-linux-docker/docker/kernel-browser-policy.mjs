@@ -90,3 +90,31 @@ export function extensionManagementUrl(url) {
   return u.protocol === "chrome-extension:" || u.protocol === "chrome:" && u.hostname === "extensions"
     || web && (u.hostname === "chromewebstore.google.com" || u.hostname === "chrome.google.com" && /^\/webstore(\/|$)/.test(u.pathname));
 }
+
+
+export const EXTENSIONS_REFUSED = "MP-11: extensions are the person's own; an agent cannot open the Web Store or chrome://extensions or act on them";
+
+// MP-11 review #1001 P1: Computer can click an unfocused window or a native install
+// confirmation. A cached active Tab is insufficient. Fence the whole owned desktop
+// while ANY live extension surface is open; an unreadable inventory cannot prove safety.
+export async function admitComputerMutation(host, command) {
+  if (!(command._agent_input || command.focused_agent) || !['input', 'target_action', 'launch_application'].includes(command.op)) return;
+  const browser = host.browser;
+  if (!browser && !host.chromium.child) return; // Native applications without a browser.
+  try {
+    if (!browser || host.chromium.child?.exitCode !== null || host.chromium.child?.signalCode !== null) throw new Error();
+    const connection = await browser.ensureConnection();
+    const { targetInfos } = await connection.send('Target.getTargets');
+    if (host.browser !== browser || connection.isOpen?.() === false || !Array.isArray(targetInfos) || !targetInfos.length) throw new Error();
+    let destinations = 0;
+    for (const target of targetInfos) {
+      if (['browser', 'tab', 'service_worker', 'shared_worker', 'worker'].includes(target.type)) continue;
+      destinations++;
+      // Empty/unparseable URLs occur while a target is being created. Do not input
+      // through that transition. Worker targets include our tab-groups extension.
+      new URL(target.url);
+      if (extensionManagementUrl(target.url) || target.pendingUrl && extensionManagementUrl(target.pendingUrl)) throw new Error();
+    }
+    if (!destinations) throw new Error();
+  } catch { throw new Error(EXTENSIONS_REFUSED); }
+}

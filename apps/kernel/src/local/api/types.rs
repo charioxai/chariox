@@ -325,4 +325,5 @@ pub use workspace::*;
 /// Allocated 530 adds band middle/right click and drag (`KernelBrowserInput`), the
 /// `browser_auxiliary` display target and the state's `chrome_window.auxiliary`.
 /// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 532;
+/// Allocated 535 registers525 resumption, worker attach and initial push credit once.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 535;

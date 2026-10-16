@@ -1,6 +1,7 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage,browserLaunchFailureReason} from './kernel-browser-error-label.mjs';
+import {nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
  assert.equal(hostErrorLabel(error),'host_error TypeError ENOENT kernel-browser-native-worker.mjs:17:20');
@@ -104,10 +105,30 @@ test('native region refusals and v2 module positions survive the public Browser 
  }
  assert(!hostFailureMessage({message:'MP-11: native region attestation mismatch private-canary'}).includes('private-canary'));
 });
+
+// MP-08/MP-10/MP-11: the private native worker reports a fixed stage before it exits.
+test('MP-08/MP-10/MP-11 native first-frame failures retain the worker cause without arbitrary text',()=>{
+ const failure=nativeReadbackFailure({helperStage:'native_codec_unavailable'},'MP-08: native region readback unavailable');
+ assert.match(hostFailureMessage(failure),/native_worker_native_codec_unavailable/);
+ assert.match(hostFailureMessage(nativeReadbackFailure({helperStage:'window_not_found'},'MD-DISPLAY: native readback unavailable')),/native_worker_window_not_found/);
+ assert(!hostFailureMessage({...failure,nativeStage:'private-canary'}).includes('private-canary'));
+ assert(!hostFailureMessage({...failure,nativeStage:'native_codec_unavailable private-canary'}).includes('private-canary'));
+});
+
 test('MP-08/MP-10/MP-11 Notes observer causes and bounded code positions survive the host envelope',()=>{
  const reply=hostFailureMessage(Object.assign(Error('MD-N2: selection observation failed'),{code:'note_observer_type_error',noteObserverLine:42}));
  assert.match(reply,/note_observer_type_error note_observer:42/);
  assert.match(hostFailureMessage({code:'note_shadow_root_limit',message:'MD-N2: selection observation failed'}),/note_shadow_root_limit/);
  for(const noteObserverLine of [-1,0,257,NaN,'private-canary'])assert(!hostFailureMessage({code:'note_observer_type_error',noteObserverLine}).includes('note_observer:'));
  assert(!hostFailureMessage({code:'private-canary',noteObserverLine:42,message:'private-canary'}).includes('private-canary'));
+});
+
+// MP-08/MP-10/MP-11: observed generic native-band/region errors on the live BBC path.
+test('MP-08/MP-10/MP-11 host replies retain closed user-domain and display-region refusals',async()=>{
+ const {UserDomainRefusal}=await import('./kernel-browser-refusal.mjs');
+ for(const reason of ['not_focused_agent','foreign_owner','stale_epoch','stale_reference','not_granted','sensitive_requires_focus']){
+  const error=new UserDomainRefusal(reason);assert(hostFailureMessage(error).includes(error.code));
+ }
+ assert.match(hostFailureMessage(Error('MP-11: region lease retired')),/native_region_lease_retired/);
+ for(const error of [{code:'user_domain_private_canary'},{message:'MP-11: region lease retired private-canary'}])assert(!hostFailureMessage(error).includes('private'))
 });

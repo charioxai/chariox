@@ -5,7 +5,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
-import {startNativeReadback} from './kernel-browser-native-readback.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
 import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
@@ -64,6 +64,8 @@ export class LinuxCapture {
    this.retireFrames();
   }
  }
+ /** A cached readback masked under the current projection (startup admits only such a sample). */
+ currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
  // Retire every published, queued and in-flight pixel of the current mask projection.
  retireFrames(){
   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
@@ -87,7 +89,7 @@ export class LinuxCapture {
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:geometry.width*this.scale,height:geometry.height*this.scale});
    for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw Error('MD-DISPLAY: native readback unavailable');
+   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.
@@ -160,7 +162,7 @@ export class LinuxCapture {
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
-   this.latest={raw,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
+   this.latest={raw,revision,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
    this.publishingRaw=null;
    if(this.attested)for(const fn of this.listeners)fn(this.latest);
   }}catch(error){this.timing(`native_publish_failed ${String(error?.message).replace(/[^a-z_ -]/gi,'').slice(0,60)}`,performance.timeOrigin+performance.now());this.fence()}finally{this.publishingRaw?.release?.();this.publishingRaw=null;this.publishing=false}

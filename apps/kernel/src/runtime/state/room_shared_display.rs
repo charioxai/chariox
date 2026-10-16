@@ -90,7 +90,8 @@ impl KernelRuntimeState {
             if lease.viewer_public_key != viewer {
                 return Err(error());
             }
-            self.resume_room_display(&mut lease, hint, &slice).await?;
+            self.resume_room_display(&mut lease, hint, &slice, false)
+                .await?;
             return self.room_display_endpoint(&slice, &lease);
         }
         let (slice, _guard) = self
@@ -297,6 +298,7 @@ impl KernelRuntimeState {
         lease: &mut RoomDisplayLease,
         id: &str,
         slice: &crate::slice::SliceRecord,
+        attach: bool,
     ) -> Result<RoomDisplayBinding, DaemonError> {
         let result = self
             .room_display_peer(
@@ -305,7 +307,11 @@ impl KernelRuntimeState {
                     session_id: lease.session_id.clone(),
                     slice_id: lease.slice_id.clone(),
                     lease_id: id.into(),
-                    command: RoomDisplayCommand::Resume {},
+                    command: if attach {
+                        RoomDisplayCommand::ResumeAttach {}
+                    } else {
+                        RoomDisplayCommand::Resume {}
+                    },
                 },
             )
             .await?;
@@ -349,9 +355,16 @@ impl KernelRuntimeState {
                 &lease.slice_id,
             )
             .await?;
-        if matches!(command, RoomDisplayCommand::Resume {}) {
-            return serde_json::to_value(self.resume_room_display(&mut lease, id, &slice).await?)
-                .map_err(|_| error());
+        if matches!(
+            command,
+            RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
+        ) {
+            let attach = matches!(command, RoomDisplayCommand::ResumeAttach {});
+            return serde_json::to_value(
+                self.resume_room_display(&mut lease, id, &slice, attach)
+                    .await?,
+            )
+            .map_err(|_| error());
         }
         let close = matches!(command, RoomDisplayCommand::Close {});
         let result = self
@@ -529,6 +542,7 @@ mod tests {
             serde_json::json!({"op":"input","x":1,"y":2}),
             serde_json::json!({"op":"attach","observed_by":"forged"}),
             serde_json::json!({"op":"resume","viewer_public_key":"forged"}),
+            serde_json::json!({"op":"resume_attach","observed_by":"forged"}),
         ] {
             assert!(serde_json::from_value::<RoomDisplayCommand>(value).is_err());
         }
