@@ -35,10 +35,10 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
  let cdp,adapter;
  try {
   const extension=path.join(root,'extension'),profile=path.join(root,'profile');await mkdir(extension);
-  await writeFile(path.join(extension,'manifest.json'),JSON.stringify({manifest_version:3,name:'MP11 Popup Free Action',version:'1.0',permissions:['storage'],background:{service_worker:'background.js'},action:{default_title:'MP11 Popup Free Action'}}));
-  await writeFile(path.join(extension,'background.js'),"chrome.action.onClicked.addListener(async()=>{const {count=0}=await chrome.storage.local.get('count');await chrome.storage.local.set({count:count+1});await chrome.action.setBadgeText({text:String(count+1)})});");
+  await writeFile(path.join(extension,'manifest.json'),JSON.stringify({manifest_version:3,name:'MP11 Popup Free Action',version:'1.0',permissions:['storage'],commands:{global_action:{suggested_key:{default:'Ctrl+Shift+5'},global:true,description:'MP11 global action'}},background:{service_worker:'background.js'},action:{default_title:'MP11 Popup Free Action'}}));
+  await writeFile(path.join(extension,'background.js'),"const action=async()=>{const {count=0}=await chrome.storage.local.get('count');await chrome.storage.local.set({count:count+1});await chrome.action.setBadgeText({text:String(count+1)})};chrome.action.onClicked.addListener(action);chrome.commands.onCommand.addListener(action);");
   const base=await desktop.start(),environment={...base.environment};
-  for(const key of ['PYTHONPATH','GI_TYPELIB_PATH','LD_LIBRARY_PATH'])if(process.env[key])environment[key]=process.env[key];
+  for(const key of ['PYTHONPATH','GI_TYPELIB_PATH','LD_LIBRARY_PATH','GSETTINGS_SCHEMA_DIR'])if(process.env[key])environment[key]=process.env[key];
   // Reuse the production bounded socket path for a long external TMPDIR.
   const {open}=await import('node:fs/promises');const held=await open(desktop.runtime);
   try {
@@ -56,7 +56,7 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    const {id}=await cdp.send('Extensions.loadUnpacked',{path:extension});assert(id);
    const binding={...base,environment};adapter=new NativeComputer({placement:'host',binding:()=>binding});
    const controls=async label=>{
-    const helper=spawn('/usr/bin/python3',['-c',findControl,label],{env:environment,stdio:['ignore','pipe','ignore']});let output='';helper.stdout.on('data',chunk=>output+=chunk);
+    const helper=spawn('/usr/bin/python3',['-c',findControl,label],{env:environment,stdio:['ignore','pipe','inherit']});let output='';helper.stdout.on('data',chunk=>output+=chunk);
     assert.equal(await new Promise(resolve=>helper.once('exit',resolve)),0);return JSON.parse(output);
    };
    const click=async(point,agent=false)=>adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'click',x:point.x,y:point.y}},{});
@@ -88,6 +88,23 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    assert.equal(await worker(),undefined,'fixture worker really stopped');
    await assert.rejects(click(action,true),/extensions are the person's own/);assert.equal(await worker(),undefined,'denied click does not wake a worker');
    await click(action);await delay(300);assert.equal(await count(),2,'owner input still wakes and invokes the action');
+   // Root-window accelerators are independent of the focused native app.
+   const editor=await desktop.launch(process.env.MP11_EDITOR??'mousepad',['--disable-server'],{...environment,TMPDIR:`/proc/${process.pid}/fd/${held.fd}`},['ignore','ignore','inherit']);
+   const runX=async args=>{const child=spawn('xdotool',args,{env:environment,stdio:['ignore','pipe','inherit']});let output='';child.stdout.on('data',chunk=>output+=chunk);const rc=await new Promise(r=>child.once('exit',r));if(args[0]!=='search')assert.equal(rc,0);return output.trim()};
+   let editorWindow;for(let i=0;i<50&&!editorWindow;i++){editorWindow=(await runX(['search','--onlyvisible','--pid',String(editor.pid)])).split('\n')[0];if(!editorWindow)await delay(100)}assert(editorWindow);
+   await runX(['windowactivate','--sync',editorWindow]);await delay(200);
+   const key=agent=>adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'key',key:'Control+Shift+5'}},{});
+   await key(false);await delay(300);assert.equal(await count(),3,'owner shortcut reaches the real global handler with a native app focused');
+   const globalDenied=await key(true).then(()=>false,error=>/extensions are the person's own/.test(error.message));await delay(300);
+   console.log('MP-08/MP-10/MP-11 global shortcut: owner count 3; after agent '+await count());
+   assert.equal(await count(),3,'agent global shortcut never reaches the handler');assert(globalDenied,'root grab refused independently of focus');
+   await key(false);await delay(300);assert.equal(await count(),4,'owner shortcut preserved after refusal');
+   // Ordinary focused native editing keeps its authority; only the global sink is refused.
+   for(const input of [{kind:'key',key:'Control+a'},{kind:'text',text:'MP11 public native edit'}])await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,_agent_input:true,input},{});
+   const sleeping=await worker();assert(sleeping);await cdp.send('Target.closeTarget',{targetId:sleeping.targetId});await delay(100);
+   assert.equal(await worker(),undefined);await assert.rejects(key(true),/extensions are the person's own/);
+   assert.equal(await worker(),undefined,'denied global shortcut never wakes the background worker');
+   await key(false);await delay(300);assert.equal(await count(),5,'owner global shortcut still wakes the worker');
    console.log('MP-08/MP-10/MP-11 pinned popup-free action: awake/sleeping agent refused; owner count 0->1->2; '+version.Browser);
   } finally {await held.close()}
  } finally {cdp?.close();await adapter?.close();await desktop.stop();await rm(root,{recursive:true,force:true})}

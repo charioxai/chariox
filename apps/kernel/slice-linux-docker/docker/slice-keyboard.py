@@ -154,7 +154,7 @@ def assert_secret_target(connection, expected_target):
         raise SecretTargetChanged()
 
 
-def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.04, connection=None):
+def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.04, connection=None, key_guard=None):
     # MP-08/MP-10/MP-11: the human-only channel owns its authenticated X11
     # connection; one-shot agent/Vault callers retain a fresh owned connection.
     owned = connection is None
@@ -219,6 +219,9 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
             try:
                 if expected_target is not None:
                     assert_secret_target(connection, expected_target)
+                if key_guard is not None:
+                    code, modifiers, _ = keyboard._resolve(keysym)
+                    key_guard(connection,[*modifiers,code])
                 active_keysym = keysym
                 keyboard.press(keysym)
                 keyboard.release(keysym)
@@ -254,7 +257,7 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
         if owned: connection.close()
 
 
-def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
+def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None, key_guard=None):
     """MP-08/MP-10/MP-11: press/hold/release within one owned Action.
 
     Hold only existing base-layout keys; text overlays stay in type_text.
@@ -322,6 +325,7 @@ def hold_input(kind, value, duration_ms, x=None, y=None, before_press=None):
             if expected_target is not None:assert_secret_target(connection,expected_target)
             if any(connection.query_keymap()) or connection.screen().root.query_pointer().mask & 7936:
                 raise ValueError("native input already held")
+            if kind == "key" and key_guard is not None:key_guard(connection,codes)
             if kind == "button":
                 xtest.fake_input(connection, Xlib.X.MotionNotify, x=x, y=y)
             for code in codes:

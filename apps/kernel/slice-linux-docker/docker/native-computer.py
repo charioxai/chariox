@@ -53,6 +53,7 @@ def capture(mask, uncovered=()):
 def input_action(action, processes=None, connection=None):
     kind = action['kind']
     guard=None
+    key_guard=load('native-input-destination').key_destinations if processes is not None else None
     if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
         raise ValueError('native paste/repeat requires human or Vault input')
     if processes is not None and kind in ('text','key','click'):
@@ -84,12 +85,12 @@ def input_action(action, processes=None, connection=None):
             pace = 0 if action['text'].isascii() else 0.04
             keyboard.type_text(action['text'],pace_seconds=pace,connection=connection)
         else:
-            keyboard.type_text(action['text'],before_press=guard)
+            keyboard.type_text(action['text'],before_press=guard,**({'key_guard':key_guard} if key_guard else {}))
         return
     if kind=='pointer_hold':
         keyboard.hold_input('button',{1:'left',2:'middle',3:'right'}[action['button']],action['duration_ms'],action['x'],action['y']);return
     if kind in ('key', 'hold'):
-        keyboard.hold_input('key', action['key'].replace('Enter', 'Return'), action.get('duration_ms', 1),before_press=guard); return
+        keyboard.hold_input('key', action['key'].replace('Enter', 'Return'), action.get('duration_ms', 1),before_press=guard,**({'key_guard':key_guard} if key_guard else {})); return
     if kind == 'clipboard_write': raise ValueError('clipboard lifetime belongs to placement adapter')
     owned = connection is None
     if owned: connection = load('native-x11').open_display(display)
