@@ -26,6 +26,9 @@ pub struct CharioxSkillPackageFile {
     pub sha256: String,
     pub content_base64: String,
 }
+#[path = "package_cache.rs"]
+mod cache;
+
 const MAX_SKILL_PACKAGE_FILES: usize = 512;
 const MAX_SKILL_PACKAGE_BYTES: u64 = 10 * 1024 * 1024;
 const SKILL_PACKAGE_IGNORED_DIRS: &[&str] = &[
@@ -60,15 +63,17 @@ pub(super) fn materialize_skill_package_for_id(
         .map_err(|_| failure("cannot resolve skill materialization root"))?;
     let parent = base.join(id);
     ensure_directory(&parent)?;
+    let _lock = cache::lock(&parent)?;
     let destination = parent.join(&package.version_hash);
     if fs::symlink_metadata(&destination).is_ok() {
         ensure_directory(&destination)?;
-        if package_skill_directory(&destination)?.version_hash != package.version_hash {
-            return Err(failure(
-                "cached skill package failed complete-content verification",
-            ));
+        if package_skill_directory(&destination)
+            .is_ok_and(|cached| cached.version_hash == package.version_hash)
+        {
+            return Ok(destination);
         }
-        return Ok(destination);
+        // MP-08 / MP-10 / MP-11: retain damaged bytes until the replacement is
+        // fully staged and verified. An invalid request cannot delete a cache.
     }
     let staging = parent.join(format!(".stage-{:032x}", rand::random::<u128>()));
     fs::create_dir(&staging).map_err(|_| failure("cannot stage skill materialization"))?;
@@ -109,6 +114,15 @@ pub(super) fn materialize_skill_package_for_id(
         return Err(failure("materialized skill package identity mismatch"));
     }
     sync_directories(&staging)?;
+    if fs::symlink_metadata(&destination).is_ok() {
+        ensure_directory(&destination)?;
+        if package_skill_directory(&destination)
+            .is_ok_and(|cached| cached.version_hash == package.version_hash)
+        {
+            return Ok(destination);
+        }
+        cache::remove_damaged(&destination)?;
+    }
     match fs::rename(&staging, &destination) {
         Ok(()) => {}
         Err(_) if destination.is_dir() => {
@@ -130,8 +144,10 @@ fn ensure_directory(path: &Path) -> Result<(), DaemonError> {
     fs::create_dir_all(path).map_err(|_| failure("cannot create skill package directory"))?;
     let metadata =
         fs::symlink_metadata(path).map_err(|_| failure("cannot inspect skill directory"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(failure("skill package directory cannot be a symlink"));
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || !cache::owned(&metadata) {
+        return Err(failure(
+            "skill package directory must be an owned directory, not a symlink",
+        ));
     }
     Ok(())
 }
