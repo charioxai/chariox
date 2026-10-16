@@ -42,6 +42,12 @@ fn params(command: KernelComputerCommand) -> Result<serde_json::Value, DaemonErr
     }
     Ok(value)
 }
+// Coordinates are surface pixels: Linux viewports are smaller, the native macOS
+// surface admits up to 4096 backing pixels per axis (maximum 4095). Dispatch
+// checks the actual surface; the schema must not exclude valid coordinates.
+fn computer_input_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536,"description":"text/composition: at most 128 Unicode characters per action; clipboard_write: at most 65536 UTF-8 bytes"},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":4095},"y":{"type":"integer","minimum":0,"maximum":4095},"to_x":{"type":"integer","minimum":0,"maximum":4095},"to_y":{"type":"integer","minimum":0,"maximum":4095},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})
+}
 impl KernelRuntimeState {
     pub(super) fn kernel_computer_tool_specs(
         &self,
@@ -63,7 +69,7 @@ impl KernelRuntimeState {
             agent.id(),
             KernelBrowserCapability::Computer,
         ) {
-            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand. Input uses text/committed composition, key chords, bounded holds, mouse and clipboard; human takeover pauses agent input. Persistent keycode down/up is a human channel. Never use video timing as observation.".into(),input_schema:serde_json::json!({"type":"object","properties":{"command":{"type":"object","properties":{"op":{"enum":["start","state","snapshot","screenshot","ocr","clipboard_read","input","target_action"]},"target":{"type":"object","properties":{"surface_id":{"type":"string","minLength":1,"maxLength":128},"generation":{"type":"string","minLength":1,"maxLength":128}},"required":["surface_id","generation"],"additionalProperties":false},"query":{"type":["string","null"],"maxLength":4096},"input":{"type":"object","properties":{"kind":{"enum":["text","composition","key","hold","pointer_hold","click","move","drag","scroll","clipboard_write"]},"text":{"type":"string","maxLength":65536,"description":"text/composition: at most 128 Unicode characters per action; clipboard_write: at most 65536 UTF-8 bytes"},"key":{"type":"string","maxLength":128},"duration_ms":{"type":"integer","minimum":1,"maximum":10000},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"to_x":{"type":"integer","minimum":0,"maximum":1279},"to_y":{"type":"integer","minimum":0,"maximum":799},"button":{"type":"integer","minimum":1,"maximum":3},"steps":{"type":"integer","minimum":-100,"maximum":100}},"required":["kind"],"additionalProperties":false},"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":128}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false})});
+            tools.push(RuntimeToolSpec{name:TOOL.into(),description:"MP-08: control the owned host desktop via fresh surface/generation. snapshot returns scoped AT-SPI targets/tree_revision; stale targets require rediscovery. OCR and exact protected screenshots are on-demand. Input uses text/committed composition, key chords, bounded holds, mouse and clipboard; human takeover pauses agent input. Persistent keycode down/up is a human channel. Never use video timing as observation.".into(),input_schema:computer_input_schema()});
         }
         tools
     }
@@ -235,6 +241,15 @@ mod tests {
             assert!(params(command(128)).is_ok());
             assert!(params(command(129)).is_err());
             assert!(params(command(600)).is_err());
+        }
+    }
+    #[test]
+    fn m1_computer_schema_covers_native_surface_pixels() {
+        // A 900x600-point window at 2x is 1800x1200 pixels; surfaces reach 4096.
+        let schema = computer_input_schema();
+        let input = &schema["properties"]["command"]["properties"]["input"]["properties"];
+        for key in ["x", "y", "to_x", "to_y"] {
+            assert_eq!(input[key]["maximum"], 4095, "{key}");
         }
     }
     #[test]

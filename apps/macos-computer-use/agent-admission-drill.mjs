@@ -115,6 +115,9 @@ export async function checkAgentAdmission(client, callback) {
   assert(!JSON.stringify(result.loader).includes('require Linux'), 'Mac agent dispatch must reach provider admission');
   assert(result.catalog.result.tools.some(tool => tool.name === 'chariox.load_kernel_computer'), 'Mac provider must discover Computer loader');
   assert(result.catalog.result.tools.some(tool => tool.name === 'chariox.kernel_computer'), 'Loaded Mac provider must discover Computer');
+  // Native surfaces reach 4096 backing pixels per axis; the advertised range must not clip them.
+  const pointer = result.catalog.result.tools.find(tool => tool.name === 'chariox.kernel_computer').inputSchema.properties.command.properties.input.properties;
+  for (const axis of ['x', 'y', 'to_x', 'to_y']) assert(pointer[axis].maximum >= 4095, `Computer schema must cover native surface pixels: ${axis}`);
   assert(!result.loader.error && !result.loader.result?.isError, 'Computer loader must admit the focused provider: ' + JSON.stringify(result.loader));
   result.agentStart = await callback.input({ op: 'start' });
   assert(JSON.stringify(result.agentStart).includes('owner starts this Computer seat'), 'Personal Mac seat still requires owner Start');
