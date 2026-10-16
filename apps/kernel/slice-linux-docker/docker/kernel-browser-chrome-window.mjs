@@ -244,17 +244,17 @@ export class ChromeWindows {
     // Steady page frames use the shared watcher. Chrome-UI input is the narrow
     // interval in which a dropdown can paint before that watcher observes it.
     const revision = this.occlusionRevision ?? 0, cache = this.occlusionCache;
-    // MP-08/MP-10/MP-11: a fresh negative observation after UI dispatch ends
-    // this capture interval even if a toolbar button left chromeFocus set.
-    // New input invalidates the cache; the watcher still discovers delayed lists.
-    const settledWithoutList = cache?.binding === binding && cache.revision === revision && cache.focus === focus && !cache.live;
-    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation && !settledWithoutList;
+    // MP-11: native dispatch acknowledges queueing, not Chrome's paint. A
+    // negative read cannot end an active omnibox interval; the list may open
+    // before the next watcher tick without another key or focus change.
+    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation;
     if (!focused && !this.uiInputs && (revision === 0 || cache?.binding === binding && cache.revision === revision)) return this.inWindowOver(rect, cache?.binding === binding ? cache.live : this.omniboxLive);
-    const read = this.occlusionRead?.binding === binding ? this.occlusionRead :
-      (this.occlusionRead = {binding, promise: this.readOmnibox()});
+    const read = this.occlusionRead?.binding === binding && this.occlusionRead.revision === revision ? this.occlusionRead :
+      (this.occlusionRead = {binding, revision, promise: this.readOmnibox()});
     let state;
     try { state = await read.promise; } finally { if (this.occlusionRead === read) this.occlusionRead = null; }
     if (this.bound?.tabbed !== binding || !binding.isCurrent()) return false;
+    if (revision !== (this.occlusionRevision ?? 0)) return true; // input crossed observation: hold pixels
     // A capture probe observes geometry; auxiliary publication/retirement stays
     // on the watcher/input paths rather than mutating bindings inside readback.
     const live = omniboxPopupRect(state, binding.bounds.x / binding.scale, binding.bounds.y / binding.scale,

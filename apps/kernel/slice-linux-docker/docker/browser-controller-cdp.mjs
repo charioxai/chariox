@@ -94,8 +94,10 @@ export class BrowserCdpClient {
     stageUploads,
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
+    focusWorldSource,
   } = {}) {
     this.applyCanonicalDisplay = applyCanonicalDisplay;
+    this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
     this.fetchImpl = fetchImpl;
@@ -124,6 +126,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
+    this.pageFramesByTarget = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
@@ -239,7 +242,7 @@ export class BrowserCdpClient {
         this.downloadCancellationReasons.clear();
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
-        this.documentIdsByTarget.clear();
+        this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
@@ -269,7 +272,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -390,7 +393,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -442,7 +445,7 @@ export class BrowserCdpClient {
     this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId);
-    this.documentIdsByTarget.delete(targetId);
+    this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.dialogDefaults.delete(targetId);
@@ -489,6 +492,7 @@ export class BrowserCdpClient {
     if (focus.status === "rejected") throw focus.reason;
     if (frames.status === "rejected") throw frames.reason;
     this.documentIdsByTarget.set(target.targetId, documentId);
+    if (this.pageFramesByTarget.get(target.targetId)?.frame.loaderId !== documentId) this.pageFramesByTarget.set(target.targetId, { connection, sessionId, frame });
     return {
       target_id: target.targetId,
       ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
@@ -1041,6 +1045,14 @@ export class BrowserCdpClient {
   // MP-11: region protection inspects isolated frames through these sessions.
   frameSession(frameId, connection) { return this.frameSessions.sessionFor(frameId, connection); }
 
+  // MP-08/MP-10/MP-11: navigation events are ordered with CDP replies. Reuse
+  // only this live connection/session/loader; a cold or retired binding queries.
+  currentPageFrame(targetId) {
+    const entry = this.pageFramesByTarget.get(targetId);
+    return entry && entry.connection === this.connection && entry.connection?.isOpen?.() === true
+      && entry.sessionId === this.sessionsByTarget.get(targetId)
+      && entry.frame.loaderId === this.documentIdsByTarget.get(targetId) ? entry : null;
+  }
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -1095,6 +1107,9 @@ export class BrowserCdpClient {
     this.targetsBySession.set(sessionId, targetId);
     try {
       await Promise.all([
+        ...(this.focusWorldSource ? [connection.send("Page.addScriptToEvaluateOnNewDocument", {
+          source: this.focusWorldSource, worldName: FOCUS_WORLD, runImmediately: true,
+        }, sessionId)] : []),
         connection.send("Page.enable", {}, sessionId),
         connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
         connection.send("Runtime.enable", {}, sessionId),
@@ -1202,11 +1217,16 @@ export class BrowserCdpClient {
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
+    if (message?.method === "Page.frameStartedLoading") {
+      const targetId = this.targetsBySession.get(message.sessionId), entry = this.pageFramesByTarget.get(targetId);
+      if (entry?.frame.id === message.params?.frameId) this.pageFramesByTarget.delete(targetId);
+    }
     if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       const targetId = this.targetsBySession.get(message.sessionId);
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt: performance.timeOrigin + performance.now() });
         for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
     }

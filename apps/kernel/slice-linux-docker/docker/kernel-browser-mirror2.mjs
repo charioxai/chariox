@@ -156,20 +156,21 @@ export class Mirror2 {
   parentWorld(stream) { return stream.world; }
   async world(tab, stream) {
     const targetAt = timestamp();
-    const { connection, sessionId } = await this.host.browser.resolvePageTarget(tab.target_id);
-    const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
+    const cached = this.host.browser.currentPageFrame?.(tab.target_id);
+    const { connection, sessionId } = cached ?? await this.host.browser.resolvePageTarget(tab.target_id);
+    const frameTree = cached ? { frame: cached.frame } : (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
     this.host.timing?.('mirror2_world_target', targetAt);
     const installAt = timestamp();
     const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
-      const installed = await connection.send('Runtime.evaluate', { expression: mirror2ObserverExpression(), contextId: world.contextId, returnByValue: true }, sessionId);
+      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId);
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
     this.host.timing?.('mirror2_world_install', installAt);
-    const out = { connection, sessionId, contextId: world.contextId, frame: frameTree.frame, ref: observerRef(stream) };
+    const out = { connection, sessionId, contextId: world.contextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
     const cssAt = timestamp();
     await this.watchCss(out, frameTree.frame.id, stream.id);
     this.host.timing?.('mirror2_world_css', cssAt);
@@ -272,7 +273,7 @@ export class Mirror2 {
     // unchanged document reuses its world without renderer round trips (a busy page answers those only after
     // its task, holding the next long poll and its echo behind it). Anything else resolves afresh.
     const kept = this.kept(stream, command.generation);
-    const tab = kept?.tab ?? await this.host.displayTarget({ tab_id: stream.tab_id, generation: command.generation });
+    const tab = kept?.tab ?? await (this.host.mirrorTarget ?? this.host.displayTarget).call(this.host, { tab_id: stream.tab_id, generation: command.generation });
     assertNotCancelled(signal);
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
@@ -288,7 +289,7 @@ export class Mirror2 {
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
-    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(PAINT_HOLD_MS), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;

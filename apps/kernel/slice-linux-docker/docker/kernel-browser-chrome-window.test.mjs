@@ -589,18 +589,36 @@ test("MP-11 UI dispatch keeps occlusion live through focus release, then steady 
   await windows.inWindowOverNow(rect); assert.equal(reads, 2, "steady page frames keep that observation")
 })
 
-// MP-08/MP-10/MP-11 review60e: a toolbar click is not an ongoing omnibox interval.
-test('MP-10 toolbar focus without an omnibox list uses one post-dispatch read',async()=>{
+// MP-08/MP-10/MP-11: toolbar focus is not proof that a delayed list cannot open.
+// Steady frames resume the cached path once the physical page has its focus back.
+test('MP-10 page focus release ends live occlusion checks after one fresh probe', async () => {
  const host={generation:3,arbiter:{chromeFocus:{generation:3,window_generation:7}}},windows=new ChromeWindows(host);
  windows.bound={tabbed:{isCurrent:()=>true,window_generation:7,scale:1,bounds:{x:0,y:0,width:1280,height:887},page_rect:{top:87}},auxiliary:[]};
  let reads=0;windows.readOmnibox=async()=>{reads++;return ['hidden']};
  const rect={left:0,top:100,width:20,height:20},finish=windows.uiInput();
  await windows.inWindowOverNow(rect);finish();await windows.inWindowOverNow(rect);
+ host.arbiter.chromeFocus=null;
  for(let n=0;n<10;n++)assert.equal(await windows.inWindowOverNow(rect),false);
- assert.equal(reads,2,'no CDP roundtrip per steady video frame after the toolbar dispatch');
- const next=windows.uiInput();await windows.inWindowOverNow(rect);next();await windows.inWindowOverNow(rect);
- assert.equal(reads,4,'new UI dispatch always rechecks before and after');
- host.arbiter.chromeFocus={generation:3,window_generation:7};
- await windows.inWindowOverNow(rect);await windows.inWindowOverNow(rect);
- assert.equal(reads,5,'a fresh keyboard focus claim cannot reuse the previous negative observation');
+ assert.equal(reads,2,'page focus release makes the cached post-dispatch negative usable');
+});
+
+test('MP-11 delayed omnibox opening after a negative probe still fences the next readback', async () => {
+ const host={generation:3,arbiter:{chromeFocus:{generation:3,window_generation:7}}},windows=new ChromeWindows(host);
+ windows.bound={tabbed:{isCurrent:()=>true,window_generation:7,scale:1,bounds:{x:0,y:0,width:1280,height:887},page_rect:{top:87}},auxiliary:[]};
+ let visible=false;windows.readOmnibox=async()=>visible?['visible',103,25,1078,90,1110,178]:['hidden'];
+ const rect={left:120,top:100,width:20,height:20},finish=windows.uiInput();finish();
+ assert.equal(await windows.inWindowOverNow(rect),false);
+ visible=true;
+ assert.equal(await windows.inWindowOverNow(rect),true,'no watcher tick or new input between the hidden and visible states');
+});
+
+test('MP-11 an occlusion probe cannot be shared across native input revisions', async () => {
+ const host={generation:3,arbiter:{chromeFocus:{generation:3,window_generation:7}}},windows=new ChromeWindows(host);
+ windows.bound={tabbed:{isCurrent:()=>true,window_generation:7,scale:1,bounds:{x:0,y:0,width:1280,height:887},page_rect:{top:87}},auxiliary:[]};
+ const old=Promise.withResolvers();let reads=0;
+ windows.readOmnibox=async()=>++reads===1?old.promise:['visible',103,25,1078,90,1110,178];
+ const rect={left:120,top:100,width:20,height:20},first=windows.inWindowOverNow(rect),finish=windows.uiInput(),second=windows.inWindowOverNow(rect);
+ old.resolve(['hidden']);
+ assert.equal(await first,true,'a read crossed by new input holds its pixels conservatively');
+ assert.equal(await second,true);assert.equal(reads,2);finish();
 });

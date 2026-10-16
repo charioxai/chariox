@@ -345,10 +345,10 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
 // MP-08/MP-10 (owner A/B 2026-10-14, finding 4/6): a navigated document's first snapshot waits for its first
 // contentful paint (bounded); a packet on the same document never waits.
 test('MP-08/MP-10: a new document is held until its first contentful paint before the reset snapshot', async () => {
-  const run = async (document, after = 1, issued = 1, previous = 'D1') => {
+  const run = async (document, after = 1, issued = 1, previous = 'D1', age = 0) => {
     const policy = { targets: [] }, calls = [], tab = { tab_id: 't', target_id: 'T', document_id: document };
     const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: document } } }) };
-    const world = { connection, sessionId: 'S', frame: { loaderId: document }, ref: 'm' };
+    const world = { connection, sessionId: 'S', frame: { loaderId: document }, ref: 'm', navigatedAt: performance.timeOrigin + performance.now() - age };
     const stream = { tab_id: 't', world, issued, document_id: previous, policy, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
     const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
       browser: { connection, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', 'S']]) } };
@@ -363,6 +363,8 @@ test('MP-08/MP-10: a new document is held until its first contentful paint befor
   const navigated = await run('D2'), hold = navigated.findIndex(call => call.includes('first-contentful-paint')), snapshot = navigated.indexOf('m.snapshot()');
   assert.ok(hold >= 0 && snapshot > hold, 'the hold precedes the new document snapshot');
   assert.equal(held(await run('D1')), false, 'same document: no hold');
+  const expired = (await run('D2', 1, 1, 'D1', 3000)).find(call => call.includes('first-contentful-paint'));
+  assert.ok(expired.includes('Date.now() + 0;'), 'world/CSS setup consumes the navigation hold budget instead of restarting it');
   // Review #1009 P2: a viewer resynchronizing while the navigation commits still gets the held first paint.
   assert.ok(held(await run('D2', 0)), 'client reset (after_sequence 0) on a new document: held');
   assert.ok(held(await run('D2', 2, 20)), 'credit far behind on a new document: held');
@@ -456,4 +458,12 @@ test('MP-10: CSS activation does not block the first mirror world', async () => 
   try {
     assert.equal(await Promise.race([mirror.watchCss(world, 'f', 'stream').then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 50))]), true);
   } finally { finish(); }
+});
+
+
+test('MP-10: a current event-bound frame avoids duplicate cold target/frame queries', async () => {
+ const frame={id:'f',loaderId:'doc'},connection={send:async(method)=>{assert.equal(method,'Runtime.evaluate');return{result:{value:true}}}};
+ const browser={currentPageFrame:()=>({connection,sessionId:'s',frame,navigatedAt:1}),resolvePageTarget:async()=>{throw Error('duplicate target lookup')},ensureFocusWorld:async()=>({contextId:1})};
+ const mirror=new Mirror2({host:{browser}});mirror.watchCss=async()=>{};
+ assert.equal((await mirror.world({target_id:'t',document_id:'doc'},{id:'stream'})).frame,frame);
 });

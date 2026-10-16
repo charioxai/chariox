@@ -1,3 +1,4 @@
+import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
@@ -69,7 +70,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection }) } = {}) {
+  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
     this.chromium = chromium;
@@ -458,6 +459,13 @@ export class KernelBrowserHost {
     const tab = this.tabs.get(command.tab_id);
     if (!tab) throw new UserDomainRefusal("not_granted");
     return tab;
+  }
+  async mirrorTarget(command) {
+    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
+    const stored = this.tabs.get(command.tab_id);
+    if (!stored) throw new UserDomainRefusal("not_granted");
+    const current = this.browser.currentPageFrame?.(stored.target_id);
+    return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
   async displayTarget(command, native = false) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
