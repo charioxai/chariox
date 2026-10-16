@@ -687,6 +687,8 @@ fn waiting_room_structural_version(
                 "id": project.id,
                 "owner_user_id": project.owner_user_id,
                 "workspace_id": project.workspace_id,
+                "workspace_ids": project.workspace_ids,
+                "pinned": project.pinned,
                 "name": project.name,
                 "kind": project.kind,
                 "status": project.status,
@@ -2220,5 +2222,26 @@ mod tests {
             waiting_room_structural_version(&structural_change, &[], &[], false, None, None)
                 .unwrap(),
         );
+    }
+}
+
+#[cfg(test)]
+mod owner15_projection_tests {
+    #[test]
+    fn mp08_owner15_pin_changes_structural_revision_for_all_subscribers() {
+        let project = crate::session::RuntimeProject::new(
+            "p",
+            "u",
+            "/repo",
+            "Project",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        let mut projects = super::waiting_room_public_project_summaries(&[project], &[], "u");
+        let before =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        projects[0].pinned = true;
+        let after =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        assert_ne!(before, after);
     }
 }
