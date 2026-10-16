@@ -183,6 +183,21 @@ test('MP-10: protocol 489 bodies from 512 bytes deflate in the subscription cont
   mirror.dispose({ ...stream, frames: new Map() }); stream.deflate?.close();
 });
 
+test('MP-08/MP-10/MP-11 compression spans cover only compressed packets and retain exact Unicode bodies', async () => {
+  const samples = [], mirror = new Mirror2({ host: { timing: (stage, started) => samples.push({ stage, started }) } }), stream = {};
+  const small = { wire: 2, sequence: 1, ops: [] };
+  const body = sequence => ({ wire: 2, sequence, ops: [{ op: 'text', id: 'n2', text: 'HTML λ🙂'.repeat(4096) }] });
+  try {
+    assert.deepEqual(await mirror.encode(stream, small), small);
+    assert.equal(samples.length, 0, 'plain input echoes do not report compression work');
+    const packets = [await mirror.encode(stream, body(2)), await mirror.encode(stream, body(3))];
+    const decoded = inflateRawSync(Buffer.concat(packets.map(p => Buffer.from(p.packet_base64, 'base64'))), { finishFlush: zlib.Z_SYNC_FLUSH });
+    assert.equal(decoded.toString(), JSON.stringify(body(2)) + JSON.stringify(body(3)));
+    assert.equal(samples.length, 2);
+    for (const sample of samples) { assert.equal(sample.stage, 'mirror2_deflate'); assert(Number.isFinite(sample.started) && sample.started > 0); }
+  } finally { stream.deflate?.close(); }
+});
+
 test("MP-10: review #941-4 leading @import rules keep their layer/supports/media conditions; later or brace-bearing ones are skipped", () => {
   const text = '@charset "utf-8";/* c */@layer a, b;@import url("../a.css") screen;\n@import "b.css" layer(x) supports(not (display: grid)) print and (min-width: 10px);@import url(c.css) layer;@import url(d.css) screen{} x;.y{}@import url(e.css);';
   assert.deepEqual(cssImports(text), { layers: "@layer a, b;", imports: [

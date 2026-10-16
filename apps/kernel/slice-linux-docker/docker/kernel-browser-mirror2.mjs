@@ -485,11 +485,14 @@ export class Mirror2 {
     const { resources, tiles, ...body } = packet, text = Buffer.from(JSON.stringify(body));
     if (packet.reset) { stream.deflate?.close(); stream.deflate = null; }
     if (text.length < DEFLATE_MIN_BYTES) return packet;
-    if (!stream.deflate) { const created = stream.deflate = createDeflateRaw({ level: 9, memLevel: 9 }); created.chunks = []; created.on('data', chunk => created.chunks.push(chunk)).on('error', () => {}); }
-    const deflate = stream.deflate;
+    // MP-08/MP-10: level 9 repeatedly searches the large continuation child lists.
+    // Level 6 retains the same stream/dictionary with bounded CPU per credit.
+    if (!stream.deflate) { const created = stream.deflate = createDeflateRaw({ level: 6, memLevel: 9 }); created.chunks = []; created.on('data', chunk => created.chunks.push(chunk)).on('error', () => {}); }
+    const deflate = stream.deflate, deflateAt = timestamp();
     try {
       await new Promise((resolve, reject) => { deflate.once('error', reject); deflate.write(text); deflate.flush(zlib.Z_SYNC_FLUSH, () => { deflate.off('error', reject); resolve(); }); });
     } catch (error) { deflate.close(); if (stream.deflate === deflate) stream.deflate = null; throw error; }
+    this.host.timing?.('mirror2_deflate', deflateAt);
     const compressed = Buffer.concat(deflate.chunks); deflate.chunks = [];
     return { wire: 2, sequence: packet.sequence, ...(packet.reset ? { reset: true } : {}), encoding: 'deflate', packet_bytes: text.length, packet_base64: compressed.toString('base64'), ...(resources ? { resources } : {}), ...(tiles ? { tiles } : {}) };
   }
