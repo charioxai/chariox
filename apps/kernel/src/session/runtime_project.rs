@@ -45,7 +45,7 @@ pub struct RuntimeProject {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_ids: Vec<String>,
     name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
     kind: RuntimeProjectKind,
     status: RuntimeProjectStatus,

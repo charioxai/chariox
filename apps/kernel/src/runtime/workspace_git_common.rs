@@ -423,7 +423,11 @@ mod tests {
 mod owner14_tests {
     #[test]
     fn mp02_mp08_owner14_workspace_label_requires_a_git_remote() {
-        let root = tempfile::tempdir().unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Scratch { fn path(&self) -> &std::path::Path { &self.0 } }
+        impl Drop for Scratch { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let root = Scratch(std::env::temp_dir().join(format!("wrux-owner14-{}", rand::random::<u64>())));
+        std::fs::create_dir_all(root.path()).unwrap();
         assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);
         assert!(std::process::Command::new("git").args(["init", "-q"]).arg(root.path()).status().unwrap().success());
         assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);

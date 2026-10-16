@@ -131,7 +131,7 @@ pub struct WaitingRoomPublicProjectSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_ids: Vec<String>,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
     pub kind: crate::session::RuntimeProjectKind,
     pub status: crate::session::RuntimeProjectStatus,

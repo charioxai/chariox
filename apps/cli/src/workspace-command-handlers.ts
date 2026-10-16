@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   RuntimeSession,
   WorkspaceLinkDefinition,
@@ -64,8 +65,7 @@ export async function handleWorkspaceSlashCommand(
 ): Promise<void> {
   const [resource, action, ...args] = command.args
   if (resource === "sync") {
-    deps.flashFooter("This command is unavailable", "error") // MP-08 OWNER-20: discontinued.
-    return
+    if (!workspaceLiveSyncUiEnabled) { deps.flashFooter("This command is unavailable", "error"); return } // MP-08 OWNER-20: discontinued.
     await handleWorkspaceSyncCommand(deps, action, args)
     return
   }

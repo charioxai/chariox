@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "./workspace-live-sync-mode.js"
 import { resolve as resolvePath } from "node:path"
 
 import type {
@@ -46,7 +47,7 @@ export async function executeWorkspaceCommand(
 ): Promise<ShellCommandResult> {
   const [resource, action, ...args] = parsed.args
   if (resource === "sync") {
-    return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20: discontinued, implementation retained below.
+    if (!workspaceLiveSyncUiEnabled) return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20: discontinued, implementation retained below.
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {

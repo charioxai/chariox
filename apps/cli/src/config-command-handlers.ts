@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   CharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload,
@@ -49,8 +50,7 @@ export async function handleConfigSlashCommand(
     return
   }
   if (subcommand === "workspace-live-sync") {
-    deps.flashFooter("This command is unavailable", "error") // MP-08 OWNER-20: discontinued.
-    return
+    if (!workspaceLiveSyncUiEnabled) { deps.flashFooter("This command is unavailable", "error"); return } // MP-08 OWNER-20: discontinued.
     await setWorkspaceLiveSyncMode(deps, keyPath, rest)
     return
   }

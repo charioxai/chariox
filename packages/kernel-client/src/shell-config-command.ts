@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "./workspace-live-sync-mode.js"
 import type {
   CharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload,
@@ -86,7 +87,7 @@ export async function executeConfigCommand(
     }
   }
   if (action === "workspace-live-sync") {
-    return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20
+    if (!workspaceLiveSyncUiEnabled) return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20
     const mode = normalizeWorkspaceLiveSyncPolicy(keyPath ?? "off")
     if (rest.length > 0 || !mode) {
       return { ok: false, message: "usage: config workspace-live-sync off|managed|tracked" }
