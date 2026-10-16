@@ -18,6 +18,7 @@ assert.equal(url.protocol,'https:','MP-10: use the actual hosted View route');
 const profile=required('CHARIOX_ROOM_DISPLAY_DRILL_PROFILE');
 const evidence=required('CHARIOX_ROOM_DISPLAY_DRILL_EVIDENCE');
 const helper=required('CHARIOX_ROOM_DISPLAY_NETWORK_CHANGE_HELPER');
+const expectInitialResume=process.env.CHARIOX_ROOM_DISPLAY_EXPECT_INITIAL_RESUME==='1';
 for(const value of [profile,evidence,helper])assert(path.isAbsolute(value)&&!value.startsWith(process.cwd()+path.sep),'MP-11: state, helper and evidence must be absolute and outside the checkout');
 const {chromium}=await import(pathToFileURL(required('PLAYWRIGHT_MODULE')).href);
 const cells=[[1440,900,1],[1440,900,2],[1920,1080,1],[1920,1080,2]];
@@ -41,12 +42,18 @@ async function changeNetwork(){
 try{
  for(const [width,height,deviceScaleFactor]of cells){
   const name=`${width}x${height}-dpr${deviceScaleFactor}`,directory=path.join(evidence,name);await mkdir(directory,{recursive:true});
-  const cell={name,width,height,deviceScaleFactor,status:'FAIL',changes:[],pageErrors:0,consoleErrors:0,closedSockets:0};report.cells.push(cell);
+  const cell={name,width,height,deviceScaleFactor,status:'FAIL',changes:[],pageErrors:0,consoleErrors:0,closedSockets:0,initialResumeWrites:0};report.cells.push(cell);
   const context=await chromium.launchPersistentContext(profile,{headless:false,executablePath:process.env.VALENV_CHROMIUM??'/opt/google/chrome/chrome',viewport:{width,height},deviceScaleFactor,recordVideo:{dir:directory,size:{width,height}},args:['--no-sandbox',`--force-device-scale-factor=${deviceScaleFactor}`,`--window-size=${width},${height+87}`]});
   try{
    const page=context.pages()[0]??await context.newPage();
    page.on('pageerror',()=>{cell.pageErrors++});page.on('console',message=>{if(message.type()==='error')cell.consoleErrors++});
-   page.on('websocket',socket=>socket.on('close',()=>{cell.closedSockets++}));
+   page.on('websocket',socket=>{
+    socket.on('close',()=>{cell.closedSockets++});
+    socket.on('framesent',frame=>{
+     // Observe only the envelope kind. Never retain grants, keys or payloads.
+     if(typeof frame.payload==='string'){try{if(JSON.parse(frame.payload)?.kind==='client_connect_display_resume')cell.initialResumeWrites++}catch{}}
+    });
+   });
    await page.goto(url.href,{waitUntil:'domcontentloaded'});
    const canvas=page.locator('[data-view-display-canvas]').first();
    await canvas.waitFor({state:'visible',timeout:30000});
@@ -67,7 +74,7 @@ try{
    assert.equal(await page.evaluate(()=>devicePixelRatio),deviceScaleFactor);
    await page.screenshot({path:path.join(directory,'before.png')});
    for(let index=0;index<3;index++){
-    const previous=await canvas.getAttribute('data-display-stream-id'),closedBefore=cell.closedSockets,started=await page.evaluate(()=>performance.now());
+    const previous=await canvas.getAttribute('data-display-stream-id'),closedBefore=cell.closedSockets,initialBefore=cell.initialResumeWrites,started=await page.evaluate(()=>performance.now());
     const measurements=await changeNetwork();
     await page.waitForFunction(old=>{const canvas=document.querySelector('[data-view-display-canvas]');return canvas?.dataset.paintMode==='video'&&canvas.dataset.displayStreamId!==old},previous,{timeout:1000});
     const stream=await canvas.getAttribute('data-display-stream-id');
@@ -80,9 +87,11 @@ try{
      // The canvas path commits in rAF; a second rAF bounds the next paint.
      painted_ms=await page.evaluate(started=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(performance.now()-started)))),started);
     }
-    cell.changes.push({index,painted_ms,paint_observer:track?'requestVideoFrameCallback':'two viewer animation frames',...measurements,socket_closed:cell.closedSockets>closedBefore});
+    const initial_resume_write=cell.initialResumeWrites>initialBefore;
+    cell.changes.push({index,painted_ms,paint_observer:track?'requestVideoFrameCallback':'two viewer animation frames',...measurements,socket_closed:cell.closedSockets>closedBefore,initial_resume_write});
     await page.screenshot({path:path.join(directory,`after-${index}.png`)});
     assert(cell.closedSockets>closedBefore,'MP-10: the network change did not retire the actual client socket');
+    if(expectInitialResume)assert(initial_resume_write,'MP-10: recovery did not use the negotiated connect+initial535 path');
     assert(painted_ms<=1000,`MP-10: network change to painted frame ${painted_ms.toFixed(1)}ms >1s`);
    }
    assert.equal(cell.pageErrors,0,'MP-10: a real viewer page error is a failure');cell.status='PASS-NETWORK-CELL';

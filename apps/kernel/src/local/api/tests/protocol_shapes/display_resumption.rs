@@ -82,7 +82,7 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
     let bytes = include_bytes!("display-registration-535.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "bd3b96605c2cc8c92f6b1322217abb768aaf62f16a133e6b842e7825d660f45f"
+        "3536030716c9af742a85728784bef7c7cb761e4e0cf9e9ef83dec582e1422a3c"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     // The registration shape introduced at 535/143 is carried unchanged by later versions.
@@ -101,6 +101,19 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
         chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE
     );
     assert!(value["registration"]["resume_from_event_id"].is_null());
+    let connect: chariox_relay::protocol::RelayEnvelope =
+        serde_json::from_value(value["initial_connect"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(connect).unwrap(),
+        value["initial_connect"]
+    );
+    assert_eq!(
+        value["connect_capability"],
+        chariox_relay::frame_transport::DISPLAY_RESUME_CONNECT_CAPABILITY
+    );
+    let mut wrong_scope = value["initial_connect"].clone();
+    wrong_scope["registration"]["subscription_scope"] = serde_json::json!("session");
+    assert!(serde_json::from_value::<chariox_relay::protocol::RelayEnvelope>(wrong_scope).is_err());
     let peer: crate::transport::relay_peer::RelayPeerRequest =
         serde_json::from_value(value["worker_request"].clone()).unwrap();
     assert_eq!(serde_json::to_value(peer).unwrap(), value["worker_request"]);
