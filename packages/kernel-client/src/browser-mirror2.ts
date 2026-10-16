@@ -891,7 +891,7 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 539')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const releaseHold = transport.prioritize?.() ?? (() => {})
@@ -942,7 +942,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       for (const seq of buffered.keys()) if (seq <= wire.sequence) buffered.delete(seq)
       const next = await expand(wire)
       if (next.fallback === 'navigation_preview' && handlers.preparing) { renderer.holdForHandover?.(); handlers.preparing(next) }
-      else if (!next.fallback) await renderer.apply(next)
+      else if (!next.fallback) {
+        // MP-08/MP-10/MP-11: native fallback recovery can start with an
+        // ordinary reset. Hold it before any prefix reaches the visible view.
+        if (next.reset && handlers.prepareReset?.(next) === true) renderer.holdForHandover?.()
+        await renderer.apply(next)
+      }
       // Only an applied packet ends a failure streak (a reply that cannot be applied does not).
       base = next; failures = 0; failingSince = 0
       if (next.fallback && next.fallback !== 'navigation_preview' || renderer.painted === undefined) releasePriority()

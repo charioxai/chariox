@@ -648,3 +648,17 @@ test('MP-08/MP-10/MP-11 native preview keeps credits alive and a handover flush 
   assert(commands.some(c=>c.flush&&c.wait_ms===0));
  }finally{await view.close();assert(closed)}
 });
+
+// MP-08/MP-10/MP-11: recovery over an existing video also has a staged reset.
+test('MP-08/MP-10/MP-11 a recovery reset holds the renderer before any reset content applies',async()=>{
+ const calls:string[]=[];let issued=0;
+ const request=async(r:any)=>{const c=r.KernelBrowser.command;
+  if(c.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
+  if(c.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
+  if(++issued>1)await new Promise(resolve=>setTimeout(resolve,10));
+  return{KernelBrowser:{result:packet(issued,issued===1)}};
+ };
+ const renderer=()=>({frame:{}as HTMLIFrameElement,ready:async()=>{},close:()=>{},holdForHandover:()=>calls.push('hold'),apply:async()=>{calls.push('apply')}});
+ const mirror=await attachBrowserMirror2({protocolVersion:540,request},{}as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:assert.fail,prepareReset:()=>{calls.push('prepare');return true}}as any,{renderer,credits:1,waitMs:0});
+ try{await until(()=>calls.includes('apply'),1000);assert.deepEqual(calls.slice(0,3),['prepare','hold','apply'])}finally{await mirror.close()}
+});
