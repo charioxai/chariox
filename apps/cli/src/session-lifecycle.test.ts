@@ -252,6 +252,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   await controller.attachBinding({ id: "session-2" }, false)
 
   assert.deepEqual(events, [
+    "setSessionHydratingState",
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
     "setSessionHydratingState",
@@ -309,6 +310,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "listSessions",
     "setAvailableSessions",
     "scheduleShortViewportHistoryCheck",
+    "setSessionHydratingState",
   ])
 })
 

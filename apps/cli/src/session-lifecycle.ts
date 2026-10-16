@@ -202,8 +202,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.requestRender()
   }
 
+  // A switch moves the live attachment aside while the new view loads; cleanup
+  // and later selections must still see it.
+  const currentAttachment = () => deps.attachmentState() ?? pendingAttachment
+
   const detachCurrentAttachment = async () => {
-    const attachment = deps.attachmentState() ?? pendingAttachment
+    const attachment = currentAttachment()
     if (!attachment) {
       return
     }
@@ -243,13 +247,54 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     return true
   }
 
+  // The previous attachment survived a failed selection: show it again.
+  const restorePendingAttachment = async () => {
+    const attachment = pendingAttachment
+    if (!attachment) return
+    pendingAttachment = null
+    try {
+      const session = await deps.getSessionState(attachment.session_id)
+      applyAttachedState(session, attachment, false)
+      const run = session.active_provider_run_id ? await deps.tryGetProviderRun(session.active_provider_run_id) : null
+      deps.setProviderRunState(run)
+      if (run) {
+        deps.syncCliProviderSelection({
+          provider: run.provider,
+          model: run.model,
+          effort: run.variant ?? deps.cliOptions.effort,
+        })
+      }
+      deps.bumpHistoryLoadGeneration()
+      applyAttachedState(
+        await deps.hydrateAttachedSessionBinding(session.id, attachment.id, session),
+        attachment,
+        false,
+      )
+      await deps.syncKernelEventSubscription?.()
+    } catch (error) {
+      try {
+        await deps.detachAttachment(attachment.id)
+      } catch (detachError) {
+        deps.logWarning?.("failed to detach the previous session after restore failed", {
+          attachment_id: attachment.id,
+          error: formatError(detachError),
+        })
+      }
+      await transitionToNoSession(`Could not restore the previous session: ${formatError(error)}`)
+    }
+    deps.setSessionHydratingState(false)
+    deps.requestRender()
+  }
+
+  // Selecting a session hands the view to its placeholder at once. The returned
+  // settle callback runs when the selection ends, and undoes it on failure.
   const prepareSessionSelection = (session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) => {
-    const currentAttachment = deps.attachmentState() ?? pendingAttachment
-    if (currentAttachment?.session_id === session.id) return
+    const previous = currentAttachment()
+    if (previous?.session_id === session.id) return
     // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
     // Move display ownership now, with no attachment or launch authority.
-    if (currentAttachment) {
-      pendingAttachment ??= currentAttachment
+    if (previous) {
+      pendingAttachment ??= previous
       const pending = deps.deriveDetachedCliTransitionState({
         cliOptions: deps.cliOptions,
         waitingRoomState: deps.waitingRoomState(),
@@ -273,14 +318,21 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       deps.setStatusLine(`Loading session ${session.alias?.trim() || session.id}…`)
-      deps.setSessionHydratingState(true)
+    }
+    // Hydrating also tells prompt submission that a selection is pending.
+    deps.setSessionHydratingState(true)
+    if (previous) {
       deps.updateSessionChrome()
       deps.requestRender()
-      return () => {
-        if (deps.attachmentState() || deps.sessionState().id !== session.id) return
+    }
+    return async () => {
+      if (deps.attachmentState()) return
+      if (pendingAttachment) {
+        await restorePendingAttachment()
+      } else if (previous) {
+        await transitionToNoSession("Could not open the selected session.")
+      } else {
         deps.setSessionHydratingState(false)
-        deps.updateSessionChrome()
-        deps.requestRender()
       }
     }
   }
@@ -290,11 +342,11 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     createdSession: boolean,
     launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
   ) => {
-    const currentAttachment = deps.attachmentState() ?? pendingAttachment
+    const previousAttachment = currentAttachment()
     if (deps.attachmentState()?.session_id === session.id) {
       return
     }
-    prepareSessionSelection(session)
+    const settleSelection = prepareSessionSelection(session)
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
     let sessionHydratingCleared = false
@@ -307,14 +359,14 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     deps.setSessionHydratingState(true)
     try {
-      if (currentAttachment) {
+      if (previousAttachment) {
         try {
-          await deps.detachAttachment(currentAttachment.id)
+          await deps.detachAttachment(previousAttachment.id)
         } catch (error) {
-          if (!formatError(error).includes(`attachment \`${currentAttachment.id}\` was not found`)) throw error
+          if (!formatError(error).includes(`attachment \`${previousAttachment.id}\` was not found`)) throw error
         }
       }
-      if (pendingAttachment?.id === currentAttachment?.id) pendingAttachment = null
+      if (pendingAttachment?.id === previousAttachment?.id) pendingAttachment = null
       const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
 
       const provisionalSession = isCompleteSessionSnapshot(session)
@@ -483,6 +535,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.scheduleShortViewportHistoryCheck()
     } finally {
       clearSessionHydrating()
+      await settleSelection?.()
     }
   }
 
@@ -506,6 +559,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
 
   return {
     transitionToNoSession,
+    currentAttachment,
     detachCurrentAttachment,
     rollbackAttachedSession,
     prepareSessionSelection,

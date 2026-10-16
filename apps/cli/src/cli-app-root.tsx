@@ -1011,7 +1011,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
-    isAttached, anyTurnWork, sessionState, attachmentState, providerRunState,
+    isAttached, sessionHydrating, anyTurnWork, sessionState, attachmentState, providerRunState,
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
