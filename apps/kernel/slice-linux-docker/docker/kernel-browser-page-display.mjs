@@ -25,14 +25,20 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   if(command.generation!==host.generation||command.target||
    !command.codecs?.includes('png')||!command.codecs.includes('avc1.420033')||command.codecs.length>8||
    !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor))refuse();
-  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation,document=tab.document_id;
+  // MP-08/MP-10/MP-11: the mirror and its native preview use the same
+  // event-bound document owner. Stored state may lag a committed navigation.
+  const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation,document=tab.document_id;
   const window=host.chromeWindows.current().tabbed;
-  const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+  const frameProof=host.browser.currentPageFrame?.(tab.target_id);
+  const {connection,sessionId}=frameProof??await host.browser.resolvePageTarget(tab.target_id);
+  const documentCurrent=()=>host.tabs.get(tab.tab_id)?.target_id===tab.target_id&&(frameProof
+   ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
+   :host.tabs.get(tab.tab_id)?.document_id===document);
   const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
-  const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&host.tabs.get(tab.tab_id)?.document_id===document;
+  const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent();
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
   if(!await current())refuse();
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,

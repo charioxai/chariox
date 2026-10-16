@@ -12,6 +12,12 @@ restoration keeps the fence closed. A later source start may repeat the original
 restoration proof; only its success closes that failed interval, and old pixels
 remain excluded. Closing either source cancels its pending readback retry.
 
+Visible-page previews also reuse the mirror's live connection/session/loader
+reference before native admission. Replacing that reference retires the lease,
+even if a loader value returns. The shared region setup reuses that same live
+binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
+policy and mask fences remain mandatory before delivery.
+
 Security anchors: `browser-capture-presentation.mjs`, `kernel-browser-native.mjs`
 and `kernel-desktop-source.mjs` in `apps/kernel/slice-linux-docker/docker/`.
 The pixel predicate, document/window leases and Vault masks are unchanged.

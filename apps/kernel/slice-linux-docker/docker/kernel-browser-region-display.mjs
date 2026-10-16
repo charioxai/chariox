@@ -9,7 +9,8 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
  let source,stream;
  try {
   const pageTab=overlayTab??tab;
-  const {connection,sessionId}=await host.browser.resolvePageTarget(pageTab.target_id);
+  const cached=host.browser.currentPageFrame?.(pageTab.target_id);
+  const {connection,sessionId}=cached?.frame.loaderId===pageTab.document_id?cached:await host.browser.resolvePageTarget(pageTab.target_id);
   const scale=window.scale,sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[target.kind]??0;
   const validateCurrent=args.validateCurrent&&(async(lease_phase=1)=>{
    const at=performance.timeOrigin+performance.now();

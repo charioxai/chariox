@@ -109,3 +109,18 @@ test('MP-08/MP-10/MP-11 mirrored visible-page capture survives video close with 
  mirror.policy={unknown:false};await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));mirror.policy=policy;
  change=true;await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
 });
+
+
+test('MP-08/MP-10/MP-11 visible-page startup shares the mirror document owner while stored state catches up',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');const connection={send:async()=>({cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}})};let proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+ const stored={tab_id:'t',target_id:'target',document_id:'old'},tab={...stored,document_id:'new'};
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',stored]]),displays:new Map(),
+  displayTarget:async()=>{throw Error('renderer document query is busy')},mirrorTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>proof,resolvePageTarget:async()=>{throw Error('cold target query is busy')}},timing:()=>{},armDisplayExpiry:()=>{}};
+ class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+ const result=await subscribeVisiblePage(host,{op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1},'terminal:a',undefined,{Capture});
+ assert.equal(result.document_id,'new');const stream=host.displays.get(result.subscription_id);assert.equal(await stream.regionCurrent(),true);
+ proof={...proof};assert.equal(await stream.regionCurrent(),false,'a replaced navigation proof cannot re-admit the same loader');await stream.close();
+});
