@@ -150,61 +150,6 @@ impl SkillCatalogStorage {
         }
         Ok(next)
     }
-    pub fn record_load(&self, record: &SkillLoadRecord) -> Result<(), DaemonError> {
-        if record.delivered_at_ms == 0 {
-            return Err(failure(
-                "skill availability is not delivery acknowledgement",
-            ));
-        }
-        let _lock = self.lock()?;
-        super::home_journal::verify(self)?;
-        if self.loads(&record.session_id)?.iter().any(|previous| {
-            previous.skill_id == record.skill_id
-                && previous.agent_id == record.agent_id
-                && previous.run_id == record.run_id
-                && previous.context_generation == record.context_generation
-                && previous.digest == record.digest
-        }) {
-            return Ok(());
-        }
-        self.durable.append_event(
-            "skills.v2.loaded",
-            Some(record.session_id.clone()),
-            serde_json::to_value(record).map_err(|_| failure("invalid load receipt"))?,
-        )?;
-        Ok(())
-    }
-    /// Session history is not a capped activity tail: all confirmed receipts
-    /// remain available for active Manual loads, compaction and acknowledgement
-    /// idempotency even after other agents generate more than one journal page.
-    pub fn loads(&self, session_id: &str) -> Result<Vec<SkillLoadRecord>, DaemonError> {
-        super::home_journal::verify(self)?;
-        let through_sequence = self.durable.latest_event_sequence()?;
-        let mut after_sequence = 0;
-        let mut records = Vec::new();
-        loop {
-            let page = self.durable.load_subject_events_by_kind_after(
-                session_id,
-                "skills.v2.loaded",
-                after_sequence,
-                200,
-            )?;
-            if page.is_empty() {
-                break;
-            }
-            for event in page {
-                if event.sequence > through_sequence {
-                    return Ok(records);
-                }
-                after_sequence = event.sequence;
-                records.push(
-                    serde_json::from_value(event.payload)
-                        .map_err(|_| failure("invalid durable skill load receipt"))?,
-                );
-            }
-        }
-        Ok(records)
-    }
     fn project(&self, snapshot: &SkillCatalogSet) -> Result<(), DaemonError> {
         for catalog in &snapshot.catalogs {
             let relative = match &catalog.scope {

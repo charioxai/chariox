@@ -65,8 +65,9 @@ impl SkillCatalogStorage {
             cursor.loaded_after,
             200,
         )? {
-            let record: SkillLoadRecord = serde_json::from_value(event.payload)
+            let bound: super::load_history::StoredSkillLoad = serde_json::from_value(event.payload)
                 .map_err(|_| failure("invalid durable skill delivery event"))?;
+            let record = bound.record;
             if record.session_id != session_id || record.delivered_at_ms == 0 {
                 return Err(failure("skill delivery event does not match this session"));
             }

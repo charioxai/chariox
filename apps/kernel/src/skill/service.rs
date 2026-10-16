@@ -342,7 +342,12 @@ impl SkillCatalogService {
             .into_iter()
             .map(|id| (id, SkillLoadReason::Explicit))
             .collect();
-        for previous in self.storage.loads(session_id)?.into_iter().rev() {
+        for previous in self
+            .storage
+            .active_loads(session_id, project_id, revision)?
+            .into_iter()
+            .rev()
+        {
             if previous.agent_id == agent_id
                 && rows.iter().any(|r| {
                     r.skill.id == previous.skill_id && r.effective_state != SkillState::Off

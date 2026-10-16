@@ -1143,3 +1143,202 @@ fn skills_v2_watch_scopes_changes_and_pages_acknowledged_loads_without_a_new_sto
         .is_empty());
     assert_eq!(f.storage.loads("session").unwrap().len(), 201);
 }
+
+// MP-08 / MP-10 / MP-11: history is not continuing authority after revocation.
+#[test]
+fn skills_v2_manual_load_stays_revoked_after_off_and_reenable() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nBODY\n",
+    );
+    let skill = &set.catalogs[0].skills[0];
+    let receipt = SkillLoadRecord {
+        skill_id: skill.id.clone(),
+        digest: skill.digest.clone(),
+        session_id: "s".into(),
+        agent_id: "a".into(),
+        run_id: "r".into(),
+        prompt_id: "p".into(),
+        reason: SkillLoadReason::Explicit,
+        context_generation: "g1".into(),
+        delivered_at_ms: 1,
+    };
+    f.storage.record_load(&receipt).unwrap();
+    for state in [SkillState::Off, SkillState::Manual] {
+        f.storage
+            .publish(
+                &SkillCatalogMutation {
+                    scope: SkillScope::Chariox,
+                    expected_revision: f.storage.snapshot().unwrap().revision,
+                    actions: vec![SkillCatalogAction::SetState {
+                        skill_id: skill.id.clone(),
+                        state: Some(state),
+                    }],
+                },
+                &BTreeMap::new(),
+            )
+            .unwrap();
+    }
+    let turn = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "continue",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "g2",
+        )
+        .unwrap();
+    assert!(
+        turn.loaded.is_empty(),
+        "re-enabling Manual must not revive revoked instructions"
+    );
+    assert_eq!(
+        f.storage.loads("s").unwrap(),
+        [receipt],
+        "delivery history remains visible"
+    );
+    let selected = service
+        .pinned_turn(
+            None,
+            "a",
+            "s",
+            "$review",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "g3",
+        )
+        .unwrap();
+    assert_eq!(
+        selected.loaded.len(),
+        1,
+        "a fresh explicit selection remains allowed"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a late provider ACK is history, not new user authority.
+#[test]
+fn skills_v2_late_ack_cannot_cross_revocation_but_a_fresh_selection_can() {
+    let f = StorageFixture::new();
+    let (_, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nBODY\n",
+    );
+    let skill = &set.catalogs[0].skills[0];
+    let receipt = SkillLoadRecord {
+        skill_id: skill.id.clone(),
+        digest: skill.digest.clone(),
+        session_id: "s".into(),
+        agent_id: "a".into(),
+        run_id: "r".into(),
+        prompt_id: "p".into(),
+        reason: SkillLoadReason::Explicit,
+        context_generation: "old".into(),
+        delivered_at_ms: 1,
+    };
+    for state in [SkillState::Off, SkillState::Manual] {
+        f.storage
+            .publish(
+                &SkillCatalogMutation {
+                    scope: SkillScope::Chariox,
+                    expected_revision: f.storage.snapshot().unwrap().revision,
+                    actions: vec![SkillCatalogAction::SetState {
+                        skill_id: skill.id.clone(),
+                        state: Some(state),
+                    }],
+                },
+                &BTreeMap::new(),
+            )
+            .unwrap();
+    }
+    f.storage
+        .record_load_at_revision(&receipt, Some("project-a"), 1)
+        .unwrap();
+    assert_eq!(f.storage.loads("s").unwrap().len(), 1);
+    assert!(f
+        .storage
+        .active_loads("s", Some("project-a"), 3)
+        .unwrap()
+        .is_empty());
+    let fresh = SkillLoadRecord {
+        prompt_id: "new-prompt".into(),
+        context_generation: "new".into(),
+        ..receipt
+    };
+    f.storage
+        .record_load_at_revision(&fresh, Some("project-a"), 3)
+        .unwrap();
+    assert_eq!(
+        f.storage.active_loads("s", Some("project-a"), 3).unwrap(),
+        [fresh.clone()]
+    );
+    assert!(f
+        .storage
+        .active_loads("s", Some("project-b"), 3)
+        .unwrap()
+        .is_empty());
+    assert!(f
+        .storage
+        .record_load_at_revision(&fresh, Some("project-a"), 4)
+        .is_err());
+    assert_eq!(f.storage.loads("s").unwrap().len(), 2);
+}
+
+// MP-08 / MP-10 / MP-11: Project-local Off revokes only that Project's active copy.
+#[test]
+fn skills_v2_project_revocation_does_not_revoke_another_project_load() {
+    let f = StorageFixture::new();
+    let (_, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nBODY\n",
+    );
+    let skill = &set.catalogs[0].skills[0];
+    for project_id in ["project-a", "project-b"] {
+        let receipt = SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: skill.digest.clone(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            run_id: "r".into(),
+            prompt_id: project_id.into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: project_id.into(),
+            delivered_at_ms: 1,
+        };
+        f.storage
+            .record_load_at_revision(&receipt, Some(project_id), 1)
+            .unwrap();
+    }
+    for state in [SkillState::Off, SkillState::Manual] {
+        f.storage
+            .publish(
+                &SkillCatalogMutation {
+                    scope: project("project-a"),
+                    expected_revision: f.storage.snapshot().unwrap().revision,
+                    actions: vec![SkillCatalogAction::SetState {
+                        skill_id: skill.id.clone(),
+                        state: Some(state),
+                    }],
+                },
+                &BTreeMap::new(),
+            )
+            .unwrap();
+    }
+    assert!(f
+        .storage
+        .active_loads("s", Some("project-a"), 3)
+        .unwrap()
+        .is_empty());
+    let other = f.storage.active_loads("s", Some("project-b"), 3).unwrap();
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].context_generation, "project-b");
+    assert_eq!(f.storage.loads("s").unwrap().len(), 2);
+}

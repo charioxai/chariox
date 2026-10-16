@@ -7,6 +7,7 @@ pub mod catalog;
 mod catalog_tests;
 pub mod frontmatter;
 mod home_journal;
+mod load_history;
 mod package;
 #[cfg(test)]
 mod package_tests;

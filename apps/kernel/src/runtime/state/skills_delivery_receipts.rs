@@ -115,7 +115,11 @@ impl SkillDispatchService {
                             && pending.prompt_id == record.prompt_id
                             && pending.context_generation == record.context_generation
                     }) {
-                        service.storage.record_load(&record)?;
+                        service.storage.record_load_at_revision(
+                            &record,
+                            Some(&current.project_id),
+                            current.catalog_revision,
+                        )?;
                         self.changes.record_change();
                     }
                 }
