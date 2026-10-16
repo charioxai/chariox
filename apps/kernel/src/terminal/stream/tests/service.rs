@@ -1332,3 +1332,45 @@ fn workflow_run_updates_are_bounded_per_attachment() {
     );
     assert!(terminal.workflow_run_update_records.is_empty());
 }
+
+// MP-08/MP-10/MP-11: a delayed leased assessment echo can outlive the
+// active-prompt lookup. Its kernel-owned ID still makes it agent-only.
+#[test]
+fn completion_check_prompt_echo_without_origin_is_not_delivered_to_clients() {
+    for origin in [
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        Some(crate::session::PromptOrigin::External),
+    ] {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "leased:run-1",
+            Some("agent-1"),
+            "goal-check-prompt-1-1-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"internal completion assessment",
+        );
+        assert!(
+            terminal
+                .drain_output_records("session-1", "attachment-1")
+                .is_empty(),
+            "origin={origin:?}"
+        );
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "leased:run-1",
+            Some("agent-1"),
+            "prompt-owner-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"ordinary owner prompt",
+        );
+        let delivered = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, b"ordinary owner prompt");
+    }
+}
