@@ -1206,13 +1206,16 @@ impl ProviderAccountProfileRegistry {
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check.
+        // A worker replica never holds the token: home supplies it per launch,
+        // so an unobserved replica defers to the provider run's own request.
         let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
             && profile.provider == "claude"
-            && crate::provider::provider_account_credential_registered(
+            && (crate::provider::provider_account_credential_registered(
                 owner_user_id,
                 "claude",
                 &profile.profile_id,
-            )?;
+            )? || (profile.auth_state == ProviderAccountAuthState::Unknown
+                && self.is_materialized_replica(owner_user_id, "claude", &profile.profile_id)?));
         if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
@@ -2583,6 +2586,20 @@ impl ProviderAccountProfileRegistry {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn is_materialized_replica(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
+                .materialized_replica,
+        )
     }
 
     pub(crate) fn is_legacy_unpinned_replica(
