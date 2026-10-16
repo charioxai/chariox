@@ -459,6 +459,7 @@ mod slice_project_source;
 mod slice_runtime_state;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod skills_catalog_runtime;
+pub(crate) use skills_catalog_runtime::control_capabilities;
 mod skills_dispatch;
 mod skills_native_inventory;
 mod skills_subscription;

@@ -123,10 +123,7 @@ impl DaemonApp {
         })?;
         Ok(RelayStatus {
             runtime_process_identity: crate::runtime::kernel_process_identity::current(),
-            capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
+            capabilities: crate::runtime::state::control_capabilities(&self.durable_state_store()),
             configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
             connected,
             relay_url: self.config().relay_url.clone(),

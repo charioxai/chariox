@@ -14,6 +14,25 @@ use base64::Engine;
 // delivery, tools, mutation authorization or transfer. Flip only with those wired.
 pub(super) const SKILLS_V2_RUNTIME_INTEGRATED: bool = false;
 
+fn skills_runtime_ready(durable: &DurableKernelStateStore) -> bool {
+    SKILLS_V2_RUNTIME_INTEGRATED
+        && durable.owns_skill_catalog()
+        && durable.skills_v2_reset_complete().unwrap_or(false)
+}
+
+/// MP-08 / MP-10 / MP-11: all status/registration paths project one kernel-owned gate.
+pub(crate) fn control_capabilities(durable: &DurableKernelStateStore) -> Vec<String> {
+    capabilities_for_readiness(skills_runtime_ready(durable))
+}
+fn capabilities_for_readiness(ready: bool) -> Vec<String> {
+    crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .iter()
+        .copied()
+        .chain(ready.then_some(crate::local::SKILLS_V2_RUNTIME_CAPABILITY))
+        .map(str::to_owned)
+        .collect()
+}
+
 fn unavailable() -> DaemonError {
     DaemonError::LocalTransport {
         operation: "skills.v2",
@@ -30,13 +49,10 @@ fn skill_error(message: &str) -> DaemonError {
 
 impl KernelRuntimeState {
     pub(crate) fn skills_v2_runtime_available(&self) -> bool {
-        SKILLS_V2_RUNTIME_INTEGRATED
-            && self.owned.durable_state_store.owns_skill_catalog()
-            && self
-                .owned
-                .durable_state_store
-                .skills_v2_reset_complete()
-                .unwrap_or(false)
+        skills_runtime_ready(&self.owned.durable_state_store)
+    }
+    pub(crate) fn control_capabilities(&self) -> Vec<String> {
+        control_capabilities(&self.owned.durable_state_store)
     }
     pub(crate) fn ensure_skills_v2_catalog_ready(&self) -> Result<(), DaemonError> {
         self.skills_catalog_service().map(|_| ())
@@ -620,4 +636,30 @@ fn verified_body(
     let body =
         String::from_utf8(bytes).map_err(|_| skill_error("skill instructions must be UTF-8"))?;
     Ok((body, root.to_string_lossy().into_owned()))
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    #[test]
+    fn skill_runtime_capability_follows_readiness_without_changing_other_controls() {
+        let closed = capabilities_for_readiness(false);
+        assert_eq!(
+            closed,
+            crate::local::RUNTIME_CONTROL_CAPABILITIES
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        );
+        let ready = capabilities_for_readiness(true);
+        assert_eq!(
+            ready
+                .iter()
+                .filter(|value| value.as_str() == crate::local::SKILLS_V2_RUNTIME_CAPABILITY)
+                .count(),
+            1
+        );
+        assert!(closed.iter().all(|value| ready.contains(value)));
+        assert_eq!(ready.len(), closed.len() + 1);
+    }
 }
