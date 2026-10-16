@@ -420,16 +420,18 @@ async fn handle_json_rpc_value(
                 // Claude Code's `--permission-prompt-tool` contract: the result
                 // is exactly one text block holding the JSON-stringified
                 // decision. No `structuredContent`: Claude Code may forward
-                // that in place of the text block. Instruction bodies likewise
-                // use one text block: exporting both forms can duplicate the
-                // same loaded body in a provider's model context (MP-08/10/11).
+                // that in place of the text block. Skill instruction bodies
+                // and discovery use one text block: exporting both forms can
+                // duplicate instruction bodies or the bounded metadata page
+                // in a provider's context (MP-08 / MP-10 / MP-11).
                 Ok(result)
                     if result.ok
                         && (tool_name
                             == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL
                             || crate::transport::runtime_tools::canonical_skill_tool_name(
                                 tool_name,
-                            ) == Some(crate::transport::runtime_tools::LOAD_SKILL_TOOL)) =>
+                            )
+                            .is_some()) =>
                 {
                     Ok(json_response(
                         StatusCode::OK,

@@ -22,12 +22,14 @@ impl KernelRuntimeState {
         self.ensure_skills_v2_catalog_ready()?;
         self.authorize_current_external_command()?;
         let origin_prompt_id;
+        let mut discovery_cursor = None;
         let request = match tool {
             crate::transport::runtime_tools::LIST_SKILLS_TOOL => {
                 let args: ListSkillsArgs = serde_json::from_value(arguments)
                     .map_err(|_| failure("invalid list_skills arguments"))?;
                 self.current_skill_tool_prompt(session.id(), agent.id(), &args.origin_prompt_id)?;
                 origin_prompt_id = args.origin_prompt_id;
+                discovery_cursor = args.cursor.clone();
                 SkillsV2Request::List {
                     session_id: session.id().into(),
                     agent_id: agent.id().into(),
@@ -102,18 +104,47 @@ impl KernelRuntimeState {
                 Some(super::super::skills_turn_authority::SkillToolOrigin {
                     session_id: session.id().into(),
                     agent_id: agent.id().into(),
-                    prompt_id: origin_prompt_id,
+                    prompt_id: origin_prompt_id.clone(),
                 }),
             )
             .await?;
         let crate::local::LocalDaemonResponse::SkillsV2 { result } = response else {
             return Err(failure("unexpected home catalog response"));
         };
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::to_value(result)
-                .map_err(|_| failure("cannot encode skill runtime response"))?,
-        })
+        let payload = if let crate::skill::v2::SkillsV2Response::Page {
+            revision,
+            skills,
+            next_cursor,
+        } = result
+        {
+            let prompt =
+                self.current_skill_tool_prompt(session.id(), agent.id(), &origin_prompt_id)?;
+            let authority = prompt
+                .skill_turn_authority()
+                .ok_or_else(|| failure("this turn has no admitted skill catalog"))?;
+            let run = self
+                .owned
+                .provider_store
+                .get_run(&authority.provider_run_id)?;
+            crate::skill::model_metadata::page(
+                revision,
+                &skills,
+                next_cursor.as_deref(),
+                discovery_cursor.as_deref(),
+                run.usage().context_window,
+                self.owned
+                    .config_projection
+                    .snapshot()
+                    .user_config
+                    .skills
+                    .metadata_budget_percent
+                    .get(),
+            )?
+        } else {
+            serde_json::to_value(result)
+                .map_err(|_| failure("cannot encode skill runtime response"))?
+        };
+        Ok(RuntimeToolResult { ok: true, payload })
     }
 
     pub(in crate::runtime::state) fn current_skill_tool_prompt(

@@ -8,6 +8,7 @@ mod catalog_tests;
 pub mod frontmatter;
 mod home_journal;
 mod load_history;
+pub(crate) mod model_metadata;
 mod package;
 #[cfg(test)]
 mod package_tests;
