@@ -104,3 +104,24 @@ test('MP-08/MP-10/MP-11 worker trace joins each viewer and resumed delivery with
  }finally{await f.display.close()}
  assert.equal(flushes,1,'MP-10 shutdown must flush the last worker delivery markers');
 });
+
+// MP-08/MP-10: an idle producer wait of one viewer's frame pump must not hold
+// the Room queue, or a recovering viewer waits behind every other pump.
+test('MP-08/MP-10 one viewer idle producer wait never delays another viewer or its own resume',async()=>{
+ const f=fixture(),waiters=new Set(),wake=()=>{for(const done of waiters)done();waiters.clear()};
+ f.display.display.createProducer=()=>({feedback(){},invalidate(){},close:async()=>{},take:()=>null,
+  waitReady:()=>new Promise(resolve=>{waiters.add(resolve);setTimeout(resolve,400)}),wakeReady:wake});
+ const within=async(promise,ms,label)=>{let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(label)),ms)})])}finally{clearTimeout(timer)}};
+ try{
+  const a=await f.request(offer),b=await f.request({...offer,observed_by:'room-lease-two'});
+  const pump=(binding,owner)=>f.request({op:'screenshot',subscription_id:binding.subscription_id,observed_by:owner,generation:1,after_sequence:0,push:{reset:false,congested:false}});
+  for(const [binding,owner] of [[a,offer.observed_by],[b,'room-lease-two']])await f.request({op:'display_attach',subscription_id:binding.subscription_id,observed_by:owner,generation:1});
+  const waitingA=pump(a,offer.observed_by),waitingB=pump(b,'room-lease-two');
+  await new Promise(resolve=>setTimeout(resolve,20));
+  f.syncClock();
+  const resumed=await within(f.request({op:'display_resume_attach',subscription_id:a.subscription_id,observed_by:offer.observed_by,generation:1}),200,'resume queued behind idle producer waits');
+  assert.equal(resumed.resumed,true);
+  await within(f.request({op:'display_attach',subscription_id:b.subscription_id,observed_by:'room-lease-two',generation:1}),200,'attach queued behind an idle producer wait');
+  await Promise.all([waitingA,waitingB]);
+ }finally{await f.display.close()}
+});
