@@ -1906,17 +1906,26 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    failed_workflow_delegate_settlement(false).await;
+    failed_workflow_delegate_settlement(false, false).await;
+}
+
+// MP-08 / MP-10 / MP-11: one parent task may accept two invocations that share
+// an unbound delegate; the first failure must not cancel the second's delegate.
+#[tokio::test]
+async fn a01_failed_workflow_preserves_delegate_shared_with_live_invocation() {
+    failed_workflow_delegate_settlement(false, true).await;
 }
 
 // MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
 // failure in the same invocation, including repeated lifecycle sweeps.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
-    failed_workflow_delegate_settlement(true).await;
+    failed_workflow_delegate_settlement(true, false).await;
 }
 
-async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
+const SECOND_INVOCATION: &str = "second-invocation-run";
+
+async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_delegate: bool) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -2004,6 +2013,18 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
     } else {
         None
     };
+    if shared_delegate {
+        // A second accepted invocation by the same parent that still needs the delegate.
+        let mut restored = serde_json::to_value(owned.session_store.get_session(&fixture.session_id).unwrap()).unwrap();
+        let mut second = restored["workflow_runs"][0].clone();
+        second["id"] = serde_json::json!(SECOND_INVOCATION);
+        second["active_node_run_id"] = serde_json::Value::Null;
+        second["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
+        second["node_runs"][0]["status"] = serde_json::json!("Created");
+        restored["workflow_runs"].as_array_mut().unwrap().push(second);
+        owned.session_store.write().restore_session(serde_json::from_value(restored).unwrap());
+        owned.persist_workflow_runtime_session(session.id(), "shared_delegate_fixture").unwrap();
+    }
     for (parent, agent) in [
         ("failed-parent", &fixture.unrelated_agent_id),
         ("independent-parent", &fixture.second_target_agent_id),
@@ -2042,6 +2063,30 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
                     id,
                     accepted: true,
                     resource: Some(resource),
+                })
+                .unwrap();
+        }
+    }
+    if shared_delegate {
+        for (id, kind) in [("failed-parent-second-workflow", "workflow_run")] {
+            store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: fixture.session_id.clone(),
+                    agent: fixture.unrelated_agent_id.clone(),
+                    prompt: "failed-parent".into(),
+                    run: None,
+                    id: id.into(),
+                    kind: kind.into(),
+                    resource: Some(SECOND_INVOCATION.into()),
+                    now,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: id.into(),
+                    accepted: true,
+                    resource: Some(SECOND_INVOCATION.into()),
                 })
                 .unwrap();
         }
@@ -2121,6 +2166,10 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
     }
     let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
     assert_eq!(parent.state, ExecutionState::Blocked);
+    if shared_delegate {
+        assert_eq!(parent.obligations[0].status, "open", "MP-08 / MP-10 / MP-11: a live second invocation keeps the shared delegate");
+        return;
+    }
     assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
     let independent = tasks
         .iter()

@@ -68,16 +68,9 @@ pub(super) fn settle_unstarted_delegates(
     }) {
         return Ok(false);
     }
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",
-            params![owner_id, task.room_id, source],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some(raw) = raw else { return Ok(false) };
-    let run: crate::session::WorkflowRun = decode(&raw)?;
+    let Some(run) = load_run(tx, owner_id, &task.room_id, source)? else {
+        return Ok(false);
+    };
     if run.created_by_agent_id() != Some(task.agent_id.as_str())
         || !matches!(
             run.status(),
@@ -86,12 +79,40 @@ pub(super) fn settle_unstarted_delegates(
     {
         return Ok(false);
     }
+    // Another accepted invocation by this parent may still need the same
+    // unbound delegate; only the last live user of it can cancel it.
+    let mut shared_agents = Vec::new();
+    for other in task.obligations.iter().filter(|o| {
+        o.tracks_workflow_run()
+            && o.status == "open"
+            && o.dispatch_state == "accepted"
+            && o.resource_id.as_deref() != Some(source)
+    }) {
+        let Some(other_id) = other.resource_id.as_deref() else {
+            continue;
+        };
+        if let Some(other_run) = load_run(tx, owner_id, &task.room_id, other_id)? {
+            if !other_run.status().is_terminal() {
+                shared_agents.extend(
+                    other_run
+                        .node_runs()
+                        .iter()
+                        .filter(|n| n.status() != crate::session::WorkflowNodeRunStatus::Completed)
+                        .map(|n| n.agent_id().to_string()),
+                );
+            }
+        }
+    }
     let mut changed = false;
     for obligation in &mut task.obligations {
         if obligation.kind != "delegate"
             || obligation.status != "open"
             || obligation.dispatch_state != "accepted"
             || obligation.completion_task_id.is_some()
+            || obligation
+                .resource_id
+                .as_deref()
+                .is_some_and(|agent| shared_agents.iter().any(|a| a == agent))
         {
             continue;
         }
@@ -140,4 +161,21 @@ pub(super) fn settle_unstarted_delegates(
         changed = true;
     }
     Ok(changed)
+}
+
+fn load_run(
+    tx: &Transaction<'_>,
+    owner_id: &str,
+    room: &str,
+    run: &str,
+) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",
+            params![owner_id, room, run],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    raw.map(|raw| decode(&raw)).transpose()
 }
