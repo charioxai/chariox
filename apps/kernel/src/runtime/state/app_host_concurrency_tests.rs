@@ -98,6 +98,7 @@ async fn host_offer_concurrency() {
         Some(&agent),
         "installed",
         Some(epoch),
+        None,
     );
     let (entered, waiting) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
@@ -187,6 +188,7 @@ async fn host_offer_concurrency() {
             Some(&agent),
             "installed",
             Some(epoch),
+            None,
         );
         let connection =
             rusqlite::Connection::open(state.owned.durable_state_store.path()).unwrap();

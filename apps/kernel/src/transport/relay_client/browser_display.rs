@@ -520,6 +520,7 @@ mod paired_tests {
                 identity: None,
                 public_key: public,
                 resume: None,
+                recover: false,
             },
         )
         .await;
