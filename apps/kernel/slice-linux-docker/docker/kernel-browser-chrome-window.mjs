@@ -280,19 +280,23 @@ export class ChromeWindows {
     const watcher = this.watcher ??= {reads: new Set(), timer: null};
     watcher.reads.add(read);
     const tick = async () => {
-      for (const next of [...watcher.reads].reverse()) {
-        let rows;
-        try { rows = await next(); } catch { continue; }
-        try { this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } catch {}
-        break;
-      }
-        if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
+      await this.observeRows();
+      if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };
     if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
     return () => {
       watcher.reads.delete(read);
       if (!watcher.reads.size) { clearTimeout(watcher.timer); this.watcher = null; }
     };
+  }
+  /** One read of the watched inventory now (a band input's reply sees the menu it opened). */
+  async observeRows() {
+    for (const next of [...this.watcher?.reads ?? []].reverse()) {
+      let rows;
+      try { rows = await next(); } catch { continue; }
+      try { this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } catch {}
+      return;
+    }
   }
   /** Protocol 530 state: popups of the band's window, CSS px from the window's top-left. */
   auxiliaryState() {
@@ -353,6 +357,8 @@ export const bandChord = matches([[key('l'), CTRL], [key('t'), CTRL], [key('w'),
 
 // The native tab strip's height in the band (DIP); the toolbar row starts below it.
 const STRIP_HEIGHT = 41;
+// PERF_AUDIT 4.2.6: how long a strip input's reply waits for Chrome to show another Tab.
+const FOLLOW_MS = 150;
 
 export class InputArbiter {
   constructor(host, windows) { this.host = host; this.windows = windows; }
@@ -384,7 +390,29 @@ export class InputArbiter {
    * the browser shortcuts go to Chrome's UI whatever the focus; every other key, text
    * or chord may land in the page (X focus decides), so it passes the page's own
    * text-target fence first (Vault-only fields, cross-origin frames fail closed). */
-  async input({stream, command, signal}) {
+  async input(args) {
+    const follow = {switches: false};
+    const reply = await this.dispatchInput(args, follow);
+    try { return await this.followed(reply, args.command, follow.switches); } catch { return reply; }
+  }
+  /** PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left: the Tab
+   * the strip now shows and its popups (the omnibox list a key opened, a menu a click opened). The
+   * viewer follows in this round trip instead of at its next state read. A Tab the kernel has not
+   * adopted yet (a new Tab) is left to that state read. */
+  async followed(reply, command, switches) {
+    const before = this.host.tabs.get(command.tab_id)?.target_id;
+    let active = before;
+    if (switches) for (const end = performance.now() + FOLLOW_MS; ;) {
+      active = await this.host.tabGroups?.active?.().catch(() => null) ?? null;
+      if (active !== before || performance.now() >= end) break;
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    if (switches) await this.windows.observeRows?.();
+    await this.windows.refreshWarm?.();
+    const window = this.host.chromeWindow?.(), tab = [...this.host.tabs.values()].find(t => t.target_id === active);
+    return window && tab ? {...reply, chrome_window: {...window, active_tab_id: tab.tab_id}} : reply;
+  }
+  async dispatchInput({stream, command, signal}, follow) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
@@ -433,7 +461,7 @@ export class InputArbiter {
       return {dispatched: true};
     };
     // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
-    const switching = async () => { const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
+    const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
     // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
     const omnibox = on => { this.inOmnibox = on; this.windows.focusOmnibox?.(on); };
