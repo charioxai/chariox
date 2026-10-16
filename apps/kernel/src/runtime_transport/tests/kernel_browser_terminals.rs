@@ -250,6 +250,7 @@ async fn mdnotes_two_local_connections_child() {
                     device_scale_factor: 1,
                     wire: None,
                     navigation_preview: None,
+                    font_requirements: None,
                 },
             )
             .await,
@@ -355,6 +356,7 @@ async fn mdnotes_two_local_connections_child() {
                     device_scale_factor: 1,
                     wire: None,
                     navigation_preview: None,
+                    font_requirements: None,
                 },
             )
             .await,

@@ -167,6 +167,23 @@ test('MP-08/MP-10/MP-11 the renderer requires native font certificates only afte
  }
 })
 
+test('MP-08/MP-10/MP-11 a typed legacy kernel retries only an unknown font field once', async () => {
+ const missing = 'unknown field `font_requirements`, expected one of `tab_id`, `generation`, `device_scale_factor`, `wire`, `navigation_preview`'
+ let subscriptions = 0
+ const f = flow(async command => {
+  if (command.op === 'mirror_subscribe') { subscriptions++; if (command.font_requirements) throw Error(missing); return { subscription_id: 's' } }
+  return command.op === 'mirror_close' ? { closed: true } : new Promise(() => {})
+ })
+ const mirror = await f.start(); await mirror.close()
+ assert.equal(subscriptions, 2); assert.equal(f.requests[1]!.font_requirements, undefined); assert.deepEqual(f.fontNegotiations, [false])
+ for (const message of ['MP-11: mirror font negotiation', 'permission denied', 'unknown field `navigation_preview`']) {
+  let calls = 0
+  const refused = flow(async () => { calls++; throw Error(message) })
+  await assert.rejects(refused.start(), error => error instanceof Error && error.message === message)
+  assert.equal(calls, 1, 'no schema fallback for permission or other negotiation failures')
+ }
+})
+
 test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
   let sequence = 0
   const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's' } : command.op === 'mirror_close' ? { closed: true } : (sequence++, command.after_sequence === 0 ? packet(sequence, true, null) : packet(sequence, false, sequence - 1)))

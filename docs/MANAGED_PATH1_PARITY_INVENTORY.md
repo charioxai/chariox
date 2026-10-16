@@ -1,5 +1,18 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 typed font opt-in (2026-10-16)
+
+The native-font snapshot drill caught the missing Rust command field before a
+matching binary was produced (242 protocol checks passed; the new round-trip
+failed on the unknown field). The typed request now carries the optional font
+opt-in through the existing mirror dispatcher; omission preserves prior request
+bytes. New viewers retry once without that opt-in only when an older typed
+kernel explicitly rejects that field before dispatch. Other errors, including
+permissions and other unknown fields, propagate. Positive font requirements
+still need the kernel acknowledgement; a retry retains conservative legacy
+checks. Client fail-first and a real older-kernel UI rejection are recorded;
+matching-built and legacy real UI validation remain required.
+
 ## MP-08 / MP-10 / MP-11 standalone canvas fidelity (2026-10-16)
 
 Real BBC source-versus-viewer screenshots show a white native canvas becoming

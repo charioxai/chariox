@@ -29,6 +29,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             device_scale_factor: 2,
             wire: None,
             navigation_preview: None,
+            font_requirements: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -46,6 +47,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             device_scale_factor: 2,
             wire: Some(2),
             navigation_preview: None,
+            font_requirements: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -218,7 +220,10 @@ fn browser_mirror2_sheet_cache_539_shape_is_pinned() {
 fn browser_mirror2_navigation_539_shape_is_pinned() {
     // MP-08/MP-10/MP-11: same unreleased mirror allocation, negotiated preview + causal drain.
     let snapshot = include_str!("browser-mirror2-navigation-539.json");
-    assert_eq!(format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())), "01ec5e7e5494bcee432b57eb6da42070a4f847bdf93d5567dac7d886b2debe98");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
+        "01ec5e7e5494bcee432b57eb6da42070a4f847bdf93d5567dac7d886b2debe98"
+    );
     let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
     for value in fixture["commands"].as_array().unwrap() {
@@ -227,7 +232,10 @@ fn browser_mirror2_navigation_539_shape_is_pinned() {
     }
     let preview = serde_json::json!({"KernelBrowser":{"result":fixture["preview"]}});
     let preview: LocalDaemonResponse = serde_json::from_value(preview).unwrap();
-    assert_eq!(serde_json::to_value(preview).unwrap()["KernelBrowser"]["result"], fixture["preview"]);
+    assert_eq!(
+        serde_json::to_value(preview).unwrap()["KernelBrowser"]["result"],
+        fixture["preview"]
+    );
 }
 
 #[test]
@@ -267,7 +275,10 @@ fn browser_mirror2_document_font_requirements_539_shape_is_pinned() {
     );
     let subscribe: LocalDaemonRequest =
         serde_json::from_value(fixture["subscribe"].clone()).unwrap();
-    assert_eq!(serde_json::to_value(subscribe).unwrap(), fixture["subscribe"]);
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
     for name in ["subscribed", "reset", "ready_delta", "cleared_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();

@@ -40,6 +40,9 @@ pub enum KernelBrowserCommand {
         /// Protocol 539/147: allow protected native video during mirror preparation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         navigation_preview: Option<bool>,
+        /// MP-08/MP-10/MP-11: additive unreleased539 native document font proof.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font_requirements: Option<bool>,
     },
     /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
     /// poll answered by the next page change; credits apply in sequence.

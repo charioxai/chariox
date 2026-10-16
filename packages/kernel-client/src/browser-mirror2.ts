@@ -930,7 +930,14 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const releaseHold = transport.prioritize?.() ?? (() => {})
   let priorityReleased = false
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
-  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(handlers.preparing ? {navigation_preview:true} : {}) }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
+  const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(handlers.preparing ? {navigation_preview:true} : {}) }
+  const subscribed = await request(subscribe).catch(error => {
+    // A typed legacy kernel refused this field before creating a subscription.
+    // Omit only that unsupported opt-in; every other refusal remains terminal.
+    if (!(error instanceof Error) || !error.message.includes('unknown field `font_requirements`')) throw error
+    const { font_requirements: _unsupported, ...legacy } = subscribe
+    return request(legacy)
+  }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
