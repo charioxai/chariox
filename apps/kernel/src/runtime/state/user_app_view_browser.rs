@@ -8,6 +8,7 @@ use super::{
 use crate::{
     error::DaemonError,
     local::{AppFrontendBundle, UserAppView, UserAppViewBrowser},
+    runtime::app_views::AppViewBinding,
     runtime::browser_controller_app_view::{
         BrowserAppViewActor, BrowserAppViewCall, BrowserAppViewCalls, BrowserAppViewError,
         BrowserAppViewRequest,
@@ -93,6 +94,50 @@ impl KernelRuntimeState {
             tokio::spawn(async move { state.pump_user_app_browser(owner).await });
         }
         Ok(bound)
+    }
+
+    /// MP-08/MP-11: one App, one owner and one kernel browser is one Tab.
+    /// Opening it again shows that Tab with the current assets, as a Room's
+    /// App Tab does. None when no live Tab of this release exists; the caller
+    /// then opens a new one (a stale or updated Tab is retired first).
+    pub(super) async fn focus_user_app_browser(
+        &self,
+        owner: &str,
+        binding: &AppViewBinding,
+        frontend: &AppFrontendBundle,
+    ) -> Option<UserAppView> {
+        let instances = self.app_control().user_views();
+        let (hosted, view) = instances.hosted(owner, &binding.installation)?;
+        let browser = view.browser.clone()?;
+        let shown = hosted.generation == binding.generation
+            && KernelBrowserAppViewHost {
+                state: self,
+                owner,
+                generation: Some(browser.generation),
+            }
+            .command(BrowserAppViewRequest::Open {
+                origin_label: super::app_view_runtime::origin_label(owner, &view.installation_id),
+                installation_id: view.installation_id.clone(),
+                instance_id: Some(view.view_id.clone()),
+                entry: frontend.entry.clone(),
+                assets: frontend.assets.clone(),
+                page: None,
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value::<Opened>(value).ok())
+            .is_some_and(|opened| {
+                opened.origin == view.origin
+                    && opened.tab_id == browser.tab_id
+                    && opened.generation == browser.generation
+            });
+        if shown {
+            return instances.get(owner, &view.view_id).map(|(_, view)| view);
+        }
+        self.retire_user_app_browser(owner, &view.view_id, false)
+            .await;
+        None
     }
 
     /// MP-08/MP-11: the agent whose input drove a call must still hold this

@@ -405,28 +405,27 @@ fn run_drill(stall: bool, browser: bool) {
                     })
                     .is_err());
                 if browser {
-                    let LocalDaemonResponse::UserAppViewOpened { view: second, .. } = request(&router, "alice", LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+                    // MP-08/MP-11: one App, one owner, one kernel browser is one Tab;
+                    // opening it again focuses that Tab instead of adding another.
+                    let LocalDaemonResponse::UserAppViewOpened { view: again, .. } = request(&router, "alice", LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
                         installation_id: "installed".into(), host: Some(UserAppViewHost::KernelBrowser),
                     })).await.unwrap() else { panic!("second App open") };
-                    assert_ne!(view.view_id, second.view_id);
-                    assert_ne!(view.browser.as_ref().unwrap().tab_id, second.browser.as_ref().unwrap().tab_id);
-                    Box::pin(check_browser_page(&router, &second, &observed, 3)).await;
-                    Box::pin(check_browser_keyboard(&router, &second, &observed)).await;
-                    let second_browser = second.browser.as_ref().unwrap();
-                    let stream = browser_request(&router, KernelBrowserCommand::Subscribe {
-                        tab_id: second_browser.tab_id.clone(), generation: second_browser.generation,
-                    }).await;
-                    request(&router, "alice", LocalDaemonRequest::CloseUserAppView(UserAppViewRequest { view_id: second.view_id })).await.unwrap();
-                    assert!(request(&router, "alice", LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
-                        command: KernelBrowserCommand::Poll {
-                            subscription_id: stream["subscription_id"].as_str().unwrap().into(),
-                            generation: stream["generation"].as_u64().unwrap(),
-                        },
-                    })).await.is_err(), "closed App frame stream is revoked");
+                    assert_eq!(view.view_id, again.view_id);
+                    assert_eq!(view.browser, again.browser);
                     let state = browser_request(&router, KernelBrowserCommand::State).await;
                     assert_eq!(state["tabs"].as_array().unwrap().len(), 1);
                     assert_eq!(state["tabs"][0]["tab_id"], view.browser.as_ref().unwrap().tab_id);
+                    assert_eq!(listed_views(&router).await.len(), 1);
+                    Box::pin(check_browser_page(&router, &again, &observed, 3)).await;
+                    Box::pin(check_browser_keyboard(&router, &again, &observed)).await;
                 }
+                let view_browser = view.browser.clone();
+                let stream = match &view_browser {
+                    Some(b) => Some(browser_request(&router, KernelBrowserCommand::Subscribe {
+                        tab_id: b.tab_id.clone(), generation: b.generation,
+                    }).await),
+                    None => None,
+                };
                 let close = LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
                     view_id: view.view_id.clone(),
                 });
@@ -434,6 +433,14 @@ fn run_drill(stall: bool, browser: bool) {
                     request(&router, "bob", close.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 request(&router, "alice", close).await.unwrap();
+                if let Some(stream) = stream {
+                    assert!(request(&router, "alice", LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
+                        command: KernelBrowserCommand::Poll {
+                            subscription_id: stream["subscription_id"].as_str().unwrap().into(),
+                            generation: stream["generation"].as_u64().unwrap(),
+                        },
+                    })).await.is_err(), "closed App frame stream is revoked");
+                }
                 assert!(matches!(
                     request(&router, "alice", call).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
@@ -968,28 +975,6 @@ async fn check_agent_app_input(
         typed_call(observed, " owner-as-agent").await["context"]["actor"],
         serde_json::json!({"kind":"agent","id":agent.id()})
     );
-    // A new Tab of the same App, which no agent drove, is the owner's.
-    let LocalDaemonResponse::UserAppViewOpened { view: fresh, .. } = request(
-        router,
-        "alice",
-        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
-            installation_id: "installed".into(),
-            host: Some(UserAppViewHost::KernelBrowser),
-        }),
-    )
-    .await
-    .unwrap() else {
-        panic!("a fresh App Tab for the owner")
-    };
-    let fresh_browser = fresh.browser.as_ref().unwrap();
-    wait_for_page(router, fresh_browser, "App channel {\\\"ok\\\":true}").await;
-    owner_types(router, fresh_browser, " fresh-owner", true).await;
-    let owned = typed_call(observed, " fresh-owner").await;
-    assert_eq!(
-        owned["context"]["actor"],
-        serde_json::json!({"kind":"human","id":"alice"})
-    );
-    assert!(owned["context"].get("agent_id").is_none());
     // Once the agent's App grant is revoked, nothing from its Tab falls back
     // to the owner's authority.
     router
@@ -1016,17 +1001,61 @@ async fn check_agent_app_input(
         .any(|r| r["params"]["input"]["text"]
             .as_str()
             .is_some_and(|text| text.ends_with(" owner-after-revoke"))));
-    for view in [&view, &fresh] {
-        request(
-            router,
-            "alice",
-            LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
-                view_id: view.view_id.clone(),
-            }),
-        )
-        .await
-        .unwrap();
-    }
+    // Opening the App again focuses this Tab: no second Tab, and no new authority.
+    let LocalDaemonResponse::UserAppViewOpened { view: again, .. } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("a second App open focuses the Tab")
+    };
+    assert_eq!(again.view_id, view.view_id);
+    request(
+        router,
+        "alice",
+        LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+            view_id: view.view_id.clone(),
+        }),
+    )
+    .await
+    .unwrap();
+    // Closing it ends that; a new Tab of the same App, which no agent drove, is the owner's.
+    let LocalDaemonResponse::UserAppViewOpened { view: fresh, .. } = request(
+        router,
+        "alice",
+        LocalDaemonRequest::OpenUserAppView(OpenUserAppViewRequest {
+            installation_id: "installed".into(),
+            host: Some(UserAppViewHost::KernelBrowser),
+        }),
+    )
+    .await
+    .unwrap() else {
+        panic!("a fresh App Tab for the owner")
+    };
+    assert_ne!(fresh.view_id, view.view_id);
+    let fresh_browser = fresh.browser.as_ref().unwrap();
+    wait_for_page(router, fresh_browser, "App channel {\\\"ok\\\":true}").await;
+    owner_types(router, fresh_browser, " fresh-owner", true).await;
+    let owned = typed_call(observed, " fresh-owner").await;
+    assert_eq!(
+        owned["context"]["actor"],
+        serde_json::json!({"kind":"human","id":"alice"})
+    );
+    assert!(owned["context"].get("agent_id").is_none());
+    request(
+        router,
+        "alice",
+        LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
+            view_id: fresh.view_id.clone(),
+        }),
+    )
+    .await
+    .unwrap();
 }
 
 async fn owner_types(

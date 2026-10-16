@@ -25,9 +25,11 @@ same call cancellation scope. Trust/asset verification, generation checks,
 installation permission/Vault rules and human App actor are shared. Chromium
 uses `KernelBrowserAppViewHost`, which delegates to lane kbrowser's existing
 App-view service; it launches no additional browser. A trusted ephemeral instance
-key gives each user-domain view its own target, even for the same installation;
-Room requests omit it and keep one shared tab per installation. User instances
-never adopt restored placeholders. The duplicate native-host
+key binds a user-domain view to its target. An owner has one kernel-browser Tab per
+installation: `OpenUserAppView` again returns that view, shows its Tab with the
+current assets and adds no Tab. An updated release, a closed Tab or a stale browser
+generation retires the old view and opens a new one. Room requests omit the key and
+keep one shared tab per installation. User instances never adopt restored placeholders. The duplicate native-host
 registry wrapper has been removed. The Room host implementation keeps its
 existing controller behavior.
 

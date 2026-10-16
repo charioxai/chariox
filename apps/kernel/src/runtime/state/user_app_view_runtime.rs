@@ -270,6 +270,13 @@ impl KernelRuntimeState {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
         };
+        if host == Some(UserAppViewHost::KernelBrowser) && !restoring {
+            if let Some(view) =
+                Box::pin(self.focus_user_app_browser(owner, &binding, &frontend)).await
+            {
+                return Ok(Ok((view, frontend)));
+            }
+        }
         let mut view =
             match instances.open(owner, binding.clone(), &origin_label(owner, installation)) {
                 Ok(view) => view,

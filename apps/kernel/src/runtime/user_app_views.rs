@@ -112,6 +112,22 @@ impl UserAppViews {
             .cloned()
     }
 
+    /// The owner's view of this installation that holds a browser Tab.
+    pub(crate) fn hosted(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Option<(AppViewBinding, UserAppView)> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .views
+            .values()
+            .find(|(b, v)| {
+                b.owner == owner && b.installation == installation && v.browser.is_some()
+            })
+            .cloned()
+    }
+
     pub(crate) fn list(&self, owner: &str) -> Vec<UserAppView> {
         self.registry
             .lock()
@@ -541,6 +557,28 @@ mod tests {
             );
         }
         assert!(views.browser_view("eve", "same-cdp-id").is_none());
+    }
+
+    #[test]
+    fn hosted_finds_only_the_owners_live_tab_of_that_installation() {
+        let views = UserAppViews::default();
+        let view = views.open("alice", binding("alice"), "a").unwrap();
+        assert!(views.hosted("alice", "todo").is_none(), "no Tab yet");
+        let browser = crate::local::UserAppViewBrowser {
+            tab_id: "host-tab-a".into(),
+            generation: 1,
+        };
+        views
+            .bind_browser("alice", &view.view_id, "target".into(), browser)
+            .unwrap();
+        assert_eq!(
+            views.hosted("alice", "todo").unwrap().1.view_id,
+            view.view_id
+        );
+        assert!(views.hosted("bob", "todo").is_none());
+        assert!(views.hosted("alice", "docs").is_none());
+        views.close("alice", &view.view_id);
+        assert!(views.hosted("alice", "todo").is_none());
     }
 
     #[test]
