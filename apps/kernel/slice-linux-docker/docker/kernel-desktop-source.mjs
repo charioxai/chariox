@@ -58,7 +58,7 @@ export class DesktopSource {
     return {processes:identities(tree.processes),browser_processes:identities(tree.browser_processes),browser_protection:this.gate.protection,serial:this.gate.protectionSerial,mask:this.policy.unknown,values:[...this.policy.values]};
   }
   async start() {
-    try { if(this.native)await this.startNative();else await this.startHelper(); }
+    try { await this.binding.browser?.()?.connection?.presentationFence?.recoverFailed?.(); if(this.native)await this.startNative();else await this.startHelper(); }
     catch(error) { await this.close(); throw error; }
     // The first native frame waits for the oracle's start and two snapshots.
     for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);

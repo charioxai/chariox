@@ -8,7 +8,9 @@ readback intersecting a screenshot or its compositor restoration remains
 inadmissible. A rejected readback now registers one cancellable retry after
 successful restoration, instead of immediately forcing another readback while
 the same fence is active. Overlapping captures must all restore; a failed
-restoration keeps the fence closed. Closing either source cancels its retry.
+restoration keeps the fence closed. A later source start may repeat the original
+restoration proof; only its success closes that failed interval, and old pixels
+remain excluded. Closing either source cancels its pending readback retry.
 
 Security anchors: `browser-capture-presentation.mjs`, `kernel-browser-native.mjs`
 and `kernel-desktop-source.mjs` in `apps/kernel/slice-linux-docker/docker/`.

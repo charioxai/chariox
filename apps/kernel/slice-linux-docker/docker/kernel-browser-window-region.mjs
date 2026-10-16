@@ -121,6 +121,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
+   await this.connection.presentationFence?.recoverFailed?.();
    const region=this.region;
    if(this.surface==='page'){
     this.regions=regionProtection(this,region.pageLeft,region.pageTop);

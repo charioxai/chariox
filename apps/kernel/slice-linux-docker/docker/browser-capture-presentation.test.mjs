@@ -49,3 +49,12 @@ test('MP-08/MP-10/MP-11 restoration wake waits for overlapping captures and neve
  const cancel=fence.whenStable(()=>{wakes++});clock=200;first.resolve();await a;clock=202;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(wakes,0);
  second.resolve();await assert.rejects(b,/unrestored/);clock=300;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(wakes,0);assert.equal(fence.stable(clock),false);cancel();
 });
+
+
+test('MP-08/MP-10/MP-11 a failed restoration recovers only after repeating its original proof',async()=>{
+ let clock=100,restored=false,proofs=0,wakes=0;const fence=new CapturePresentationFence(()=>clock);
+ const restore=async()=>{proofs++;if(!restored)throw Error('temporarily busy')};
+ await assert.rejects(fence.run(async()=>{},restore),/temporarily busy/);assert.equal(fence.stable(1000),false);
+ const cancel=fence.whenStable(()=>{wakes++});clock=200;await assert.rejects(fence.recoverFailed(),/temporarily busy/);assert.equal(fence.stable(1000),false);assert.equal(wakes,0);
+ restored=true;clock=300;await Promise.all([fence.recoverFailed(),fence.recoverFailed()]);clock=302;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(proofs,3,'concurrent starts share one proof');assert.equal(wakes,1);assert.equal(fence.stable(302),true);assert.equal(fence.stable(250),false,'pixels from the failed interval remain excluded');cancel();
+});

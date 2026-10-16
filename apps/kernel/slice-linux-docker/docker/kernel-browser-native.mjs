@@ -93,6 +93,7 @@ export class LinuxCapture {
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
+   this.phase='presentation';await this.connection.presentationFence?.recoverFailed?.();
    this.phase='bounds';const readback=await this.prepareReadback();
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.

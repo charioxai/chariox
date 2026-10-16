@@ -21,15 +21,30 @@ export class CapturePresentationFence {
     this.waiters.add(check); queueMicrotask(check);
     return () => { cancelled = true; clearTimeout(timer); this.waiters.delete(check); };
   }
+  restored(interval) {
+    interval.end = this.now() + 1; delete interval.restore;
+    while (this.intervals.length > 64 && Number.isFinite(this.intervals[0].end))
+      this.floor = Math.max(this.floor, this.intervals.shift().end);
+    for (const check of [...this.waiters]) check();
+  }
+  // MP-08/MP-10/MP-11: a later start may repeat the SAME restoration proof.
+  // Failure never opens the interval or admits its old pixels.
+  recoverFailed() {
+    if (this.recovering) return this.recovering;
+    const failed = this.intervals.filter(interval => interval.restore);
+    if (!failed.length) return Promise.resolve();
+    this.recovering = (async () => {
+      for (const interval of failed) { await interval.restore(); this.restored(interval); }
+    })().finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
   async run(capture, restore) {
     const interval = { start: this.now(), end: Infinity }; this.intervals.push(interval);
     try { return await capture(); }
     finally {
-      // A failed restoration remains fenced until this connection is replaced.
-      await restore(); interval.end = this.now() + 1;
-      while (this.intervals.length > 64 && Number.isFinite(this.intervals[0].end))
-        this.floor = Math.max(this.floor, this.intervals.shift().end);
-      for (const check of [...this.waiters]) check();
+      try { await restore(); }
+      catch (error) { interval.restore = restore; throw error; }
+      this.restored(interval);
     }
   }
 }
