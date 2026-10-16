@@ -1,5 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
+
+The real WHATWG navigation timed out repeatedly creating a world that Chromium
+had already created from the kernel's registered preload. A source diagnostic
+that reused that world produced native preview; full handover remains pending.
+The current CDP owner now records only the named isolated, non-default context
+with a unique identifier, matching the live connection, session, committed main
+frame and loader. Navigation, context destruction and context clearing retire
+it. A queued event from a retired connection is ignored. An observed context
+also releases a concurrent redundant creation without waiting for its renderer
+reply, preserving the same cached owner object used by capture restoration.
+Default/unregistered/child/stale contexts are refused. Existing document,
+protection and screenshot presentation proofs still gate publication and input.
+Focused fail-first checks cover ownership and races; a diagnostic preview is
+not matching-built, full-DPR, quiet-host or stability acceptance.
+
 ## MP-08 / MP-10 / MP-11 typed font opt-in (2026-10-16)
 
 The native-font snapshot drill caught the missing Rust command field before a

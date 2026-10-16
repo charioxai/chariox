@@ -1,5 +1,5 @@
 import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
-import {FOCUS_WORLD,ensureFocusWorld} from './browser-focus-world.mjs';
+import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
@@ -416,7 +416,7 @@ export class BrowserCdpClient {
     this.browserGeneration += 1;
     if (typeof connection.subscribe === "function") {
       this.unsubscribeFromConnection = connection.subscribe(
-        (message) => this.recordConnectionEvent(message),
+        (message) => { if(this.connection===connection)this.recordConnectionEvent(message); },
       );
     }
     try {
@@ -1226,6 +1226,7 @@ export class BrowserCdpClient {
         for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
     }
+    recordFocusWorld(this,message);
     if (message?.method === "Browser.downloadWillBegin") {
       const targetId = this.targetsByFrame.get(message.params?.frameId);
       const guid = message.params?.guid;
