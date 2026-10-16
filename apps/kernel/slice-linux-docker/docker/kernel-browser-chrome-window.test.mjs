@@ -623,3 +623,43 @@ test('MP-08/MP-10/MP-11 active target in one fresh viewport query keeps a foreig
   host.tabGroups.viewport=async()=>{throw Error('unavailable')};assert.equal(await b.isPageCurrent('tb'),false);assert.equal(b.isCurrent(),false);
  }finally{await display.close()}
 });
+
+// PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left, so the viewer
+// follows in that round trip instead of at its next 250 ms state read (r12/r13 quiet: Tab click and list
+// first paint waited for the poll and a second round trip).
+const followHost = (active) => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "da" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }], ["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]),
+    tabGroups: { active: async () => active.target }, retireNativeForeground: () => null,
+    chromeWindow: () => ({ window_generation: 7, active_tab_id: "host-tab-a", auxiliary: active.list ? [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }] : [] }),
+    browser: { inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  return host;
+};
+test("MP-08/MP-10 a Tab click's reply carries the Tab the strip now shows", async () => {
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { setTimeout(() => { active.target = "tb"; }, 30); return true; } };
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 300, y: 12 } } });
+  assert.equal(reply.dispatched, true);
+  assert.deepEqual(reply.chrome_window, { window_generation: 7, active_tab_id: "host-tab-b", auxiliary: [] });
+});
+test("MP-08/MP-10 an address-bar key's reply carries the omnibox list it opened", async () => {
+  const active = { target: "ta", list: false };
+  let warm = false;
+  const windows = { onOmnibox: () => true, focusOmnibox: on => { warm = on; }, refreshWarm: async () => { if (warm) active.list = true; } };
+  const arbiter = new InputArbiter(followHost(active), windows);
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => true, chord: async () => true };
+  const stream = { regionSource: source }, command = input => ({ tab_id: "host-tab-a", document_id: "da", generation: 3, input });
+  await arbiter.input({ stream, command: command({ kind: "click", x: 300, y: 60 }) });
+  const reply = await arbiter.input({ stream, command: command({ kind: "text", text: "w" }) });
+  assert.equal(reply.dispatched, true);
+  assert.deepEqual(reply.chrome_window.auxiliary, [{ auxiliary_id: 1, x: 80, y: 40, width: 600, height: 120 }]);
+});
+test("MP-08/MP-10 a click that opens a Tab the kernel has not adopted yet leaves the window to the state read", async () => {
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => { active.target = "t-new"; return true; } };
+  const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 600, y: 12 } } });
+  assert.deepEqual(reply, { dispatched: true });
+});
