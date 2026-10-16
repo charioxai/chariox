@@ -85,11 +85,22 @@ async fn relay_configure_invalidates_provider_catalog_projection_inner() {
         crate::session::DEFAULT_LOCAL_USER_ID,
         &request,
     );
-    app.provider_catalog_projection_store()
-        .update_scoped(&cache_key, catalog);
+    let store = app.provider_catalog_projection_store().clone();
+    store.update_scoped(&cache_key, catalog.clone());
+    let warmed_generation = store.invalidation_generation();
     app.configure_relay(None, None)
         .expect("relay configure should invalidate provider catalog projection");
     app.invalidate_provider_catalog_projection();
+
+    // Invalidation rejects fresh-cache hits and fences an older refresh, but
+    // keeps the scoped metadata as the stale copy served while discovery reruns.
+    let ttl = crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
+    assert!(store.get_scoped(&cache_key, ttl).is_none(), "an invalidated catalog is no fresh hit");
+    assert_eq!(store.cached_scoped(&cache_key).map(|stale| stale.connected), Some(vec!["codex".to_string()]));
+    assert!(
+        !store.update_scoped_if_generation(&cache_key, catalog, warmed_generation),
+        "a refresh that started before the invalidation must not publish"
+    );
 
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -107,16 +118,16 @@ async fn relay_configure_invalidates_provider_catalog_projection_inner() {
             .dispatch(catalog_command, catalog_request)
             .await
     });
-
-    tokio::task::yield_now().await;
-    assert!(
-        !catalog_task.is_finished(),
-        "relay configuration should invalidate warmed provider catalog projection"
-    );
-    drop(app_guard);
-    let _ = catalog_task
+    let response = tokio::time::timeout(Duration::from_secs(2), catalog_task)
         .await
-        .expect("catalog task should join after app lock is released");
+        .expect("an invalidated catalog is answered from the stale copy without the app lock")
+        .expect("catalog task should join")
+        .expect("catalog should resolve");
+    drop(app_guard);
+    match response {
+        LocalDaemonResponse::ProviderCatalog { catalog } => assert_eq!(catalog.connected, vec!["codex"]),
+        _ => panic!("unexpected provider catalog response"),
+    }
 }
 
 #[test]
