@@ -7,7 +7,8 @@ had already created from the kernel's registered preload. A source diagnostic
 that reused that world produced native preview; full handover remains pending.
 The current CDP owner now records only the named isolated, non-default context
 with a unique identifier, matching the live connection, session, committed main
-frame and loader. Navigation, context destruction and context clearing retire
+frame and loader. A new unique context gets a fresh owner even if its numeric
+ID is reused; installation state never carries across that replacement. Navigation, context destruction and context clearing retire
 it. A queued event from a retired connection is ignored. An observed context
 also releases a concurrent redundant creation without waiting for its renderer
 reply, preserving the same cached owner object used by capture restoration.

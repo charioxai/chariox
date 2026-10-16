@@ -103,3 +103,13 @@ test('MP-11 a queued old-connection context event cannot claim the new connectio
   assert.equal(b.focusWorldsByTarget.get('t'),current);assert.equal(current.uniqueContextId,'new-connection-world');
  } finally {await b.close();}
 });
+
+test('MP-11 a new unique context gets a fresh owner even when its numeric ID and loader are reused',async()=>{
+ const f=preloadedFixture();f.emit(f.context);
+ const previous=await f.b.ensureFocusWorld(f.connection,'s','t',f.frame);previous.mirror2Installed=true;
+ f.emit({...f.context,uniqueId:'replacement-unique-world'});
+ const current=await f.b.ensureFocusWorld(f.connection,'s','t',f.frame);
+ assert.notEqual(current,previous);assert.equal(current.mirror2Installed,undefined);assert.equal(current.uniqueContextId,'replacement-unique-world');
+ f.b.recordConnectionEvent({sessionId:'s',method:'Runtime.executionContextDestroyed',params:{executionContextId:7,executionContextUniqueId:f.context.uniqueId}});
+ assert.equal(f.b.focusWorldsByTarget.get('t'),current);
+});

@@ -60,6 +60,7 @@ export function recordFocusWorld(browser, message) {
   // Preserve an in-flight creator's object: capture restoration fences also
   // compare its identity. The event adds the unique context retirement fence.
   const current=owned&&world.documentId===frame.frame.loaderId&&world.frameId===frame.frame.id&&
+    (!world.uniqueContextId||world.uniqueContextId===context.uniqueId)&&
     (world.contextId===undefined||world.contextId===context.id)?world:
     {connection:browser.connection,sessionId,documentId:frame.frame.loaderId,frameId:frame.frame.id};
   current.contextId=context.id;current.uniqueContextId=context.uniqueId;cache.set(targetId,current);
