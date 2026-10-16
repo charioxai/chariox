@@ -6,7 +6,7 @@ import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { installTerminalNativeSelection } from "./terminal-native-selection.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
-import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createCliRoomWorkflowsComposition } from "./cli-room-workflows-composition.js"
 import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
@@ -262,8 +262,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
     getAccountProfile: (provider, accountProfile) => getProviderAccountProfile(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
+      // The plain label: the strip title and the Retry command must name the account, not its status.
       const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
-      return profile ? providerAccountDisplayLabel(profile) : accountProfile
+      return profile?.label ?? accountProfile
     },
     localDesktop: localDesktopAvailable,
     openUrl: openExternalUrl,
