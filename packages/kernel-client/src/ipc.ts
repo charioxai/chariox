@@ -558,15 +558,9 @@ export class LocalIpcClient {
     }
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
-    this.clearKernelHeartbeat("event")
-    const socket = this.getWebSocket("event")
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
-      this.suppressNextEventCloseEvent = true
-      socket.terminate()
-      this.setWebSocket("event", null)
-      this.setWebSocketConnectPromise("event", null)
-    }
-    this.setRelayDaemonPublicKey("event", null)
+    // MP-08 / MP-10 OWNER-25: retiring the carrier must settle its pending
+    // subscribe too; its close callback is deliberately stale after restart.
+    this.destroyWebSocket("event", "kernel event stream restarted")
     this.scheduleReconnect(25)
   }
 
