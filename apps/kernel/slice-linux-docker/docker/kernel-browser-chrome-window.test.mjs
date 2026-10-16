@@ -686,3 +686,19 @@ test("MP-11 a closed warm omnibox list does not carry keys past the page's sensi
   assert.equal((await send({ kind: "text", text: "w" })).dispatched, true);
   assert.equal(evaluated.length, 0, "a shown list owns the keys (Chrome's UI)");
 });
+
+// vidlat 07:52Z (C10): a band input marks its dispatch at the final native action boundary (after every
+// fence, before XTest), once per native action, never for a refused one, so band frames can be graded as
+// input-triggered exactly as page frames are.
+test("MP-08/MP-10 a band input marks each native dispatch after its fences", async () => {
+  const order = [];
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (order.push("click"), true), chord: async () => (order.push("chord"), true) };
+  const send = (input, tab_id = "host-tab-a") => arbiter.input({ stream: { regionSource: source }, command: { tab_id, document_id: "da", generation: 3, input }, onDispatch: () => order.push("dispatch") });
+  await send({ kind: "click", x: 300, y: 12 });
+  await send({ kind: "key", key: "t", modifiers: 4 });
+  assert.deepEqual(order, ["dispatch", "click", "dispatch", "chord"]);
+  await assert.rejects(send({ kind: "click", x: 300, y: 12 }, "host-tab-b"), { code: "user_domain_stale_reference" });
+  assert.equal(order.length, 4, "a refused input marks nothing");
+});

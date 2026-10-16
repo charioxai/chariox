@@ -418,7 +418,7 @@ export class InputArbiter {
     const window = this.host.chromeWindow?.(), tab = [...this.host.tabs.values()].find(t => t.target_id === active);
     return window && tab ? {...reply, chrome_window: {...window, active_tab_id: tab.tab_id}} : reply;
   }
-  async dispatchInput({stream, command, signal}, follow) {
+  async dispatchInput({stream, command, signal, onDispatch}, follow) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
@@ -460,8 +460,10 @@ export class InputArbiter {
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
+    // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.
     const dispatched = async action => {
       let done;
+      onDispatch?.();
       try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
