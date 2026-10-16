@@ -1,3 +1,4 @@
+import {pageObservationFence} from './browser-controller-frames.mjs';
 import {FOCUS_WORLD,ensureFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
@@ -483,6 +484,7 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
+    const observation = pageObservationFence(this, connection, sessionId, target.targetId, frame);
     // MP-08/MP-10/MP-11: overlap independent observations, retaining both
     // fences and draining their work before a failed observation returns.
     const [focus, frames] = await Promise.allSettled([
@@ -491,8 +493,9 @@ export class BrowserCdpClient {
     ]);
     if (focus.status === "rejected") throw focus.reason;
     if (frames.status === "rejected") throw frames.reason;
+    observation.assertCurrent();
     this.documentIdsByTarget.set(target.targetId, documentId);
-    if (this.pageFramesByTarget.get(target.targetId)?.frame.loaderId !== documentId) this.pageFramesByTarget.set(target.targetId, { connection, sessionId, frame });
+    if (!observation.owner) this.pageFramesByTarget.set(target.targetId, { connection, sessionId, frame });
     return {
       target_id: target.targetId,
       ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),

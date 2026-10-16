@@ -31,7 +31,13 @@ binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
 policy and mask fences remain mandatory before delivery. Screenshot capture
 and native attestation also reuse that current owner before/after capture;
 unknown owners still query the renderer. Same-loader reference replacement or
-session/connection mismatch refuses the image. Screenshot masking policy lives
+session/connection mismatch refuses the image. A delayed page inspection cannot replace an event-owned newer document or
+revive a retired session. Its initial frame and document-map references must
+remain unchanged across focus/frame observations. A cold mismatched cache may
+be repaired only by that fresh, stable inspection. `browser-controller-frames.mjs`
+owns this publication fence.
+
+Screenshot masking policy lives
 in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and
 slice bundles include the same module.
 

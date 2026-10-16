@@ -1,5 +1,19 @@
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
 
+// MP-08/MP-10/MP-11: an asynchronous inspection may populate a cold cache,
+// but it cannot replace a newer navigation/session event with an old result.
+export function pageObservationFence(browser, connection, sessionId, targetId, frame) {
+  const entry = browser.pageFramesByTarget.get(targetId), document = browser.documentIdsByTarget.get(targetId);
+  const owner = browser.currentPageFrame(targetId);
+  const stale = () => new BrowserSnapshotError('stale_document_reference', 'browser document observation retired');
+  if (owner && (owner.frame.loaderId !== frame.loaderId || owner.frame.id !== frame.id)) throw stale();
+  const assertCurrent = () => {
+    if (browser.connection !== connection || browser.sessionsByTarget.get(targetId) !== sessionId ||
+        browser.pageFramesByTarget.get(targetId) !== entry || browser.documentIdsByTarget.get(targetId) !== document) throw stale();
+  };
+  assertCurrent();return { owner, assertCurrent };
+}
+
 const MAX_FRAMES = 64;
 const MAX_NODES = 5_000;
 
