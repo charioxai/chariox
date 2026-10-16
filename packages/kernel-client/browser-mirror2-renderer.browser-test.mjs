@@ -1061,3 +1061,32 @@ test('MP-10 completion after an empty prefix starts a bounded empty-page hold', 
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
  } finally { await page.close() }
 });
+
+// MP-08/MP-10/MP-11 review60e: no stale refusal when a viewer drops the text range.
+for (const mode of ['collapsed','absent']) test(`MP-11 a refused selection is not sticky after ${mode}`, async()=>{
+ const page=await viewer();try {
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The witness has called'}])));
+  const result=await page.evaluate(async mode=>{
+   let calls=0;window.r.send=async action=>{if(action.kind==='selection'){calls++;throw Error('transient refusal')}};
+   const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild,s=d.getSelection();s.setBaseAndExtent(t,0,t,t.length);
+   const first=await window.r.settleInput().then(()=>null,e=>e.message);
+   if(mode==='collapsed')s.collapse(t,0);else s.removeAllRanges();
+   return {first,second:await window.r.settleInput().then(()=>null,e=>e.message),calls};
+  },mode);
+  assert.equal(result.first,'MP-10: mirror selection refused');assert.equal(result.second,null);assert.equal(result.calls,1);
+ }finally{await page.close()}
+});
+
+// MP-08/MP-10/MP-11: a refusal can arrive after the person has dropped the range.
+test('MP-11 collapsed range is rechecked after a pending selection refusal',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'The witness has called'}])));
+  const result=await page.evaluate(async()=>{
+   let reject;window.r.send=action=>action.kind==='selection'?new Promise((_resolve,r)=>{reject=r}):Promise.resolve();
+   const d=window.r.frame.contentDocument,t=d.querySelector('p').firstChild,s=d.getSelection();s.setBaseAndExtent(t,0,t,t.length);
+   const settled=window.r.settleInput().then(()=>null,e=>e.message);
+   while(!reject)await new Promise(r=>setTimeout(r,0));s.collapse(t,0);reject(Error('transient refusal'));return settled;
+  });
+  assert.equal(result,null);
+ }finally{await page.close()}
+});

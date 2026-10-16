@@ -244,7 +244,11 @@ export class ChromeWindows {
     // Steady page frames use the shared watcher. Chrome-UI input is the narrow
     // interval in which a dropdown can paint before that watcher observes it.
     const revision = this.occlusionRevision ?? 0, cache = this.occlusionCache;
-    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation;
+    // MP-08/MP-10/MP-11: a fresh negative observation after UI dispatch ends
+    // this capture interval even if a toolbar button left chromeFocus set.
+    // New input invalidates the cache; the watcher still discovers delayed lists.
+    const settledWithoutList = cache?.binding === binding && cache.revision === revision && cache.focus === focus && !cache.live;
+    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation && !settledWithoutList;
     if (!focused && !this.uiInputs && (revision === 0 || cache?.binding === binding && cache.revision === revision)) return this.inWindowOver(rect, cache?.binding === binding ? cache.live : this.omniboxLive);
     const read = this.occlusionRead?.binding === binding ? this.occlusionRead :
       (this.occlusionRead = {binding, promise: this.readOmnibox()});
@@ -255,7 +259,7 @@ export class ChromeWindows {
     // on the watcher/input paths rather than mutating bindings inside readback.
     const live = omniboxPopupRect(state, binding.bounds.x / binding.scale, binding.bounds.y / binding.scale,
       binding.page_rect.top / binding.scale, binding.bounds.width / binding.scale, binding.bounds.height / binding.scale);
-    if (!this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, live};
+    if (!this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live};
     return this.inWindowOver(rect, live);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
@@ -265,9 +269,9 @@ export class ChromeWindows {
     const tick = async () => {
       const [first] = watcher.reads;
       try { if (first) {
-        const rows = await first(), binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0;
+        const rows = await first(), binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
         this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
-        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, live: this.omniboxLive};
+        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live: this.omniboxLive};
       } } catch {}
         if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };

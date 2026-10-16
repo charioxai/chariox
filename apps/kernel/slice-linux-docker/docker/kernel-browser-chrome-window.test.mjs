@@ -588,3 +588,19 @@ test("MP-11 UI dispatch keeps occlusion live through focus release, then steady 
   finish(); await windows.inWindowOverNow(rect); assert.equal(reads, 2, "the completed native dispatch gets one fresh observation")
   await windows.inWindowOverNow(rect); assert.equal(reads, 2, "steady page frames keep that observation")
 })
+
+// MP-08/MP-10/MP-11 review60e: a toolbar click is not an ongoing omnibox interval.
+test('MP-10 toolbar focus without an omnibox list uses one post-dispatch read',async()=>{
+ const host={generation:3,arbiter:{chromeFocus:{generation:3,window_generation:7}}},windows=new ChromeWindows(host);
+ windows.bound={tabbed:{isCurrent:()=>true,window_generation:7,scale:1,bounds:{x:0,y:0,width:1280,height:887},page_rect:{top:87}},auxiliary:[]};
+ let reads=0;windows.readOmnibox=async()=>{reads++;return ['hidden']};
+ const rect={left:0,top:100,width:20,height:20},finish=windows.uiInput();
+ await windows.inWindowOverNow(rect);finish();await windows.inWindowOverNow(rect);
+ for(let n=0;n<10;n++)assert.equal(await windows.inWindowOverNow(rect),false);
+ assert.equal(reads,2,'no CDP roundtrip per steady video frame after the toolbar dispatch');
+ const next=windows.uiInput();await windows.inWindowOverNow(rect);next();await windows.inWindowOverNow(rect);
+ assert.equal(reads,4,'new UI dispatch always rechecks before and after');
+ host.arbiter.chromeFocus={generation:3,window_generation:7};
+ await windows.inWindowOverNow(rect);await windows.inWindowOverNow(rect);
+ assert.equal(reads,5,'a fresh keyboard focus claim cannot reuse the previous negative observation');
+});

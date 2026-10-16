@@ -1355,12 +1355,12 @@ test('MP-10 M2: ordinary navigation includes the form after a byte-heavy body he
 }));
 
 // MP-08/MP-10/MP-11: hosted GitHub's later CSS exceeds the initial 2MiB cap.
-test('MP-10 M2: an ordinary document between two and four MiB is still one usable reset',()=>mirrored(
+test('MP-10 M2: an ordinary document between two and four MiB fits the eight MiB reset cap',()=>mirrored(
  '<head><style>body{margin:0}</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(300)+'</header><form><h1>Complete destination form</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Complete destination form'),'the ordinary form cannot be deferred behind a partial reset');
  const world=host.mirror.streams.get(subscription_id).world;
- assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the four MiB cap');
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the eight MiB cap');
  assert(JSON.stringify(first).length<5*1024*1024,'record/message backstop remains bounded');
 }));
 

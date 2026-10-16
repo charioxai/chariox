@@ -157,6 +157,7 @@ export class BrowserMirror2Renderer {
     while (this.pendingInputs && !this.disposed) await Promise.all([...this.inputReplies])
     if (this.disposed) throw Error('MP-08: mirror closed')
     if(this.documentId!==documentId)throw Error('MP-08: mirror document changed')
+    if (!this.selectedText(this.selectionDoc ?? this.doc)) this.selectionFailure = false
     if(this.selectionFailure)throw Error('MP-10: mirror selection refused')
   }
   private settleFocus(): void {
@@ -191,12 +192,16 @@ export class BrowserMirror2Renderer {
     const [anchor, focus] = field.selectionDirection === 'backward' ? [field.selectionEnd, field.selectionStart] : [field.selectionStart, field.selectionEnd]
     this.enqueue({ kind: 'selection', anchor_id: id, anchor_offset: anchor, focus_id: id, focus_offset: focus })
   }
-  private syncSelection(doc: Document | null): void {
+  private selectedText(doc: Document | null): Mirror2Input | null {
     const selection = doc?.getSelection()
-    if (!selection || selection.isCollapsed || !selection.anchorNode?.isConnected || !selection.focusNode?.isConnected) return
+    if (!selection || selection.isCollapsed || !selection.anchorNode?.isConnected || !selection.focusNode?.isConnected) return null
     const a = this.ids.get(selection.anchorNode), b = this.ids.get(selection.focusNode)
-    if (!a || !b || this.records.get(a)?.kind !== 'text' || this.records.get(b)?.kind !== 'text') return
-    const action: Mirror2Input = { kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }
+    if (!a || !b || this.records.get(a)?.kind !== 'text' || this.records.get(b)?.kind !== 'text') return null
+    return { kind: 'selection', anchor_id: a, anchor_offset: selection.anchorOffset, focus_id: b, focus_offset: selection.focusOffset }
+  }
+  private syncSelection(doc: Document | null): void {
+    const action = this.selectedText(doc)
+    if (!action) { this.selectionFailure = false; return }
     this.selectionDoc = doc
     if (JSON.stringify(action) !== this.selectionSent) this.enqueue(action)
   }

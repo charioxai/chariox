@@ -38,7 +38,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   suppression and frame slots are retired before rebuilding. Cancellation
   keeps the fence ahead of the published sequence, forcing the next credit
   to rebuild a full base. Resource keys retain their document lifetime.
-  An ordinary document has a 20,000-record/4 MiB
+  An ordinary document has a 20,000-record/8 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
   continuation records. A same-document reset preserves an active root wheel
   target and submits that position through normal input under the newly applied
@@ -712,3 +712,21 @@ that larger ordinary-document range; over-cap documents still continue.
 Resets for lost base/recovery use the same producer policy as first
 attachment/navigation. These observations and source regressions do not close
 the strict hosted fidelity, interactivity or stability gates.
+
+### MP-08 / MP-10 / MP-11: explicit initial completion (539/147)
+
+`snapshot_complete` is true only after the initial main-document serializer has
+drained and native document readiness is complete. False keeps an invisible
+body prefix from starting the two-second intentionally-empty-page timer. A
+readiness change wakes the credit; a change between credits remains pending.
+Compact headers inherit completion from their base. Both renderer copies require
+539 and retain the previous inert page until visible content or confirmed empty
+completion. This adds no observation authority or protection exception.
+
+The ordinary-document atomic backstop is 20,000 records / 8 MiB of record data
+(up to one bounded record beyond the byte threshold), with 40,000 iterator visits.
+It is synchronous work on the native page thread; 532 relay chunk interleaving
+does not bound that CPU time. The cap has not increased in539. Near-cap first
+packet/continuation input timings still need quiet-host evidence before acceptance
+or any further cap increase. B3 functional runs and source tests are not that
+timing evidence.
