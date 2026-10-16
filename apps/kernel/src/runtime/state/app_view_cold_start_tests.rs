@@ -571,7 +571,8 @@ fn mp08_an_app_reopened_before_seeding_settles_one_saved_tab() {
         )
         .unwrap();
     runtime.remember_user_app_tabs(owner);
-    assert_eq!(views.restore_batch(owner), vec!["todo".to_string()]);
+    // An App is one Tab: the saved duplicate collapsed, and the explicit open settled it.
+    assert!(views.restore_batch(owner).is_empty());
 }
 
 /// MP-08/MP-10/MP-11 #992: shutdown/restart while the second App is opening.

@@ -288,7 +288,14 @@ impl UserAppViews {
         if registry.restore.contains_key(owner) {
             return;
         }
-        let mut pending: Vec<_> = installations.into_iter().take(32).collect();
+        // An earlier kernel saved one entry per open (repeat opens added Tabs):
+        // an App is restored as one Tab.
+        let mut pending: Vec<String> = Vec::new();
+        for installation in installations {
+            if pending.len() < 32 && !pending.contains(&installation) {
+                pending.push(installation);
+            }
+        }
         // First use may load disk after an explicit browser binding. Account
         // for each hosted Tab once here; later bindings consume their entry.
         for installation in registry.hosted(owner) {
@@ -448,17 +455,14 @@ mod tests {
                     generation: 1,
                 },
             );
-            assert_eq!(views.restore_intent("alice"), vec!["todo", "todo"]);
+            // The saved duplicate collapsed into one Tab, which the explicit open settles.
+            assert_eq!(views.restore_intent("alice"), vec!["todo"]);
             if stop {
                 views.suspend("alice", &view.view_id);
             } else {
                 views.close("alice", &view.view_id);
             }
-            let expected = if stop {
-                vec!["todo", "todo"]
-            } else {
-                vec!["todo"]
-            };
+            let expected = if stop { vec!["todo"] } else { vec![] };
             assert_eq!(views.restore_intent("alice"), expected);
             assert_eq!(views.restore_batch("alice"), expected);
         }
@@ -557,6 +561,18 @@ mod tests {
             );
         }
         assert!(views.browser_view("eve", "same-cdp-id").is_none());
+    }
+
+    #[test]
+    fn restore_intent_saved_with_repeat_opens_restores_one_tab_per_app() {
+        let views = UserAppViews::default();
+        views.seed_restore(
+            "alice",
+            ["todo", "todo", "docs", "todo", "docs"]
+                .map(String::from)
+                .to_vec(),
+        );
+        assert_eq!(views.restore_batch("alice"), vec!["todo", "docs"]);
     }
 
     #[test]
