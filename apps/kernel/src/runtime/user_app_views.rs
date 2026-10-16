@@ -63,9 +63,23 @@ impl Registry {
 pub(crate) struct UserAppViews {
     registry: Arc<Mutex<Registry>>,
     changed: Arc<tokio::sync::Notify>,
+    /// One kernel-browser open per owner at a time (see `opening`).
+    opening: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl UserAppViews {
+    /// MP-08/MP-11: opening an App as a kernel-browser Tab, from first check to
+    /// bound Tab, is one step per owner; racing Opens (Web, TUI, restore) then
+    /// find the Tab the first one made instead of each allocating their own.
+    pub(crate) async fn opening(&self, owner: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+            opening.retain(|_, lock| Arc::strong_count(lock) > 1);
+            opening.entry(owner.into()).or_default().clone()
+        };
+        lock.lock_owned().await
+    }
+
     pub(crate) fn open(
         &self,
         owner: &str,

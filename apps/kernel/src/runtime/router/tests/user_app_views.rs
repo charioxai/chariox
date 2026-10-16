@@ -198,11 +198,21 @@ fn run_drill(stall: bool, browser: bool) {
                 assert!(matches!(
                     router.dispatch(provider, open.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
-                let LocalDaemonResponse::UserAppViewOpened { view, frontend } =
-                    request(&router, "alice", open).await.unwrap()
+                // MP-08/MP-11: Opens racing for one App (Web and TUI) share one Tab.
+                let racing = browser.then(|| request(&router, "alice", open.clone()));
+                let (opened, raced) = tokio::join!(request(&router, "alice", open), async {
+                    match racing {
+                        Some(raced) => Some(raced.await.unwrap()),
+                        None => None,
+                    }
+                });
+                let LocalDaemonResponse::UserAppViewOpened { view, frontend } = opened.unwrap()
                 else {
                     panic!("open native view");
                 };
+                if let Some(LocalDaemonResponse::UserAppViewOpened { view: raced, .. }) = raced {
+                    assert_eq!(view.view_id, raced.view_id);
+                }
                 if !browser {
                     let capture=LocalDaemonRequest::CaptureVisibleRegion(CaptureVisibleRegionRequest {
                         capture_id:"human-capture".into(), surface:ScreenshotSurface::UserAppView {view_id:view.view_id.clone(),generation:1},
@@ -269,10 +279,10 @@ fn run_drill(stall: bool, browser: bool) {
                     panic!("channel call");
                 };
                 assert_eq!(result, serde_json::json!({"ok":true}));
-                if browser { Box::pin(check_browser_page(&router, &view, &observed, 2)).await; }
+                if browser { Box::pin(check_browser_page(&router, &view, &observed, 3)).await; }
                 else { assert!(view.browser.is_none()); }
                 let recorded = observed.tool_requests().unwrap();
-                assert_eq!(recorded.len(), if browser { 2 } else { 1 });
+                assert_eq!(recorded.len(), if browser { 3 } else { 1 });
                 assert_eq!(
                     recorded[0]["context"]["actor"],
                     serde_json::json!({"kind":"human","id":"alice"})
@@ -416,7 +426,7 @@ fn run_drill(stall: bool, browser: bool) {
                     assert_eq!(state["tabs"].as_array().unwrap().len(), 1);
                     assert_eq!(state["tabs"][0]["tab_id"], view.browser.as_ref().unwrap().tab_id);
                     assert_eq!(listed_views(&router).await.len(), 1);
-                    Box::pin(check_browser_page(&router, &again, &observed, 3)).await;
+                    Box::pin(check_browser_page(&router, &again, &observed, 4)).await;
                     Box::pin(check_browser_keyboard(&router, &again, &observed)).await;
                 }
                 let view_browser = view.browser.clone();
@@ -807,7 +817,7 @@ async fn check_browser_keyboard(
     })
     .await
     .expect("human keyboard App channel reply in accessibility projection");
-    assert_eq!(observed.tool_invocations(), 4);
+    assert_eq!(observed.tool_invocations(), 5);
     let last = observed.tool_requests().unwrap().last().unwrap().clone();
     assert_eq!(last["params"]["input"]["text"], "TUI keyboard fixture");
     assert_eq!(
