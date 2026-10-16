@@ -182,53 +182,59 @@ export async function bootstrapSession(
 
   const attachment = await deps.attachToSession(client, session.id, options.clientId)
   let attachedSession = await deps.getSessionState(client, session.id)
-  const providerSettlement = await settleAttachProviderRun(
-    attachedSession,
-    {
-      provider: options.provider ?? "opencode",
-      model: options.model,
-      effort: options.effort,
+  // MP-08/MP-10/MP-11 F02: launching may wait for a Vault interaction.
+  // Start it only after the TUI mounts and can display/answer that interaction.
+  const attachedProvider = {
+    sessionId: session.id,
+    load: async (): Promise<RuntimeProviderRun | null> => {
+      const providerSettlement = await settleAttachProviderRun(
+        attachedSession,
+        {
+          provider: options.provider ?? "opencode",
+          model: options.model,
+          effort: options.effort,
+        },
+        options.accountProfile,
+        createdSession,
+        {
+          launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
+            deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
+          getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
+          tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
+        },
+      )
+      if (providerSettlement.action === "skipped") {
+        if (providerSettlement.recoveredRemotePlacement) {
+          deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
+            session_id: session.id,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+            worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+          })
+        } else if (providerSettlement.reason === "no_visible_agents") {
+          deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+        } else if (providerSettlement.reason === "missing_focused_agent") {
+          deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+        } else if (providerSettlement.reason === "remote_backed_agent") {
+          deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+            session_id: session.id,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+            worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+          })
+        } else if (providerSettlement.reason === "credential_vault_locked") {
+          deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
+            session_id: session.id,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+          })
+        }
+      }
+      return providerSettlement.providerRun
     },
-    options.accountProfile,
-    createdSession,
-    {
-      launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
-        deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
-      getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
-      tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
-    },
-  )
-  attachedSession = providerSettlement.session
-  const providerRun: RuntimeProviderRun | null = providerSettlement.providerRun
-  if (providerSettlement.action === "skipped") {
-    if (providerSettlement.recoveredRemotePlacement) {
-      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "no_visible_agents") {
-      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "missing_focused_agent") {
-      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-        session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "remote_backed_agent") {
-      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "credential_vault_locked") {
-      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-      })
-    }
   }
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
   const hydratedSession = await deps.getSessionState(client, session.id)
@@ -249,11 +255,7 @@ export async function bootstrapSession(
     binding: {
       session: hydratedSession,
       attachment,
-      providerRun,
-      providerLaunchIssue: providerSettlement.action === "skipped"
-        && providerSettlement.reason === "credential_vault_locked"
-        ? "credential_vault_locked"
-        : null,
+      providerRun: null,
       createdSession,
       historyEntries: [],
       promptHistoryEntries: [],
@@ -266,6 +268,7 @@ export async function bootstrapSession(
     options,
     preferences,
     deferred: {
+      attachedProvider,
       providerCatalog: providerCatalogPromise,
       providerCommandCatalogs: providerCommandCatalogsPromise,
       terminalCommandCatalog: terminalCommandCatalogPromise,

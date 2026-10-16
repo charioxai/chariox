@@ -108,6 +108,29 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
   assert.deepEqual(harness.prependCalls, [])
 })
 
+// MP-08/MP-10/MP-11 F02: a late protected launch cannot overwrite another Room.
+test("deferred provider initialization is attachment scoped", async () => {
+  let finish!: (run: never) => void
+  let starts = 0
+  const result = new Promise<never>(resolve => { finish = resolve })
+  const h = bootstrapHarness({ attachmentSessionId: "room", deferred: {
+    attachedProvider: { sessionId: "room", load: () => { starts++; return result } },
+  } })
+  h.controller.apply()
+  h.controller.apply()
+  assert.equal(starts, 1)
+  h.attachmentSessionId = "other-room"
+  finish({ id: "old-run" } as never)
+  await flushPromises()
+  assert.equal(h.appliedProviderRuns, 0)
+  const detached = bootstrapHarness({ deferred: { attachedProvider: {
+    sessionId: "room", load: () => { throw new Error("must not start after detach") },
+  } } })
+  detached.controller.apply()
+  await flushPromises()
+  assert.deepEqual(detached.warnings, [])
+})
+
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
@@ -122,6 +145,7 @@ function bootstrapHarness(options: {
     providerCatalog: null as ProviderCatalog | null,
     providerCommandCatalogs: null as ProviderCommandCatalogs | null,
     chromeUpdates: 0,
+    appliedProviderRuns: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
@@ -135,6 +159,7 @@ function bootstrapHarness(options: {
   }
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
+    applyProviderRun: () => { harness.appliedProviderRuns++ },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,

@@ -14,6 +14,7 @@ mod migration;
 mod quarantine;
 mod replies;
 mod supervision;
+mod subscriptions;
 #[cfg(test)]
 mod tests;
 mod transitions;

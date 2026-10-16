@@ -12,6 +12,8 @@ import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entr
 export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
+  applyProviderRun?: (run: import("./cli-types.js").RuntimeProviderRun | null) => void
+  reportProviderLaunchError?: (error: unknown) => void
   currentAttachmentSessionId: () => string | null
   currentTranscriptEntryCount: () => number
   entryCounter: () => number
@@ -80,6 +82,16 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
     const deferred = deps.getDeferred()
     if (!deferred) {
       return
+    }
+
+    const provider = deferred.attachedProvider
+    if (provider && deps.currentAttachmentSessionId() === provider.sessionId) {
+      void provider.load().then(run => {
+        if (deps.currentAttachmentSessionId() === provider.sessionId) deps.applyProviderRun?.(run)
+      }).catch(error => {
+        warn("failed to initialize attached provider after bootstrap", error)
+        if (deps.currentAttachmentSessionId() === provider.sessionId) deps.reportProviderLaunchError?.(error)
+      })
     }
 
     void deferred.providerCatalog?.then((catalog) => {

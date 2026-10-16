@@ -44,6 +44,8 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setPromptHistoryEntries: AnyFn
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
+  setProviderRunState: AnyFn
+  providerRunState: AnyFn
   setProviderCatalogState: AnyFn
   setProviderCommandCatalogState: AnyFn
   setTerminalCommandCatalogState: AnyFn
@@ -323,6 +325,11 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => deps.bootstrap.deferred,
+    applyProviderRun: run => {
+      if (run?.agent_instance_id && run.agent_instance_id !== deps.visibleTranscriptAgentId()) return
+      if (!deps.providerRunState()) deps.setProviderRunState(run)
+    },
+    reportProviderLaunchError: error => deps.flashFooter(deps.formatError(error), "error"),
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
