@@ -24,7 +24,10 @@ use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run, run_agent_utility_on_provider_run_for_project_environment_repair,
 };
-use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
+use crate::runtime::project_environment_setup_utility::{
+    project_environment_setup_utility_missing_input_message,
+    project_environment_setup_utility_reply_rejected,
+};
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
@@ -1340,13 +1343,27 @@ impl KernelRuntimeState {
             .user_config
             .history
             .archive;
-        let utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
+        let mut utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
             self,
-            archive_config,
-            utility_request,
+            archive_config.clone(),
+            utility_request.clone(),
             provider_run.clone(),
         )
         .await;
+        if let Err(error) = &utility_result {
+            if project_environment_setup_utility_reply_rejected(error)
+                && !store.is_cancelled(&execution.operation_id, attempt)
+            {
+                log_project_environment_binding_failure("discovery-utility", error);
+                utility_result = run_agent_utility_on_provider_run_for_project_environment_repair(
+                    self,
+                    archive_config,
+                    utility_request,
+                    provider_run.clone(),
+                )
+                .await;
+            }
+        }
         if store.is_cancelled(&execution.operation_id, attempt) {
             let _ = self
                 .restore_previous_ordinary_provider_run(&provider_run, &ordinary_provider_run)
@@ -1619,6 +1636,7 @@ impl KernelRuntimeState {
             });
         });
         if !validation_passed {
+            log_project_environment_validation_failure(&validation, inputs_match);
             store.mark_failed(
                 &execution.operation_id,
                 attempt,
@@ -1781,6 +1799,9 @@ impl KernelRuntimeState {
             };
         let validation_passed =
             validation_passed_for_execution(execution, definition, &validation) && inputs_match;
+        if !validation_passed {
+            log_project_environment_validation_failure(&validation, inputs_match);
+        }
         let _ = self.owned.project_environment_setups.update(
             &execution.operation_id,
             attempt,
@@ -3642,6 +3663,24 @@ mod tests {
 #[cfg(test)]
 #[path = "project_environment_access_tests.rs"]
 mod access_tests;
+
+fn log_project_environment_validation_failure(
+    validation: &ProjectEnvironmentValidation,
+    inputs_match: bool,
+) {
+    crate::logging::warn_with_fields(
+        "project.environment_setup.validation",
+        "project environment validation failed",
+        serde_json::json!({
+            "inputs_match": inputs_match,
+            "exit_codes": validation
+                .commands
+                .iter()
+                .map(|command| command.exit_code)
+                .collect::<Vec<_>>(),
+        }),
+    );
+}
 
 fn log_project_environment_binding_failure(stage: &'static str, error: &DaemonError) {
     let operation = match error {

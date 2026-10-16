@@ -95,6 +95,10 @@ project evidence requires. Represent each required package, compiler, system too
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
 requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
 bounded validation; do not assume they are present in the managed image. Return explicit relative path_entries for any named executable directories setup creates.\n\n\
+Validation commands must pass on the project exactly as committed. When no lockfile is committed\n\
+(libraries commonly commit none), use the plain command (`cargo check`, `npm install`) rather than\n\
+a lockfile-enforcing one (`cargo check --locked`, `npm ci`), and never spell out a disabled flag such\n\
+as `--locked=false`: cargo rejects it. The reply is one JSON object with no duplicate keys.\n\n\
 Prefer a project-pinned toolchain. Without a pin, reuse a working compiler that meets the\n\
 manifest minimum instead of installing a newer toolchain just for an independent CI job.\n\
 Do not select nightly solely because a CI job uses it.\n\n\
@@ -354,6 +358,17 @@ pub(crate) fn project_environment_setup_utility_missing_input_message(
     }
 }
 
+/// A reply the kernel rejected (malformed JSON, schema or definition
+/// violation). The model can produce a valid one on a second ask; provider
+/// failures, timeouts and missing-input reports are not retried.
+pub(crate) fn project_environment_setup_utility_reply_rejected(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "run project environment setup utility"
+    ) && project_environment_setup_utility_missing_input_message(error).is_none()
+}
+
 fn project_environment_setup_utility_schema() -> serde_json::Value {
     let definition = serde_json::json!({
         "type": "object",
@@ -607,6 +622,46 @@ mod tests {
         assert!(hidden.contains("tools must be disabled for this pass"));
         assert!(prompt.contains("do not run setup or validation"));
         assert!(!prompt.contains("Run the requested setup in the worker before returning"));
+    }
+
+    #[test]
+    fn project_environment_utility_prompt_forbids_uncommitted_lockfile_enforcement() {
+        let prompt = project_environment_setup_utility_visible_prompt(
+            "{}",
+            &project_environment_setup_utility_schema(),
+        );
+        // `cargo check --locked` fails on a library that commits no Cargo.lock.
+        assert!(prompt.contains("When no lockfile is committed"));
+        assert!(prompt.contains("never spell out a disabled flag"));
+        assert!(prompt.contains("no duplicate keys"));
+    }
+
+    #[test]
+    fn only_rejected_replies_are_retried() {
+        let duplicate_key =
+            r#"{"definition": {"schema_version": 1, "path_entries": [], "path_entries": []}}"#;
+        let rejected =
+            parse_project_environment_setup_utility_output(duplicate_key, None, "linux-x86_64")
+                .expect_err("a reply with a duplicate key must be rejected");
+        assert!(project_environment_setup_utility_reply_rejected(&rejected));
+
+        let missing_input = parse_project_environment_setup_utility_output(
+            r#"{"missing_user_inputs": [{"kind": "toolchain"}]}"#,
+            None,
+            "linux-x86_64",
+        )
+        .expect_err("a missing-input report fails the setup");
+        assert!(!project_environment_setup_utility_reply_rejected(
+            &missing_input
+        ));
+
+        assert!(!project_environment_setup_utility_reply_rejected(
+            &DaemonError::ProviderProtocol {
+                provider_run_id: "provider-run-1".to_string(),
+                operation: "codex_utility_timeout",
+                message: "codex utility did not complete".to_string(),
+            }
+        ));
     }
 
     #[test]
