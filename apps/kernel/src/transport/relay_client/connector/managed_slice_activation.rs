@@ -40,6 +40,10 @@ impl Drop for ManagedSliceActivationConfirmation {
     }
 }
 
+pub(super) fn socket_has_current_token(current: Option<&str>, socket: &str) -> bool {
+    current == Some(socket)
+}
+
 pub(super) fn managed_slice_token_confirmation_matches(
     slice_id: &str,
     nonce: &str,

@@ -8,7 +8,7 @@ use super::*;
 
 mod managed_slice_activation;
 mod writer;
-use managed_slice_activation::ManagedSliceActivationConfirmation;
+use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationConfirmation};
 #[cfg(test)]
 use managed_slice_activation::{
     managed_slice_token_confirmation_matches,
@@ -1157,7 +1157,15 @@ async fn run_daemon_relay_connector_inner(
                             // Same-identity token installation reauthenticates in place.
                             // Its pending confirmation must run after this heartbeat too,
                             // without waiting for a socket reconnect or duplicating retries.
-                            if static_relay.is_none() {
+                            // A token installed after this tick's snapshot waits for the
+                            // next heartbeat, which carries it; confirm only on a socket
+                            // authenticated with the token the owner is told to verify.
+                            if static_relay.is_none()
+                                && socket_has_current_token(
+                                    router.relay_config_snapshot().relay_token.as_deref(),
+                                    &active_relay_token,
+                                )
+                            {
                                 slice_activation.resume_pending(&router, &state).await;
                             }
                             if should_start_leased_projection_pump(

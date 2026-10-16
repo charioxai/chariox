@@ -748,3 +748,11 @@ async fn mp08_mp10_mp11_in_place_activation_starts_confirmation_without_socket_r
         "pending activation was stranded on the healthy socket"
     );
 }
+
+#[test]
+fn mp08_mp10_mp11_activation_confirms_only_on_a_socket_with_the_current_token() {
+    use super::managed_slice_activation::socket_has_current_token;
+    assert!(socket_has_current_token(Some("renewed"), "renewed"));
+    assert!(!socket_has_current_token(Some("renewed"), "previous"));
+    assert!(!socket_has_current_token(None, "previous"));
+}
