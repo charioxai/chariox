@@ -176,6 +176,17 @@ test("inline status names only what stops an account, and healthy accounts have 
   const creditsLater = { ...spend, resets_at_ms: day + 86_400_000 }
   assert.equal(providerAccountStatusLabel(profile("codex", [weekly, creditsLater]), at), "usage limit until 22 Oct")
   assert.equal(providerAccountStatusLabel(profile("codex", [weekly, spend]), at), "usage limit until 22 Oct")
+  // An exhausted allowance with no scheduled reset keeps the account limited: never drop it or invent a date.
+  const undated = { ...usage, meter_id: "five-hour", resets_at_ms: null, observed_at_ms: day - 1_000 }
+  const dated = { ...usage, resets_at_ms: day, observed_at_ms: day - 1_000 }
+  const credit = { ...credits, observed_at_ms: day - 1_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, credit]), day - 1_000), "usage limit reached")
+  assert.equal(providerAccountStatusLabel(profile("codex", [dated, credit]), day - 1_000), "usage limit until 22 Oct")
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, dated, credit]), day - 1_000), "usage limit reached")
+  assert.equal(providerAccountCapacityResetLabel(profile("codex", [undated, dated, credit]), day - 1_000), null)
+  const creditBack = { ...credit, resets_at_ms: day + 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, dated, creditBack]), day - 1_000), "usage limit until 23 Oct")
+  assert.equal(providerAccountStatusLabel(profile("opencode", [{ ...dated, service_id: "opencode" }, { ...undated, meter_id: "zen", service_id: "opencode" }]), day - 1_000, "opencode/x"), "usage limit reached")
   for (const [authState, label] of [
     ["unknown", "sign-in not checked"],
     ["not_configured", "sign in"],

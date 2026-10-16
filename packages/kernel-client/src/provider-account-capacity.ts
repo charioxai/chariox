@@ -9,6 +9,12 @@ export type ProviderAccountCapacity = {
 
 const PROVIDER_USAGE_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 
+function meterCurrentlyExhausted(meter: ProviderAccountUsageMeter, nowMs: number): boolean {
+  return nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS
+    && meter.state === "exhausted"
+    && (meter.resets_at_ms == null || meter.resets_at_ms > nowMs)
+}
+
 export function providerAccountCapacity(
   profile: ProviderAccountProfile,
   nowMs = Date.now(),
@@ -25,11 +31,7 @@ export function providerAccountCapacity(
   const isFresh = (meter: ProviderAccountUsageMeter): boolean => (
     nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS
   )
-  const currentlyExhausted = (meter: ProviderAccountUsageMeter): boolean => (
-    isFresh(meter)
-    && meter.state === "exhausted"
-    && (meter.resets_at_ms == null || meter.resets_at_ms > nowMs)
-  )
+  const currentlyExhausted = (meter: ProviderAccountUsageMeter): boolean => meterCurrentlyExhausted(meter, nowMs)
   const provider = profile.provider === "claude-headless" || profile.provider === "claude-p"
     ? "claude"
     : profile.provider
@@ -148,20 +150,18 @@ export function providerAccountCapacityResetLabel(profile: ProviderAccountProfil
  */
 function providerAccountRecoveryMs(profile: ProviderAccountProfile, nowMs: number, model?: string | null): number | null {
   if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
-  const pending = (meters: readonly ProviderAccountUsageMeter[]): number[] => meters
-    .filter(meter => meter.state === "exhausted" && meter.resets_at_ms != null && meter.resets_at_ms > nowMs
-      && nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS)
-    .map(meter => meter.resets_at_ms!)
+  // A group reopens when every exhausted meter has reset; one without a scheduled reset keeps it closed.
+  const reopens = (meters: readonly ProviderAccountUsageMeter[]): number | null => {
+    const live = meters.filter(meter => meterCurrentlyExhausted(meter, nowMs))
+    return live.length && live.every(meter => meter.resets_at_ms != null) ? Math.max(...live.map(meter => meter.resets_at_ms!)) : null
+  }
   const isCredit = (meter: ProviderAccountUsageMeter): boolean => meter.kind === "credit_balance" || meter.kind === "spend_limit"
   const modelMeters = providerAccountModelMeters(profile, model)
   const family = profile.provider.startsWith("claude") ? "claude" : profile.provider
-  if (family !== "codex" && family !== "claude") {
-    const resets = pending(modelMeters)
-    return resets.length ? Math.max(...resets) : null
-  }
-  const allowance = pending(modelMeters.filter(meter => !isCredit(meter)))
-  const credit = pending((profile.usage?.meters ?? []).filter(isCredit))
-  const options = [...(allowance.length ? [Math.max(...allowance)] : []), ...credit]
+  if (family !== "codex" && family !== "claude") return reopens(modelMeters)
+  const credits = (profile.usage?.meters ?? []).filter(isCredit)
+  const options = [reopens(modelMeters.filter(meter => !isCredit(meter))), ...credits.map(meter => reopens([meter]))]
+    .filter((reset): reset is number => reset !== null)
   return options.length ? Math.min(...options) : null
 }
 
