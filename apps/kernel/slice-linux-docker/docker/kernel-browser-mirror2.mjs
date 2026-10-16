@@ -7,7 +7,7 @@ import { createDeflateRaw, constants as zlib } from 'node:zlib';
 import { mirrorExceptionReason } from './kernel-browser-error-label.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
-import { assertCurrentDocument, assertNotCancelled } from './browser-controller-actions.mjs';
+import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
@@ -326,7 +326,12 @@ export class Mirror2 {
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
     let source, fallback = null;
+    const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
+    // Ordered navigation events retire this credit before any old-world retry.
+    // A renderer query here would queue behind the newly loading document.
+    const assertDocument = () => { if (moved()) throw new BrowserActionError('stale_document_reference', 'browser mirror document retired'); };
     const read = async () => {
+      assertDocument();
       if (reset) {
         // A snapshot may reuse local ids. Refuse old inputs/region leases
         // before touching the observer, including resyncs found during drain.
@@ -354,6 +359,7 @@ export class Mirror2 {
       return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
     const processDelta = async delta => {
+      assertDocument();
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
       if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
         delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
@@ -375,6 +381,7 @@ export class Mirror2 {
     let resources = [];
     try {
       source = await read();
+      assertDocument();
       if (source.resync) { reset = true; source = await read(); }
       this.register(stream, source);
       // A pointer press's focus/selection alone waits for the rest of its click (the page's next frame).
@@ -390,7 +397,6 @@ export class Mirror2 {
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
-      const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
       while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
@@ -400,6 +406,7 @@ export class Mirror2 {
         if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
       }
     } catch (error) {
+      assertDocument();
       await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
       // Over-budget/unavailable DOM: the client shows the protected video path.
       fallback = error.mirrorReason ?? 'observer_unavailable';
@@ -408,6 +415,7 @@ export class Mirror2 {
     }
     if (fallback) resources = [];
     mark('observe_resources');
+    assertDocument();
     const sheets = await this.sheetOps(world, source?.sheets);
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -421,6 +429,7 @@ export class Mirror2 {
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
     // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
     // answer asks the renderer.
+    assertDocument();
     if (this.host.browser.documentIdsByTarget?.get(tab.target_id) !== tab.document_id) await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
     assertNotCancelled(signal);
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {

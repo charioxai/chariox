@@ -285,7 +285,7 @@ test('MP-08/MP-11: a DOM echo is fenced by the page session\'s navigation events
   const fresh = await run('D1');
   assert.deepEqual([fresh.frameTrees, fresh.packet.ops], [[], [{ op: 'text', id: 'n5', text: 'menu' }]], 'MP-08: no renderer round trip ahead of the echo');
   const moved = await run('D2');
-  assert.deepEqual([moved.frameTrees.length, moved.packet.code], [1, 'stale_document_reference'], 'MP-11: a navigated page is refused by the renderer check');
+  assert.deepEqual([moved.frameTrees.length, moved.packet.code], [0, 'stale_document_reference'], 'MP-11: the committed navigation event refuses before renderer discovery');
   const unknown = await run(undefined);
   assert.deepEqual([unknown.frameTrees.length, unknown.packet.code], [1, 'stale_document_reference']);
 });
@@ -338,7 +338,7 @@ test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a n
     mirror.evaluate = async (_world, expression) => { calls.push(expression); return { ops: [{ op: 'text', id: 'n5', text: 'menu' }], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 }; };
     mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
     await mirror.packet(stream, { subscription_id: 's', generation, after_sequence: 1 }, 'scope').catch(() => {});
-    return calls.slice(0, calls.indexOf('m.drain()'));
+    const drain = calls.indexOf('m.drain()'); return drain < 0 ? calls : calls.slice(0, drain);
   };
   assert.deepEqual(await run(), [], 'MP-08: no target or frame round trip before the drain');
   for (const changed of [{ document: 'D2' }, { document: null }, { session: 'S2' }, { open: false }, { generation: 2 }])
@@ -558,4 +558,20 @@ test('MP-08/MP-10/MP-11 the protected native preview can initialize before obser
  const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');pending.catch(()=>{});
  await new Promise(resolve=>setTimeout(resolve,10));ready=true;displays.set('native',{tab_id:'t',generation:1,observed_by:'scope',expires:Date.now()+60000,regionTarget:{kind:'visible_page'},regionLease:{document_id:'new'},regionSource:{attested:true,valid:()=>true,sample:()=>({})}});
  await assert.rejects(pending,/observer reached after preview/);
+});
+
+for(const reply of ['evicted','delta','rejected'])test('MP-08/MP-10/MP-11 navigation during '+reply+' refuses before a snapshot or renderer query',async()=>{
+ const policy={targets:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'},documents=new Map([['T','D1']]),calls=[];
+ const connection={isOpen:()=>true,send:async method=>{calls.push(method);return{frameTree:{frame:{loaderId:'D2'}}};}};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={tab_id:'t',world,issued:1,document_id:'D1',policy,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,browser:{connection,documentIdsByTarget:documents,sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
+ const delta={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,fragment:null,opaque:false,pressed:0,nodes:[],root:'n1'};
+ mirror.evaluate=async(_,expression)=>{calls.push(expression);if(expression==='m.drain()'){documents.set('T','D2');if(reply==='rejected')throw Error('context destroyed');return reply==='evicted'?{resync:'evicted'}:delta;}return delta;};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];
+ let refused;try{await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:1},'scope');}catch(error){refused=error;}
+ assert(!calls.includes('m.snapshot()'),'a reused execution-context id must not resnapshot the new page under the old credit');
+ assert(!calls.includes('Page.getFrameTree'),'the ordered navigation event already proves retirement; no renderer query');
+ assert.equal(refused?.code,'stale_document_reference');
 });
