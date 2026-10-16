@@ -59,7 +59,7 @@ export class BrowserDisplayPresenter {
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
     // MP-08/MP-10/MP-11: request the low-latency compositor path before the
-    // first Chrome UI draw. Keep ordinary region/page canvases on their default.
+    // first crop/Chrome UI draw. Full-page and desktop streams retain their sink.
     if(videoOptions.direct)canvas.getContext?.('2d',{desynchronized:true});
     this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
@@ -293,10 +293,10 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     await releaseDisplay(false).catch(()=>{});throw Error('MP-08/MP-11: invalid region negotiation');
   }
   const onTiming = options.onTiming ?? (() => {});
-  // MP-08/MP-10/MP-11: Chrome UI has sparse, latency-sensitive damage.
-  // Paint its decoded video directly; live page/desktop video keeps its track.
+  // MP-08/MP-10/MP-11: crops and Chrome UI paint into their actual canvas.
+  // Avoid an intermediate media-track compositor and another rAF for regions.
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming, warmDecoder,
-    {direct:['browser_chrome','browser_auxiliary'].includes(options.target?.kind)});
+    {direct:!options.desktop&&(binding.source_kind==='region'||['region','browser_chrome','browser_auxiliary'].includes(options.target?.kind))});
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();
