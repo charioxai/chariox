@@ -4124,3 +4124,28 @@ field): the kernel's mirror resolver turns them into the editor's own chords
 under its observed-frame, live-focus and epoch guards (before 530 they were
 document-bound `display_input` chords, which refuse any focused frame). Clients
 feature-detect 530; no client floor moves.
+
+### MP-08 / MP-10 / MP-11: mirror initial snapshot completion (local 539 / peer 147)
+
+The mirror v2 packet header adds `snapshot_complete?: boolean`. The kernel emits
+`true` only when the main document's initial serializer has drained and its
+native `document.readyState` is `complete`. A bounded prefix, even one with a
+hidden body, emits `false`. This is main-document readiness; child-frame
+completion cannot override it. Resources may continue refining independently.
+A readiness change wakes an outstanding credit. A completion change between
+credits is retained until the next drain, so an otherwise empty completion
+header cannot be lost. Compact deltas inherit an omitted value from their base,
+just like focus, scroll and selection; resets always carry the boolean.
+
+The shared renderer requires protocol 539. It keeps the previous inert page
+while an incoming prefix has no visible viewport content. Only confirmed
+completion starts the bounded two-second hold for an intentionally empty page.
+Visible content may paint before completion; the serializer and opaque relay
+chunk transport remain bounded and keep their existing input/band interleaving.
+The field does not relax observation protection, frame admission or input fences.
+
+The frozen header fixture `browser-mirror2-completion-539.json` is hash-pinned by
+`mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash`; real-Chromium observer,
+controller, compact-header and renderer drills cover pending prefixes, completion
+wakes (including between credits), completed empty pages and pre-539 rejection.
+These supplementary checks do not replace the MP-10 real hosted UI/timing matrix.

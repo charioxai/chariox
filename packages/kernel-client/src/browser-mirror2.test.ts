@@ -44,7 +44,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 517)
+  assert.equal(browserMirror2MinimumProtocolVersion, 539)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -149,7 +149,7 @@ const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) =>
   const packets: Mirror2Packet[] = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 517, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  const transport = { protocolVersion: 539, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
   return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
@@ -216,8 +216,8 @@ test('MP-10: removing an inline style forgets it, so a later resource cannot res
 
 test('MP-08/MP-10: compact deltas inherit binding and header from their base; deflated bodies inflate in sequence order; late copies are not gaps', async () => {
   const kernel = kernelContext()
-  const reset = { ...packet(1, true), scroll: [0, 40], focused: 'n2' }
-  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
+  const reset = { ...packet(1, true), snapshot_complete: false, scroll: [0, 40], focused: 'n2' }
+  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, snapshot_complete: true, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
   const wires: unknown[] = []
   for (const body of bodies) { const text = JSON.stringify(body); wires.push(text.length >= 512 ? { wire: 2, sequence: body.sequence, ...(body.sequence === 1 ? { reset: true } : {}), encoding: 'deflate', ...await kernel.encode(text) } : body) }
   kernel.close()
@@ -230,6 +230,7 @@ test('MP-08/MP-10: compact deltas inherit binding and header from their base; de
   await mirror.close()
   assert.deepEqual(f.applied, [1, 2, 3, 4]); assert.deepEqual(f.failures, [])
   const [, second, third, fourth] = f.packets
+  assert.deepEqual(f.packets.map(p => p.snapshot_complete), [false, false, true, true], '539 completion changes survive compression, ordering and omitted compact headers')
   assert.deepEqual([second!.subscription_id, second!.tab_id, second!.document_id, second!.base_sequence, second!.reset, second!.scroll, second!.focused], ['s', 't', 'd', 1, false, [0, 40], 'n2'])
   assert.equal(third!.focused, null, 'an explicit null replaces the base value'); assert.equal(fourth!.focused, null); assert.deepEqual(fourth!.resources, [])
 })
@@ -394,7 +395,7 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 539, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -420,7 +421,7 @@ test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the miss
   let sequence = 0, gapAt = 0
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 539, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -448,7 +449,7 @@ test('MP-08: a queued credit answered within the kernel bound is not lost: no re
   let sequence = 0, chain: Promise<unknown> = Promise.resolve()
   const requests: Array<Record<string, unknown>> = [], started = Date.now(), wait = 2000
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async () => {} })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 539, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -473,7 +474,7 @@ test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) a
   let sequence = 0
   const applied: Array<[number, number]> = [], requests: Array<Record<string, unknown>> = [], started = Date.now()
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push([p.sequence, Date.now() - started]) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 539, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -512,7 +513,7 @@ test('specific retired-subscription replies retire the viewer immediately',async
 test('a refused input reports its reason without retiring paint or replaying the gesture',async()=>{
  let send:any,inputs=0,sequence=0;const refusals:unknown[]=[],failures:unknown[]=[]
  const error=Error('kernel_browser_failed: MD-2: browser operation failed: Error occluded_node')
- const mirror=await attachBrowserMirror2({protocolVersion:517,request:async(r:any)=>{
+ const mirror=await attachBrowserMirror2({protocolVersion:539,request:async(r:any)=>{
   const c=r.KernelBrowser.command
   if(c.op==='mirror_subscribe')return {KernelBrowser:{result:{subscription_id:'s'}}}
   if(c.op==='mirror_close')return {KernelBrowser:{result:{closed:true}}}
@@ -569,4 +570,16 @@ test('MP-11: tree refusals distinguish missing delta targets from invalid parent
   assert.throws(() => validateMirror2Packet(delta('n6', 'n6'), previous), { message: 'MP-11: unsafe mirror tree (missing operation target)' })
   assert.throws(() => validateMirror2Packet(delta('n2', 'n8'), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n7', parent: 'n8', kind: 'text', text: 'PRIVATE_PAGE_TEXT' })), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
+})
+
+// MP-08/MP-10/MP-11: the renderer depends on the explicit completion bit.
+test('MP-11 completion header is boolean; pre-539 kernels are refused before subscription', async () => {
+  for (const snapshot_complete of [true, false]) validateMirror2Packet(base(tree(element('p')), { snapshot_complete }), new Map())
+  validateMirror2Packet(base(tree(element('p'))), new Map())
+  for (const snapshot_complete of [null, 0, 'true', {}]) assert.throws(() => validateMirror2Packet(base(tree(element('p')), { snapshot_complete } as unknown as Partial<Mirror2Packet>), new Map()), /unsafe mirror header/)
+  for (const protocolVersion of [517, 535, 538, NaN]) {
+    let called = false
+    await assert.rejects(attachBrowserMirror2({ protocolVersion, request: async () => { called = true } }, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure() {} }), /requires protocol 539/)
+    assert.equal(called, false)
+  }
 })

@@ -85,11 +85,10 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
         "bd3b96605c2cc8c92f6b1322217abb768aaf62f16a133e6b842e7825d660f45f"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        value["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
+    assert_eq!(value["local_protocol"], 535);
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 535);
+    assert_eq!(value["peer_protocol"], 143);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 143);
     let registration: chariox_relay::protocol::RelayEnvelope =
         serde_json::from_value(value["registration"].clone()).unwrap();
     assert_eq!(

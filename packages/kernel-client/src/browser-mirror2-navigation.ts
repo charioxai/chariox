@@ -89,12 +89,14 @@ export class Mirror2Navigation {
     ;[this.frame, this.loaded] = this.create()
     await this.loaded
   }
-  present(): void {
+  present(complete = false): void {
+    if (!complete) this.cancelEmpty()
     if (this.painted || !this.frame.contentDocument) return
     if (!hasVisibleMirrorContent(this.frame.contentDocument)) {
       // MP-08/MP-10/MP-11: a body can intentionally stay empty. Bound its
-      // paint hold without treating a head-only continuation as a blank page.
-      if (this.frame.contentDocument.body && this.emptyTimer === undefined) {
+      // paint hold only after the kernel confirms the initial serialization
+      // has drained and the native document has completed.
+      if (complete && this.frame.contentDocument.body && this.emptyTimer === undefined) {
         const frame = this.frame
         this.emptyTimer = setTimeout(() => {
           this.emptyTimer = undefined

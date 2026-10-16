@@ -27,7 +27,7 @@ const OPS = {
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
-  sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
+  snapshot_complete: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
 const apply = (value, schema, what) => Object.fromEntries(Object.entries(value).map(([name, field]) => { if (!Object.hasOwn(schema, name)) throw new Error(`MP-11: unrebased mirror ${what} field`); return [name, field === undefined ? field : schema[name](field)]; }));
 export function rebaseRecord(record, slot) {
   if (!slot) return record;

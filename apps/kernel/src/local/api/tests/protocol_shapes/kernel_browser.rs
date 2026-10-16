@@ -467,3 +467,18 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
 }
+
+// MP-08/MP-10/MP-11: opaque mirror bodies are carried by the ordinary kernel response.
+#[test]
+fn mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash() {
+    let bytes = include_bytes!("browser-mirror2-completion-539.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "ab0d2b897b06b4bd6c232a136464cd3ed4782c1b64510f4d502aa1708eabe174");
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
+    for name in ["completion_delta", "inherited_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": value[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}

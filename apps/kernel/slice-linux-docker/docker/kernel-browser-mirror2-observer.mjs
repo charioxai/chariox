@@ -192,6 +192,7 @@ export function installMirror2(sanitizeMirrorCss) {
       if (!listened.has(root)) {
         listened.add(root);
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
+        if (root.nodeType === 9) listen('readystatechange', wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
         if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
@@ -459,10 +460,12 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // MP-08/MP-10: the focus/selection state the last drain reported. A focus or selection event that leaves it
     // unchanged (focus emulation restoring the same element) does not end the long poll before the input it precedes.
-    let reported = '';
+    let reported = '', reportedComplete = false;
+    const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
-      return { scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
+      reportedComplete = complete();
+      return { snapshot_complete: reportedComplete, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
     };
     const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -928,7 +931,7 @@ export function installMirror2(sanitizeMirrorCss) {
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => complete() !== reportedComplete || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged

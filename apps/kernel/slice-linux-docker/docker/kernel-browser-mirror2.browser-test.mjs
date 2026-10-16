@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
@@ -1373,3 +1373,20 @@ test('MP-10 M2: an ordinary document between four and eight MiB includes its des
  assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false);
  assert(JSON.stringify(first).length<9*1024*1024,'the ordinary reset retains a bounded byte cap');
 }));
+
+// MP-08/MP-10/MP-11: exercise the actual controller encoder, not only the observer.
+test('MP-10 protocol539 completion follows the final initial continuation and compacts unchanged headers', () => mirrored(
+  '<header hidden>'+('<span>hidden prefix</span>').repeat(12000)+'</header><p>Final viewport</p>', async ({ next }) => {
+    const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-mirror2-completion-539.json', import.meta.url), 'utf8'))
+    const first = await next(); assert.equal(first.reset, true)
+    assert.equal(first.snapshot_complete, fixture.reset_header.snapshot_complete)
+    let complete = first.snapshot_complete, drains = 0
+    while (!complete) {
+      const packet = await next(); assert(!packet.fallback)
+      if (Object.hasOwn(packet, 'snapshot_complete')) complete = packet.snapshot_complete
+      assert(++drains < 300, 'initial serialization must settle')
+    }
+    assert(drains > 0)
+    const idle = await next()
+    assert.equal(Object.hasOwn(idle, 'snapshot_complete'), false, 'unchanged completion inherits its base')
+  }))

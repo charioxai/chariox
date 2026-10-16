@@ -39,7 +39,7 @@ async function viewer() {
   await page.evaluate(async () => { window.sent = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), async action => { window.sent.push(action); }); await window.r.ready(); });
   return page;
 }
-const header = { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1 };
+const header = { snapshot_complete: true, wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', ops: [], scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [], css_width: 1280, css_height: 800, device_scale_factor: 1 };
 const snapshot = nodes => ({ ...header, sequence: 1, base_sequence: null, reset: true, root: nodes[0].id, nodes });
 const delta = (sequence, ops = [], extra = {}) => ({ ...header, sequence, base_sequence: sequence - 1, reset: false, ops, ...extra });
 const apply = (page, packet) => page.evaluate(packet => window.r.apply(packet), packet);
@@ -1031,4 +1031,33 @@ test('MP-11 a refused selection can be settled again without changing its range'
   });
   assert.equal(result.first,'MP-10: mirror selection refused');assert.equal(result.second,null);assert.equal(result.calls,2);assert.equal(result.range,'The witness has called');
  }finally{await page.close()}
+});
+
+// MP-08/MP-10/MP-11 review#1023: delayed continuation with a hidden body prefix.
+test('MP-10 a hidden body prefix cannot time out over a held page',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Previous usable site'}])));
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'header',attrs:{hidden:''}},{id:'n5',parent:'n4',kind:'text',text:'Hidden prefix'}])),document_id:'large',sequence:2,snapshot_complete:false});
+  await new Promise(resolve=>setTimeout(resolve,2300));
+  assert.equal(await page.evaluate(()=>window.r.painted),false,'a pending hidden prefix is not a completed empty page');
+  assert.equal(await page.locator('#c > iframe').count(),2);
+  await apply(page,{...delta(3,[{op:'children',id:'n3',children:['n4','n6'],nodes:[{id:'n6',parent:'n3',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'Actual viewport'}]}],{document_id:'large'}),snapshot_complete:true});
+  await page.waitForFunction(()=>window.r.painted);
+  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert((await page.evaluate(()=>window.r.frame.contentDocument.body.innerText)).includes('Actual viewport'));
+ }finally{await page.close()}
+});
+
+// MP-08/MP-10/MP-11: completion can arrive in a header-only compact delta.
+test('MP-10 completion after an empty prefix starts a bounded empty-page hold', async () => {
+ const page=await viewer();try {
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'Previous site'}])));
+  await apply(page,{...snapshot(page2([])),document_id:'empty',sequence:2,snapshot_complete:false});
+  await new Promise(resolve=>setTimeout(resolve,2200));
+  assert.equal(await page.evaluate(()=>window.r.painted),false);
+  await apply(page,{...delta(3),document_id:'empty',snapshot_complete:true});
+  await page.waitForFunction(()=>window.r.painted,null,{timeout:3000});
+  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
+ } finally { await page.close() }
 });
