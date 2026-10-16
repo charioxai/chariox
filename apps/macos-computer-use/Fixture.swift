@@ -8,6 +8,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
     var ticks = 0
     var drillText: NSTextView?
     var lastSelection: NSRange?
+    var clickCount = 0
     var coverPanel: NSPanel?
     var coverSignal: DispatchSourceSignal?
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -52,7 +53,13 @@ final class Fixture: NSObject, NSApplicationDelegate {
         print("fixturePID=\(getpid()) windowID=\(window.windowNumber)"); fflush(stdout)
     }
     func startTextDrill() {
-        let scroll = NSScrollView(frame: NSRect(x: 20, y: 20, width: 500, height: 320))
+        // Human-visible click oracle: a large banner and a highlighted line follow every selection change.
+        let banner = NSTextField(labelWithString: "Waiting for the agent's click")
+        banner.frame = NSRect(x: 20, y: 300, width: 500, height: 44)
+        banner.font = .boldSystemFont(ofSize: 26); banner.alignment = .center
+        banner.wantsLayer = true; banner.layer?.backgroundColor = NSColor.systemGray.withAlphaComponent(0.3).cgColor
+        window.contentView!.addSubview(banner)
+        let scroll = NSScrollView(frame: NSRect(x: 20, y: 20, width: 500, height: 270))
         scroll.hasVerticalScroller = true
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 1200))
         text.setAccessibilityIdentifier("text")
@@ -99,9 +106,19 @@ final class Fixture: NSObject, NSApplicationDelegate {
             let selected = text.selectedRange()
             if selected != lastSelection {
                 lastSelection = selected
+                if selected.location > 0 { markClick(selected.location, in: text, banner: banner, layout: layout) }
                 print("fixture selection location=\(selected.location) length=\(selected.length)"); fflush(stdout)
             }
         }
+    }
+    func markClick(_ location: Int, in text: NSTextView, banner: NSTextField, layout: NSLayoutManager) {
+        let string = text.string as NSString
+        let line = string.substring(to: location).filter { $0 == "\n" }.count + 1
+        clickCount += 1
+        layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: string.length))
+        layout.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow, forCharacterRange: string.lineRange(for: NSRange(location: location, length: 0)))
+        banner.stringValue = "agent click #\(clickCount) on line \(line)"
+        banner.layer?.backgroundColor = NSColor.systemYellow.cgColor
     }
     // Same-process cover drill: SIGUSR1 toggles a non-key, click-through floating panel over the
     // still-focused main window. Focus and the app-scoped AX hit still land on the target, so only
