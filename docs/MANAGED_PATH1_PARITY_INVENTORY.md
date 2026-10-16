@@ -1,5 +1,19 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 rendered-font handover readiness (2026-10-16)
+
+A completed page waits for fonts needed by its visible text, controls and
+`::before`/`::after` content. Chromium resolves the actual family, weight and
+unicode range through `FontFaceSet.check`; unused font variants no longer hold
+handover merely because another face failed. Missing visible fonts still keep
+the admitted native view. This uses the existing font and resource contracts,
+with matching shared and Cloud behavior and no new resource-fetch authority.
+A real hosted BBC baseline reached a settled 35-face set (six loaded, two failed,
+27 unused) but remained in video at the global font gate. Focused real-Chromium
+regressions distinguish unused declarations from missing visible text, control
+and generated-content fonts. Those checks do not establish live acceptance;
+the complete site/window/DPR, transition, timing and stability drills still apply.
+
 ## MP-08 / MP-10 / MP-11 held mirror continuation layout (2026-10-16)
 
 The shared renderer continues to apply records and resources while native video

@@ -1,4 +1,4 @@
-import { Mirror2FontStyle } from './browser-mirror2-fonts.js'
+import { Mirror2FontStyle, mirror2RenderedFontReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -633,15 +633,12 @@ export class BrowserMirror2Renderer {
     if (doc.fonts.status === 'loading') this.handoverDiagnostic('wait_fonts')
     await doc.fonts.ready
     const fontFailed = [...doc.fonts].some(font => font.status === 'error')
-    for (const styled of fontFailed ? this.styled.values() : []) {
-      const raws = styled.kind === 'adopted' ? styled.raw : [styled.raw]
-      for (const raw of raws) for (const rule of raw.match(/@font-face[^{}]*\{[^{}]*\}/gi) ?? []) for (const [,key] of rule.matchAll(resourcePattern)) if (!this.resources.has(key)) { this.handoverDiagnostic('wait_fonts'); return false }
-    }
     const view = doc.defaultView
     for (const node of this.dom.values()) if (node.nodeType === 1) {
       const element = node as Element, box = element.getBoundingClientRect()
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = view?.getComputedStyle(element)
+      if (fontFailed && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
       if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
     if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')

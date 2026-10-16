@@ -42,3 +42,25 @@ export class Mirror2FontStyle {
   }
   remove(): void { this.sheet = null }
 }
+
+// MP-08/MP-10/MP-11: failed/unused font declarations do not describe the
+// fonts used by visible text, controls or generated content. Let Chromium
+// resolve the actual family, weight and unicode range for that rendered text.
+export function mirror2RenderedFontReady(element: Element, style: CSSStyleDeclaration): boolean {
+  const doc = element.ownerDocument
+  const ready = (font: CSSStyleDeclaration, text: string): boolean => {
+    if (!text.trim() || font.visibility !== 'visible' || Number(font.opacity) === 0) return true
+    try { return !!font.font && doc.fonts.check(font.font, text) } catch { return false }
+  }
+  let text = [...element.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent ?? '').join('')
+  if (['input', 'textarea'].includes(element.localName)) {
+    const control = element as HTMLInputElement | HTMLTextAreaElement
+    text += control.value || control.placeholder
+  }
+  if (!ready(style, text)) return false
+  for (const pseudo of ['::before', '::after']) {
+    const generated = doc.defaultView?.getComputedStyle(element, pseudo), content = generated?.content
+    if (generated && content && !['none', 'normal', '""', "''"].includes(content) && !content.startsWith('url(') && !ready(generated, content)) return false
+  }
+  return true
+}

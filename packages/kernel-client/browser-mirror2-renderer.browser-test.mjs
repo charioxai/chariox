@@ -1235,3 +1235,16 @@ test('MP-08/MP-10/MP-11 handover reports a visible resource blocker without expo
   assert.equal(await page.evaluate(()=>window.handoverMarks.filter(s=>s.stage==='handover_wait_image').length),1,'unchanged blockers do not flood diagnostics');
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: an unused font variant cannot hold a completed public page.
+for(const usage of ['hidden','text','pseudo','control'])test(`MP-08/MP-10/MP-11 font readiness checks rendered usage=${usage}`,async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
+  const css='@font-face{font-family:MissingMirror;src:url("mr:r1")}@font-face{font-family:UnusedMirror;src:url("mr:r2")}body{font-family:Arial}'+(usage==='pseudo'?'p::before{content:"Generated text";font-family:MissingMirror}':'');
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:usage==='control'?'input':'p',attrs:usage==='text'||usage==='control'?{style:'font-family:MissingMirror'}:{},...(usage==='control'?{form:{value:'Visible input',checked:false,selected_index:-1,selection_start:0,selection_end:0}}:{})},...(usage==='control'?[]:[{id:'n7',parent:'n6',kind:'text',text:'Visible page'}])];
+  await apply(page,{...snapshot(nodes),document_id:'font-page',sequence:2});
+  await page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px MissingMirror').catch(()=>{});await d.fonts.ready});
+  assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts].some(f=>f.status==='error')),true);
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),usage==='hidden','only fonts required by visible content constrain the switch');
+ }finally{await page.close()}
+});
