@@ -406,6 +406,8 @@ impl TerminalStreamService {
         if record.pending_recipient_attachment_ids.is_empty()
             || record.prompt_origin == Some(PromptOrigin::CompletionCheck)
             || internal_echo
+            || (record.kind == TerminalOutputKind::ProviderTool
+                && crate::history::public_history::is_private_history_tool_record(&record.bytes))
         {
             return;
         }

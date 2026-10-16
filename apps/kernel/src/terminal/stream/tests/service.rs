@@ -1374,3 +1374,57 @@ fn completion_check_prompt_echo_without_origin_is_not_delivered_to_clients() {
         assert_eq!(delivered[0].bytes, b"ordinary owner prompt");
     }
 }
+
+#[test]
+fn public_history_legacy_tool_records_are_not_client_output() {
+    // MP-08 / MP-10 / MP-11: old tool-result blobs can contain assessment turns.
+    // Keep those traces agent-only on both live and historical client paths.
+    for (tool, version, visible) in [
+        ("chariox.history.turn", Some(4), false),
+        ("mcp__chariox__chariox_history_turn", Some(4), false),
+        ("chariox_chariox_history_turn", Some(4), false),
+        ("chariox.meta.turn_overview", Some(4), false),
+        ("chariox.history.turn", None, false),
+        ("chariox.history.turn", Some(5), true),
+        ("chariox.history.turn", Some(6), false),
+        ("bash", Some(4), true),
+    ] {
+        let text = serde_json::json!({
+            "tool": tool, "status":"completed",
+            "output": serde_json::json!({"structuredContent": {
+                "redaction_version": version,
+                "events": [{"text":"retained public or legacy internal text"}]
+            }}).to_string()
+        })
+        .to_string();
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            "session-1",
+            "run",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("history-call".into()),
+            text.clone(),
+        );
+        let event = crate::history::HistoryEvent::transcript(1, &entry, Default::default());
+        assert_eq!(
+            event.to_session_history_entry().is_some(),
+            visible,
+            "historical {tool} version {version:?}"
+        );
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "run",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("history-call".into()),
+            vec!["attachment-1".into()],
+            text.as_bytes(),
+        );
+        assert_eq!(
+            !terminal.output_records().is_empty(),
+            visible,
+            "live {tool} version {version:?}"
+        );
+    }
+}

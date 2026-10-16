@@ -359,6 +359,14 @@ impl HistoryEvent {
     }
 
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+        if self.kind == HistoryEventKind::ProviderTool
+            && self
+                .content
+                .as_deref()
+                .is_some_and(|text| public_history::is_private_history_tool_record(text.as_bytes()))
+        {
+            return None;
+        }
         let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
         let session_id = self.session_id.clone()?;
         let source_attachment_id = self
