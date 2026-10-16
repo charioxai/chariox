@@ -627,3 +627,24 @@ test('MP-11 a reset can reuse only immutable sheets actually retained by this vi
   assert.equal(resolveMirror2Sheets(reset, known, retained).nodes![2]!.css, 'p{color:red}')
   assert.throws(() => resolveMirror2Sheets({...reset,nodes:tree({id:'n3',parent:'n2',kind:'element',tag:'style',css_ref:'e'.repeat(24)})}, known, retained), /sheet reference/)
 })
+
+test('MP-08/MP-10/MP-11 native preview keeps credits alive and a handover flush applies after earlier packets',async()=>{
+ const applied:number[]=[],commands:any[]=[],previews:string[]=[];let sequence=0,closed=false;
+ const renderer=()=>({frame:{} as HTMLIFrameElement,ready:async()=>{},close:()=>{},apply:async(p:Mirror2Packet)=>{applied.push(p.sequence)}});
+ const request=async(r:any)=>{const c=r.KernelBrowser.command;commands.push(c);let result:any;
+  if(c.op==='mirror_subscribe')result={subscription_id:'s'};
+  else if(c.op==='mirror_close'){closed=true;result={closed:true}}
+  else if(c.op==='mirror_next'){
+   const n=++sequence;if(n===1)result={...packet(1,true),fallback:'navigation_preview',snapshot_complete:false};
+   else {if(!c.flush)await new Promise(resolve=>setTimeout(resolve,10));result=packet(n,n===2)}
+  }
+  return{KernelBrowser:{result}};
+ };
+ const view=await attachBrowserMirror2({protocolVersion:539,request},{}as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:assert.fail,preparing:(p:Mirror2Packet)=>previews.push(p.document_id)} as any,{renderer,credits:1,waitMs:0});
+ try{
+  await until(()=>applied.length>0,1000);
+  assert.deepEqual(previews,['d']);assert.equal(commands[0].navigation_preview,true);
+  const fresh=await (view as any).synchronize();assert.equal(fresh.document_id,'d');assert(applied.includes(fresh.sequence));
+  assert(commands.some(c=>c.flush&&c.wait_ms===0));
+ }finally{await view.close();assert(closed)}
+});

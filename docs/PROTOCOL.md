@@ -4172,3 +4172,20 @@ renderer discards both dictionaries. This extends mirror's own unreleased
 539/147 allocation additively, as allocated by the coordinator; no new protocol
 number or client floor is introduced. `browser-mirror2-sheet-cache-539.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
+
+MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
+`mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
+`fallback:"navigation_preview"`, `snapshot_complete:false` notification before
+observer preparation. It is nonterminal only for the opting-in viewer; the next
+credit supplies the new document's actual snapshot. Old input epochs and region
+leases retire before the notification. No page pixels or new input authority
+travel in this packet. With protected display disabled it is never issued.
+
+The viewer may show the existing whole-page protected VIDEO display while
+preparing its script-free DOM offscreen. `mirror_next.flush:true` requires
+`wait_ms:0`, ends earlier long polls and performs a fresh observer drain; it
+never replays a history packet. Opted-in native input awaits CDP dispatch ACKs
+so a flush after those receipts is causal. The client must match document and
+geometry, await full snapshot/assets and settle in-flight input before atomic
+handover; a newer input or document invalidates that attempt. Active pointer
+and IME composition remain on the existing native input surface until complete.

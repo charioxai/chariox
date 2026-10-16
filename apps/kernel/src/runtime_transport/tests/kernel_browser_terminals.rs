@@ -249,6 +249,7 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     device_scale_factor: 1,
                     wire: None,
+                    navigation_preview: None,
                 },
             )
             .await,
@@ -265,6 +266,7 @@ async fn mdnotes_two_local_connections_child() {
                 known_sheets: vec![],
                 wait_ms: None,
                 resend: None,
+                flush: None,
             },
         )
         .await;
@@ -287,6 +289,7 @@ async fn mdnotes_two_local_connections_child() {
                     known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,
@@ -315,6 +318,7 @@ async fn mdnotes_two_local_connections_child() {
                     known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,
@@ -350,6 +354,7 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     device_scale_factor: 1,
                     wire: None,
+                    navigation_preview: None,
                 },
             )
             .await,
@@ -370,6 +375,7 @@ async fn mdnotes_two_local_connections_child() {
                     known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,

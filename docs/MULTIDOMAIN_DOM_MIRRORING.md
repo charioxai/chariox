@@ -736,3 +736,25 @@ notifies the View with the last applied frame metadata. Idle or stalled credits
 cannot postpone View promotion after that timer. The packet callback still runs
 only for received/applied packets; presentation creates no sequence or ACK and
 is fenced by the current applied sequence, renderer lifetime and frame identity.
+
+### MP-08 / MP-10 / MP-11: native navigation handover (539/147)
+
+Owner decision 2026-10-16 permits the existing protected whole-page VIDEO path
+while a typed URL's DOM snapshot prepares. The opting-in subscription announces
+`navigation_preview` before observer work, retires old input epochs/region leases,
+and continues delivering the new document's mirror offscreen. Ordinary clients
+that do not opt in keep their current paint hold. No screenshot polling path or
+new capture/input authority is added.
+
+Required cell `MIRROR-NAVIGATION-HANDOVER`: from a fresh real hosted web client,
+use the native omnibox to navigate between public sites, then click/type/scroll
+while VIDEO changes to DOM. Run 1440×900 and 1920×1080 at DPR1 and DPR2 through
+the shaped hosted WSS path. Record full screen video and per-frame mode/geometry
+samples across the switch. Watch the recording and inspect every transition
+frame: no blank frame, layout jump, old-page flash, lost or duplicate input.
+Verify the final field value and caret through normal keys after handover;
+repeat a navigation, an active pointer gesture and IME composition. A mismatched
+document/geometry, incomplete snapshot, pending input or active composition must
+keep the admitted native surface until a fresh synchronized mirror can replace
+it. Capture a region before and after the switch. The base must fail the same
+video/handover assertion. Source fixtures supplement this real drill only.

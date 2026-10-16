@@ -1179,3 +1179,17 @@ test('MP-10 next navigation consumes one preloaded inert sandbox and closes the 
   await page.evaluate(()=>window.r.close());assert.equal(await page.locator('#c > iframe').count(),0);
  }finally{await page.close();}
 });
+
+test('MP-08/MP-10/MP-11 native preview holds old paint and focus until a complete prepared document is released',async()=>{
+ const page=await viewer();
+ try{
+  const nodes=(text)=>[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'input',form:{value:text,checked:false,selected_index:-1,selection_start:text.length,selection_end:text.length}}];
+  await apply(page,snapshot(nodes('old')));
+  await page.evaluate(()=>{window.old=window.r.frame;window.r.holdForHandover()});
+  await apply(page,{...snapshot(nodes('new')),document_id:'new',sequence:2,focused:'n4'});
+  assert.deepEqual(await page.evaluate(()=>({oldConnected:window.old.isConnected,oldVisible:getComputedStyle(window.old).visibility,newVisible:getComputedStyle(window.r.frame).visibility,painted:window.r.painted,focus:document.activeElement===window.r.frame})),{oldConnected:true,oldVisible:'visible',newVisible:'hidden',painted:false,focus:false});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true);
+  await page.evaluate(()=>window.r.handover(true));
+  assert.deepEqual(await page.evaluate(()=>({oldConnected:window.old.isConnected,newVisible:getComputedStyle(window.r.frame).visibility,painted:window.r.painted,value:window.r.frame.contentDocument.activeElement.value,selection:window.r.frame.contentDocument.activeElement.selectionStart})),{oldConnected:false,newVisible:'visible',painted:true,value:'new',selection:3});
+ }finally{await page.close()}
+});

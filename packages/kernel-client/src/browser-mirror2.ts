@@ -45,6 +45,7 @@ export class BrowserMirror2Renderer {
   private doc: Document | null = null
   private navigationAt = performance.now()
   private paintFrame: HTMLIFrameElement | undefined
+  private interactive = true
   private disposed = false
   private applying = false
   private dom = new Map<string, Node>()
@@ -124,7 +125,7 @@ export class BrowserMirror2Renderer {
   }
   // ---- input: node-addressed, the kernel re-validates everything live.
   private enqueue(action: Mirror2Input): void {
-    if (this.applying || this.disposed || !this.documentId || !this.navigation.painted) return
+    if (!this.interactive || this.applying || this.disposed || !this.documentId || !this.navigation.painted) return
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
@@ -197,6 +198,7 @@ export class BrowserMirror2Renderer {
   }
   // The kernel's focus in the viewer: the viewer page's own control outside the mirror keeps its focus.
   private takeFocus(id: string | null): void {
+    if (!this.interactive) return
     const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
     const focused = id && !elsewhere ? this.dom.get(id) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
     this.focusSent = id
@@ -604,6 +606,39 @@ export class BrowserMirror2Renderer {
   }
   private sheets = new Map<string, string>()
   private sheetCache = new Mirror2SheetCache()
+  // MP-08/MP-10/MP-11: hidden preparation never steals focus or emits input.
+  setInteractive(enabled: boolean, focus = false): void {
+    this.interactive = enabled; this.frame.inert = !enabled
+    if (enabled && focus) this.takeFocus(this.kernelFocus)
+  }
+  holdForHandover(): void { this.navigation.hold(); this.setInteractive(false) }
+  handover(focus = false): void { this.navigation.release(); this.setInteractive(true, focus); this.navigationPaint() }
+  async readyForHandover(): Promise<boolean> {
+    const doc = this.doc, documentId = this.documentId
+    if (!doc || !this.navigation.readyToPresent || this.slices.size) return false
+    for (const [id, record] of this.records) {
+      if (!record.res || this.resources.has(record.res)) continue
+      const element = this.dom.get(id) as Element | undefined
+      const box = element?.nodeType === 1 ? element.getBoundingClientRect() : null
+      if (box && box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < this.frame.clientWidth && box.top < this.frame.clientHeight) return false
+    }
+    // Fonts and visible CSS imagery must not pop into place after the switch.
+    await doc.fonts.ready
+    const fontFailed = [...doc.fonts].some(font => font.status === 'error')
+    for (const styled of fontFailed ? this.styled.values() : []) {
+      const raws = styled.kind === 'adopted' ? styled.raw : [styled.raw]
+      for (const raw of raws) for (const rule of raw.match(/@font-face[^{}]*\{[^{}]*\}/gi) ?? []) for (const [,key] of rule.matchAll(resourcePattern)) if (!this.resources.has(key)) return false
+    }
+    const view = doc.defaultView
+    for (const node of this.dom.values()) if (node.nodeType === 1) {
+      const element = node as Element, box = element.getBoundingClientRect()
+      if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
+      const style = view?.getComputedStyle(element)
+      if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) return false
+    }
+    await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
+    return !this.disposed && this.doc === doc && this.documentId === documentId && !this.slices.size
+  }
   knownSheets(): string[] { return this.sheetCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
@@ -669,6 +704,7 @@ export class BrowserMirror2Renderer {
       for (const entry of this.styled.values()) if (entry.kind === 'css') entry.fontStyle?.attach()
       this.navigation.present(packet.snapshot_complete === true)
       this.navigationPaint()
+      this.frame.inert = !this.interactive
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
       this.kernelFocus = packet.focused
@@ -841,17 +877,17 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 539')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const releaseHold = transport.prioritize?.() ?? (() => {})
   let priorityReleased = false
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
-  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
+  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2, ...(handlers.preparing ? {navigation_preview:true} : {}) }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
@@ -895,14 +931,15 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     for (let wire = [...buffered.values()].find(p => p.reset || p.sequence === applied + 1); wire; wire = [...buffered.values()].find(p => p.reset || p.sequence === applied + 1)) {
       for (const seq of buffered.keys()) if (seq <= wire.sequence) buffered.delete(seq)
       const next = await expand(wire)
-      if (!next.fallback) await renderer.apply(next)
+      if (next.fallback === 'navigation_preview' && handlers.preparing) { renderer.holdForHandover?.(); handlers.preparing(next) }
+      else if (!next.fallback) await renderer.apply(next)
       // Only an applied packet ends a failure streak (a reply that cannot be applied does not).
       base = next; failures = 0; failingSince = 0
-      if (next.fallback || renderer.painted === undefined) releasePriority()
+      if (next.fallback && next.fallback !== 'navigation_preview' || renderer.painted === undefined) releasePriority()
       if (next.reset || next.ops?.length || next.resources.length || next.tiles.length) activeAt = performance.now()
       applied = next.sequence
       if (next.reset) { wantReset = false; wantResend = false }
-      handlers.packet?.(next)
+      if (next.fallback !== 'navigation_preview' || !handlers.preparing) handlers.packet?.(next)
     }
     if (buffered.size > 8) { buffered.clear(); wantReset = true }
     // A gap is a reply lost with a dropped socket (or one overtaken by milliseconds: its duplicate is ignored):
@@ -966,6 +1003,19 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)
   return {
     renderer,
+    // A fresh drain is queued after all earlier credits. Call only after native
+    // input receipts; unlike resend it never reuses an old observer packet.
+    async synchronize(): Promise<Mirror2Packet> {
+      if (closed) throw Error('MP-08: mirror closed')
+      const wire = await request({op:'mirror_next',subscription_id,generation:binding.generation,after_sequence:applied,drift_nodes:[],wait_ms:0,flush:true}) as Mirror2WirePacket
+      if (!wire || wire.wire !== 2 || !Number.isSafeInteger(wire.sequence) || wire.sequence <= 0) throw Error('MP-11: foreign mirror packet')
+      if (wire.sequence > applied) buffered.set(wire.sequence,wire)
+      await drain()
+      const deadline = performance.now()+8000
+      while (!closed && applied < wire.sequence && performance.now()<deadline) await new Promise(resolve=>setTimeout(resolve,10))
+      if (closed || applied < wire.sequence || !base) throw Error('MP-08: mirror handover not synchronized')
+      return base
+    },
     async settleInput() {
       if(closed)throw Error('MP-08: mirror closed')
       await renderer.settleInput?.()

@@ -245,13 +245,15 @@ export class Mirror2 {
     // Protocol 501: a resend credit (the viewer saw a gap, or a credit failed with its socket) wants the packet
     // after its base now: from history when it was issued (its reply lost), else once earlier long polls, which
     // it ends, have answered (a failed credit's orphan issues it), else it is an ordinary credit.
+    if (command.flush !== undefined && command.flush !== true) throw new Error('MP-11: invalid mirror flush');
+    if (command.flush && command.wait_ms !== 0) throw new Error('MP-11: invalid mirror flush wait');
     if (command.resend !== undefined && command.resend !== true) throw new Error('MP-11: invalid mirror resend');
     const resend = command.resend === true && command.after_sequence > 0;
     const lost = this.lost(stream, command, scope, resend);
     if (lost) return lost;
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
-    if (command.after_sequence === 0 || resend) this.hurry(stream);
+    if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
     const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
     stream.chain = run.catch(() => {});
@@ -276,6 +278,22 @@ export class Mirror2 {
     const kept = this.kept(stream, command.generation);
     const tab = kept?.tab ?? await (this.host.mirrorTarget ?? this.host.displayTarget).call(this.host, { tab_id: stream.tab_id, generation: command.generation });
     assertNotCancelled(signal);
+    // MP-08/MP-10/MP-11: negotiate native preview before any observer/CSS work.
+    // It is an ordinary protected display, never a raster in the mirror packet.
+    if (stream.navigationPreview && stream.previewDocument !== tab.document_id && stream.document_id !== tab.document_id) {
+      if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
+      stream.previewDocument = tab.document_id;
+      this.regions.retireStream(stream);
+      const sequence = ++stream.issued;
+      stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
+      const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation,
+        document_id: tab.document_id, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
+        snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1,
+        scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
+      this.remember(stream, sequence, packet, true);
+      this.host.timing?.('mirror2_navigation_preview', started);
+      return packet;
+    }
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
     if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');

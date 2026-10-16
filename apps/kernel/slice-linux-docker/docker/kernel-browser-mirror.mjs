@@ -52,6 +52,7 @@ export class MirrorService {
     return reply.result.value;
   }
   async subscribe(command,scope) {
+    if(command.navigation_preview!==undefined&&command.navigation_preview!==true)throw new Error('MP-11: mirror preview negotiation');
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
     // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
@@ -67,7 +68,7 @@ export class MirrorService {
       const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
       await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender}));}
+      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,navigationPreview:command.navigation_preview===true&&process.env.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'}));}
       catch(error){await releaseRender().catch(()=>{});throw error;}
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});

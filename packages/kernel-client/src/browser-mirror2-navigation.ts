@@ -60,6 +60,8 @@ export class Mirror2Navigation {
   frame: HTMLIFrameElement
   loaded: Promise<void>
   painted = false
+  readyToPresent = false
+  private deferred = false
   private held: HTMLIFrameElement | undefined
   private cancelLoad: (() => void) | undefined
   private spare: [HTMLIFrameElement, Promise<void>] | undefined
@@ -88,7 +90,7 @@ export class Mirror2Navigation {
     this.cancelLoad?.()
     if (this.painted) { this.held?.remove(); this.held = this.frame; this.held.inert = true }
     else this.frame.remove() // a second navigation retires only its unpainted prefix
-    this.painted = false
+    this.painted = false; this.readyToPresent = false
     if (this.spare) {
       ;[this.frame, this.loaded] = this.spare; this.spare = undefined
       this.cancelLoad = this.cancelSpareLoad; this.cancelSpareLoad = undefined
@@ -114,7 +116,11 @@ export class Mirror2Navigation {
     }
     this.reveal()
   }
+  hold(): void { this.deferred = true }
+  release(): void { this.deferred = false; if (this.readyToPresent) this.reveal() }
   private reveal(): void {
+    this.readyToPresent = true
+    if (this.deferred) return
     this.cancelEmpty()
     this.frame.style.visibility = 'visible'; this.painted = true
     this.held?.remove(); this.held = undefined

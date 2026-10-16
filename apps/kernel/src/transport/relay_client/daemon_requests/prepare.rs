@@ -211,6 +211,7 @@ mod tests {
                 known_sheets: vec![],
                 wait_ms: Some(1500),
                 resend: None,
+                flush: None,
             })
             .browser_input_key()
             .unwrap()
@@ -249,6 +250,7 @@ mod tests {
             known_sheets: vec![],
             wait_ms: Some(1500),
             resend: None,
+            flush: None,
         })
         .browser_input_key()
         .unwrap();

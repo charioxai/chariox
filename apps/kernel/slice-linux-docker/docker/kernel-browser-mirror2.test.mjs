@@ -481,3 +481,21 @@ test('MP-10 independent sheet bodies overlap in batches of at most four and reta
  const ops=await mirror.sheetOps({},sheets);
  assert.equal(peak,4);assert.deepEqual(ops.map(op=>op.id),sheets.map(sheet=>sheet.id));
 });
+
+test('MP-08/MP-10/MP-11 native navigation preview precedes observer work and retires old input epochs', async () => {
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,issued:5,document_id:'old',resetAt:1};
+ const host={generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
+ let retired=0;mirror.regions.retireStream=()=>{retired++};mirror.world=async()=>{throw Error('observer must not delay preview')};
+ const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:5},'scope');
+ assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'new');assert.equal(packet.snapshot_complete,false);
+ assert.equal(stream.issued,6);assert.equal(stream.resetAt,7);assert.equal(retired,1);
+ assert.equal(stream.document_id,'old','actual snapshot must still reset');
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),/observer must not delay preview/);
+});
+
+test('MP-08/MP-10/MP-11 explicit handover flush ends older polls before a fresh drain', async()=>{
+ const stream={chain:Promise.resolve(),issued:2},mirror=new Mirror2({host:{}});let hurried=0;
+ mirror.hurry=s=>{s.hurry=(s.hurry??0)+1;hurried++};mirror.packet=async(_s,c,_scope,_signal,deadline)=>{assert.equal(c.flush,true);assert(deadline<=Date.now());return{sequence:3}};
+ await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:2,wait_ms:0,flush:true},'scope');assert.equal(hurried,1);
+});

@@ -37,6 +37,9 @@ pub enum KernelBrowserCommand {
         device_scale_factor: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wire: Option<u32>,
+        /// Protocol 539/147: allow protected native video during mirror preparation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        navigation_preview: Option<bool>,
     },
     /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
     /// poll answered by the next page change; credits apply in sequence.
@@ -57,6 +60,9 @@ pub enum KernelBrowserCommand {
         /// its history at once, ending earlier long polls.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resend: Option<bool>,
+        /// End earlier long polls and drain freshly after acknowledged preview input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flush: Option<bool>,
     },
     MirrorClose {
         subscription_id: String,

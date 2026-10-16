@@ -797,7 +797,9 @@ export class KernelBrowserHost {
         // Protocol 530: a page drag is the person's, on a page they are watching.
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
-        const candidate=this.compositors.get(tab.tab_id)?.source;
+        // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
+        const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
+        const candidate=handoverOrdered?null:this.compositors.get(tab.tab_id)?.source;
         const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
