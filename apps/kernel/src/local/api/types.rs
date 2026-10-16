@@ -282,4 +282,7 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// Version 545 (relay peer 153) derives live provider output prompt identity from
+/// kernel ownership across local and remote projections: structured output and
+/// terminal stream events carry the owning prompt ID (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 545;
