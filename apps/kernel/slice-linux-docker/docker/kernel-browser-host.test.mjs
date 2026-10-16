@@ -1863,3 +1863,11 @@ test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',
  assert.equal(handlers.size,1,'only lockdown remains after the unsupported extension reload; the retired native observer is gone');
  await host.request({op:'stop'});assert.equal(handlers.size,0);
 }));
+
+// PERF_AUDIT 4.2.2/4.2.6: the window a Chrome UI input left is read concurrently with later input
+// (never in the host's serial barrier lane, where it queued every following key) and never starts the browser.
+test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>using(async({host})=>{
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
+ await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
+}));

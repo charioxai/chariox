@@ -409,9 +409,16 @@ export class InputArbiter {
   async input(args) {
     const follow = {switches: false};
     const reply = await this.dispatchInput(args, follow);
-    // Best effort: a stalled Chrome read never holds the input's reply (it then names no window).
-    const bound = new Promise(resolve => setTimeout(resolve, FOLLOW_LIMIT_MS, reply).unref?.());
-    try { return await Promise.race([this.followed(reply, args.command, follow.switches), bound]); } catch { return reply; }
+    // The kernel answers each person's input in order (one serial input lane): the window it left is
+    // read by a separate observation (`follow`) after that lane is free, never while later keys wait.
+    return this.host.chromeWindow ? {...reply, _follow: {tab_id: args.command.tab_id, switches: follow.switches}} : reply;
+  }
+  /** `chrome_window_follow`: the window an admitted Chrome UI input left (best effort, bounded; a
+   * stalled Chrome read answers without it and the viewer reads the state). */
+  async follow({tab_id, switches}) {
+    if (typeof tab_id !== 'string' || typeof switches !== 'boolean') throw new Error('MD-2: invalid window follow');
+    const bound = new Promise(resolve => setTimeout(resolve, FOLLOW_LIMIT_MS, {}).unref?.());
+    try { return await Promise.race([this.followed({}, {tab_id}, switches), bound]); } catch { return {}; }
   }
   /** PERF_AUDIT 4.2.2/4.2.6 (protocol 540): a band input's reply carries the window it left: the Tab
    * the strip now shows and its popups (the omnibox list a key opened, a menu a click opened). The
