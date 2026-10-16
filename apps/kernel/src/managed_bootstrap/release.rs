@@ -7,6 +7,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::ManagedProviderTopology;
 use crate::error::DaemonError;
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -15,8 +16,6 @@ const MAX_SIGNATURE_BYTES: u64 = 1024;
 const MAX_ATTESTATION_BYTES: u64 = 16 * 1024;
 const MAX_SERVICE_UNIT_BYTES: u64 = 32 * 1024;
 const MANAGED_BOOTSTRAP_PATH: &str = "/usr/local/bin/chariox-managed-bootstrap";
-const MANAGED_BOOTSTRAP_SERVICE_PATH: &str =
-    "/etc/systemd/system/chariox-managed-bootstrap.service";
 const RETIRED_SERVICE_NAMES: &[&str] = &[
     "chariox-disposable-worker-bootstrap.service",
     "chariox-kernel.service",
@@ -408,10 +407,18 @@ pub(super) fn verify_release_evidence(
     })
 }
 
+pub(super) fn managed_bootstrap_service_name(topology: ManagedProviderTopology) -> &'static str {
+    match topology {
+        ManagedProviderTopology::Path1 => "chariox-path1-managed-bootstrap.service",
+        ManagedProviderTopology::SharedHost => "chariox-managed-bootstrap.service",
+    }
+}
+
 pub(super) fn verify_managed_bootstrap_service_binding(
     release: &VerifiedReleaseEvidence,
     service_unit_path: &Path,
     service_wants_path: &Path,
+    topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let manifest_path = release
         .active_release_path
@@ -420,10 +427,12 @@ pub(super) fn verify_managed_bootstrap_service_binding(
         read_bounded_regular_file(&manifest_path, MAX_MANIFEST_BYTES, "release manifest")?;
     let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|_| release_error("release manifest is invalid"))?;
+    let service_name = managed_bootstrap_service_name(topology);
+    let service_path = format!("/etc/systemd/system/{service_name}");
     let service = read_pinned_release_artifact(
         &manifest,
-        "chariox-managed-bootstrap.service",
-        MANAGED_BOOTSTRAP_SERVICE_PATH,
+        service_name,
+        &service_path,
         &release.active_release_path,
     )?;
     let service_bytes = read_bounded_regular_file(
@@ -452,7 +461,13 @@ pub(super) fn verify_managed_bootstrap_service_binding(
     let wants_dir = service_wants_path
         .parent()
         .ok_or_else(|| release_error("managed bootstrap wants path has no directory"))?;
-    for name in RETIRED_SERVICE_NAMES {
+    let other_topology = match topology {
+        ManagedProviderTopology::Path1 => ManagedProviderTopology::SharedHost,
+        ManagedProviderTopology::SharedHost => ManagedProviderTopology::Path1,
+    };
+    for name in RETIRED_SERVICE_NAMES.iter().copied().chain(std::iter::once(
+        managed_bootstrap_service_name(other_topology),
+    )) {
         for path in [service_dir.join(name), wants_dir.join(name)] {
             if fs::symlink_metadata(&path).is_ok() {
                 return Err(release_error("retired Chariox service residue is present"));
