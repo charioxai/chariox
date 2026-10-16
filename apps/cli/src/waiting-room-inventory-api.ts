@@ -31,6 +31,7 @@ export type WaitingRoomInventory = {
   machineId: string
   machineAlias?: string | null
   launchTarget?: {
+    repositoryState?: "ready" | "not-repository" | "unborn" | null
     workspaceId: string
     worktreeId: string
   } | null
@@ -74,6 +75,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     machineAlias: payload.relay_status.machine_alias ?? null,
     launchTarget: payload.launch_target
       ? {
+          repositoryState: payload.launch_target.repository_state,
           workspaceId: payload.launch_target.workspace_id,
           worktreeId: payload.launch_target.worktree_id,
         }

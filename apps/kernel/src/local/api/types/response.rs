@@ -275,7 +275,7 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_run: Option<PublicProviderRun>,
     },
-    WorkspaceDirectoriesSearched { directories: Vec<String>, },
+    WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
     WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },

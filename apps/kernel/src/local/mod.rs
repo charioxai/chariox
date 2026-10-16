@@ -237,7 +237,7 @@ pub use api::{
     WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
     WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
     WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
+    WorkspaceDirectoryGitSummary, WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
     DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
     PASSKEY_REMEMBER_MAX_MINUTES, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
     RUNTIME_CONTROL_CAPABILITIES,

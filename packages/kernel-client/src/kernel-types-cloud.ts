@@ -366,6 +366,7 @@ export type WaitingRoomInventorySnapshot = {
   remote_kernels?: RelayKernelPresence[]
   terminals?: TerminalRecord[]
   launch_target?: {
+    repository_state?: "ready" | "not-repository" | "unborn" | null
     workspace_id: string
     worktree_id: string
     workspace_label?: string | null

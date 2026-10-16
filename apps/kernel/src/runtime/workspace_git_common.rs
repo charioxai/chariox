@@ -145,6 +145,17 @@ pub(crate) fn workspace_default_compare_ref(repo_root: &str, branch: Option<&str
         .to_string()
 }
 
+/// MP-02 / MP-08 OWNER-13: project Git availability with workspace discovery.
+pub(crate) fn workspace_repository_state(workspace_path: &str) -> String {
+    if git_command_output(workspace_path, &["rev-parse", "--show-toplevel"]).is_none() {
+        "not-repository"
+    } else if git_command_output(workspace_path, &["rev-parse", "--verify", "HEAD"]).is_none() {
+        "unborn"
+    } else {
+        "ready"
+    }.to_string()
+}
+
 pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
     git_command_output(workspace_path, &["remote", "get-url", "origin"])
         .as_deref()

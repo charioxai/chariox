@@ -172,6 +172,7 @@ export type WaitingRoomPublicSessionSummary = {
   machine_id?: string | null
   machine_alias?: string | null
   alias?: string | null
+  repository_state?: "ready" | "not-repository" | "unborn" | null
   workspace_id: string
   worktree_id: string
   workspace_label?: string | null
