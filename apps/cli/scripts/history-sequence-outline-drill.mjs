@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// MP-08 / MP-10 / MP-11: focused regression drill for allocated local 518 / peer 126.
+// MP-08 / MP-10 / MP-11: focused regression drill for allocated local 534 / peer 142.
 // The 508 sequence contracts are retained. This is supplementary to live
 // terminal output records carry their history sequence, outline blobs are one
 // per tool call / thought with display previews, and blob contents load in one
@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url"
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
 const kernelTests = [
   "local::api::tests::session_view::mp08_mp10_mp11_initial_view_is_a_bounded_latest_turn_not_a_blob_download",
-  "local::api::tests::protocol_shapes::client_catalog_revisions::client_catalog_revisions_518_126_are_versioned_and_hashed",
+  "local::api::tests::protocol_shapes::client_catalog_revisions::client_catalog_revisions_534_142_are_versioned_and_hashed",
+  "local::api::tests::protocol_shapes::client_catalog_revisions::client_catalog_snapshot_and_change_event_534_142_are_versioned_and_hashed",
   "terminal::stream::tests::service::stalled_attachment_retains_six_thousand_history_deltas",
   "terminal::stream::tests::service::output_records_preserve_distinct_history_sequences",
   "runtime::history_requests::session_outline::tests::batch_blob_contents::initial_outline_batches_three_agents_and_marks_budgeted_steers",
@@ -31,23 +32,30 @@ const steps = [
     name,
     command: "cargo",
     args: ["test", "--manifest-path", "apps/kernel/Cargo.toml", "--lib", name, "--", "--exact"],
+    // An exact filter that matches nothing exits 0; the drill must have run the test.
+    mustRun: 1,
   })),
   { name: "kernel client build and tests", command: "pnpm", args: ["--filter", "@chariox/kernel-client", "run", "test"] },
 ]
 
 for (const step of steps) {
   console.log(`[history-sequence-outline-drill] ${step.name}`)
-  await run(step.command, step.args)
+  await run(step.command, step.args, step.mustRun)
 }
 console.log("[history-sequence-outline-drill] ok")
 
-function run(command, args) {
+function run(command, args, mustRun = 0) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, stdio: "inherit", env: process.env })
+    const child = spawn(command, args, { cwd: repoRoot, stdio: ["inherit", mustRun ? "pipe" : "inherit", "inherit"], env: process.env })
+    let output = ""
+    child.stdout?.on("data", (chunk) => { output += chunk; process.stdout.write(chunk) })
     child.on("error", reject)
     child.on("exit", (code, signal) => {
-      if (code === 0) resolve()
-      else reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
+      if (code !== 0) return reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
+      if (mustRun && !new RegExp(`test result: ok\\. ${mustRun} passed;`).test(output)) {
+        return reject(new Error(`${args.at(-3)} ran ${mustRun} expected test(s) zero times; the selector is stale`))
+      }
+      resolve()
     })
   })
 }
