@@ -121,3 +121,14 @@ test('MP-08/MP-10/MP-11 direct Chrome mode bypasses the live media track',()=>{
  try{assert.equal(sink.setup({setSink(){assert.fail('Chrome UI must not enter a media jitter buffer')}}),false);assert.equal(generated,0);assert.deepEqual(created,['canvas']);}
  finally{sink.close();globalThis.MediaStreamTrackGenerator=priorGenerator;globalThis.MediaStream=priorStream;}
 });
+
+test('MP-08/MP-10/MP-11 direct video pixels use the visible low-latency canvas',async()=>{
+ const draws=[];let visible;
+ const make=name=>{let context;const node={width:8,height:8,style:{},dataset:{},setAttribute(){},remove(){}};
+  node.getContext=(_kind,options)=>context??=( {desynchronized:options?.desynchronized===true,clearRect(){},drawImage(){draws.push({name,desynchronized:this.desynchronized})}} );return node;};
+ const document={defaultView:{getComputedStyle:()=>({position:'relative',objectFit:'fill'})},createElement:tag=>{assert.equal(tag,'canvas');return visible=make('visible');}};
+ const canvas=make('overlay');canvas.ownerDocument=document;canvas.parentElement={style:{},insertBefore(){}};
+ const sink=new VideoSink(canvas,()=>{},{direct:true});
+ try{sink.setup({});await sink.commit({image:{clone:()=>({close(){}})}},{width:8,height:8});assert(visible);assert.deepEqual(draws,[{name:'visible',desynchronized:true}]);}
+ finally{sink.close()}
+});

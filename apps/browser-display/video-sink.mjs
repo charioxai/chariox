@@ -18,6 +18,8 @@ export class VideoSink {
    catch{track?.stop();track=null;}
   }
   const video=document.createElement(track?'video':'canvas');
+  // MP-08/MP-10/MP-11: video pixels use this sibling, not the repair overlay.
+  if(this.direct&&!track)video.getContext?.('2d',{desynchronized:true});
   this.track=track;this.video=video;
   if(track){video.muted=true;video.autoplay=true;video.playsInline=true;video.srcObject=new MediaStream([track]);}
   video.setAttribute?.('aria-hidden','true');
