@@ -236,12 +236,9 @@ fn queued_selection(value: &Value, names: &std::collections::BTreeSet<String>) -
     // Cancel explicit selections, including old invocation spelling. Do not
     // reinterpret an unknown $name as a provider-native selection after reset.
     let prompt = value.get("prompt").and_then(Value::as_str).unwrap_or("");
-    crate::skill::selection::explicit_skill_tokens_with_names(
-        prompt,
-        &names.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
-    .iter()
-    .any(|token| names.contains(&token.name.to_ascii_lowercase()))
+    crate::skill::selection::explicit_skill_tokens(prompt)
+        .iter()
+        .any(|token| names.contains(&token.name.to_ascii_lowercase()))
         || prompt.trim_start().starts_with("/skill ")
         || value
             .get("skill_selections")
@@ -928,6 +925,32 @@ mod tests {
         let retired: Value = serde_json::from_str(&encoded).unwrap();
         assert_eq!(retired["workflows"][0]["prompt"], "Use ");
         assert!(executable::load_names(&db).unwrap().contains("review"));
+    }
+
+    #[test]
+    fn skill_reset_known_names_do_not_turn_shell_variables_into_typed_selections() {
+        let mut db = database();
+        let ordinary = json!({"prompt":"Read $HOME"});
+        let before = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"home"}]}],
+            "queued_prompts":[ordinary.clone()],"active_prompt":ordinary.clone(),
+            "workflows":[{"prompt":"Explain $HOME and use $home"}]});
+        db.execute(
+            "INSERT INTO durable_state_snapshots VALUES(1,1,1,?1)",
+            [before.to_string()],
+        )
+        .unwrap();
+        initialize(&mut db).unwrap();
+        let encoded: String = db
+            .query_row(
+                "SELECT payload_json FROM durable_state_snapshots",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let after: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(after["queued_prompts"], json!([ordinary.clone()]));
+        assert_eq!(after["active_prompt"], ordinary);
+        assert_eq!(after["workflows"][0]["prompt"], "Explain $HOME and use ");
     }
 
     #[test]

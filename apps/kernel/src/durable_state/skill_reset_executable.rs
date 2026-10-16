@@ -152,8 +152,7 @@ fn retire_body_fields(value: &mut Value, names: &BTreeSet<String>) {
 
 fn retire_text(text: &str, names: &BTreeSet<String>) -> String {
     let text = super::retire_hidden_context(text);
-    let known: Vec<_> = names.iter().map(String::as_str).collect();
-    let tokens = crate::skill::selection::explicit_skill_tokens_with_names(&text, &known);
+    let tokens = crate::skill::selection::explicit_skill_tokens(&text);
     let mut result = String::new();
     let mut start = 0;
     for token in tokens {
