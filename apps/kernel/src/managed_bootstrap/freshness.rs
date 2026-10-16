@@ -894,7 +894,33 @@ mod tests {
         let release_path = root.path().join("releases/sha256-test-release");
         let kernel_path = release_path.join("usr/local/bin/chariox-kernel");
         let service_path = release_path.join(format!("etc/systemd/system/{service_name}"));
-        let service_contents = b"[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n";
+        // MP-07/MP-09/MP-11: actual installer layout publishes all signed
+        // bootstrap facades, while enabling only the selected managed-home unit.
+        let signed_units: [(&str, &[u8]); 3] = [
+            (
+                "chariox-managed-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-managed-bootstrap.service"
+                ),
+            ),
+            (
+                "chariox-path1-managed-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-path1-managed-bootstrap.service"
+                ),
+            ),
+            (
+                "chariox-disposable-worker-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"
+                ),
+            ),
+        ];
+        let service_contents = signed_units
+            .iter()
+            .find(|(name, _)| *name == service_name)
+            .unwrap()
+            .1;
         fs::create_dir_all(kernel_path.parent().expect("kernel parent"))
             .expect("create release kernel directory");
         fs::write(&kernel_path, b"signed kernel fixture").expect("write release kernel");
@@ -905,18 +931,26 @@ mod tests {
         let manifest_path = release_path.join("usr/lib/chariox/release-manifest.json");
         fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
             .expect("create release manifest directory");
-        let service_digest = format!("sha256:{:x}", Sha256::digest(service_contents));
+        let mut service_artifacts = Vec::new();
+        for (name, bytes) in signed_units {
+            fs::write(
+                release_path.join(format!("etc/systemd/system/{name}")),
+                bytes,
+            )
+            .expect("write signed bootstrap unit");
+            service_artifacts.push(serde_json::json!({
+                "name": name,
+                "path": format!("/etc/systemd/system/{name}"),
+                "sha256": format!("sha256:{:x}", Sha256::digest(bytes)),
+            }));
+        }
         fs::write(
             &manifest_path,
             serde_json::to_vec(&serde_json::json!({
                 "schemaVersion": 2,
                 "sourceCommit": "c".repeat(40),
                 "sourceTree": "d".repeat(40),
-                "artifacts": [{
-                    "name": service_name,
-                    "path": format!("/etc/systemd/system/{service_name}"),
-                    "sha256": service_digest,
-                }],
+                "artifacts": service_artifacts,
             }))
             .expect("serialize release manifest"),
         )
@@ -928,14 +962,27 @@ mod tests {
         fs::write(&boot_id, "01234567-89ab-cdef-0123-456789abcdef\n").expect("write boot ID");
         fs::write(&machine_id, format!("{}\n", "a".repeat(32))).expect("write machine ID");
 
-        let service_unit = root.path().join(format!("systemd/system/{service_name}"));
-        let service_wants = root.path().join(format!("systemd/wants/{service_name}"));
+        let system_dir = root.path().join("etc/systemd/system");
+        let service_unit = system_dir.join(service_name);
+        let service_wants = system_dir
+            .join("multi-user.target.wants")
+            .join(service_name);
+        let current = root.path().join("usr/lib/chariox/current");
+        fs::create_dir_all(current.parent().unwrap()).expect("create current release parent");
+        symlink(&release_path, &current).expect("link active release");
         fs::create_dir_all(service_unit.parent().expect("unit parent"))
             .expect("create service unit directory");
         fs::create_dir_all(service_wants.parent().expect("wants parent"))
             .expect("create service wants directory");
-        symlink(&service_path, &service_unit).expect("link active service unit");
-        symlink(&service_path, &service_wants).expect("link enabled service unit");
+        for (name, _) in signed_units {
+            symlink(
+                format!("../../../usr/lib/chariox/current/etc/systemd/system/{name}"),
+                system_dir.join(name),
+            )
+            .expect("install signed service facade");
+        }
+        symlink(format!("../{service_name}"), &service_wants)
+            .expect("enable selected service only");
 
         let hotfix_path = root.path().join("dev-hotfix/chariox-kernel");
         fs::create_dir_all(hotfix_path.parent().expect("hotfix parent"))
@@ -999,17 +1046,46 @@ mod tests {
         } else {
             "chariox-path1-managed-bootstrap.service"
         };
-        for directory in [
-            paths.service_unit.parent().unwrap(),
-            paths.service_wants.parent().unwrap(),
-        ] {
-            let residue = directory.join(other_service);
-            symlink(&service_path, &residue).expect("link other topology residue");
+        for name in [other_service, "chariox-disposable-worker-bootstrap.service"] {
+            let dormant = system_dir.join(name);
+            let expected = release
+                .active_release_path
+                .join(format!("etc/systemd/system/{name}"));
+            let enabled = paths.service_wants.parent().unwrap().join(name);
+            assert!(
+                observe().is_ok(),
+                "signed disabled facade is normal installer output"
+            );
+            symlink(&expected, &enabled).expect("enable conflicting service");
+            assert!(observe().is_err(), "another bootstrap must not be enabled");
+            fs::remove_file(&enabled).expect("disable conflicting service");
+            fs::remove_file(&dormant).expect("remove dormant facade");
+            symlink(&hotfix_path, &dormant).expect("link foreign dormant unit");
             assert!(
                 observe().is_err(),
-                "other topology must not remain installed or enabled"
+                "foreign dormant facade must be rejected"
             );
-            fs::remove_file(residue).expect("remove other topology residue");
+            fs::remove_file(&dormant).expect("remove foreign dormant link");
+            fs::write(&dormant, b"unsigned dormant unit").expect("write unsigned dormant unit");
+            assert!(
+                observe().is_err(),
+                "regular dormant facade must be rejected"
+            );
+            fs::remove_file(&dormant).expect("remove regular dormant facade");
+            symlink(&expected, &dormant).expect("restore dormant facade");
+            let original = fs::read(&expected).expect("read signed dormant unit");
+            fs::write(&expected, b"tampered dormant unit").expect("tamper dormant unit");
+            assert!(
+                observe().is_err(),
+                "dormant unit must match signed artifact"
+            );
+            fs::write(&expected, original).expect("restore signed dormant unit");
+        }
+        for name in ["chariox-kernel.service", "chariox-relay.service"] {
+            let residue = system_dir.join(name);
+            symlink(&service_path, &residue).expect("link retired service");
+            assert!(observe().is_err(), "retired service must still be rejected");
+            fs::remove_file(residue).expect("remove retired service");
         }
         fs::remove_file(&paths.service_wants).expect("remove enabled service");
         assert!(

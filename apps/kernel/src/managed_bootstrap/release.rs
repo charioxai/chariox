@@ -16,11 +16,7 @@ const MAX_SIGNATURE_BYTES: u64 = 1024;
 const MAX_ATTESTATION_BYTES: u64 = 16 * 1024;
 const MAX_SERVICE_UNIT_BYTES: u64 = 32 * 1024;
 const MANAGED_BOOTSTRAP_PATH: &str = "/usr/local/bin/chariox-managed-bootstrap";
-const RETIRED_SERVICE_NAMES: &[&str] = &[
-    "chariox-disposable-worker-bootstrap.service",
-    "chariox-kernel.service",
-    "chariox-relay.service",
-];
+const RETIRED_SERVICE_NAMES: &[&str] = &["chariox-kernel.service", "chariox-relay.service"];
 const BUILD_ATTESTATION_PATH: &str = "/usr/lib/chariox/build-attestation.json";
 const BUILD_ATTESTATION_SIGNATURE_PATH: &str = "/usr/lib/chariox/build-attestation.sig";
 const BUILDER_PUBLIC_KEY_PATH: &str = "/usr/lib/chariox/builder-public-key";
@@ -465,16 +461,45 @@ pub(super) fn verify_managed_bootstrap_service_binding(
         ManagedProviderTopology::Path1 => ManagedProviderTopology::SharedHost,
         ManagedProviderTopology::SharedHost => ManagedProviderTopology::Path1,
     };
-    for name in RETIRED_SERVICE_NAMES.iter().copied().chain(std::iter::once(
+    // MP-07/MP-09/MP-11: the production installer publishes dormant signed
+    // facades for both home topologies and the disposable-worker role. Presence
+    // alone is not stale state; another enabled bootstrap is still forbidden.
+    for name in [
         managed_bootstrap_service_name(other_topology),
-    )) {
+        "chariox-disposable-worker-bootstrap.service",
+    ] {
+        if service_entry_exists(&wants_dir.join(name))? {
+            return Err(release_error(
+                "conflicting Chariox bootstrap service is enabled",
+            ));
+        }
+        let facade = service_dir.join(name);
+        if service_entry_exists(&facade)? {
+            let signed = read_pinned_release_artifact(
+                &manifest,
+                name,
+                &format!("/etc/systemd/system/{name}"),
+                &release.active_release_path,
+            )?;
+            require_release_symlink(&facade, &signed)?;
+        }
+    }
+    for name in RETIRED_SERVICE_NAMES {
         for path in [service_dir.join(name), wants_dir.join(name)] {
-            if fs::symlink_metadata(&path).is_ok() {
+            if service_entry_exists(&path)? {
                 return Err(release_error("retired Chariox service residue is present"));
             }
         }
     }
     Ok(())
+}
+
+fn service_entry_exists(path: &Path) -> Result<bool, DaemonError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(release_io_error("managed bootstrap service binding", error)),
+    }
 }
 
 fn require_release_symlink(path: &Path, expected: &Path) -> Result<(), DaemonError> {
