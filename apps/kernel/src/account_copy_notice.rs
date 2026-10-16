@@ -328,7 +328,9 @@ mod tests {
     #[test]
     fn keychain_deletion_failures_other_than_an_absent_item_are_errors() {
         assert!(keychain_delete_outcome(Some(0), b"").is_ok());
-        assert!(keychain_delete_outcome(Some(44), b"The specified item could not be found").is_ok());
+        assert!(
+            keychain_delete_outcome(Some(44), b"The specified item could not be found").is_ok()
+        );
         let denied = keychain_delete_outcome(Some(36), b"User interaction is not allowed.")
             .expect_err("a locked Keychain must not count as a deleted login");
         assert!(denied.to_string().contains("User interaction"), "{denied}");

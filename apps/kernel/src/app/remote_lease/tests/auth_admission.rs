@@ -67,7 +67,10 @@ async fn leased_prompt_is_rejected_before_launch_when_the_account_needs_sign_in(
         )
         .await
         .expect_err("an unauthenticated worker account must refuse the prompt");
-    assert!(error.to_string().contains("is not authenticated"), "{error}");
+    assert!(
+        error.to_string().contains("is not authenticated"),
+        "{error}"
+    );
     let app = app.lock().await;
     let receipt = app
         .worker_prompt_receipts
