@@ -58,6 +58,9 @@ export class BrowserDisplayPresenter {
     this.canvas = canvas; this.binding = binding; this.sequence = 0; this.documentId = null;
     this.busy = false; this.closed = false;
     this.onTiming = onTiming;
+    // MP-08/MP-10/MP-11: request the low-latency compositor path before the
+    // first Chrome UI draw. Keep ordinary region/page canvases on their default.
+    if(videoOptions.direct)canvas.getContext?.('2d',{desynchronized:true});
     this.videoSink=new VideoSink(canvas,onTiming,videoOptions);this.prepared=new WeakMap();this.outcomes=new WeakMap();
     // Start the single module fetch while source navigation/capture is pending.
     if(globalThis.Worker&&globalThis.VideoDecoder){try{this.workerDecoder=new WorkerVideoDecoder();}catch{/* Codec admission/presentation owns worker failures. */}}
