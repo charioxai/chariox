@@ -4263,3 +4263,11 @@ recovery request. Sender/generation admission, lease renewal and protected
 frame publication keep their existing paths. `browser-visible-page-536.json`
 pins the additive request and ACK capability response. See the display region
 drill for required real-path checks; source regressions do not close acceptance.
+
+MP-08 / MP-10 / MP-11 — native-to-DOM handover retains an issued visible-page
+crop as a presentation clip around the canonical mirror layout. The temporary
+video producer closes after handover. A subsequent protected capture may resolve
+the same crop afresh for a live opted-in mirror of that observer/document/policy;
+the kernel requires exact issued geometry, active owned window, density and
+pre/post-capture fences. A frame-size hint never supplies capture coordinates or
+observation authority. This composes unreleased mirror539 with union540/148.

@@ -92,3 +92,20 @@ test('MP-08/MP-10/MP-11 visible-page screenshot requires a live same-observer cr
  host.protection=policy;change=false;stream.regionCurrent=async()=>{host.displays.clear();return true;};
  await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
 });
+
+// MP-08/MP-10/MP-11: after the video closes, the admitted mirror still names the same crop.
+test('MP-08/MP-10/MP-11 mirrored visible-page capture survives video close with fresh kernel geometry',async()=>{
+ const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const policy={unknown:false},tab={tab_id:'t',target_id:'target',document_id:'d'};let live=true,captured=0,change=false;
+ const window={...binding(),isCurrent:()=>live,isPageCurrent:async target=>target==='target'&&live};
+ const mirror={tab_id:'t',scope:'terminal:a',document_id:'d',policy,wire:2,navigationPreview:true,expires:Date.now()+60000};
+ const host={generation:1,protection:policy,chromium:{policy:'managed'},displays:new Map(),mirror:{streams:new Map([['mirror',mirror]])},
+  tabs:new Map([['t',tab]]),scales:new Map([['t',1]]),chromeWindows:{current:()=>({tabbed:window})},
+  browser:{resolvePageTarget:async()=>({connection:{send:async method=>{assert.equal(method,'Page.getLayoutMetrics');return{cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{scale:1,zoom:1}}}},sessionId:'s'})},
+  displayScreenshot:async(t,clip)=>{captured++;assert.equal(t,tab);assert.deepEqual(clip,{x:0,y:0,width:1264,height:712,scale:1});if(change)live=false;return{width:1264,height:712,[displayMaskRegions]:[{x:1,y:2,width:3,height:4}]}}};
+ const frame={width:1264,height:712};assert.equal((await captureVisiblePage(host,tab,frame,'terminal:a')).protected_regions.length,1);
+ for(const [f,scope]of [[frame,'terminal:b'],[{width:1264,height:800},'terminal:a']])await assert.rejects(captureVisiblePage(host,tab,f,scope));
+ assert.equal(captured,1);mirror.expires=0;await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));mirror.expires=Date.now()+60000;
+ mirror.policy={unknown:false};await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));mirror.policy=policy;
+ change=true;await assert.rejects(captureVisiblePage(host,tab,frame,'terminal:a'));assert.equal(captured,2);
+});

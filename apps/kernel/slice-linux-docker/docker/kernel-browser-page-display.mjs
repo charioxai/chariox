@@ -77,12 +77,34 @@ export async function captureVisiblePage(host,tab,frame,scope){
  const stream=[...host.displays.values()].find(s=>s.regionTarget?.kind==='visible_page'&&s.observed_by===scope&&
   s.tab_id===tab.tab_id&&s.generation===host.generation&&s.regionLease.document_id===tab.document_id&&
   s.css_width*s.device_scale_factor===frame?.width&&s.css_height*s.device_scale_factor===frame?.height);
+ if(!stream)return captureMirroredPage(host,tab,frame,scope);
  const policy=host.protection;
  const alive=()=>host.protection===policy&&!policy.unknown&&stream&&!stream.suspended&&host.displays.get(stream.subscription_id)===stream&&
   stream.regionLease.isAlive()&&stream.regionSource.valid()&&stream.regionWindow.isCurrent();
  const current=async()=>alive()&&await stream.regionCurrent()&&alive();
  if(!await current())refuse();
  const shot=await host.displayScreenshot(tab,{x:0,y:0,width:stream.css_width,height:stream.css_height,scale:1},false);
+ if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
+ return {...shot,protected_regions:shot[displayMaskRegions]??[]};
+}
+
+// MP-08/MP-10/MP-11: handover closes the temporary video producer. A current
+// opted-in mirror retains observation authority, never its old pixels/geometry.
+// Resolve the owned crop again and use the ordinary protected screenshot seam.
+async function captureMirroredPage(host,tab,frame,scope){
+ const mirror=[...(host.mirror?.streams?.values()??[])].find(s=>s.wire===2&&s.navigationPreview&&s.scope===scope&&s.tab_id===tab.tab_id&&s.document_id===tab.document_id);
+ if(!mirror||host.chromium?.policy!=='managed')refuse();
+ const policy=host.protection,generation=host.generation,document=tab.document_id,window=host.chromeWindows.current().tabbed;
+ const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&
+  mirror.policy===policy&&mirror.expires>Date.now()&&[...host.mirror.streams.values()].includes(mirror)&&host.tabs.get(tab.tab_id)?.document_id===document;
+ if(!alive()||window.scale!==host.scales.get(tab.tab_id))refuse();
+ const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+ const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
+ const viewport=await measure(),geometry=visiblePageGeometry(window,viewport);
+ if(geometry.width!==frame?.width||geometry.height!==frame?.height)refuse();
+ const current=async()=>alive()&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
+ if(!await current())refuse();
+ const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false);
  if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }
