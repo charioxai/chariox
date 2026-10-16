@@ -128,3 +128,7 @@ Chariox must export the exact profile-scoped Keychain item automatically when ma
 ## Coding style
 
 Simple: be clean and minimalistic. Strive for simplest solution always.
+
+## Commit messages
+
+A commit message is a short, plain summary of the change: one subject line (imperative, about 72 characters at most) and, only when really needed, a few short body lines. Do not add Co-Authored-By lines, agent, model or author claims, email addresses, test logs, evidence or review notes. Squash merges into `main` always set an explicit subject and a short summary body; never use GitHub's default squash message, which concatenates every branch commit.
