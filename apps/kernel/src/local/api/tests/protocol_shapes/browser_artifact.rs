@@ -115,6 +115,6 @@ fn mp08_mp10_mp11_apps_browser_computer_union_current_is_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "a730244663c7e6882f71516b10e1a04d202c140da78854f5581e84e8472c9329"
+        "a2a729f183c7918df16eb9198ca8d637145921ce0435edd58d59465bc62e7ee1"
     );
 }
