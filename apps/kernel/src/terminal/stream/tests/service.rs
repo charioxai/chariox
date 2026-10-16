@@ -1387,14 +1387,27 @@ fn public_history_legacy_tool_records_are_not_client_output() {
         ("chariox.history.turn", None, false),
         ("chariox.history.turn", Some(5), true),
         ("chariox.history.turn", Some(6), false),
+        ("chariox.history.search", Some(4), false),
+        ("mcp__chariox__chariox_history_search", Some(4), false),
+        ("chariox_chariox_history_search", None, false),
+        ("chariox.meta.history_search", Some(4), false),
+        ("chariox.history.search", Some(5), true),
+        ("chariox.history.search", Some(6), false),
+        ("chariox.history.read", Some(4), false),
+        ("mcp__chariox__chariox_history_read", None, false),
+        ("chariox_chariox_history_read", Some(4), false),
+        ("chariox.meta.turn_blob", Some(4), false),
+        ("chariox.history.read", Some(5), true),
         ("bash", Some(4), true),
     ] {
+        let result = if tool.contains("search") {
+            serde_json::json!({"coverage":{"redaction_version":version},"hits":[{"snippet":"legacy internal assessment"}]})
+        } else {
+            serde_json::json!({"redaction_version":version,"events":[{"text":"retained public or legacy internal text"}]})
+        };
         let text = serde_json::json!({
             "tool": tool, "status":"completed",
-            "output": serde_json::json!({"structuredContent": {
-                "redaction_version": version,
-                "events": [{"text":"retained public or legacy internal text"}]
-            }}).to_string()
+            "output": serde_json::json!({"structuredContent": result}).to_string()
         })
         .to_string();
         let entry = crate::history::SessionHistoryEntry::provider_output(

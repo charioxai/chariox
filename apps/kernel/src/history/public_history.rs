@@ -790,7 +790,14 @@ pub(crate) fn is_private_history_tool_record(bytes: &[u8]) -> bool {
                     .and_then(crate::transport::runtime_tools::canonical_meta_tool_name)
             })
         });
-    if canonical != Some(crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL) {
+    if !matches!(
+        canonical,
+        Some(
+            crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL
+                | crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                | crate::transport::runtime_tools::META_TURN_BLOB_TOOL
+        )
+    ) {
         return false;
     }
     let version = record
@@ -798,10 +805,14 @@ pub(crate) fn is_private_history_tool_record(bytes: &[u8]) -> bool {
         .and_then(|v| v.as_str())
         .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
         .and_then(|result| {
-            result
-                .get("structuredContent")?
-                .get("redaction_version")?
-                .as_u64()
+            let content = result.get("structuredContent")?;
+            let version =
+                if canonical == Some(crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL) {
+                    content.get("coverage")?.get("redaction_version")?
+                } else {
+                    content.get("redaction_version")?
+                };
+            version.as_u64()
         });
     version.is_none_or(|version| version != u64::from(PUBLIC_HISTORY_VERSION))
 }
