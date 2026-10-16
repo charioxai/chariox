@@ -667,6 +667,23 @@ captures video/screenshots and checks three network changes per cell. It never
 automatically labels the feature accepted: review the recordings, the normal
 public-site/control/protection tasks and the separate 2-hour soak first.
 
+MP-08/MP-10/MP-11 recovery attribution also requires the home kernel's existing
+`kernel_receive` and `kernel_request_end` marks. Set
+`CHARIOX_BROWSER_DISPLAY_TIMING=1` before starting that kernel and pipe its
+stderr into `node apps/cli/scripts/home-request-timing.mjs /absolute/drill/root`.
+For a Node launcher, call `captureHomeRequestTiming(kernel.stderr, drillRoot)`
+from that module and await it after stopping the owned kernel. Keep stdout and
+normal runtime logs in private state. The collector exclusively creates
+`home-request-timing.jsonl` (0600, at most 64 MiB), accepts only the two stages,
+52-bit ciphertext digests and numeric timestamps, and discards unrelated stderr.
+It never copies commands, identities, auth envelopes or arbitrary diagnostic
+fields. The network drill requires at least one joined receive/end pair in that
+file; a missing capture is an instrumentation failure. These encrypted-request
+marks do not cover the separate 535 subscription exchange: keep its client and
+worker phase timings too. Preserve exact home/worker/relay/client source and
+binary receipts with every run. Source collector tests establish neither
+timing acceptance nor a completed live drill.
+
 MP-08/MP-10/MP-11 519→525 integration: region and native Chrome streams use
 the same `DisplaySessions` lifetime. Resume rechecks the owner lease, native
 source, current geometry/window epoch and protection, retains the encoder, and

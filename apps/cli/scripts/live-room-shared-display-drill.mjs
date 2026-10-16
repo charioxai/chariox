@@ -3,9 +3,13 @@
 // Authenticate/select the Room with normal product UI in the lane-owned profile.
 // The network helper changes the real client link and reports public measurements:
 // {wire_rtt_ms,uplink_bits_per_second}. Never use viewer CDP to drive the Room.
+// MP-10: pipe the home kernel's stderr into home-request-timing.mjs with this
+// drill's evidence root. Enable CHARIOX_BROWSER_DISPLAY_TIMING=1 on that kernel.
+// Raw kernel stderr must not be copied into public drill evidence.
 import assert from 'node:assert/strict';
 import {spawn,execFileSync} from 'node:child_process';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,stat} from 'node:fs/promises';
+import {homeRequestTimingRow} from './home-request-timing.mjs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 const required=name=>{const value=process.env[name];assert(value,`MP-08/MP-10: set ${name}`);return value};
@@ -85,4 +89,18 @@ try{
   }finally{await context.close()}
  }
 }catch(error){report.failure=error instanceof Error?error.message:'Room display drill failed';process.exitCode=1}
-finally{report.finished=new Date().toISOString();await writeFile(path.join(evidence,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});console.log(`MP-08/MP-10/MP-11 Room network drill evidence: ${evidence}; acceptance requires recording review`)}
+finally{
+ try{
+  const file=path.join(evidence,'home-request-timing.jsonl');
+  assert((await stat(file)).size<=64*1024*1024,'MP-11: home timing evidence exceeds bound');
+  const rows=(await readFile(file,'utf8')).trim().split('\n').filter(Boolean).map(line=>homeRequestTimingRow('MP-10-PACKET-TIMING '+line));
+  assert(rows.length&&rows.every(Boolean),'MP-11: home timing evidence must contain only allowlisted opaque marks');
+  const starts=new Set(rows.filter(row=>row.stage==='kernel_receive').map(row=>row.packet));
+  const completed=rows.filter(row=>row.stage==='kernel_request_end'&&starts.has(row.packet)).length;
+  assert(completed>0,'MP-10: missing home receive-to-request-end spans');
+  report.home_request_timing={file:'home-request-timing.jsonl',rows:rows.length,completed};
+ }catch{
+  report.instrumentation_failure='MP-10: missing or invalid home receive/end capture';process.exitCode=1;
+ }
+ report.finished=new Date().toISOString();await writeFile(path.join(evidence,'report.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});console.log(`MP-08/MP-10/MP-11 Room network drill evidence: ${evidence}; acceptance requires recording review`)
+}
