@@ -29,7 +29,7 @@ impl Transfer {
         true
     }
 
-    fn next_chunk(&self) -> Option<(Message, usize)> {
+    fn next_chunk(&self, window_bytes: usize) -> Option<(Message, usize)> {
         if self.offset == self.text.len() {
             return None;
         }
@@ -46,7 +46,7 @@ impl Transfer {
             })
             .ok()?;
             if text.len() <= CHUNK_BYTES {
-                return (self.wire_bytes + text.len() <= WINDOW_BYTES)
+                return (self.wire_bytes + text.len() <= window_bytes)
                     .then_some((Message::Text(text.into()), end));
             }
             end = self.offset + (end - self.offset) / 2;
@@ -122,6 +122,7 @@ pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
+    window_bytes: usize,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
 ) where
@@ -193,7 +194,7 @@ pub(super) async fn run_writer<S>(
             continue;
         }
         if let Some(transfer) = active.as_mut() {
-            if let Some((message, end)) = transfer.next_chunk() {
+            if let Some((message, end)) = transfer.next_chunk(window_bytes) {
                 let wire_bytes = message.len();
                 // Record before writing so a fast receipt is never ahead of its chunk.
                 transfer.offset = end;
@@ -283,6 +284,67 @@ mod tests {
     use super::*;
     use futures_util::StreamExt;
 
+    // MP-08 / MP-10 / MP-11: the catalog flight must not wait for a WAN ACK.
+    #[tokio::test]
+    async fn catalog_optin_fits_one_unacknowledged_flight() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = client.await.unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (ack_tx, ack_rx) = mpsc::channel(32);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let text = serde_json::json!({"kind":"client_response","payload":"x".repeat(140*1024)})
+            .to_string();
+        let expected = text.len();
+        tx.send(Message::Text(text.into())).await.unwrap();
+        let writer = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            crate::frame_transport::WIDE_WINDOW_BYTES,
+            ack_rx,
+            control_rx,
+        ));
+        let mut received = 0;
+        let mut receipts = Vec::new();
+        while received < expected {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(1), client.next())
+                .await
+                .expect("catalog stopped before the first transport ACK")
+                .unwrap()
+                .unwrap();
+            let Message::Text(text) = message else {
+                panic!("expected a bounded text chunk")
+            };
+            let TransportFrame::TransportChunk {
+                transfer_id,
+                offset,
+                payload,
+                ..
+            } = serde_json::from_str(&text).unwrap()
+            else {
+                panic!("expected transport chunk")
+            };
+            assert_eq!(offset as usize, received);
+            received += payload.len();
+            receipts.push((transfer_id, received as u32));
+        }
+        for receipt in receipts {
+            ack_tx.send(receipt).await.unwrap();
+        }
+        drop(tx);
+        writer.await.unwrap();
+        let _ = client.close(None).await;
+    }
+
     // MP-08 / MP-10 / MP-11: clients project the final native close to the user.
     #[tokio::test]
     async fn legacy_large_response_retains_upgrade_reason_in_native_close() {
@@ -303,7 +365,14 @@ mod tests {
         tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, false, ack_rx, control_rx));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            false,
+            WINDOW_BYTES,
+            ack_rx,
+            control_rx,
+        ));
         let message = client.next().await.unwrap().unwrap();
         assert!(
             matches!(message, Message::Text(text) if text.contains("requires an updated client"))
@@ -359,6 +428,12 @@ mod tests {
     // MP-08 / MP-10 / MP-11: both data and receipts traverse real ordered sockets.
     #[tokio::test]
     async fn small_requests_continue_during_partial_bulk_drain() {
+        for window in [WINDOW_BYTES, crate::frame_transport::WIDE_WINDOW_BYTES] {
+            assert_small_requests_continue_during_partial_bulk_drain(window).await;
+        }
+    }
+
+    async fn assert_small_requests_continue_during_partial_bulk_drain(window: usize) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let client_task = tokio::spawn(async move {
@@ -396,7 +471,7 @@ mod tests {
                 tx.send(Message::Text(serde_json::json!({"kind":"daemon_request","relay_request_id":format!("small-{index}"),"payload":"x".repeat(4096)}).to_string().into())).await.unwrap();
             }
         });
-        let writer = tokio::spawn(run_writer(sink, rx, true, ack_rx, control_rx));
+        let writer = tokio::spawn(run_writer(sink, rx, true, window, ack_rx, control_rx));
         let mut frames = crate::frame_transport::FrameReceiver::default();
         let mut complete = false;
         let mut small = 0;
@@ -466,7 +541,14 @@ mod tests {
         tx.send(Message::Text(response.clone().into()))
             .await
             .unwrap();
-        let writer = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let writer = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            WINDOW_BYTES,
+            ack_rx,
+            control_rx,
+        ));
         let first = client.next().await.unwrap().unwrap();
         let bulk_request = serde_json::json!({"kind":"daemon_request", "relay_request_id":"A", "payload":"x".repeat(2 * WINDOW_BYTES)}).to_string();
         for message in [
@@ -567,7 +649,14 @@ mod tests {
         let (_ack_tx, ack_rx) = mpsc::channel(8);
         let (control_tx, control_rx) = mpsc::channel(8);
         tx.send(Message::Text(serde_json::json!({"kind":"client_response", "request_id":"large", "payload":"x".repeat(2_932_256)}).to_string().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            WINDOW_BYTES,
+            ack_rx,
+            control_rx,
+        ));
         let first = tokio::time::timeout(std::time::Duration::from_secs(3), client.next())
             .await
             .unwrap()

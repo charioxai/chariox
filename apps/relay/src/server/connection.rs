@@ -106,15 +106,11 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
-    let mut chunks = false;
+    let mut chunk_window = None;
     let handshake = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-            chunks = request.uri().query().is_some_and(|query| {
-                query
-                    .split('&')
-                    .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
-            });
+            chunk_window = crate::frame_transport::negotiated_window(request.uri().query());
             Ok(response)
         },
     );
@@ -124,14 +120,16 @@ pub(crate) async fn handle_connection(
         Err(_) => return Ok(()),
     };
     let (writer, mut reader) = socket.split();
+    let chunks = chunk_window.is_some();
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
-    let (receipt_tx, receipt_rx) = mpsc::channel(8);
+    let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::RECEIPT_QUEUE_CAPACITY);
     let (control_tx, control_rx) = mpsc::channel(8);
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
         chunks,
+        chunk_window.unwrap_or(crate::frame_transport::WINDOW_BYTES),
         receipt_rx,
         control_rx,
     )));

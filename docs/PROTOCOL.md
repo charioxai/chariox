@@ -873,10 +873,20 @@ around the existing opaque relay envelope; it grants no runtime or relay
 admission authority and does not change encryption or request correlation.
 Direct local kernel sockets retain their existing transport.
 
+The lane's unreleased local534/peer142 allocation adds the optional query
+`chariox_window=262144` beside `chariox_transport=chunks-v1`. Updated clients
+request a 256KiB bound so a typical catalog can leave in one transport flight.
+An older relay ignores this additive hint and retains its existing bound;
+without the exact hint, the new relay also retains64KiB. The chunk size,
+receiver grammar, total bound, ordered receipts, independent small/control
+traffic and all admission/encryption checks are unchanged. The hint alone
+without `chunks-v1` does not opt a socket into bounded framing.
+
+
 Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
 frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
 totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
-most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written. The
+most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written by default. The
 receiver immediately returns `transport_ack` with the same transfer ID and the
 exclusive byte offset received, then dispatches only the completely reassembled
 original envelope. Totals are bounded to 64 MiB, IDs increase per connection,

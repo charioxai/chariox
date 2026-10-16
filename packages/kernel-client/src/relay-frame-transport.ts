@@ -4,6 +4,7 @@ export const relayMaxMessageBytes = 64 * 1024 * 1024
 export function relayTransportUrl(value: string): string {
   const url = new URL(value)
   url.searchParams.set("chariox_transport", "chunks-v1")
+  url.searchParams.set("chariox_window", "262144")
   return url.href
 }
 export class RelayFrameReceiver {

@@ -154,6 +154,27 @@ async fn runtime_client_frames_require_accepted_client_connect() {
     }
     assert_eq!(registry.read().await.pending_request_count(), 0);
 
+    // MP-08 / MP-10 / MP-11: admission and its first request may be written
+    // together. Admission still runs first; no relay protocol bypass is needed.
+    let (mut pipelined, _) = connect_async_with_retry(&url).await.unwrap();
+    let target = ClientTarget { daemon_id: Some("daemon-1".into()), daemon_alias: None };
+    for envelope in [
+        RelayEnvelope::ClientConnect { auth_token: "secret".into(), target: target.clone() },
+        RelayEnvelope::ClientRequest { request_id: "pipelined".into(), target,
+            encrypted_request: EncryptedRelayPayload { sender_public_key:"client-public".into(), nonce:"nonce".into(), ciphertext:"opaque".into() } },
+    ] {
+        pipelined.feed(Message::Text(serde_json::to_string(&envelope).unwrap().into())).await.unwrap();
+    }
+    pipelined.flush().await.unwrap();
+    // Observe the kernel-side delivery BEFORE reading client_connected.
+    let incoming = timeout(Duration::from_secs(2), daemon_socket.next()).await.unwrap().unwrap().unwrap();
+    let Message::Text(incoming) = incoming else { panic!("expected forwarded request") };
+    assert!(matches!(serde_json::from_str::<RelayEnvelope>(&incoming).unwrap(), RelayEnvelope::DaemonRequest { .. }));
+    let connected = timeout(Duration::from_secs(2), pipelined.next()).await.unwrap().unwrap().unwrap();
+    let Message::Text(connected) = connected else { panic!("expected admission acknowledgement") };
+    assert!(matches!(serde_json::from_str::<RelayEnvelope>(&connected).unwrap(), RelayEnvelope::ClientConnected { .. }));
+    let _ = pipelined.close(None).await;
+
     let _ = daemon_socket.close(None).await;
     let _ = shutdown_tx.send(());
     server_task.await.expect("server task should join");

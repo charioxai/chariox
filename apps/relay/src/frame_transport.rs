@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v1";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;
+pub const WIDE_WINDOW_BYTES: usize = 256 * 1024;
+pub const WIDE_WINDOW_QUERY: &str = "chariox_window=262144";
+// Serialized chunks hold at least half a chunk except the final fragment.
+// A whole opted-in flight may be acknowledged in one socket-read burst.
+pub const RECEIPT_QUEUE_CAPACITY: usize = 2 * WIDE_WINDOW_BYTES / CHUNK_BYTES + 2;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -29,7 +34,7 @@ pub fn transport_url(value: &str) -> String {
         .split_once("://")
         .is_some_and(|(_, authority)| authority.contains('/'));
     format!(
-        "{base}{}?{}{TRANSPORT_QUERY}",
+        "{base}{}?{}{TRANSPORT_QUERY}&{WIDE_WINDOW_QUERY}",
         if has_path { "" } else { "/" },
         if query.is_empty() {
             String::new()
@@ -37,6 +42,19 @@ pub fn transport_url(value: &str) -> String {
             format!("{query}&")
         }
     )
+}
+
+/// Allocated protocol534/peer142 additive opt-in; legacy bounded peers retain64KiB.
+pub fn negotiated_window(query: Option<&str>) -> Option<usize> {
+    let query = query?;
+    if !query.split('&').any(|part| part == TRANSPORT_QUERY) {
+        return None;
+    }
+    Some(if query.split('&').any(|part| part == WIDE_WINDOW_QUERY) {
+        WIDE_WINDOW_BYTES
+    } else {
+        WINDOW_BYTES
+    })
 }
 
 /// No payload appears in errors or Debug output, including incomplete transfers.
@@ -158,15 +176,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocated534_wide_window_requires_bounded_transport_and_exact_optin() {
+        assert_eq!(negotiated_window(None), None);
+        assert_eq!(negotiated_window(Some(WIDE_WINDOW_QUERY)), None);
+        assert_eq!(negotiated_window(Some(TRANSPORT_QUERY)), Some(WINDOW_BYTES));
+        assert_eq!(
+            negotiated_window(Some(
+                "chariox_transport=chunks-v1&chariox_window=4294967295"
+            )),
+            Some(WINDOW_BYTES)
+        );
+        assert_eq!(
+            negotiated_window(Some("chariox_transport=chunks-v1&chariox_window=262144")),
+            Some(WIDE_WINDOW_BYTES)
+        );
+    }
+
     #[test]
     fn transport_urls_preserve_paths_and_normalize_empty_paths() {
         assert_eq!(
             transport_url("ws://127.0.0.1:1"),
-            "ws://127.0.0.1:1/?chariox_transport=chunks-v1"
+            "ws://127.0.0.1:1/?chariox_transport=chunks-v1&chariox_window=262144"
         );
         assert_eq!(
             transport_url("wss://relay.example/path?scope=public"),
-            "wss://relay.example/path?scope=public&chariox_transport=chunks-v1"
+            "wss://relay.example/path?scope=public&chariox_transport=chunks-v1&chariox_window=262144"
         );
     }
     #[test]
