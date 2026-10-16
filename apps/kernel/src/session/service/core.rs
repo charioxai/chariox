@@ -673,6 +673,7 @@ impl SessionService {
                 if !project.contains_workspace(&request.workspace_id) {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
+                    let workspaces = normalize_project_workspace_ids(workspaces)?;
                     self.projects
                         .get_mut(project_id)
                         .expect("owned project checked")

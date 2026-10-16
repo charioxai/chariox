@@ -2116,3 +2116,44 @@ fn mp08_owner19_named_project_creation_and_cross_workspace_assignment() {
         )
         .is_err());
 }
+
+#[test]
+fn mp08_owner19_automatic_assignment_keeps_workspace_membership_bound() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/0", "0").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some("Bounded".into()),
+                },
+            ),
+        )
+        .unwrap();
+    let existing = |index: usize| {
+        CreateSessionRequest::new(format!("/workspace/{index}"), "w").with_project_selection(
+            SessionProjectSelection::Existing {
+                project_id: first.project_id().into(),
+            },
+        )
+    };
+    for index in 1..32 {
+        service.create_session(existing(index)).unwrap();
+    }
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .unwrap()
+            .workspace_ids()
+            .len(),
+        32
+    );
+    assert!(service.create_session(existing(32)).is_err());
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .unwrap()
+            .workspace_ids()
+            .len(),
+        32
+    );
+}
