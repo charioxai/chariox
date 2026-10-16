@@ -27,6 +27,7 @@ async function withAdapter(run) {
   // Host admission has already selected the observed tab. The browser adapter,
   // document validation, backend-node resolution and normalization remain real.
   host.browser = browser; host.generation = 1;
+  host.chromium.desktop ??= {}; // the owned desktop exists only on Linux; activation is the owned-desktop path on every platform
   host.start = async () => {};
   host.target = async () => ({ tab_id: 'host-tab', target_id: 'target', document_id: 'observed' });
   host.displayTarget = host.target; // navigation and bound input read their own Tab (MP-08/MP-10)
