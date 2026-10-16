@@ -453,6 +453,8 @@ export type AttachLaunch = {
 }
 
 export type BootstrapDeferredState = {
+  // attachedHistory comes from the attach reply, so it is available without another request.
+  historyIsBundled?: true
   attachLaunch?: Promise<AttachLaunch>
   composerScopeKey?: () => string
   loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>

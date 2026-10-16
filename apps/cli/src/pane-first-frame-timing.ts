@@ -27,7 +27,7 @@ export function recordPaneFirstFrame(
   renderer: CliRenderer,
   hasMountedTranscript: () => boolean,
   mountedEntries: () => Iterable<TranscriptEntry> = () => [],
-  cached = false,
+  cached: boolean | "preview" = false,
   onFirstFrame?: () => void,
   hasMountedSurface: () => boolean = hasMountedTranscript,
   requestStats?: () => { count: number; kinds: Record<string, number>; timeline?: Array<[string, number]> },
@@ -52,7 +52,7 @@ export function recordPaneFirstFrame(
     }
     if (!recorded && hasMountedTranscript()) {
       recorded = true
-      write({ event: "pane_first_frame", ...(cached ? { cached: true } : {}), ...(requestStats ? { kernelRequests: requestStats() } : {}) })
+      write({ event: "pane_first_frame", ...(cached === "preview" ? { preview: true } : cached ? { cached: true } : {}), ...(requestStats ? { kernelRequests: requestStats() } : {}) })
       // Requests the open still issues after the first frame (provider launch, subscriptions).
       if (requestStats) setTimeout(() => write({ event: "pane_open_requests", kernelRequests: requestStats() }), 3000).unref()
       if (destination && !prefix) renderer.removePostProcessFn(sample)

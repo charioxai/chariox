@@ -258,7 +258,7 @@ export async function bootstrapSession(
       composerScopeKey: () => JSON.stringify([options.provider, options.accountProfile]),
       loadPromptInputHistory: (sessionId: string) => loadSessionPromptHistory(client, sessionId, deps).then(entries => ({ sessionId, entries })),
       attachedHistory: attachedHistoryPromise,
-      ...(initialView ? { attachLaunch: launching } : {}),
+      ...(initialView ? { attachLaunch: launching, historyIsBundled: true as const } : {}),
     },
   }
 }

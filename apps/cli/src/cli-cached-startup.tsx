@@ -3,7 +3,9 @@ import { reconcileCachedHistory } from "./cached-history-reconciliation.js"
 import {createSignal,onMount,onCleanup,Show} from "solid-js"
 import {useRenderer,useKeyboard} from "@opentui/solid"
 import type {BoxRenderable,ScrollBoxRenderable} from "@opentui/core"
+import type {TranscriptEntry} from "./cli-types.js"
 import {bindCliViewScope,readClientView,subscribeClientViewInvalidation,clearClientViews,type CliCachedView} from "./client-view-cache.js"
+import type {LocalIpcClient} from "./ipc.js"
 import type {CliRuntimeBootstrapOptions,CliRuntimeBootstrapResult} from "./cli-runtime-bootstrap.js"
 import {CharioxCliApp} from "./cli-app-root.js"
 import {buildTranscriptEntryRenderable} from "./transcript-render.js"
@@ -25,10 +27,15 @@ export function createCliCachedStartup(){
  }
  return {cached,onClientReady,finish:()=>{finished=true;setCached(null);unsubscribe()}}
 }
+// Rows of the bundled kernel history drawn before the full app mounts; older rows scroll in with the app.
+const previewEntryLimit=40
+type Preview={alias:string;entries:TranscriptEntry[];requests:()=>ReturnType<LocalIpcClient['requestStats']>}
 export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResult>;view:ReturnType<typeof createCliCachedStartup>}){
  const [ready,setReady]=createSignal<Extract<CliRuntimeBootstrapResult,{kind:'ready'}>|null>(null)
  const [painted,setPainted]=createSignal(false)
  const [failure,setFailure]=createSignal<string|null>(null)
+ const [preview,setPreview]=createSignal<Preview|null>(null)
+ const renderer=useRenderer()
  let disposed=false
  onCleanup(()=>{disposed=true})
  void props.pending.then(async result=>{
@@ -43,6 +50,18 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
     return reconciled.history
    })
   }
+  // The full app takes ~100 ms of synchronous mounting. Draw the kernel's bundled history first,
+  // read-only, then mount; nothing here waits on anything the attach has not already delivered.
+  const history = !cached && session && result.bootstrap.deferred?.historyIsBundled ? await result.bootstrap.deferred.attachedHistory : null
+  if (disposed) return
+  if (history && session && history.sessionId === session.id) {
+   const entries = history.historyEntries.filter(entry => !entry.hidden).slice(-previewEntryLimit)
+   if (entries.length) {
+    setPreview({alias: session.alias ?? session.id, entries, requests: () => result.bootstrap.client.requestStats()})
+    await nextFrame(renderer)
+    if (disposed) return
+   }
+  }
   result.bootstrap.isTranscriptViewCovered=()=>!painted()
   result.bootstrap.onTranscriptFrame=()=>{if(!disposed){setPainted(true);props.view.finish()}}
   setReady(result)
@@ -50,14 +69,24 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
-   <Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()}/>}</Show>
+   <Show when={props.view.cached()} fallback={<Show when={preview()} fallback={<text content={failure()??'Connecting…'} />}>{value=><CachedTranscript view={value()} title="Opening session" requests={value().requests}/>}</Show>}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>
   </box></Show>
  </box>
 }
-function CachedTranscript(props:{view:CliCachedView}){
+// Resolves once the frame that includes the current tree has been composed.
+function nextFrame(renderer:ReturnType<typeof useRenderer>):Promise<void>{
+ return new Promise(resolve=>{
+  const done=()=>{renderer.removePostProcessFn(sample);clearTimeout(timer);setTimeout(resolve,0)}
+  const sample=()=>done()
+  const timer=setTimeout(done,100)
+  renderer.addPostProcessFn(sample)
+  renderer.requestRender()
+ })
+}
+function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'frame'>;title:string;requests?:Preview['requests']}){
  const renderer=useRenderer(),syntax=createTranscriptSyntaxStyle()
  let box:BoxRenderable|undefined,scrollbox:ScrollBoxRenderable|undefined,timer:ReturnType<typeof setTimeout>|undefined
- const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean((props.view.frame || box?.getChildren().length) && box && box.width > 0 && box.height > 0),()=>props.view.entries,true)
+ const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean((props.view.frame || box?.getChildren().length) && box && box.width > 0 && box.height > 0),()=>props.view.entries,props.requests?"preview":true,undefined,undefined,props.requests)
  useKeyboard(key=>{if(key.ctrl&&key.name==='c')process.exit(0)})
  onMount(()=>{
   if (props.view.frame) return
@@ -69,7 +98,7 @@ function CachedTranscript(props:{view:CliCachedView}){
  })
  onCleanup(()=>{removeTiming();if(timer)clearTimeout(timer);syntax.destroy()})
  return <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>
-  <text height={1} flexShrink={0} content={`${props.view.alias} · Reconnecting — previous view`} fg={theme.textMuted}/>
-  <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
+  <text height={1} flexShrink={0} content={`${props.view.alias} · ${props.title}`} fg={theme.textMuted}/>
+  <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} stickyScroll={true} stickyStart="bottom" ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
  </box>
 }
