@@ -75,6 +75,13 @@ export class LinuxCapture {
  }
  /** A cached readback masked under the current projection (startup admits only such a sample). */
  currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
+ // MP-08/MP-10/MP-11: a busy navigation can retire its first protected sample.
+ // Wait only for a current mask projection and stop as soon as its lease retires.
+ async waitForCurrentSample({now=()=>performance.now(),pause=delay}={}){
+  const deadline=now()+5_000;
+  while(this.valid()&&!this.currentSample()&&now()<deadline)await pause(Math.min(10,deadline-now()));
+  return this.valid()&&this.currentSample();
+ }
  // Retire every published, queued and in-flight pixel of the current mask projection.
  retireFrames(){
   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
@@ -92,8 +99,7 @@ export class LinuxCapture {
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,readback);
-   for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
+   if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
    this.phase='attestation';let matched=false;
    // Chromium may finish a viewport paint after the first shared readback.
    // Retry only this observation; never admit an approximate pixel binding.

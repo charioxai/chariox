@@ -332,3 +332,18 @@ for(const phase of ['occlusion','metadata','binding'])for(const retirement of ['
  try{await source.publish();assert.equal(released,1);assert.equal(reads,0);assert.equal(delivered,0);assert.equal(source.sample(),null);assert(!timings.some(s=>s.startsWith('native_publish_failed')));}
  finally{await source.close()}
 });
+
+
+// MP-08/MP-10/MP-11: WHATWG live readback arrived at2747ms, after the old2s wait.
+test('MP-08/MP-10/MP-11 startup awaits a late current projection instead of accepting a retired first sample',async()=>{
+ const source=new LinuxCapture({});source.valid=()=>!source.closed;source.latest={revision:-1};let at=0;
+ const ready=await source.waitForCurrentSample({now:()=>at,pause:async ms=>{at+=ms;if(at>=2750)source.latest={revision:source.regionRevision}}});
+ assert.equal(ready,true);assert.equal(at,2750);assert.equal(source.currentSample(),true);
+});
+test('MP-08/MP-10/MP-11 startup sample wait is bounded and exits immediately when the lease retires',async()=>{
+ for(const retire of [false,true]){
+  const source=new LinuxCapture({});source.valid=()=>!source.closed;let at=0;
+  assert.equal(await source.waitForCurrentSample({now:()=>at,pause:async ms=>{at+=ms;if(retire&&at>=40)source.closed=true}}),false);
+  assert.equal(at,retire?40:5000);assert.equal(source.latest,undefined);
+ }
+});

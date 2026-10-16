@@ -42,15 +42,18 @@ import { DisplayDocuments } from './kernel-browser-display-document.mjs';
 // to one attempt a minute.
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
-export function scheduleHostRequest(request, browser, viewport = hostViewport()) {
+export function scheduleHostRequest(request, browser, viewport = hostViewport(), nativeDesktop = false) {
   // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
   // stay independent of input and lifecycle barriers on the host as in Rooms.
+  // A native desktop's default page crop never resizes Chrome; its protected
+  // first sample may wait without parking input. Legacy full-page setup still
+  // applies viewport geometry and must retain the barrier.
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && request.params.target) && browser?.canReconcileConcurrently?.(viewport) === true)
+    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true)
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
@@ -998,5 +1001,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport()))).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport(), Boolean(host.chromium.desktop?.binding?.())))).run().finally(() => host.stop());
 }

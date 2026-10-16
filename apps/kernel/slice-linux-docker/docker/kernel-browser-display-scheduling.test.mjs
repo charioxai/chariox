@@ -35,3 +35,24 @@ test('MP-08/MP-10/MP-11 Computer input progresses during held Browser mirror obs
  const early=await Promise.race([inputDone.then(()=>true),new Promise(r=>setTimeout(()=>r(false),50))]);
  input.end();release();await running;assert.equal(early,true,'mirror observation blocked native input');
 });
+
+
+test('MP-08/MP-10/MP-11 an owned visible-page startup never parks native input',async()=>{
+ const input=new PassThrough(),output=new PassThrough();let release,started,completed;
+ const began=new Promise(r=>started=r),hold=new Promise(r=>release=r),inputDone=new Promise(r=>completed=r);
+ const browser={canReconcileConcurrently:()=>true};
+ output.on('data',b=>{for(const line of b.toString().trim().split('\n'))if(line&&JSON.parse(line).id===2)completed()});
+ const server=new BrowserControllerStdioServer({input,output,scheduleRequest:request=>scheduleHostRequest(request,browser,{},true),handleRequest:async request=>{
+  if(request.id===1){started();await hold}return {id:request.id,ok:true,result:{}};
+ }});
+ const running=server.run();
+ input.write(JSON.stringify({id:1,method:'host.browser',params:{op:'display_subscribe',tab_id:'t',generation:1}})+'\n');await began;
+ input.write(JSON.stringify({id:2,method:'host.browser',params:{op:'input',tab_id:'t'}})+'\n');
+ const early=await Promise.race([inputDone.then(()=>true),new Promise(r=>setTimeout(()=>r(false),100))]);
+ input.end();release();await running;assert.equal(early,true,'input waited behind the first protected native sample');
+});
+test('MP-08/MP-10/MP-11 legacy resize and unapplied viewport startup retain their barrier',()=>{
+ const request={method:'host.browser',params:{op:'display_subscribe',tab_id:'t'}};
+ assert.deepEqual(scheduleHostRequest(request,{canReconcileConcurrently:()=>true},{},false),{kind:'barrier'});
+ assert.deepEqual(scheduleHostRequest(request,{canReconcileConcurrently:()=>false},{},true),{kind:'barrier'});
+});

@@ -1,10 +1,9 @@
 // MP-08/MP-10/MP-11: prove a native frame's identity and origin using exact
 // non-media pixels. Only the kernel observer supplies media boxes; these are
 // comparison exclusions, never display/protection masks.
-import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxCapture,attestationMask,statusBand} from './kernel-browser-native.mjs';
 import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
-import {startNativeReadback} from './kernel-browser-native-readback.mjs';
+import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {cropProtectedPng,decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 
@@ -93,7 +92,7 @@ export async function attestNativeRegion(source){
   await probe.regions.refresh();probe.poolRoot=await probe.createRasterPool();
   startNativeReadback(probe,{width:plan.rect.width,height:plan.rect.height,
    window_region:{...source.region.window_region,left:plan.rect.left,top:plan.rect.top}});
-  for(let n=0;n<200&&!probe.latest&&probe.valid();n++)await delay(10);
+  if(!await probe.waitForCurrentSample())throw nativeReadbackFailure(probe,'MP-08: native region readback unavailable');
   const shot=await source.screenshot();
   const clip={x:left/source.scale,y:top/source.scale,width:plan.rect.width/source.scale,height:plan.rect.height/source.scale};
   const reference=decodePng(cropProtectedPng(shot.data_base64,clip,source.scale).data_base64,source.scale);
