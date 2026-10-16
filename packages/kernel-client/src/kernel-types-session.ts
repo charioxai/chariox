@@ -76,9 +76,10 @@ export type RuntimeProjectStatus = "active" | "archived"
 export type SessionProjectSelection =
   | { kind: "default" }
   | { kind: "existing"; project_id: string }
-  | { kind: "new" }
+  | { kind: "new"; name?: string }
 
 export type RuntimeProject = {
+  pinned?: boolean
   id: string
   owner_user_id: string
   workspace_id: string
@@ -172,6 +173,7 @@ export type WaitingRoomPublicSessionSummary = {
   machine_id?: string | null
   machine_alias?: string | null
   alias?: string | null
+  repository_state?: "ready" | "not-repository" | "unborn" | null
   workspace_id: string
   worktree_id: string
   workspace_label?: string | null

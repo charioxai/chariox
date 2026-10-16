@@ -2046,7 +2046,7 @@ mod tests {
                     source_git.display().to_string(),
                     source_git.display().to_string(),
                 )
-                .with_project_selection(SessionProjectSelection::New)
+                .with_project_selection(SessionProjectSelection::New { name: None })
                 .with_agent_defaults(SessionAgentDefaults::new("default")),
             ),
         )

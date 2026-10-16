@@ -20,7 +20,7 @@ use crate::runtime::waiting_room_activity::{
     waiting_room_workflow_activity_summary,
 };
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, workspace_display_label, worktree_display_label,
+    detect_git_branch, workspace_display_label, workspace_repository_state, worktree_display_label,
 };
 use crate::session::{unix_epoch_ms, RuntimeProject, RuntimeSession};
 use crate::slice::SliceRecord;
@@ -587,6 +587,7 @@ fn compute_waiting_room_launch_target(
         .unwrap_or_else(|| cwd_string.to_string());
     let branch = cached_git_branch(&worktree, now_ms);
     Some(WaitingRoomLaunchTarget {
+        repository_state: Some(workspace_repository_state(&workspace)),
         workspace_label: cached_workspace_label(&workspace),
         directory: Some(workspace.clone()),
         worktree_label: worktree_display_label(&worktree, &workspace, branch.as_deref()),
@@ -686,6 +687,8 @@ fn waiting_room_structural_version(
                 "id": project.id,
                 "owner_user_id": project.owner_user_id,
                 "workspace_id": project.workspace_id,
+                "workspace_ids": project.workspace_ids,
+                "pinned": project.pinned,
                 "name": project.name,
                 "kind": project.kind,
                 "status": project.status,
@@ -837,6 +840,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicSessionSummary {
+                repository_state: Some(workspace_repository_state(&workspace_id)),
                 id: session.id().to_string(),
                 project_id: session.project_id().to_string(),
                 alias: session.alias().map(ToOwned::to_owned),
@@ -1027,6 +1031,7 @@ fn waiting_room_public_project_summaries(
                 workspace_id: project.workspace_id().to_string(),
                 workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
+                pinned: project.pinned(),
                 kind: project.kind(),
                 status: project.status(),
                 created_at_ms: project.created_at_ms(),
@@ -2217,5 +2222,26 @@ mod tests {
             waiting_room_structural_version(&structural_change, &[], &[], false, None, None)
                 .unwrap(),
         );
+    }
+}
+
+#[cfg(test)]
+mod owner15_projection_tests {
+    #[test]
+    fn mp08_owner15_pin_changes_structural_revision_for_all_subscribers() {
+        let project = crate::session::RuntimeProject::new(
+            "p",
+            "u",
+            "/repo",
+            "Project",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        let mut projects = super::waiting_room_public_project_summaries(&[project], &[], "u");
+        let before =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        projects[0].pinned = true;
+        let after =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        assert_ne!(before, after);
     }
 }

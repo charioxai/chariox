@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   backendProviderLabel,
   type BackendProviderId,
@@ -48,6 +49,7 @@ export function waitingRoomStartRows(
     | "selectedMachineRef"
     | "selectedKernelRef"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "sliceSelectionId"
     | "sliceDisplayMode"
     | "managedComputeClass"
@@ -164,7 +166,7 @@ export function waitingRoomStartRows(
       ? [{
           id: "project",
           title: "Project",
-          value: describeWaitingRoomProjectSelection(
+          value: state.projectSelectionId === "new" && state.projectNameDraft?.trim() ? `New (${state.projectNameDraft.trim()})` : describeWaitingRoomProjectSelection(
             state.projectSelectionId ?? "default",
             remote.projects,
             options.targets?.workspacePath,
@@ -247,7 +249,7 @@ export function waitingRoomStartRows(
       selectable: !waitingRoomWorktreeDisabledHint(),
       scrollbar: "",
     },
-    {
+    ...(workspaceLiveSyncUiEnabled ? [{
       id: "live-sync",
       title: "Live Sync",
       value: formatWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
@@ -256,7 +258,7 @@ export function waitingRoomStartRows(
       focused: state.focus === "live-sync",
       selectable: true,
       scrollbar: "",
-    },
+    }] : []),
     {
       id: "collaborators",
       title: "Collaborators",
@@ -307,6 +309,7 @@ function waitingRoomManagedRepositoryRows(
   state: Pick<WaitingRoomState,
     | "focus"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "managedDevelopmentMode"
     | "managedRepositorySelection"
     | "managedRepositoryIndex"

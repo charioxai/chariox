@@ -32,7 +32,7 @@ export function createWaitingRoomPromptBootstrapController(
       }
 
       inFlight = deps.startSessionFromWaitingRoomDefaults()
-        .then(() => "bootstrapped" as const)
+        .then(result => result === false ? "handled" as const : "bootstrapped" as const)
         .catch((error) => {
           deps.warn?.("waiting-room prompt bootstrap failed", { error: formatError(error) })
           deps.flashFooter(formatError(error), "error")

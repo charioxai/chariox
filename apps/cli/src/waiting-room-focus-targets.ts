@@ -134,7 +134,7 @@ export function waitingRoomFocusTargets(
     { focus: "effort" as const, sessionIndex: 0 },
     { focus: "workspace" as const, sessionIndex: 0 },
     ...(!waitingRoomWorktreeDisabledHint() ? [{ focus: "worktree" as const, sessionIndex: 0 }] : []),
-    { focus: "live-sync" as const, sessionIndex: 0 },
+    // MP-08 OWNER-20: discontinued controls have no focus target.
     { focus: "collaborators" as const, sessionIndex: 0 },
     { focus: "slice" as const, sessionIndex: 0 },
     ...(sliceDevelopmentConfiguration

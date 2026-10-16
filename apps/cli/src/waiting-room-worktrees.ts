@@ -185,7 +185,7 @@ function modulo(value: number, size: number) {
   return ((value % size) + size) % size
 }
 
-export const NO_REPOSITORY_WORKTREE_HINT = "No git repository in this workspace — run git init to enable worktrees"
+export const NO_REPOSITORY_WORKTREE_HINT = "Worktrees not available"
 export const UNBORN_WORKTREE_HINT = "This repository has no commits — create a commit to enable worktrees"
 
 export function waitingRoomWorktreeDisabledHint(): string | null {
