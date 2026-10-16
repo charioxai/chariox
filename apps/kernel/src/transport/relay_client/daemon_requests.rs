@@ -140,6 +140,7 @@ pub(super) async fn handle_prepared_daemon_request(
                         generation,
                         sequence,
                         lost,
+                        held_ms,
                     },
             }) = &request.request
             {
@@ -150,6 +151,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     *generation,
                     *sequence,
                     *lost,
+                    *held_ms,
                 )
                 .await;
                 return display_ack_outcome(status, &daemon_private_key, &client_public_key);
@@ -422,7 +424,7 @@ fn display_ack_outcome(
         };
     };
     let response = crate::local::LocalDaemonResponse::KernelBrowser {
-        result: serde_json::json!({"acknowledged":true,"push":status}),
+        result: serde_json::json!({"acknowledged":true,"push":status,"ack_timing":true}),
     };
     match serde_json::to_vec(&response).ok().and_then(|plaintext| {
         relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)

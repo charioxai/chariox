@@ -4160,3 +4160,25 @@ All live active-Tab, document, window, Vault and exact-RGB checks still apply.
 Explicit region and Chrome UI targets retain their existing contract.
 This default-crop activation requires local536 / peer144; full-viewport
 producers on hosts without the owned desktop retain their negotiated geometry.
+
+### MP-08 / MP-10 / MP-11: timed display acknowledgements (536 / peer 144)
+
+The same unreleased allocation additively admits optional `held_ms` on
+`display_ack`: an integer receipt-to-ACK hold time in milliseconds (bounded by
+60000 by the viewer). A successful ACK advertises `ack_timing: true`. The
+viewer requires that capability and local protocol >=536 before sending the
+optional field; older kernels retain their original ACK shape. The receiver
+clock starts before local CXR1 conversion/decryption, and holds include time
+waiting to decode, present or send a bounded outstanding ACK. Frame clocks
+stay local and never become relay or session authority.
+
+The kernel subtracts a valid hold from the matching frame's send-to-ACK age
+when estimating ACK transport RTT. This still includes transport processing;
+the latency acceptance gate uses its separately measured wire RTT. A hold
+larger than the frame age cannot create a zero RTT sample. Untimed clients retain their existing allowance; timed clients
+use one observed frame interval plus recent RTT jitter. ACK requests pipeline
+within an eight-request bound and retain the newest pending sequence and any
+recovery request. Sender/generation admission, lease renewal and protected
+frame publication keep their existing paths. `browser-visible-page-536.json`
+pins the additive request and ACK capability response. See the display region
+drill for required real-path checks; source regressions do not close acceptance.

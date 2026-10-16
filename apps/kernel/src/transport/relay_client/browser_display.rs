@@ -237,7 +237,7 @@ pub(super) async fn handle_subscribe(
         },
     )?;
     if recover {
-        pump.acknowledge(generation, 0, true);
+        pump.acknowledge(generation, 0, true, None);
     }
     tokio::spawn(super::display_pump::run(
         super::display_pump::PumpRoute {
@@ -280,6 +280,7 @@ pub(super) async fn acknowledge(
     generation: u64,
     sequence: u64,
     lost: bool,
+    held_ms: Option<u32>,
 ) -> Option<&'static str> {
     let pump = {
         let guard = tasks.lock().await;
@@ -293,7 +294,7 @@ pub(super) async fn acknowledge(
             .display_pump
             .clone()?
     };
-    let status = pump.acknowledge(generation, sequence, lost)?;
+    let status = pump.acknowledge(generation, sequence, lost, held_ms)?;
     browser_display_delivery_id(tasks, display_id, public_key).await?;
     Some(status)
 }

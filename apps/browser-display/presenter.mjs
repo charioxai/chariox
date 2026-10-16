@@ -454,19 +454,23 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   let nextSequence = presenter.sequence + 1, heldBytes = 0, failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
   let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
-  // MP-08/MP-10: heartbeat ownership is bounded even while hidden.
-  // Keep the relay lease alive, with one request and one latest queued ACK.
+  // MP-08/MP-10/MP-11: ACK replies must not delay delivery feedback by another
+  // WAN round trip. Bound outstanding requests and coalesce only at that bound.
   const document=presenter.canvas.ownerDocument;
-  let ackInFlight=false, queuedAck=null;
+  let ackInFlight=0, queuedAck=null, timedAcks=false;
+  const receiptTimes=new Map();
   const ack = (sequence, lost = false) => {
     if (closed) return;
-    const candidate={sequence,lost:lost||queuedAck?.lost||false};
-    if (ackInFlight) { queuedAck=candidate;return; }
-    queuedAck=null;ackInFlight=true;ackedAt=performance.now();
+    const candidate={sequence:Math.max(sequence,queuedAck?.sequence??sequence),lost:lost||queuedAck?.lost||false};
+    if (ackInFlight>=8) { queuedAck=candidate;return; }
+    queuedAck=null;ackInFlight++;ackedAt=performance.now();
+    const received=receiptTimes.get(candidate.sequence);
+    if(timedAcks&&received!==undefined)candidate.held_ms=Math.min(60000,Math.max(0,Math.floor(performance.timeOrigin+performance.now()-received)));
+    for(const sequence of receiptTimes.keys())if(sequence<=candidate.sequence)receiptTimes.delete(sequence);
     request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, ...candidate })
-      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail)
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); else if(transport.kernelProtocolVersion>=536&&reply.ack_timing===true)timedAcks=true; }, fail)
       .finally(()=>{
-        ackInFlight=false;
+        ackInFlight--;
         if(!closed&&!failure&&queuedAck){const latest=queuedAck;queuedAck=null;ack(latest.sequence,latest.lost);}
       });
   };
@@ -518,6 +522,9 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     if (resync && Number.isSafeInteger(frame.sequence)) { resync = false; nextSequence = frame.sequence; }
     // Relay lanes and concurrent decryption may reorder; decode in sequence.
     if (!Number.isSafeInteger(frame.sequence) || frame.sequence < nextSequence || held.has(frame.sequence)) return;
+    const received=frame[Symbol.for('chariox.display.receivedAt')];
+    receiptTimes.set(frame.sequence,Number.isFinite(received)?received:performance.timeOrigin+performance.now());
+    while(receiptTimes.size>64)receiptTimes.delete(receiptTimes.keys().next().value);
     held.set(frame.sequence, frame); heldBytes += size;
     // A sequence that never arrives: skip the gap and recover from a key.
     // While recovering, an independent frame establishes the cursor at once.
@@ -549,6 +556,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close(closeOptions) { closed = true; running = false; queuedAck=null;document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
+    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
   };
 }

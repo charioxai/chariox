@@ -34,5 +34,5 @@ export function summarizePushGate(records) {
  return {observed,closures:observed?samples('push_gate_closed').length:null,
   reopened:observed?samples('push_gate_reopened').length:null,
   closed_at_age_ms:samples('push_gate_closed'),closed_duration_ms:samples('push_gate_reopened'),
-  oldest_unacked_poll_age_ms:samples('push_oldest_unacked'),frame_ack_age_ms:samples('push_frame_ack')};
+  oldest_unacked_poll_age_ms:samples('push_oldest_unacked'),frame_ack_age_ms:samples('push_frame_ack'),ack_transport_rtt_ms:samples('push_ack_rtt')};
 }

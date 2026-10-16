@@ -284,7 +284,8 @@ mod tests {
             subscription_id: "s".into(),
             generation: 1,
             sequence: 0,
-            lost: false
+            lost: false,
+            held_ms: None,
         })
         .browser_input_key()
         .is_none());

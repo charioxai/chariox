@@ -86,3 +86,31 @@ Report startup/placement/input/retirement separately with exact heads,
 screenshots, recording review and first failing seam. Only after functional
 readiness passes request the quiet host for strict paired Selkies timing and
 the two-hour soak; b3 source/functional checks cannot establish these gates.
+
+## MP-08 / MP-10 / MP-11 timed ACK lane (536/144)
+
+Before changing ACK scheduling, preserve the red held-reply regression and
+90ms RTT/30fps cadence result from `apps/browser-display/ack-pipeline.test.mjs`.
+The cadence target is ACK-age P95 <=105ms. Preserve Rust red/green receiver-hold,
+adaptive allowance, generation refusal and stalled-client recovery tests;
+round-trip the extended536 snapshot/hash through cargo-slot. These are
+supplementary checks only.
+
+On the integrated real kernel/relay/web path, use normal play/pause and scroll
+on MDN's public flower video and the Commons video at DPR2, with three two-second
+steady windows and a post-correction physical-pixel FPS sampler. Keep the full
+kernel log and numeric `push_oldest_unacked` samples; count `push_gate_closed`
+transitions separately from closed polling, and record `push_ack_rtt` beside
+raw `push_frame_ack` age. Absent transition telemetry means unknown counts.
+Collect `chariox:browser-display-timing` (and Room's existing timing event)
+from the real viewer: `client_receive` starts at raw socket receipt; the track
+`committedAt` and `displayPresentedSequence` require an exact decoded-media-time
+rVFC join, while `writtenAt` only means track writer completion. This compositor
+clock still requires comparison with recorded physical pixels.
+
+Repeat normal input while ACK replies are delayed, stop ACKs to prove the
+kernel gate closes, then recover without an unbounded request queue. Check a
+kernel without `ack_timing`: the viewer sends no `held_ms` and the original
+stream still works. Use the hosted shaped path and the same quiet-host Selkies
+control; apply RTT+60ms, FPS and CPU gates above. Keep current source identities
+on every receipt and watch the recordings before grading.

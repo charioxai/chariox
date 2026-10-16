@@ -8,8 +8,8 @@ use super::*;
 use crate::runtime::state::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
 use std::collections::VecDeque;
 
-/// Unacknowledged frames older than the RTT floor plus this allowance close
-/// the gate: queueing beyond it only adds input-to-visible latency.
+/// Legacy clients have no receiver hold clock. Timed acknowledgements use
+/// an observed frame interval plus RTT jitter instead of this allowance.
 const GATE_ALLOWANCE: Duration = Duration::from_millis(100);
 /// Selkies STALLED_CLIENT_TIMEOUT_SECONDS / STALLED_CLIENT_REPROBE_SECONDS.
 const STALL: Duration = Duration::from_secs(4);
@@ -32,6 +32,9 @@ struct PumpState {
     reset: bool,
     sent: VecDeque<(u64, Instant)>,
     rtt: VecDeque<(Instant, Duration)>,
+    timed_ack: bool,
+    last_frame_at: Option<Instant>,
+    frame_interval: Option<Duration>,
     gated_at: Option<Instant>,
     closes: VecDeque<Instant>,
     synced_at: Option<Instant>,
@@ -50,6 +53,35 @@ impl PumpState {
             .map(|(_, rtt)| *rtt)
             .min()
             .unwrap_or_default()
+    }
+    // MP-08/MP-10/MP-11: sparse idle gaps are not frame intervals. Observe
+    // the source cadence while it is moving; bootstrap at 30fps until learned.
+    fn sent_frame(&mut self, sequence: u64, now: Instant) {
+        if let Some(previous) = self.last_frame_at {
+            let interval = now.saturating_duration_since(previous);
+            if interval > Duration::ZERO && interval < Duration::from_millis(250) {
+                let sample = interval.max(Duration::from_millis(8));
+                self.frame_interval = Some(
+                    self.frame_interval
+                        .map_or(sample, |old| (old * 3 + sample) / 4),
+                );
+            }
+        }
+        self.last_frame_at = Some(now);
+        self.sent.push_back((sequence, now));
+    }
+    fn gate_allowance(&self) -> Duration {
+        if !self.timed_ack || self.rtt.is_empty() {
+            return GATE_ALLOWANCE;
+        }
+        let mut samples: Vec<_> = self.rtt.iter().map(|(_, sample)| *sample).collect();
+        samples.sort_unstable();
+        let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+        let jitter = p95.saturating_sub(self.rtt_floor());
+        self.frame_interval
+            .unwrap_or(Duration::from_nanos(1_000_000_000 / 30))
+            + jitter
+            + Duration::from_millis(5)
     }
     fn admit(&mut self, now: Instant) -> Gate {
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
@@ -71,7 +103,7 @@ impl PumpState {
                 }
                 self.sent.clear();
                 self.reset = true;
-            } else if age > self.rtt_floor() + GATE_ALLOWANCE {
+            } else if age > self.rtt_floor() + self.gate_allowance() {
                 crate::transport::kernel_browser_display::timing("push_oldest_unacked", oldest);
                 if self.gated_at.is_none() {
                     crate::transport::kernel_browser_display::timing("push_gate_closed", oldest);
@@ -106,7 +138,7 @@ impl PumpState {
             congested: self.closes.len() >= 2,
         })
     }
-    fn acknowledge(&mut self, sequence: u64, lost: bool, now: Instant) {
+    fn acknowledge(&mut self, sequence: u64, lost: bool, now: Instant, held_ms: Option<u32>) {
         self.started = true;
         self.reset |= lost;
         self.acked = self.acked.max(sequence);
@@ -117,7 +149,27 @@ impl PumpState {
             self.sent.pop_front();
             if sent == sequence {
                 crate::transport::kernel_browser_display::timing("push_frame_ack", at);
-                self.rtt.push_back((now, now.saturating_duration_since(at)));
+                let age = now.saturating_duration_since(at);
+                let sample = match held_ms {
+                    Some(held) => age.checked_sub(Duration::from_millis(u64::from(held))),
+                    None if !self.timed_ack => Some(age),
+                    None => None,
+                };
+                if let Some(sample) = sample {
+                    if held_ms.is_some() {
+                        // Old, untimed samples include decoder/ACK hold. Once
+                        // the receiver supplies a clock, use only wire samples.
+                        if !self.timed_ack {
+                            self.rtt.clear();
+                        }
+                        self.timed_ack = true;
+                        crate::transport::kernel_browser_display::timing(
+                            "push_ack_rtt",
+                            Instant::now().checked_sub(sample).unwrap_or(now),
+                        );
+                    }
+                    self.rtt.push_back((now, sample));
+                }
             }
         }
         while self
@@ -157,12 +209,13 @@ impl DisplayPump {
         generation: u64,
         sequence: u64,
         lost: bool,
+        held_ms: Option<u32>,
     ) -> Option<&'static str> {
         let status = self.with(|state| {
             if state.generation != generation {
                 return None;
             }
-            state.acknowledge(sequence, lost, Instant::now());
+            state.acknowledge(sequence, lost, Instant::now(), held_ms);
             Some(if state.failed {
                 "failed"
             } else if state.stopped {
@@ -267,7 +320,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         };
         idle = Duration::ZERO;
         let at = std::time::Instant::now();
-        pump.with(|state| state.sent.push_back((sequence, Instant::now())));
+        pump.with(|state| state.sent_frame(sequence, Instant::now()));
         last_sent = sequence;
         if route
             .outgoing_tx
@@ -352,12 +405,12 @@ mod tests {
     fn mp10_gate_trace_observation() {
         let now = Instant::now();
         let mut state = PumpState::default();
-        state.acknowledge(0, false, now);
+        state.acknowledge(0, false, now, None);
         assert!(matches!(state.admit(now), Gate::Open(_)));
         state.sent.push_back((1, now - Duration::from_millis(200)));
         assert_eq!(state.admit(now), Gate::Closed);
         assert_eq!(state.admit(now), Gate::Closed);
-        state.acknowledge(1, false, now);
+        state.acknowledge(1, false, now, None);
         assert!(matches!(state.admit(now), Gate::Open(_)));
         state.sent.push_back((2, now - Duration::from_millis(400)));
         assert_eq!(state.admit(now), Gate::Closed);
@@ -367,7 +420,7 @@ mod tests {
     fn mp10_ack_gate_closes_on_lag_and_lifts_after_ack() {
         let start = Instant::now();
         let mut state = PumpState::default();
-        state.acknowledge(0, false, start);
+        state.acknowledge(0, false, start, None);
         assert!(matches!(state.admit(start), Gate::Open(_)));
         for sequence in 1..=3 {
             state.sent.push_back((sequence, start));
@@ -382,7 +435,7 @@ mod tests {
             state.admit(start + Duration::from_millis(150)),
             Gate::Closed
         );
-        state.acknowledge(3, false, start + Duration::from_millis(160));
+        state.acknowledge(3, false, start + Duration::from_millis(160), None);
         assert_eq!(state.rtt_floor(), Duration::from_millis(160));
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(161)) else {
             panic!("acknowledged client must reopen the gate");
@@ -394,7 +447,7 @@ mod tests {
     fn mp10_lost_frames_and_stalls_request_an_independent_frame() {
         let start = Instant::now();
         let mut state = PumpState::default();
-        state.acknowledge(4, true, start);
+        state.acknowledge(4, true, start, None);
         let Gate::Open(credit) = state.admit(start) else {
             panic!()
         };
@@ -403,7 +456,7 @@ mod tests {
             panic!()
         };
         assert!(!credit.reset, "reset is consumed once");
-        state.acknowledge(4, true, start);
+        state.acknowledge(4, true, start, None);
         let Gate::Open(credit) = state.admit(start + Duration::from_millis(500)) else {
             panic!()
         };
@@ -432,12 +485,12 @@ mod tests {
         let mut state = PumpState::default();
         // A 5 ms RTT floor: 150 ms of lag exceeds floor + allowance.
         state.sent.push_back((0, start));
-        state.acknowledge(0, false, start + Duration::from_millis(5));
+        state.acknowledge(0, false, start + Duration::from_millis(5), None);
         for round in 0..2u64 {
             let at = start + Duration::from_millis(10 + 400 * round);
             state.sent.push_back((round + 1, at));
             assert_eq!(state.admit(at + Duration::from_millis(150)), Gate::Closed);
-            state.acknowledge(round + 1, false, at + Duration::from_millis(160));
+            state.acknowledge(round + 1, false, at + Duration::from_millis(160), None);
             // The pump re-admits after every ack; that ends the closure.
             assert!(matches!(
                 state.admit(at + Duration::from_millis(161)),
@@ -457,7 +510,7 @@ mod tests {
     #[test]
     fn mp10_new_pump_first_frame_is_independent() {
         let pump = DisplayPump::new(7);
-        assert_eq!(pump.acknowledge(7, 13, false), Some("running"));
+        assert_eq!(pump.acknowledge(7, 13, false, None), Some("running"));
         let now = Instant::now();
         let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
             panic!()
@@ -472,7 +525,104 @@ mod tests {
     #[test]
     fn mp10_foreign_generation_ack_is_refused() {
         let pump = DisplayPump::new(7);
-        assert_eq!(pump.acknowledge(8, 1, false), None);
-        assert_eq!(pump.acknowledge(7, 1, false), Some("running"));
+        assert_eq!(pump.acknowledge(8, 1, false, None), None);
+        assert_eq!(pump.acknowledge(7, 1, false, None), Some("running"));
+    }
+    // MP-08/MP-10/MP-11: receiver-side decode/queue hold is not wire RTT.
+    #[test]
+    fn mp10_timed_ack_excludes_receiver_hold() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.sent.push_back((1, start));
+        state.acknowledge(1, false, start + Duration::from_millis(120), Some(30));
+        assert_eq!(state.rtt_floor(), Duration::from_millis(90));
+    }
+
+    #[test]
+    fn mp10_timed_ack_gate_uses_frame_interval_instead_of_fixed_100ms() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.sent.push_back((1, start));
+        state.acknowledge(1, false, start + Duration::from_millis(90), Some(0));
+        state
+            .sent
+            .push_back((2, start + Duration::from_millis(100)));
+        assert_eq!(
+            state.admit(start + Duration::from_millis(240)),
+            Gate::Closed
+        );
+    }
+
+    #[test]
+    fn mp11_invalid_receiver_hold_does_not_fabricate_zero_rtt() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.sent.push_back((1, start));
+        state.acknowledge(1, false, start + Duration::from_millis(90), Some(0));
+        state
+            .sent
+            .push_back((2, start + Duration::from_millis(100)));
+        state.acknowledge(2, false, start + Duration::from_millis(110), Some(100));
+        assert_eq!(state.rtt_floor(), Duration::from_millis(90));
+        assert!(
+            state.sent.is_empty(),
+            "invalid telemetry must not strand an admitted ACK"
+        );
+    }
+    #[test]
+    fn mp10_timed_gate_allows_observed_wire_jitter() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.sent_frame(1, start);
+        state.acknowledge(1, false, start + Duration::from_millis(90), Some(0));
+        state.sent_frame(2, start + Duration::from_millis(100));
+        state.acknowledge(2, false, start + Duration::from_millis(220), Some(0));
+        state.frame_interval = Some(Duration::from_millis(33));
+        state
+            .sent
+            .push_back((3, start + Duration::from_millis(300)));
+        assert!(
+            matches!(
+                state.admit(start + Duration::from_millis(440)),
+                Gate::Open(_)
+            ),
+            "a 30ms wire RTT excursion must not close a healthy 30fps lane"
+        );
+    }
+
+    #[test]
+    fn mp10_timed_gate_does_not_treat_idle_gaps_as_frame_intervals() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.sent_frame(1, start);
+        state.acknowledge(1, false, start + Duration::from_millis(90), Some(0));
+        state.sent_frame(2, start + Duration::from_secs(10));
+        assert!(state.gate_allowance() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn mp10_30fps_90ms_wire_rtt_with_receiver_hold_never_closes_the_gate() {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.acknowledge(0, false, start, None);
+        let mut arrivals = VecDeque::new();
+        let mut closures = 0;
+        let mut sequence = 0;
+        for ms in 0..2000u64 {
+            let now = start + Duration::from_millis(ms);
+            while arrivals.front().is_some_and(|(at, _)| *at <= ms) {
+                let (_, sequence) = arrivals.pop_front().unwrap();
+                state.acknowledge(sequence, false, now, Some(5));
+            }
+            if matches!(state.admit(now), Gate::Closed) {
+                closures += 1;
+            } else if ms % 33 == 0 {
+                sequence += 1;
+                state.sent_frame(sequence, now);
+                arrivals.push_back((ms + 95, sequence));
+            }
+        }
+        assert_eq!(closures, 0);
+        assert_eq!(state.rtt_floor(), Duration::from_millis(90));
     }
 }
