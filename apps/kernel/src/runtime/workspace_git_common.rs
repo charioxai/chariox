@@ -149,12 +149,7 @@ pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
     git_command_output(workspace_path, &["remote", "get-url", "origin"])
         .as_deref()
         .and_then(repo_label_from_remote_url)
-        .or_else(|| {
-            Path::new(workspace_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        })
+
 }
 
 pub(crate) fn canonical_workspace_path(
@@ -410,5 +405,18 @@ mod tests {
             workspace_default_compare_ref("/path/that/does/not/exist", None),
             "HEAD"
         );
+    }
+}
+
+#[cfg(test)]
+mod owner14_tests {
+    #[test]
+    fn mp02_mp08_owner14_workspace_label_requires_a_git_remote() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);
+        assert!(std::process::Command::new("git").args(["init", "-q"]).arg(root.path()).status().unwrap().success());
+        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()), None);
+        assert!(std::process::Command::new("git").arg("-C").arg(root.path()).args(["remote", "add", "origin", "https://github.com/charioxai/chariox.git"]).status().unwrap().success());
+        assert_eq!(super::workspace_display_label(root.path().to_str().unwrap()).as_deref(), Some("charioxai/chariox"));
     }
 }
