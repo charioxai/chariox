@@ -578,3 +578,13 @@ test("MP-11 concurrent occlusion probes share a focused read and never mutate wi
   const rect = { left: 0, top: 100, width: 20, height: 20 }, pending = [windows.inWindowOverNow(rect), windows.inWindowOverNow(rect)]
   release(); assert.deepEqual(await Promise.all(pending), [false, false]); assert.equal(reads, 1); assert.equal(refreshes, 0)
 })
+
+test("MP-11 UI dispatch keeps occlusion live through focus release, then steady frames use the result", async () => {
+  const host = { generation: 3, arbiter: { chromeFocus: null } }, windows = new ChromeWindows(host)
+  windows.bound = { tabbed: { isCurrent: () => true, window_generation: 7, scale: 1, bounds: { x: 0, y: 0, width: 1280, height: 887 }, page_rect: { top: 87 } }, auxiliary: [] }
+  let reads = 0; windows.readOmnibox = async () => { reads++; return ["hidden"] }
+  const rect = { left: 0, top: 100, width: 20, height: 20 }, finish = windows.uiInput()
+  await windows.inWindowOverNow(rect); assert.equal(reads, 1, "in-flight native input can still show Chrome UI after its focus proof clears")
+  finish(); await windows.inWindowOverNow(rect); assert.equal(reads, 2, "the completed native dispatch gets one fresh observation")
+  await windows.inWindowOverNow(rect); assert.equal(reads, 2, "steady page frames keep that observation")
+})

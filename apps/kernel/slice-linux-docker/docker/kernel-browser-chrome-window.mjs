@@ -52,6 +52,13 @@ export class ChromeWindows {
     this.auxiliaryIds = new Map(); this.auxiliarySequence = 0;
   }
   onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  /** Native UI input invalidates the observation before dispatch and after its acknowledgement. */
+  uiInput() {
+    this.occlusionRevision = (this.occlusionRevision ?? 0) + 1;
+    this.uiInputs = (this.uiInputs ?? 0) + 1;
+    let finished = false;
+    return () => { if (!finished) { finished = true; this.uiInputs--; this.occlusionRevision++; } };
+  }
   retire(reason) {
     if (!this.bound) return;
     const {window_generation} = this.bound.tabbed; this.bound = null;
@@ -236,7 +243,9 @@ export class ChromeWindows {
     if (!binding?.isCurrent()) return false;
     // Steady page frames use the shared watcher. Chrome-UI input is the narrow
     // interval in which a dropdown can paint before that watcher observes it.
-    if (!focus || focus.generation !== this.host.generation || focus.window_generation !== binding.window_generation) return this.inWindowOver(rect);
+    const revision = this.occlusionRevision ?? 0, cache = this.occlusionCache;
+    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation;
+    if (!focused && !this.uiInputs && (revision === 0 || cache?.binding === binding && cache.revision === revision)) return this.inWindowOver(rect, cache?.binding === binding ? cache.live : this.omniboxLive);
     const read = this.occlusionRead?.binding === binding ? this.occlusionRead :
       (this.occlusionRead = {binding, promise: this.readOmnibox()});
     let state;
@@ -246,6 +255,7 @@ export class ChromeWindows {
     // on the watcher/input paths rather than mutating bindings inside readback.
     const live = omniboxPopupRect(state, binding.bounds.x / binding.scale, binding.bounds.y / binding.scale,
       binding.page_rect.top / binding.scale, binding.bounds.width / binding.scale, binding.bounds.height / binding.scale);
+    if (!this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, live};
     return this.inWindowOver(rect, live);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). */
@@ -254,7 +264,11 @@ export class ChromeWindows {
     watcher.reads.add(read);
     const tick = async () => {
       const [first] = watcher.reads;
-      try { if (first) { const rows = await first(); this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } } catch {}
+      try { if (first) {
+        const rows = await first(), binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0;
+        this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
+        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, live: this.omniboxLive};
+      } } catch {}
         if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
     };
     if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
@@ -415,7 +429,9 @@ export class InputArbiter {
     // At most once: a native action without a reply may have run; never replayed.
     const dispatched = async action => {
       let done;
+      const finishUi = ['browser_chrome', 'browser_auxiliary'].includes(source?.surface) ? this.windows.uiInput?.() : null;
       try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      finally { finishUi?.(); }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
     };
