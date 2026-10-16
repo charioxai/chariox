@@ -114,7 +114,7 @@ test("deferred provider initialization is attachment scoped", async () => {
   let starts = 0
   const result = new Promise<never>(resolve => { finish = resolve })
   const h = bootstrapHarness({ attachmentSessionId: "room", deferred: {
-    attachedProvider: { sessionId: "room", load: () => { starts++; return result } },
+    attachedProvider: { sessionId: "room", load: () => { starts++; return result.then(run => ({ run, issue: null })) } },
   } })
   h.controller.apply()
   h.controller.apply()
@@ -129,6 +129,19 @@ test("deferred provider initialization is attachment scoped", async () => {
   detached.controller.apply()
   await flushPromises()
   assert.deepEqual(detached.warnings, [])
+})
+
+// MP-08/MP-10/MP-11: a locked vault keeps its recovery guidance after deferred startup.
+test("deferred provider initialization reports a locked vault only for the current attachment", async () => {
+  const load = () => Promise.resolve({ run: null, issue: "credential_vault_locked" as const })
+  const current = bootstrapHarness({ attachmentSessionId: "room", deferred: { attachedProvider: { sessionId: "room", load } } })
+  current.controller.apply()
+  await flushPromises()
+  assert.deepEqual(current.launchIssues, ["credential_vault_locked"])
+  const stale = bootstrapHarness({ attachmentSessionId: "room", deferred: { attachedProvider: { sessionId: "room", load: async () => { stale.attachmentSessionId = "other"; return load() } } } })
+  stale.controller.apply()
+  await flushPromises()
+  assert.deepEqual(stale.launchIssues, [])
 })
 
 function bootstrapHarness(options: {
@@ -146,6 +159,7 @@ function bootstrapHarness(options: {
     providerCommandCatalogs: null as ProviderCommandCatalogs | null,
     chromeUpdates: 0,
     appliedProviderRuns: 0,
+    launchIssues: [] as string[],
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
@@ -160,6 +174,7 @@ function bootstrapHarness(options: {
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
     applyProviderRun: () => { harness.appliedProviderRuns++ },
+    applyProviderLaunchIssue: (issue) => { harness.launchIssues.push(issue) },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,

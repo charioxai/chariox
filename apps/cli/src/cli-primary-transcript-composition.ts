@@ -51,6 +51,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
   flashFooter: AnyFn
+  setStatusLine: (line: string) => void
   attachmentState: AnyFn
   sessionState: AnyFn
   selectedWorkflowId: AnyFn
@@ -329,6 +330,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       if (run?.agent_instance_id && run.agent_instance_id !== deps.visibleTranscriptAgentId()) return
       if (!deps.providerRunState()) deps.setProviderRunState(run)
     },
+    applyProviderLaunchIssue: () => deps.setStatusLine("Chariox vault locked. Run /credential vault manage."),
     reportProviderLaunchError: error => deps.flashFooter(deps.formatError(error), "error"),
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,

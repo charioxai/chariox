@@ -880,7 +880,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       setEntries(reconcile(nextEntries))
     },
     setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
-    setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
+    setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter, setStatusLine,
     attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),

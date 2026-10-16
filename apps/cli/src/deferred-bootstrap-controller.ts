@@ -13,6 +13,7 @@ export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
   getDeferred: () => BootstrapDeferredState | undefined
   applyProviderRun?: (run: import("./cli-types.js").RuntimeProviderRun | null) => void
+  applyProviderLaunchIssue?: (issue: "credential_vault_locked") => void
   reportProviderLaunchError?: (error: unknown) => void
   currentAttachmentSessionId: () => string | null
   currentTranscriptEntryCount: () => number
@@ -86,8 +87,10 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
 
     const provider = deferred.attachedProvider
     if (provider && deps.currentAttachmentSessionId() === provider.sessionId) {
-      void provider.load().then(run => {
-        if (deps.currentAttachmentSessionId() === provider.sessionId) deps.applyProviderRun?.(run)
+      void provider.load().then(({ run, issue }) => {
+        if (deps.currentAttachmentSessionId() !== provider.sessionId) return
+        deps.applyProviderRun?.(run)
+        if (issue) deps.applyProviderLaunchIssue?.(issue)
       }).catch(error => {
         warn("failed to initialize attached provider after bootstrap", error)
         if (deps.currentAttachmentSessionId() === provider.sessionId) deps.reportProviderLaunchError?.(error)

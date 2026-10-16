@@ -14,6 +14,7 @@ import type {
   BootstrapState,
   PromptInputHistoryEntry,
   RuntimeAttachment,
+  AttachedProviderLoad,
   RuntimeProviderRun,
   RuntimeSession,
   SessionHistoryOutline,
@@ -186,7 +187,7 @@ export async function bootstrapSession(
   // Start it only after the TUI mounts and can display/answer that interaction.
   const attachedProvider = {
     sessionId: session.id,
-    load: async (): Promise<RuntimeProviderRun | null> => {
+    load: async (): Promise<AttachedProviderLoad> => {
       const providerSettlement = await settleAttachProviderRun(
         attachedSession,
         {
@@ -233,7 +234,12 @@ export async function bootstrapSession(
           })
         }
       }
-      return providerSettlement.providerRun
+      return {
+        run: providerSettlement.providerRun,
+        issue: providerSettlement.action === "skipped" && providerSettlement.reason === "credential_vault_locked"
+          ? "credential_vault_locked"
+          : null,
+      }
     },
   }
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)

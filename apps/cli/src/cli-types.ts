@@ -435,8 +435,10 @@ export type SessionBinding = {
   nextHistoryCursor: SessionHistoryCursorState
 }
 
+export type AttachedProviderLoad = { run: RuntimeProviderRun | null; issue: "credential_vault_locked" | null }
+
 export type BootstrapDeferredState = {
-  attachedProvider?: { sessionId: string; load: () => Promise<RuntimeProviderRun | null> }
+  attachedProvider?: { sessionId: string; load: () => Promise<AttachedProviderLoad> }
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
