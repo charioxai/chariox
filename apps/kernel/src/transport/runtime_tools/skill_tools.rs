@@ -2,6 +2,8 @@
 use super::RuntimeToolSpec;
 use crate::skill::v2::SkillCatalogMutation;
 use serde::Deserialize;
+#[path = "skill_tool_schema.rs"]
+mod schema;
 
 pub const LIST_SKILLS_TOOL: &str = "chariox.list_skills";
 pub const LOAD_SKILL_TOOL: &str = "chariox.load_skill";
@@ -72,14 +74,8 @@ pub fn skill_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_SKILLS_TOOL.into(),
-            description: "Review and atomically publish a Skills catalog batch through the home catalog. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope ({kind:chariox} or {kind:project,project_id}), expected_revision, and actions. Actions use the Skills v2 install/update/remove/state/package contract. Install source is {kind:folder,path}, {kind:content,skill_md} or {kind:url,url}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
-            input_schema: serde_json::json!({"type":"object","required":["action","mutation","origin_prompt_id"],"properties":{
-                "action":{"type":"string","enum":["preview","publish"]},
-                "mutation":{"type":"object","required":["scope","expected_revision","actions"],"properties":{
-                    "scope":{"type":"object"},"expected_revision":{"type":"integer","minimum":0},
-                    "actions":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"object"}}},"additionalProperties":false},
-                "review_receipt_id":{"type":"string","minLength":1},
-                "origin_prompt_id":{"type":"string","minLength":1}},"additionalProperties":false}),
+            description: "Review and atomically publish a Skills catalog batch through the home catalog. First preview, then publish the identical mutation with its review_receipt_id. Mutation has scope ({kind:chariox} or {kind:project,project_id}), expected_revision, and actions. Each mutation action has its own action tag: {action:install,source:{kind:folder,path:skills/example},collision:{action:reject}}. Use the exact typed action schema for updates, state and packages. Omit review_receipt_id during preview. Install source is {kind:folder,path}, {kind:content,skill_md} or {kind:url,url}; collision is {action:reject}, {action:rename,name} or {action:replace,skill_id}. Publication follows normal owner and ask/yolo policy. It affects the next turn, keeps this turn pinned, and never executes bundled scripts or grants capabilities.".into(),
+            input_schema: schema::manage(),
         },
     ]
 }
@@ -99,6 +95,110 @@ mod tests {
             assert_eq!(
                 canonical_skill_tool_name(&tool.name),
                 Some(tool.name.as_str())
+            );
+        }
+    }
+    // MP-08 / MP-10 / MP-11: catch drift between advertised JSON schema and real Serde tags.
+    #[test]
+    fn skill_manage_schema_matches_canonical_batches_and_rejects_ambiguous_install_arguments() {
+        use crate::skill::v2::*;
+        let spec = skill_runtime_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == MANAGE_SKILLS_TOOL)
+            .unwrap();
+        let schema = jsonschema::JSONSchema::options()
+            .with_draft(jsonschema::Draft::Draft7)
+            .compile(&spec.input_schema)
+            .unwrap();
+        let source = SkillInstallSource::Folder {
+            path: "skills/skill-creator".into(),
+        };
+        let scope = SkillScope::Chariox;
+        let actions = vec![
+            SkillCatalogAction::Install {
+                source: source.clone(),
+                collision: SkillCollisionAction::Reject,
+                package_id: None,
+            },
+            SkillCatalogAction::Update {
+                skill_id: "skill-1".into(),
+                source: source.clone(),
+                expected_digest: "a".repeat(64),
+            },
+            SkillCatalogAction::Remove {
+                skill_id: "skill-1".into(),
+            },
+            SkillCatalogAction::SetState {
+                skill_id: "skill-1".into(),
+                state: None,
+            },
+            SkillCatalogAction::CreatePackage {
+                package_id: "package-1".into(),
+                name: "Review package".into(),
+            },
+            SkillCatalogAction::SetPackageSource {
+                package_id: "package-1".into(),
+                source_locator: "https://github.com/example/skills".into(),
+                source_revision: "a".repeat(40),
+                upstream_members: std::collections::BTreeMap::from([(
+                    "review".into(),
+                    "skill-1".into(),
+                )]),
+            },
+            SkillCatalogAction::RenamePackage {
+                package_id: "package-1".into(),
+                name: "Reviewed".into(),
+            },
+            SkillCatalogAction::Regroup {
+                skill_id: "skill-1".into(),
+                package_id: None,
+            },
+            SkillCatalogAction::RemovePackage {
+                package_id: "package-1".into(),
+                remove_skills: false,
+            },
+            SkillCatalogAction::SetPackageState {
+                package_id: "package-1".into(),
+                state: Some(SkillState::Manual),
+            },
+            SkillCatalogAction::Move {
+                skill_id: "skill-1".into(),
+                destination: SkillScope::Project {
+                    project_id: "project-p".into(),
+                },
+            },
+        ];
+        for action in actions {
+            let value = serde_json::json!({"action":"preview","origin_prompt_id":"prompt-1","mutation":SkillCatalogMutation{scope:scope.clone(),expected_revision:0,actions:vec![action]}});
+            assert!(
+                schema.is_valid(&value),
+                "canonical mutation rejected: {value}"
+            );
+            assert!(serde_json::from_value::<ManageSkillsArgs>(value.clone()).is_ok());
+            let mut publish = value.clone();
+            publish["action"] = serde_json::json!("publish");
+            assert!(!schema.is_valid(&publish));
+            publish["review_receipt_id"] = serde_json::json!("review-1");
+            assert!(schema.is_valid(&publish));
+            assert!(serde_json::from_value::<ManageSkillsArgs>(publish).is_ok());
+        }
+        let base = serde_json::json!({"action":"preview","origin_prompt_id":"prompt-1","mutation":{"scope":{"kind":"chariox"},"expected_revision":0,"actions":[{"action":"install","source":{"kind":"folder","path":"skills/skill-creator"},"collision":{"action":"reject"}}]}});
+        let mut wrong_tag = base.clone();
+        let action = wrong_tag["mutation"]["actions"][0].as_object_mut().unwrap();
+        action.remove("action");
+        action.insert("kind".into(), serde_json::json!("install"));
+        let mut wrong_source = base.clone();
+        wrong_source["mutation"]["actions"][0]["source"] =
+            serde_json::json!({"type":"folder","path":"skills/skill-creator"});
+        let mut wrong_collision = base.clone();
+        wrong_collision["mutation"]["actions"][0]["collision"] = serde_json::json!("reject");
+        let mut wrong_receipt = base.clone();
+        wrong_receipt["review_receipt_id"] = serde_json::json!("review-1");
+        for malformed in [wrong_tag, wrong_source, wrong_collision, wrong_receipt] {
+            assert!(serde_json::from_value::<ManageSkillsArgs>(malformed.clone()).is_err());
+            assert!(
+                !schema.is_valid(&malformed),
+                "schema admits a request the real decoder rejects"
             );
         }
     }

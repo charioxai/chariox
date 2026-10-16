@@ -50,7 +50,7 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
                 let args: ManageSkillsArgs = serde_json::from_value(arguments)
-                    .map_err(|_| failure("invalid manage_skills arguments; preview the exact batch before publishing it"))?;
+                    .map_err(|_| failure("invalid manage_skills arguments: mutation.actions entries require action (for example install), source.kind and collision.action; preview omits review_receipt_id, publish requires it"))?;
                 match args {
                     ManageSkillsArgs::Preview {
                         mutation,
