@@ -872,7 +872,12 @@ async fn run_daemon_relay_connector_inner(
                     .runtime_state()
                     .retry_pending_slice_observation_revocations();
                 let mut slice_activation = ManagedSliceActivationConfirmation::default();
-                if static_relay.is_none() {
+                if static_relay.is_none()
+                    && socket_has_current_token(
+                        router.relay_config_snapshot().relay_token.as_deref(),
+                        &active_relay_token,
+                    )
+                {
                     slice_activation.resume_pending(&router, &state).await;
                 }
                 if replayed_display_tunnel_count > 0 {
