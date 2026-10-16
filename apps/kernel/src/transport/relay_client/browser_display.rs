@@ -148,21 +148,36 @@ pub(super) async fn handle_subscribe(
         }
     };
     let (display_id, generation) = if recover {
-        match (
-            binding.get("subscription_id").and_then(|v| v.as_str()),
-            binding.get("generation").and_then(|v| v.as_u64()),
-        ) {
-            (Some(id), Some(generation))
-                if id != display_id
-                    && binding.get("resumed").and_then(|v| v.as_bool()) == Some(true) =>
-            {
-                (id.to_string(), generation)
-            }
-            _ => {
-                return Err(DaemonError::LocalTransport {
+        match resumed_delivery(&binding, &display_id) {
+            Some(delivery) => delivery,
+            None => {
+                // MP-11: answer the viewer and release whatever the attach just bound;
+                // a dropped registration would hang the viewer on a rotated lease.
+                if let (Some(id), Some(generation)) = (
+                    binding.get("subscription_id").and_then(|v| v.as_str()),
+                    binding.get("generation").and_then(|v| v.as_u64()),
+                ) {
+                    let release = crate::local::KernelBrowserCommand::Unsubscribe {
+                        subscription_id: id.into(),
+                        generation,
+                    };
+                    let _ = router
+                        .runtime_state()
+                        .kernel_browser_terminal_request(&caller, release)
+                        .await;
+                }
+                let error = DaemonError::LocalTransport {
                     operation: "kernel_browser",
                     message: "MP-11: invalid resumed delivery binding".into(),
-                })
+                };
+                return send_outgoing_envelope(
+                    outgoing_tx,
+                    RelayEnvelope::DaemonResponse {
+                        relay_request_id: request_id,
+                        encrypted_response: None,
+                        error: Some(super::request_errors::map_relay_error(&error)),
+                    },
+                );
             }
         }
     } else {
@@ -333,6 +348,13 @@ mod tests {
 }
 
 // MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
+/// MP-11: a resumed (535) delivery is a new subscription id with its generation, marked resumed.
+fn resumed_delivery(binding: &serde_json::Value, previous: &str) -> Option<(String, u64)> {
+    let id = binding.get("subscription_id")?.as_str()?;
+    let generation = binding.get("generation")?.as_u64()?;
+    (id != previous && binding.get("resumed")?.as_bool()?).then(|| (id.to_string(), generation))
+}
+
 fn display_subscription_caller(
     router: &CommandRouter,
     identity: Option<RelayCallerIdentity>,
@@ -343,6 +365,40 @@ fn display_subscription_caller(
         Some(grant) => KernelCaller::from_paired_terminal(grant),
         None => KernelCaller::for_relay_request(identity),
     })
+}
+
+#[cfg(test)]
+mod resumed_delivery_tests {
+    use super::resumed_delivery;
+    use serde_json::json;
+    #[test]
+    fn mp11_resumed_delivery_requires_a_new_marked_generation_bound_id() {
+        let ok = json!({"subscription_id": "s2", "generation": 7, "resumed": true});
+        assert_eq!(resumed_delivery(&ok, "s1"), Some(("s2".into(), 7)));
+        // Review #1016 @57b49eac1 P3: RoomDisplayBinding.resumed is #[serde(default)].
+        assert_eq!(
+            resumed_delivery(&json!({"subscription_id": "s2", "generation": 7}), "s1"),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(
+                &json!({"subscription_id": "s2", "generation": 7, "resumed": false}),
+                "s1"
+            ),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(
+                &json!({"subscription_id": "s1", "generation": 7, "resumed": true}),
+                "s1"
+            ),
+            None
+        );
+        assert_eq!(
+            resumed_delivery(&json!({"subscription_id": "s2", "resumed": true}), "s1"),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
