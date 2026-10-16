@@ -957,3 +957,189 @@ fn skills_v2_review_model_load_becoming_manual_does_not_block_continuation() {
         "an acknowledged explicit Manual load stays active"
     );
 }
+
+// MP-08 / MP-10 / MP-11: only resolved selections change ordinary prompt admission.
+#[test]
+fn skills_v2_unknown_ordinary_dollars_do_not_create_skill_invocations() {
+    let f = StorageFixture::new();
+    let (service, _) = service_install(
+        &f,
+        "---\nname: review\ndescription: Review code\n---\nReview instructions.\n",
+    );
+    let turn = service
+        .pinned_turn(
+            None,
+            "agent",
+            "session",
+            "Why is $total null? Show $HOME, $20 and `$review`.",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "generation",
+        )
+        .unwrap();
+    assert!(turn.loaded.is_empty());
+    assert!(turn.native_selections.is_empty());
+    let stale = SkillSelection::Chariox {
+        skill_id: "missing".into(),
+        name: "total".into(),
+        catalog_revision: turn.catalog_revision,
+    };
+    assert!(
+        service
+            .pinned_turn(
+                None,
+                "agent",
+                "session",
+                "Use $total",
+                &[stale],
+                &[],
+                Some(128_000),
+                1.0,
+                8192,
+                "generation"
+            )
+            .is_err(),
+        "a source-bound stale selection must still refuse before a provider turn"
+    );
+}
+
+#[test]
+fn skills_v2_running_turn_catalog_stays_pinned_when_the_turn_publishes_an_update() {
+    let f = StorageFixture::new();
+    let (service, before) = service_install(
+        &f,
+        "---\nname: review\ndescription: Review code\n---\nORIGINAL TURN BODY\n",
+    );
+    let record = &before.catalogs[0].skills[0];
+    let update = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: before.revision,
+        actions: vec![SkillCatalogAction::Update {
+            skill_id: record.id.clone(),
+            expected_digest: record.digest.clone(),
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Updated review\n---\nNEXT TURN BODY\n"
+                    .into(),
+            },
+        }],
+    };
+    let prepared = service.prepare(&update).unwrap();
+    service.publish_authorized(&update, &prepared).unwrap();
+    let pinned = service
+        .storage
+        .snapshot_at_revision(before.revision)
+        .unwrap();
+    assert_eq!(pinned, before);
+    let old = service
+        .pinned_turn_from_snapshot(
+            &pinned,
+            None,
+            "agent",
+            "session",
+            "Use $review",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "turn1",
+        )
+        .unwrap();
+    assert!(old.loaded[0].body.contains("ORIGINAL TURN BODY"));
+    let next = service
+        .pinned_turn(
+            None,
+            "agent",
+            "session",
+            "Use $review",
+            &[],
+            &[],
+            Some(128_000),
+            1.0,
+            8192,
+            "turn2",
+        )
+        .unwrap();
+    assert!(next.loaded[0].body.contains("NEXT TURN BODY"));
+    assert!(next.catalog_revision > old.catalog_revision);
+    assert!(service
+        .storage
+        .snapshot_at_revision(next.catalog_revision + 1)
+        .is_err());
+}
+
+// MP-08 / MP-10 / MP-11: the feed is a session-scoped view of durable authority.
+#[test]
+fn skills_v2_watch_scopes_changes_and_pages_acknowledged_loads_without_a_new_store() {
+    let f = StorageFixture::new();
+    let (cursor, _) = f
+        .storage
+        .watch_changes("session", "project-a", Default::default())
+        .unwrap();
+    let (mutation, prepared) = install(skill("foreign-skill", "foreign", project("project-b")));
+    f.storage.publish(&mutation, &prepared).unwrap();
+    let (cursor, events) = f
+        .storage
+        .watch_changes("session", "project-a", cursor)
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], SkillCatalogEvent::Changed { scope:SkillScope::Chariox, revision:1, changed_skill_ids, removed_skill_ids } if changed_skill_ids.is_empty() && removed_skill_ids.is_empty())
+    );
+    let (cursor, events) = f
+        .storage
+        .watch_changes("session", "project-a", cursor)
+        .unwrap();
+    assert!(events.is_empty());
+    for index in 0..201 {
+        f.storage
+            .record_load(&SkillLoadRecord {
+                skill_id: format!("skill-{index}"),
+                digest: "a".repeat(64),
+                session_id: "session".into(),
+                agent_id: "agent".into(),
+                run_id: "run".into(),
+                prompt_id: "prompt".into(),
+                reason: SkillLoadReason::Model,
+                context_generation: "context".into(),
+                delivered_at_ms: 1,
+            })
+            .unwrap();
+    }
+    f.storage
+        .record_load(&SkillLoadRecord {
+            skill_id: "other-session-skill".into(),
+            digest: "b".repeat(64),
+            session_id: "other-session".into(),
+            agent_id: "agent".into(),
+            run_id: "run".into(),
+            prompt_id: "prompt".into(),
+            reason: SkillLoadReason::Model,
+            context_generation: "context".into(),
+            delivered_at_ms: 1,
+        })
+        .unwrap();
+    let (cursor, first) = f
+        .storage
+        .watch_changes("session", "project-a", cursor)
+        .unwrap();
+    assert_eq!(first.len(), 200);
+    assert!(first.iter().all(|event| matches!(event, SkillCatalogEvent::Loaded { record } if record.session_id == "session")));
+    let (cursor, second) = f
+        .storage
+        .watch_changes("session", "project-a", cursor)
+        .unwrap();
+    assert!(
+        matches!(second.as_slice(), [SkillCatalogEvent::Loaded {record}] if record.skill_id == "skill-200")
+    );
+    assert!(f
+        .storage
+        .watch_changes("session", "project-a", cursor)
+        .unwrap()
+        .1
+        .is_empty());
+    assert_eq!(f.storage.loads("session").unwrap().len(), 201);
+}

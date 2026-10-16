@@ -6,6 +6,7 @@ use super::{
     package::package_skill_directory,
     resolver::*,
     selection::explicit_skill_names,
+    source_access::SkillSourceAccess,
     storage::SkillCatalogStorage,
     v2::*,
     CharioxSkillPackage,
@@ -17,6 +18,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+/// MP-08 / MP-10 / MP-11: an execution-side inventory resolves this root;
+/// it is not deserializable or accepted as client/model path authority.
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedNativeSkillSource {
+    pub selection: SkillSelection,
+    pub root: PathBuf,
+    pub digest: String,
+    pub source_machine: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SkillCatalogService {
@@ -43,6 +54,21 @@ impl SkillCatalogService {
         &self,
         mutation: &SkillCatalogMutation,
     ) -> Result<BTreeMap<usize, (SkillRecord, CharioxSkillPackage)>, DaemonError> {
+        self.prepare_with_native_sources(mutation, &BTreeMap::new())
+    }
+    pub(crate) fn prepare_with_native_sources(
+        &self,
+        mutation: &SkillCatalogMutation,
+        native_sources: &BTreeMap<usize, VerifiedNativeSkillSource>,
+    ) -> Result<BTreeMap<usize, (SkillRecord, CharioxSkillPackage)>, DaemonError> {
+        self.prepare_with_source_access(mutation, native_sources, SkillSourceAccess::Owner)
+    }
+    pub(crate) fn prepare_with_source_access(
+        &self,
+        mutation: &SkillCatalogMutation,
+        native_sources: &BTreeMap<usize, VerifiedNativeSkillSource>,
+        access: SkillSourceAccess<'_>,
+    ) -> Result<BTreeMap<usize, (SkillRecord, CharioxSkillPackage)>, DaemonError> {
         let current = self.storage.snapshot()?;
         if current.revision != mutation.expected_revision {
             return Err(failure("catalog changed; refresh before reviewing sources"));
@@ -54,7 +80,26 @@ impl SkillCatalogService {
                 | SkillCatalogAction::Update { source, .. } => source,
                 _ => continue,
             };
-            let (package, locator) = self.prepare_source(source)?;
+            let (package, locator) = if let SkillInstallSource::Native { selection } = source {
+                let verified=native_sources.get(&index)
+                    .filter(|verified|&verified.selection==selection)
+                    .ok_or_else(||failure("provider import requires a current execution-local source; refresh the focused provider"))?;
+                let package = package_skill_directory(&verified.root)?;
+                if package.version_hash != verified.digest {
+                    return Err(failure(
+                        "native source changed after review; refresh and reselect",
+                    ));
+                }
+                (
+                    package,
+                    Some(safe_locator(&verified.root.to_string_lossy())?),
+                )
+            } else {
+                if native_sources.contains_key(&index) {
+                    return Err(failure("native source does not match its reviewed action"));
+                }
+                self.prepare_source(source, access)?
+            };
             let body = package
                 .files
                 .iter()
@@ -101,13 +146,28 @@ impl SkillCatalogService {
                         SkillInstallSource::Native { .. } => "provider_import",
                     }
                     .into(),
-                    source_machine: None,
+                    source_machine: native_sources
+                        .get(&index)
+                        .and_then(|source| source.source_machine.clone()),
                     locator,
                     // Only a source adapter that actually resolves a repository
                     // revision may attest one; a caller-supplied label is not proof.
                     source_revision: None,
-                    provider: None,
-                    account_profile: None,
+                    provider: match source {
+                        SkillInstallSource::Native {
+                            selection: SkillSelection::Native { provider, .. },
+                        } => Some(provider.clone()),
+                        _ => None,
+                    },
+                    account_profile: match source {
+                        SkillInstallSource::Native {
+                            selection:
+                                SkillSelection::Native {
+                                    account_profile, ..
+                                },
+                        } => Some(account_profile.clone()),
+                        _ => None,
+                    },
                     installed_at_ms: now,
                     updated_at_ms: now,
                 },
@@ -184,7 +244,37 @@ impl SkillCatalogService {
         remaining_body_tokens: u64,
         context_generation: &str,
     ) -> Result<SkillTurnContext, DaemonError> {
-        let (revision, rows) = self.projections(project_id, native)?;
+        self.pinned_turn_from_snapshot(
+            &self.storage.snapshot()?,
+            project_id,
+            agent_id,
+            session_id,
+            prompt,
+            selections,
+            native,
+            context_capacity,
+            budget_percent,
+            remaining_body_tokens,
+            context_generation,
+        )
+    }
+    pub(crate) fn pinned_turn_from_snapshot(
+        &self,
+        catalog: &SkillCatalogSet,
+        project_id: Option<&str>,
+        agent_id: &str,
+        session_id: &str,
+        prompt: &str,
+        selections: &[SkillSelection],
+        native: &[NativeSkillEntry],
+        context_capacity: Option<u64>,
+        budget_percent: f64,
+        remaining_body_tokens: u64,
+        context_generation: &str,
+    ) -> Result<SkillTurnContext, DaemonError> {
+        catalog.validate()?;
+        let revision = catalog.revision;
+        let rows = projections(catalog, project_id, native);
         let mut selected = BTreeSet::new();
         let mut native_selections = Vec::new();
         for selection in selections {
@@ -236,12 +326,15 @@ impl SkillCatalogService {
                 selected.insert(resolve_name(&rows, &name)?.skill.id.clone());
             } else {
                 let matches: Vec<_> = native.iter().filter(|entry| entry.exposure == NativeSkillExposure::Confirmed).filter(|entry| matches!(&entry.selection, SkillSelection::Native { name: candidate, .. } if candidate.eq_ignore_ascii_case(&name))).collect();
-                if matches.len() != 1 {
-                    return Err(failure(
-                        "unknown or ambiguous skill name; open Skills and select a current entry",
-                    ));
+                match matches.as_slice() {
+                    [] => continue, // Unresolved ordinary dollar text is not an invocation.
+                    [entry] => native_selections.push(entry.selection.clone()),
+                    _ => {
+                        return Err(failure(
+                            "ambiguous skill name; open Skills and select a current entry",
+                        ))
+                    }
                 }
-                native_selections.push(matches[0].selection.clone());
             }
         }
         let explicit: Vec<_> = selected.iter().cloned().collect();
@@ -350,12 +443,23 @@ impl SkillCatalogService {
     fn prepare_source(
         &self,
         source: &SkillInstallSource,
+        access: SkillSourceAccess<'_>,
     ) -> Result<(CharioxSkillPackage, Option<String>), DaemonError> {
         match source {
-            SkillInstallSource::Folder { path } => Ok((
-                package_skill_directory(Path::new(path))?,
-                Some(safe_locator(path)?),
-            )),
+            SkillInstallSource::Folder { path } => {
+                let package=match access {
+                    SkillSourceAccess::Owner=>package_skill_directory(Path::new(path))?,
+                    SkillSourceAccess::Agent{workspace:Some(workspace)}=>super::package::package_skill_directory_beneath(workspace,Path::new(path))?,
+                    SkillSourceAccess::Agent{workspace:None}=>return Err(failure("remote agent folder sources must be read on the execution kernel; use content or a public URL until package transfer completes")),
+                };
+                let locator = package
+                    .metadata
+                    .path
+                    .parent()
+                    .ok_or_else(|| failure("skill source root is unavailable"))?;
+                let locator = Some(safe_locator(&locator.to_string_lossy())?);
+                Ok((package, locator))
+            }
             SkillInstallSource::Content { skill_md } => self.content_package(skill_md, None),
             SkillInstallSource::Url {
                 url,
@@ -369,9 +473,8 @@ impl SkillCatalogService {
                 if !matches!(parsed.scheme(), "https" | "http") {
                     return Err(failure("skill URL must use http or https"));
                 }
-                let response = ureq::AgentBuilder::new()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .build()
+                let response = access
+                    .download_agent(url)?
                     .get(url)
                     .call()
                     .map_err(|_| failure("skill source download failed"))?;

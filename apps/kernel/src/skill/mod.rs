@@ -16,11 +16,14 @@ pub mod resolver;
 pub mod review;
 pub mod selection;
 pub mod service;
+pub(crate) mod source_access;
 pub mod storage;
 #[cfg(test)]
 mod tests;
 pub mod transfer;
+pub(crate) mod turn_authority;
 pub mod v2;
+pub(crate) mod watch;
 
 pub(crate) use package::package_skill_directory;
 pub use package::{CharioxSkillPackage, CharioxSkillPackageFile};

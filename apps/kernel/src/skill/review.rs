@@ -74,13 +74,35 @@ impl SkillCatalogService {
         caller_user_id: &str,
         mutation: &SkillCatalogMutation,
     ) -> Result<SkillsV2Response, crate::error::DaemonError> {
+        self.preview_review_with_native_sources(caller_user_id, mutation, &BTreeMap::new())
+    }
+    pub(crate) fn preview_review_with_native_sources(
+        &self,
+        caller_user_id: &str,
+        mutation: &SkillCatalogMutation,
+        native_sources: &BTreeMap<usize, super::service::VerifiedNativeSkillSource>,
+    ) -> Result<SkillsV2Response, crate::error::DaemonError> {
+        self.preview_review_with_source_access(
+            caller_user_id,
+            mutation,
+            native_sources,
+            super::source_access::SkillSourceAccess::Owner,
+        )
+    }
+    pub(crate) fn preview_review_with_source_access(
+        &self,
+        caller_user_id: &str,
+        mutation: &SkillCatalogMutation,
+        native_sources: &BTreeMap<usize, super::service::VerifiedNativeSkillSource>,
+        access: super::source_access::SkillSourceAccess<'_>,
+    ) -> Result<SkillsV2Response, crate::error::DaemonError> {
         if caller_user_id.is_empty() {
             return Err(failure(
                 "a home owner identity is required for skill review",
             ));
         }
         retention::sweep(self, crate::session::unix_epoch_ms())?;
-        let prepared = self.prepare(mutation)?;
+        let prepared = self.prepare_with_source_access(mutation, native_sources, access)?;
         let records: BTreeMap<_, _> = prepared
             .iter()
             .map(|(index, (record, _))| (*index, record.clone()))

@@ -28,6 +28,9 @@ pub struct CharioxSkillPackageFile {
 }
 #[path = "package_cache.rs"]
 mod cache;
+#[cfg(unix)]
+#[path = "package_source_unix.rs"]
+mod source_unix;
 
 const MAX_SKILL_PACKAGE_FILES: usize = 512;
 const MAX_SKILL_PACKAGE_BYTES: u64 = 10 * 1024 * 1024;
@@ -232,17 +235,51 @@ pub(crate) fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
 pub(crate) fn package_skill_directory(
     skill_dir: &Path,
 ) -> Result<CharioxSkillPackage, DaemonError> {
-    let mut files = Vec::new();
-    let mut total = 0;
     let root = fs::canonicalize(skill_dir).map_err(|_| failure("cannot resolve skill source"))?;
-    let instructions = fs::symlink_metadata(root.join("SKILL.md"))
-        .map_err(|_| failure("skill source requires a regular SKILL.md"))?;
-    if !instructions.is_file() || instructions.file_type().is_symlink() {
-        return Err(failure(
-            "skill source requires a regular, contained SKILL.md",
-        ));
+    #[cfg(unix)]
+    let files = source_unix::collect(&source_unix::open_directory(&root)?)?;
+    #[cfg(not(unix))]
+    let files = {
+        let mut files = vec![];
+        let mut total = 0;
+        collect_files(&root, &root, &mut files, &mut total)?;
+        files
+    };
+    package_collected_files(&root, files)
+}
+/// An agent's folder source is read with its existing workspace boundary. The
+/// canonical comparison is followed by no-follow descriptor traversal, so a
+/// concurrent source replacement cannot redirect the kernel into another root.
+pub(crate) fn package_skill_directory_beneath(
+    workspace: &Path,
+    source: &Path,
+) -> Result<CharioxSkillPackage, DaemonError> {
+    let workspace = fs::canonicalize(workspace)
+        .map_err(|_| failure("agent skill source workspace is unavailable"))?;
+    let requested = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        workspace.join(source)
+    };
+    let source =
+        fs::canonicalize(requested).map_err(|_| failure("agent skill source is unavailable"))?;
+    let relative=source.strip_prefix(&workspace).map_err(|_|failure("agent skill folder must be inside its current workspace; use content, a public URL or the user Skills import for another location"))?;
+    #[cfg(unix)]
+    {
+        let workspace_handle = source_unix::open_directory(&workspace)?;
+        let source_handle = source_unix::open_beneath(&workspace_handle, relative)?;
+        package_collected_files(&source, source_unix::collect(&source_handle)?)
     }
-    collect_files(&root, &root, &mut files, &mut total)?;
+    #[cfg(not(unix))]
+    {
+        let _ = relative;
+        Err(failure("agent folder import requires a host with no-follow directory reads; use content or a public URL"))
+    }
+}
+fn package_collected_files(
+    skill_dir: &Path,
+    mut files: Vec<CharioxSkillPackageFile>,
+) -> Result<CharioxSkillPackage, DaemonError> {
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let body_file = files
         .iter()
@@ -268,6 +305,7 @@ pub(crate) fn package_skill_directory(
     verify_package(&package)?;
     Ok(package)
 }
+#[cfg(not(unix))]
 fn collect_files(
     root: &Path,
     dir: &Path,

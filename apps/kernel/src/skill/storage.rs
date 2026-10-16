@@ -74,6 +74,51 @@ impl SkillCatalogStorage {
         catalogs.validate()?;
         Ok(catalogs)
     }
+    /// A running turn keeps the revision it admitted, including when that same
+    /// turn installs an update. History lives in the existing durable journal.
+    pub(crate) fn snapshot_at_revision(
+        &self,
+        revision: u64,
+    ) -> Result<SkillCatalogSet, DaemonError> {
+        let current = self.snapshot()?;
+        if current.revision == revision {
+            return Ok(current);
+        }
+        if revision == 0 {
+            return Ok(SkillCatalogSet::default());
+        }
+        if revision > current.revision {
+            return Err(failure("skill turn revision is not committed"));
+        }
+        let mut after = 0;
+        loop {
+            let page = self.durable.load_subject_events_by_kind_after(
+                CATALOG_SUBJECT,
+                CATALOG_KIND,
+                after,
+                200,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                after = event.sequence;
+                let snapshot: SkillCatalogSet = serde_json::from_value(event.payload)
+                    .map_err(|_| failure("invalid durable skill turn catalog"))?;
+                if snapshot.revision == revision {
+                    snapshot.validate()?;
+                    return Ok(snapshot);
+                }
+                if snapshot.revision > revision {
+                    break;
+                }
+            }
+        }
+        Err(failure(
+            "skill turn catalog is unavailable; start a new turn",
+        ))
+    }
+
     /// Rebuild projections after a crash between journal commit and file publication.
     /// Runtime readers always read the durable revision, never a stale projection.
     pub fn recover_projections(&self) -> Result<SkillCatalogSet, DaemonError> {
