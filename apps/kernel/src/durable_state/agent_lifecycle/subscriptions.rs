@@ -41,7 +41,18 @@ pub(super) fn bind(
         task.obligations
             .iter()
             .rev()
-            .find(|o| source_for(o).is_some())
+            // A spawned child's completion and delivered prompt can match
+            // the same source. Cover the unresolved completion first.
+            .find(|o| {
+                matches!(o.status.as_str(), "open" | "settling" | "failed")
+                    && source_for(o).is_some()
+            })
+            .or_else(|| {
+                task.obligations
+                    .iter()
+                    .rev()
+                    .find(|o| source_for(o).is_some())
+            })
     };
     if let Some(obligation) = candidate {
         let source = source_for(obligation).ok_or_else(|| {

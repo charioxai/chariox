@@ -3292,3 +3292,86 @@ fn a02_existing_child_subscription_uses_the_submitted_task_not_prior_agent_resul
         assert!(!correction);
     }
 }
+
+// MP-08/MP-10/MP-11 F04: the same child task may have a pending
+// delegate completion and an already delivered message. Automatic binding
+// must cover the completion obligation instead of observing delivery alone.
+#[test]
+fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
+    for source in ["child", "child-prompt"] {
+        let f = Fixture::new();
+        f.begin("p");
+        for (id, kind, resource) in [
+            ("delegate", "delegate", "child"),
+            ("message", "message", "child-prompt"),
+        ] {
+            f.apply(Operation::RegisterObligation {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "parent".into(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                id: id.into(),
+                kind: kind.into(),
+                resource: Some(resource.into()),
+                now: 1,
+            });
+            f.apply(Operation::DispatchReceipt {
+                id: id.into(),
+                accepted: true,
+                resource: Some(resource.into()),
+            });
+        }
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: "child-prompt".into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+        f.apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: "child-prompt".into(),
+        });
+        f.apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "completion".into(),
+                task_id: "p".into(),
+                source_id: source.into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+            },
+        });
+        let reg = f
+            .store
+            .agent_registrations("p")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "completion")
+            .unwrap();
+        assert_eq!(reg.source_id, "child-prompt");
+        assert_eq!(reg.obligation_id.as_deref(), Some("delegate"));
+        assert_eq!(
+            f.task()
+                .obligations
+                .iter()
+                .find(|o| o.id == "message")
+                .unwrap()
+                .status,
+            "satisfied"
+        );
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![reg.id],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "actual child completion".into(),
+            now: 3,
+        });
+    }
+}
