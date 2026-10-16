@@ -700,7 +700,9 @@ export class BrowserMirror2Renderer {
       mark('apply_state')
       if (packet.reset) { this.deferred.clear(); this.wheel.cancel() }
       for (const [element, x, y] of scrolls) this.deferred.set(element, [x, y])
-      if (packet.reset || !this.scrolling()) {
+      // MP-08/MP-10/MP-11: hidden native preparation keeps the latest
+      // scroller positions, without laying out the growing tree per packet.
+      if ((!this.navigation.holding || packet.snapshot_complete === true) && (packet.reset || !this.scrolling())) {
         const pending = this.deferred; this.deferred = new Map()
         for (const [element, [x, y]] of pending as Map<Element, [number, number]>) {
           // A frame document scrolls its viewport (its root element: a quirks-mode viewer document would not).

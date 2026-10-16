@@ -1193,3 +1193,29 @@ test('MP-08/MP-10/MP-11 native preview holds old paint and focus until a complet
   assert.deepEqual(await page.evaluate(()=>({oldConnected:window.old.isConnected,newVisible:getComputedStyle(window.r.frame).visibility,painted:window.r.painted,value:window.r.frame.contentDocument.activeElement.value,selection:window.r.frame.contentDocument.activeElement.selectionStart})),{oldConnected:false,newVisible:'visible',painted:true,value:'new',selection:3});
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: held continuation packets must not synchronously lay out
+// the growing document before the handover can use it.
+test('MP-08/MP-10/MP-11 native-held continuations defer repeated layout and retain final scroll',async()=>{
+ const page=await viewer(),cdp=await page.context().newCDPSession(page);
+ try{
+  await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'text',text:'old page'}]));
+  await page.evaluate(()=>{window.old=window.r.frame;window.r.holdForHandover()});
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'}];
+  for(let i=0;i<1000;i++)nodes.push({id:'n'+(4+i*2),parent:'n3',kind:'element',tag:'p'},{id:'n'+(5+i*2),parent:'n'+(4+i*2),kind:'text',text:'continued page '+i});
+  nodes.push({id:'n2004',parent:'n3',kind:'element',tag:'div',attrs:{id:'staged-scroller',style:'height:80px;overflow:auto'},scroll:[0,400]},{id:'n2005',parent:'n2004',kind:'element',tag:'div',attrs:{style:'height:1000px'}});
+  await apply(page,{...snapshot(nodes),document_id:'new',sequence:2,snapshot_complete:false});await frames();
+  // Browser layout can move an inert scroller; it is not a new viewer action.
+  await page.evaluate(()=>window.r.frame.contentDocument.getElementById('staged-scroller').scrollTop=10);await frames();
+  await cdp.send('Performance.enable');const count=async()=>{const r=await cdp.send('Performance.getMetrics');return r.metrics.find(m=>m.name==='LayoutCount').value};const before=await count();
+  const packets=Array.from({length:10},(_,i)=>({...delta(i+3,[{op:'attr',id:'n3',name:'style',value:'padding-left:'+i+'px'}]),document_id:'new',snapshot_complete:false}));
+  await page.evaluate(async packets=>{for(const packet of packets)await window.r.apply(packet)},packets);
+  const layouts=(await count())-before;
+  assert(layouts<=2,`held continuation batch forced ${layouts} layouts; final geometry is not needed yet`);
+  assert.deepEqual(await page.evaluate(()=>({oldConnected:window.old.isConnected,oldText:window.old.contentDocument.body.textContent,painted:window.r.painted,sent:window.sent.length})),{oldConnected:true,oldText:'old page',painted:false,sent:0});
+  await apply(page,{...delta(13,[],{scroll:[0,500]}),document_id:'new',snapshot_complete:true});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true);await page.evaluate(()=>window.r.handover());
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.scrollY),500);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').textContent),'continued page 0');
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('staged-scroller').scrollTop),400);
+ }finally{await cdp.detach();await page.close()}
+});

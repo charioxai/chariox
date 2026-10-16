@@ -100,7 +100,9 @@ export class Mirror2Navigation {
   }
   present(complete = false): void {
     if (!complete) this.cancelEmpty()
-    if (this.painted || !this.frame.contentDocument) return
+    // Native video owns paint while incomplete continuation records arrive.
+    // Defer visibility/layout until completion can actually release that view.
+    if (this.painted || !this.frame.contentDocument || this.deferred && !complete) return
     if (!hasVisibleMirrorContent(this.frame.contentDocument)) {
       // MP-08/MP-10/MP-11: a body can intentionally stay empty. Bound its
       // paint hold only after the kernel confirms the initial serialization
@@ -116,6 +118,7 @@ export class Mirror2Navigation {
     }
     this.reveal()
   }
+  get holding(): boolean { return this.deferred }
   hold(): void { this.deferred = true }
   release(): void { this.deferred = false; if (this.readyToPresent) this.reveal() }
   private reveal(): void {

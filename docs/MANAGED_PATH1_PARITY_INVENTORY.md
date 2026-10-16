@@ -1,5 +1,19 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 held mirror continuation layout (2026-10-16)
+
+The shared renderer continues to apply records and resources while native video
+owns presentation. Until `snapshot_complete`, it queues the latest scroller
+positions and defers visibility checks for that held DOM. Completion applies
+those positions before the existing readiness and input-drain handover. Ordinary
+progressive mirrors retain their existing presentation behavior. The shared OSS
+and Cloud navigation modules use the same rule; sandbox, masks, native admission
+and serialized fields are unchanged. A real-Chromium regression reduces a batch
+of ten held continuations from nine forced layouts to at most two, while checking
+that prior paint remains and final content and scroll survive. This is a focused
+regression, not hosted usability, quiet timing or full MP-item acceptance.
+
+
 
 ## MP-08 / MP-10 / MP-11 capture restoration retries (2026-10-16)
 
