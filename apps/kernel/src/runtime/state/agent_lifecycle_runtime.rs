@@ -725,6 +725,11 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
             {
+                // A turn that answered but was never settled lands here; keep
+                // the facts that attribute the lost settlement edge.
+                tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
+                    revision=task.revision, answered=self.owned.public_agent_task_answer(&task).ok().flatten().is_some(),
+                    "MP-08/MP-09/MP-10/MP-11 A03: supervisor blocked a working task with no live executor");
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }
