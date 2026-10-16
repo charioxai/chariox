@@ -1,4 +1,4 @@
-import { Mirror2FontStyle, mirror2RenderedFontReady, mirror2FontDescriptor } from './browser-mirror2-fonts.js'
+import { Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -569,6 +569,8 @@ export class BrowserMirror2Renderer {
     const node = this.dom.get(id), kind = this.records.get(id)?.kind
     if (kind === 'tile' || kind === 'mask') this.counts[kind]--
     this.dom.delete(id); this.records.delete(id); this.styled.delete(id); this.styled.delete(`${id}#style`); this.styled.delete(`${id}#adopted`)
+    this.frameDocuments.delete(id)
+    if (this.fontRequirements.delete(id)) this.fontRequirementsVersion++
     const tile = this.tileUrls.get(id); if (tile) { URL.revokeObjectURL(tile); this.tileUrls.delete(id) }; this.tileBoxes.delete(id)
     if (node) this.ids.delete(node)
   }
@@ -617,12 +619,16 @@ export class BrowserMirror2Renderer {
   private handoverStage = ''
   private nativeFontFailures = new Set<string>()
   private nativeFontFailureKey = '[]'
+  private fontRequirements = new Map<string, string[] | null>()
+  private fontRequirementsVersion = 0
+  private fontRequirementsNegotiated = false
+  requireNativeFonts(negotiated: boolean): void { this.fontRequirementsNegotiated = negotiated; this.fontRequirementsVersion++ }
   private handoverDiagnostic(reason: string): void {
     if (this.handoverStage === reason) return
     this.handoverStage = reason; this.timed(`handover_${reason}`, performance.now())
   }
   async readyForHandover(): Promise<boolean> {
-    const doc = this.doc, documentId = this.documentId
+    const doc = this.doc, documentId = this.documentId, proofSequence = this.sequence
     if (!doc || !this.navigation.readyToPresent) { this.handoverDiagnostic('wait_content'); return false }
     if (this.slices.size) { this.handoverDiagnostic('wait_slices'); return false }
     for (const [id, record] of this.records) {
@@ -632,23 +638,27 @@ export class BrowserMirror2Renderer {
       if (box && box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < this.frame.clientWidth && box.top < this.frame.clientHeight) { this.handoverDiagnostic('wait_image'); return false }
     }
     // Fonts and visible CSS imagery must not pop into place after the switch.
-    if (doc.fonts.status === 'loading') this.handoverDiagnostic('wait_fonts')
-    await doc.fonts.ready
-    const nativeFailures = this.nativeFontFailures
-    const failures = await Promise.all([...doc.fonts].filter(font => font.status === 'error').map(font => digest(new TextEncoder().encode(mirror2FontDescriptor(font)))))
-    if (this.disposed || this.doc !== doc || this.documentId !== documentId || nativeFailures !== this.nativeFontFailures) return false
-    const fontFailed = failures.some(signature => !nativeFailures.has(signature))
-    const view = doc.defaultView
+    const nativeFailures = this.nativeFontFailures, fontVersion = this.fontRequirementsVersion, legacyChecks = new Set<Document>()
+    for (const [id, record] of this.records) if (record.kind === 'document') {
+      const document = this.dom.get(id) as Document | undefined
+      if (document?.nodeType !== 9) continue
+      if (document.fonts.status === 'loading') this.handoverDiagnostic('wait_fonts')
+      const required = this.fontRequirements.get(id) ?? (this.fontRequirementsNegotiated || this.fontRequirements.size ? null : undefined)
+      const fonts = await mirror2DocumentFontsReady(document, required, document === doc ? nativeFailures : new Set())
+      if (!fonts.ready) { this.handoverDiagnostic('wait_fonts'); return false }
+      if (fonts.checkRendered) legacyChecks.add(document)
+    }
+    if (this.disposed || this.doc !== doc || this.documentId !== documentId || this.sequence !== proofSequence || nativeFailures !== this.nativeFontFailures || fontVersion !== this.fontRequirementsVersion) return false
     for (const node of this.dom.values()) if (node.nodeType === 1) {
       const element = node as Element, box = element.getBoundingClientRect()
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
-      const style = view?.getComputedStyle(element)
-      if (fontFailed && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
+      const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+      if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
       if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
     if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
     await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
-    const ready = !this.disposed && this.doc === doc && this.documentId === documentId && !this.slices.size
+    const ready = !this.disposed && this.doc === doc && this.documentId === documentId && this.sequence === proofSequence && fontVersion === this.fontRequirementsVersion && !this.slices.size
     this.handoverDiagnostic(ready ? 'ready' : 'wait_document')
     return ready
   }
@@ -768,6 +778,7 @@ export class BrowserMirror2Renderer {
     const doc = this.doc!
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
     this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.frameDocuments.clear(); this.ids = new WeakMap(); this.counts = { tile: 0, mask: 0 }
+    this.fontRequirements.clear(); this.fontRequirementsVersion++
     const records = packet.nodes ?? [], frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
     const root = records[0]!
     const main = this.subtree(records, root.id)
@@ -796,6 +807,7 @@ export class BrowserMirror2Renderer {
     const node = this.dom.get(op.id)
     if (!node) return // removed earlier in this packet
     switch (op.op) {
+      case 'fonts': this.fontRequirements.set(op.id, op.required); this.fontRequirementsVersion++; break
       case 'children': {
         const frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
         // A frame's child is its document: rebuild the frame's own document.
@@ -908,7 +920,7 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
@@ -918,7 +930,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const releaseHold = transport.prioritize?.() ?? (() => {})
   let priorityReleased = false
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
-  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2, ...(handlers.preparing ? {navigation_preview:true} : {}) }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
+  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(handlers.preparing ? {navigation_preview:true} : {}) }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
@@ -947,6 +959,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
+  renderer.requireNativeFonts?.(subscribed.font_requirements === true)
   renderer.onTiming = sample => { if (sample.stage === 'mirror_navigation_paint') releasePriority(); handlers.timing?.(sample) }
   try { await renderer.ready() } catch (error) { releasePriority(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   // Notify consumers when the empty-page timer presents the last applied

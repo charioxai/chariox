@@ -4131,6 +4131,32 @@ feature-detect 530; no client floor moves.
 
 ### MP-08 / MP-10 / MP-11: mirror initial snapshot completion (local 539 / peer 147)
 
+MP-08 / MP-10 / MP-11: the same coordinator-authorized additive unreleased539
+allocation adds `mirror_subscribe.font_requirements?: true` and the v2 operation
+`{op:"fonts", id, required}`. Kernels emit the operation only for explicitly
+negotiating v2 viewers and acknowledge `font_requirements:true` in the subscribe
+result; older viewers keep their existing operation set. An acknowledged viewer
+holds every document lacking its certificate; an older kernel without the
+acknowledgment retains the conservative legacy path. `id` must name a
+known document record, including same-origin and rebased cross-origin child
+roots. `required` is null while native font loading is pending, otherwise at
+most128 unique sorted SHA-256 descriptors for native loaded FontFaces, using
+the canonical descriptor below. More than4096 faces, a loaded descriptor above
+4096 characters, or more than128 distinct loaded descriptors stays pending;
+an incomplete list never becomes a ready empty certificate. Loading/completion
+wakes the existing credit. Snapshots carry the operation before deltas; each
+child's document ID is rebased, while descriptor hashes are unchanged.
+
+For a certified document, clients require every matching required face to load
+from the existing validated kernel font resources. A source-loaded offscreen
+face is explicitly preloaded. Failed unused fallbacks do not block a document
+whose requirements are satisfied; missing required faces do. Certificates
+retire with their document/frame or reset, and packet changes during hashing,
+font loading or image decoding invalidate the handover proof. No name, source
+URL, page text, credential or new input/protection authority is added. Older
+kernels without this operation retain the conservative failure-metadata path.
+The protocol/hash fixture is `browser-mirror2-font-requirements-539.json`.
+
 MP-08 / MP-10 / MP-11: the coordinator-authorized additive extension of mirror's
 unreleased 539/147 allocation (current union 540/148) adds
 `font_failures?: string[]`. It contains at most 128 unique lowercase SHA-256 hex

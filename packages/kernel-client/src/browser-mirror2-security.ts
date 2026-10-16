@@ -167,6 +167,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     case 'state': if (!validState(op.state) || known(op.id) && known(op.id)!.kind !== 'element') fail('op'); break
     case 'fragment': if (!validFragment(op.fragment) || known(op.id) && known(op.id)!.kind !== 'document') fail('op'); break
+    case 'fonts': if (Object.keys(op).some(key => !['op', 'id', 'required'].includes(key)) || known(op.id)?.kind !== 'document' || op.required !== null && (!Array.isArray(op.required) || op.required.length > 128 || new Set(op.required).size !== op.required.length || op.required.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('fonts'); break
     default: fail('op')
   }
 }

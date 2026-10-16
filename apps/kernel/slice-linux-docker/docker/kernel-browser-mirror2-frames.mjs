@@ -24,6 +24,7 @@ const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
   attr: slot => ({ name: same, value: same }), text: () => ({ text: same }), form: () => ({ form: same }), scroll: () => ({ scroll: same }), size: () => ({ size: same }), state: () => ({ state: same }),
   css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }), fragment: () => ({ fragment: same }),
+  fonts: () => ({ required: same }),
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
@@ -127,7 +128,7 @@ export class MirrorFrames {
         out.records.push(...records);
         out.resources = [...(out.resources ?? []), ...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot }))];
         if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
-        out.ops.push(...snap.sheetOps);
+        out.ops.push(...(snap.ops ?? []).map(op => rebaseOp(op, slot)), ...snap.sheetOps);
       } catch (error) { this.failed('attach', error); out.opaque.push(id); }
     }
     return out;
@@ -161,7 +162,7 @@ export class MirrorFrames {
           const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner, ...(next.fragment ? { fragment: next.fragment } : {}) };
-          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...snap.sheetOps);
+          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...(snap.ops ?? []).map(op => rebaseOp(op, slot)), ...snap.sheetOps);
           if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
           out.resources.push(...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })));
         } catch {}

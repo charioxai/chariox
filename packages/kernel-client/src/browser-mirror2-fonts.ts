@@ -69,3 +69,36 @@ export function mirror2RenderedFontReady(element: Element, style: CSSStyleDeclar
 export function mirror2FontDescriptor(font: FontFace): string {
   return JSON.stringify([font.family.replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase(), font.style.trim().replace(/\s+/g, ' '), font.weight === 'normal' ? '400' : font.weight.trim().replace(/\s+/g, ' '), font.stretch === 'normal' ? '100%' : font.stretch.trim(), font.unicodeRange.replace(/\s+/g, '').toUpperCase()])
 }
+
+const fontDigests = new WeakMap<FontFace, { descriptor: string; digest: Promise<string> }>()
+function fontDigest(font: FontFace): Promise<string> {
+  const descriptor = mirror2FontDescriptor(font), cached = fontDigests.get(font)
+  if (cached?.descriptor === descriptor) return cached.digest
+  const digest = crypto.subtle.digest('SHA-256', new TextEncoder().encode(descriptor)).then(bytes => Array.from(new Uint8Array(bytes), value => value.toString(16).padStart(2, '0')).join(''))
+  fontDigests.set(font, { descriptor, digest }); return digest
+}
+
+// MP-08/MP-10/MP-11: the native document specifies required faces. Checking a
+// complete font-family list would also test unused fallbacks, including ones
+// that failed transiently before the primary font's bytes arrived.
+export async function mirror2DocumentFontsReady(doc: Document, required: string[] | null | undefined, nativeFailures: ReadonlySet<string>): Promise<{ ready: boolean; checkRendered: boolean }> {
+  if (required === null) return { ready: false, checkRendered: false }
+  await doc.fonts.ready
+  const fonts = [...doc.fonts]
+  if (fonts.length > 4096) return { ready: false, checkRendered: false }
+  if (required === undefined) {
+    const failures = await Promise.all(fonts.filter(font => font.status === 'error').map(fontDigest))
+    return { ready: true, checkRendered: failures.some(signature => !nativeFailures.has(signature)) }
+  }
+  const entries = await Promise.all(fonts.map(async font => ({ font, descriptor: mirror2FontDescriptor(font), digest: await fontDigest(font) })))
+  const needed = required.flatMap(signature => entries.filter(entry => entry.digest === signature))
+  if (required.some(signature => !entries.some(entry => entry.digest === signature))) return { ready: false, checkRendered: false }
+  // A source-loaded face can be offscreen in this viewer. Load its already
+  // kernel-materialized URL explicitly, rather than waiting for local layout.
+  const loaded = await Promise.all(needed.map(async entry => {
+    if (!doc.fonts.has(entry.font) || mirror2FontDescriptor(entry.font) !== entry.descriptor) return false
+    try { await entry.font.load() } catch { return false }
+    return doc.fonts.has(entry.font) && entry.font.status === 'loaded' && mirror2FontDescriptor(entry.font) === entry.descriptor
+  }))
+  return { ready: loaded.every(Boolean), checkRendered: false }
+}

@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 
 assert(process.env.MIRROR_LAB_NODE_MODULES && path.isAbsolute(process.env.MIRROR_LAB_NODE_MODULES));
@@ -14,6 +16,34 @@ async function install(page) {
   await page.evaluate(mirror2ObserverExpression());
   await page.evaluate(() => { window.observer = globalThis.__charioxMirror2.get('completion-test'); });
 }
+
+test('MP-08/MP-10/MP-11 native loaded-font requirements wake credits and ignore unused failures', async () => {
+  const bytes = await readFile(process.env.MIRROR_LAB_FONT ?? '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
+  let response;
+  const server = createServer((_request, res) => { response = res; res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Content-Type', 'font/ttf'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body>Native fonts</body>'); await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    assert.deepEqual((first.ops ?? []).filter(op => op.op === 'fonts'), [{ op: 'fonts', id: first.root, required: [] }]);
+    await page.evaluate(url => { window.requiredFont = new FontFace('NativeRequired', `url(${url})`); document.fonts.add(window.requiredFont); void window.requiredFont.load(); }, `http://127.0.0.1:${server.address().port}/font`);
+    await page.waitForFunction(() => document.fonts.status === 'loading');
+    assert((await page.evaluate(() => window.observer.drain())).ops.some(op => op.op === 'fonts' && op.required === null));
+    const waiting = page.evaluate(() => window.observer.waitDrain(2000));
+    for (let n = 0; !response && n < 100; n++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert(response); response.end(bytes);
+    await page.evaluate(() => window.requiredFont.loaded);
+    let packet = await waiting;
+    const signature = createHash('sha256').update(JSON.stringify(['nativerequired','normal','400','100%','U+0-10FFFF'])).digest('hex');
+    for (let n = 0; n < 3 && !packet.ops.some(op => op.op === 'fonts' && op.required?.includes(signature)); n++) packet = await page.evaluate(() => window.observer.drain());
+    assert(packet.ops.some(op => op.op === 'fonts' && JSON.stringify(op.required) === JSON.stringify([signature])));
+    await page.evaluate(async () => { const unused = new FontFace('UnusedNative', 'url(data:font/woff2;base64,AA==)'); document.fonts.add(unused); await unused.load().catch(() => {}); });
+    const last = await page.evaluate(() => window.observer.snapshot());
+    assert.deepEqual(last.ops.find(op => op.op === 'fonts').required, [signature]);
+  } finally { response?.end(); await browser.close(); await new Promise(resolve => server.close(resolve)); }
+});
 
 test('MP-08/MP-11 long SVG geometry survives without admitting long metadata', async () => {
   const browser = await launch();

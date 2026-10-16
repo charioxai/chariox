@@ -3,7 +3,8 @@
 // MutationObserver deltas (rrweb's model): the page's own stylesheets and
 // attributes travel instead of a computed-style dump. Page code never sees
 // this object; raw mutation records, URLs and unsanitized values stay here.
-export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()})`;
+import { nativeFontRequirements } from './kernel-browser-mirror2-fonts.mjs';
+export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()})`;
 
 // Pure CSS sanitizer, shared verbatim with the kernel (cross-origin sheets read
 // through CDP). Every url() becomes a kernel resource key or `none`; nothing
@@ -46,7 +47,7 @@ export function sanitizeMirrorCss(text, base, resource) {
 }
 
 // The sanitizer is passed in: the isolated world has no module scope.
-export function installMirror2(sanitizeMirrorCss) {
+export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements) {
   if (globalThis.__charioxMirror2) return true;
   // One independent observer per subscription (viewer): its own ids, mutation
   // journal and listeners, so one viewer's snapshot never resets another's.
@@ -191,6 +192,7 @@ export function installMirror2(sanitizeMirrorCss) {
       // Shadow roots too: scroll, change, reset and load events do not cross their boundary.
       if (!listened.has(root)) {
         listened.add(root);
+        if (root.nodeType === 9) for (const type of ['loading', 'loadingdone', 'loadingerror']) root.fonts.addEventListener(type, wake, { signal: listening.signal });
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         if (root.nodeType === 9) listen('readystatechange', wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
@@ -217,7 +219,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); reportedRequirements.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -474,6 +476,16 @@ export function installMirror2(sanitizeMirrorCss) {
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
     let reportedFonts = '[]';
+    const reportedRequirements = new Map();
+    const fontOps = (ops, force = false) => {
+      for (const [id, root] of roots) {
+        if (root.nodeType !== 9) continue;
+        const required = fontRequirements(root, fontDescriptor, sha256), signature = JSON.stringify(required);
+        if (force || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); ops.push({ op: 'fonts', id, required }); }
+      }
+      return ops;
+    };
+    const fontsChanged = () => [...roots].some(([id, root]) => root.nodeType === 9 && reportedRequirements.get(id) !== JSON.stringify(fontRequirements(root, fontDescriptor, sha256)));
     let reported = '', reportedComplete = false;
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
@@ -490,7 +502,7 @@ export function installMirror2(sanitizeMirrorCss) {
       // The producer fences the old epoch before calling snapshot. Reclaim the
       // local id range without walking the previous (possibly huge) document.
       ids = new WeakMap(); serial = 0;
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
+      reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       continuation?.return(); continuation = serializeTree(document, null);
@@ -500,7 +512,7 @@ export function installMirror2(sanitizeMirrorCss) {
       // by time after 256 visits, with the same byte/document bounds.
       const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
-      return { root, nodes: out, ...take(), ...header() };
+      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header() };
     };
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
@@ -685,7 +697,7 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
       if (continuation && !urgent && !ops.length) ops.push(...continuationOps(chunk()));
-      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
+      return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
@@ -945,8 +957,7 @@ export function installMirror2(sanitizeMirrorCss) {
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
-    for (const type of ['loadingdone', 'loadingerror']) document.fonts.addEventListener(type, wake, { signal: listening.signal });
+    const changed = () => fontsChanged() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged

@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 native document font requirements (2026-10-16)
+
+The real BBC article can have an extra failed viewer fallback that the native
+page never used. [FontFaceSet.check](https://drafts.csswg.org/css-font-loading-3/) tests a family
+list rather than proving which fallback painted. The kernel now emits document-scoped loaded-font requirements
+as the explicitly negotiated `fonts` operation (`mirror_subscribe.font_requirements`),
+within mirror's authorized additive unreleased539/147
+allocation (union540/148). Shared and Cloud renderers load the required native
+faces, refuse missing/pending requirements, and retire them on frame removal or
+reset. Same-origin and cross-origin documents use the ordinary observer and
+rebased operation path. Bounds and an applied-packet fence prevent incomplete
+or stale certificates. Existing font-failure metadata remains the conservative
+compatibility path. Font resources, sandbox, Vault masks, native pixel proof,
+permissions and input dispatch keep their existing authorities. Source checks
+and a source-override BBC completion do not establish exact-built, fullDPR,
+quiet-host or multi-hour acceptance.
+
 ## MP-08 / MP-10 / MP-11 native font failures (2026-10-16)
 
 The real BBC diagnostic finds font failures in the source browser itself; all

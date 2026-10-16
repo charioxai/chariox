@@ -145,17 +145,27 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
 
 // Viewer flow with a scripted kernel and a recording renderer (no DOM needed).
 const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
-  const applied: number[] = [], failures: unknown[] = []
+  const applied: number[] = [], failures: unknown[] = [], fontNegotiations: boolean[] = []
   let failNext = false, always = false
   const packets: Mirror2Packet[] = []
-  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
+  const renderer = () => ({ requireNativeFonts: (value: boolean) => { fontNegotiations.push(value) }, frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
   const transport = { protocolVersion: 539, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
-  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
+  return { applied, packets, failures, requests, fontNegotiations, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
 const packet = (sequence: number, reset: boolean, _base?: number | null) => reset ? { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { wire: 2, sequence, ops: [] }
 const until = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10)) }
+
+test('MP-08/MP-10/MP-11 the renderer requires native font certificates only after acknowledgement', async () => {
+ for (const acknowledged of [undefined, true]) {
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's', ...(acknowledged ? { font_requirements: true } : {}) } : command.op === 'mirror_close' ? { closed: true } : new Promise(() => {}))
+  const mirror = await f.start()
+  assert.equal(f.requests[0]!.font_requirements, true)
+  assert.deepEqual(f.fontNegotiations, [acknowledged === true])
+  await mirror.close()
+ }
+})
 
 test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
   let sequence = 0
@@ -668,4 +678,13 @@ test('MP-08/MP-10/MP-11 source font failure metadata is bounded and authenticate
  const valid='a'.repeat(64)
  for(const font_failures of [[],[valid]])validateMirror2Packet(base(tree(element('p')),{font_failures} as Partial<Mirror2Packet>),new Map())
  for(const font_failures of [null,'x',[valid,valid],['not-a-digest'],Array(129).fill(valid)])assert.throws(()=>validateMirror2Packet(base(tree(element('p')),{font_failures} as unknown as Partial<Mirror2Packet>),new Map()),/unsafe mirror header/)
+})
+
+test('MP-08/MP-10/MP-11 native font requirements are bounded and target a known document only',()=>{
+ const nodes:Mirror2Record[]=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'p'}]
+ const hashes=Array.from({length:129},(_,i)=>i.toString(16).padStart(64,'0'))
+ for(const required of [null,[],hashes.slice(0,128)])validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}),new Map())
+ for(const required of [undefined,'x',[hashes[0],hashes[0]],hashes,['invalid']])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}as any),new Map()),/unsafe mirror fonts/)
+ for(const id of ['n2','n99'])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id,required:[]}]}),new Map()),/unsafe mirror fonts/)
+ assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required:[],family:'unexpected'}]}as any),new Map()),/unsafe mirror fonts/)
 })

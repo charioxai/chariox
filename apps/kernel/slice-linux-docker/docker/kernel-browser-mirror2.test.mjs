@@ -8,6 +8,28 @@ import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, r
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
 
+test('MP-08/MP-10/MP-11 document font operations require viewer negotiation',()=>{
+ const mirror=new Mirror2({host:{}}),ops=[{op:'fonts',id:'n1',required:[]},{op:'text',id:'n2',text:'paint'}];
+ assert.deepEqual(mirror.viewerOps({},ops),[ops[1]]);
+ assert.deepEqual(mirror.viewerOps({fontRequirements:false},ops),[ops[1]]);
+ assert.equal(mirror.viewerOps({fontRequirements:true},ops),ops);
+});
+
+test('MP-08/MP-10/MP-11 native font negotiation is acknowledged only on an opted-in v2 stream',async()=>{
+ const {MirrorService}=await import('./kernel-browser-mirror.mjs');
+ const connection={send:async method=>{assert.equal(method,'Page.getFrameTree');return {frameTree:{frame:{id:'T',loaderId:'D'}}};}};
+ const host={generation:1,scales:new Map(),viewport:()=>({device_scale_factor:1}),displayTarget:async()=>({tab_id:'t',target_id:'T',document_id:'D'}),browser:{resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{hold:async()=>async()=>{}}}};
+ const service=new MirrorService(host);
+ try {
+  for(const requested of [undefined,true]){
+   const reply=await service.subscribe({wire:2,device_scale_factor:1,...(requested?{font_requirements:true}:{})},'owner');
+   assert.equal(reply.font_requirements,requested);
+   assert.equal(service.streams.get(reply.subscription_id).fontRequirements,requested===true);
+  }
+  for(const command of [{wire:2,font_requirements:false},{wire:2,font_requirements:'true'},{wire:1,font_requirements:true}])await assert.rejects(service.subscribe({...command,device_scale_factor:1},'owner'),/mirror font negotiation/);
+ } finally {service.clear();clearInterval(service.expiry);}
+});
+
 test('MP-11: every url() spelling becomes a kernel resource key (custom properties, var() shorthands)', () => {
   // Real shapes from MDN (custom property) and GitHub (var() shorthand) that
   // the first v2 sanitizer left unquoted; the client refused those packets.
@@ -223,6 +245,8 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
   const out = frames.rebaseDelta(delta, slot);
   assert.equal(out.snapshot_complete, true, 'child completion is a scalar, never a parent completion override');
   assert.deepEqual(out.font_failures,['a'.repeat(64)],'font descriptors are hashes, never rebased as node or resource ids');
+  assert.deepEqual(frames.rebaseOp({op:'fonts',id:'n1',required:['a'.repeat(64)]},slot),{op:'fonts',id:n(1),required:['a'.repeat(64)]});
+  assert.deepEqual(frames.rebaseOp({op:'fonts',id:'n1',required:null},slot),{op:'fonts',id:n(1),required:null});
   assert.deepEqual(out.ops[0], { op: 'children', id: n(6), children: [n(7)], nodes: [{ ...record, id: n(7), parent: n(6), attrs: { class: 'x', style: `background:url("mr:${r(3)}")` }, res: r(4) }] });
   assert.deepEqual(out.ops.slice(1).map(op => op.id), [n(7), n(8), n(9), n(1), n(7), n(7), n(7), n(7), n(7), n(7)]);
   assert.match(JSON.stringify(out.ops), new RegExp(`mr:${r(5)}.*mr:${r(6)}.*mr:${r(7)}.*"res":"${r(8)}".*"res":null`));

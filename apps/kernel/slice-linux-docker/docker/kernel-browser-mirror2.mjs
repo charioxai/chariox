@@ -154,6 +154,8 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
+  // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
+  viewerOps(stream, ops) { return stream.fontRequirements === true ? ops : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
   async world(tab, stream) {
     const targetAt = timestamp();
@@ -347,7 +349,7 @@ export class Mirror2 {
         const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
         this.host.timing?.('mirror2_frames', framesAt);
         this.opaque(snap.nodes, frames.opaque);
-        return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: [...frames.ops, ...sheetOps], resources: [...snap.resources, ...(frames.resources ?? [])] });
+        return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
       return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
     };
@@ -368,7 +370,7 @@ export class Mirror2 {
         } else ops.push(op);
       }
       const children = await this.frames.drain(stream, policy, tab);
-      return this.frames.project(stream, { ...delta, ops: [...ops, ...children.ops], resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] });
+      return this.frames.project(stream, { ...delta, ops: this.viewerOps(stream, [...ops, ...children.ops]), resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] });
     };
     let resources = [];
     try {

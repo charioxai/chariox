@@ -1249,3 +1249,69 @@ for(const usage of ['hidden','text','pseudo','control'])test(`MP-08/MP-10/MP-11 
   if(usage!=='hidden'){const canonical=JSON.stringify(['missingmirror','normal','400','100%','U+0-10FFFF']);await apply(page,{...delta(3,[],{font_failures:[createHash('sha256').update(canonical).digest('hex')]}),document_id:'font-page'});assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'a certified native font failure renders the same fallback, rather than waiting forever')}
  }finally{await page.close()}
 });
+
+test('MP-08/MP-10/MP-11 native font requirements ignore a failed unused fallback, while pending or missing required fonts hold',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
+  const css='@font-face{font-family:NativeFailed;src:url("mr:r1")}@font-face{font-family:UnusedFailed;src:url("mr:r2")}body{font-family:NativeFailed,Arial}';
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'Visible native fallback'}];
+  await apply(page,{...snapshot(nodes),document_id:'requirements',sequence:2,ops:[{op:'fonts',id:'n1',required:null}]});
+  await page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await Promise.all(['NativeFailed','UnusedFailed'].map(f=>d.fonts.load('16px '+f).catch(()=>{})));await d.fonts.ready});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'pending native fonts hold');
+  await apply(page,{...delta(3,[{op:'fonts',id:'n1',required:[]}]),document_id:'requirements'});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'the source uses system fallback; an unused failed face does not hold forever');
+  await apply(page,{...delta(4,[{op:'fonts',id:'n1',required:['a'.repeat(64)]}]),document_id:'requirements'});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'a missing required font never becomes a fallback');
+ }finally{await page.close()}
+});
+
+test('MP-08/MP-10/MP-11 native font requirements belong to each document and retire with its frame or reset',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
+  const nodes=page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'frame',tag:'iframe'},{id:'n6',parent:'n5',kind:'document'},{id:'n7',parent:'n6',kind:'element',tag:'html'},{id:'n8',parent:'n7',kind:'element',tag:'body'},{id:'n9',parent:'n8',kind:'text',text:'child'}]);
+  await apply(page,{...snapshot(nodes),document_id:'requirements',sequence:2,ops:[{op:'fonts',id:'n1',required:[]}]});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'the main document cannot certify its child');
+  await apply(page,{...delta(3,[{op:'fonts',id:'n6',required:[]}]),document_id:'requirements'});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true);
+  await apply(page,{...delta(4,[{op:'fonts',id:'n6',required:null},{op:'children',id:'n3',children:['n4'],nodes:[]}]),document_id:'requirements'});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'a removed frame cannot retain a pending font requirement');
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'fresh legacy document'}])),document_id:'fresh',sequence:5});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'a reset retires the old certificate');
+ }finally{await page.close()}
+});
+
+test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and preload an offscreen native face',async()=>{
+ const page=await viewer();try{
+  const bytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
+  const signature=createHash('sha256').update(JSON.stringify(['requiredmirror','normal','400','100%','U+0-10FFFF'])).digest('hex');
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'@font-face{font-family:RequiredMirror;src:url("mr:r1")}body{font-family:Arial}'},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'System font text'}];
+  await apply(page,{...snapshot(nodes),document_id:'requirements',sequence:2,ops:[{op:'fonts',id:'n1',required:[signature]}]});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'missing source-required bytes remain held');
+  await apply(page,{...delta(3),document_id:'requirements',resources:[{key:'r1',resource_id:createHash('sha256').update(bytes).digest('hex'),mime_type:'font/ttf',data_base64:bytes.toString('base64')}]});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'materialized native font preloads even without local text using it');
+  assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts][0].status),'loaded');
+ }finally{await page.close()}
+});
+
+test('MP-08/MP-10/MP-11 a packet received during image decoding invalidates the font handover proof',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'element',tag:'img',attrs:{width:'1',height:'1'}}])),document_id:'requirements',sequence:2,ops:[{op:'fonts',id:'n1',required:[]}]});
+  await page.evaluate(()=>{const image=window.r.frame.contentDocument.querySelector('img');image.removeAttribute('src');image.setAttribute('src','data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=');image.decode=()=>new Promise(resolve=>{window.finishDecode=resolve});window.proof=window.r.readyForHandover()});
+  await page.waitForFunction(()=>!!window.finishDecode);
+  await apply(page,{...delta(3,[{op:'attr',id:'n3',name:'class',value:'updated'}]),document_id:'requirements'});
+  assert.equal(await page.evaluate(async()=>{window.finishDecode();return window.proof}),false,'retry against the applied packet instead of an earlier font proof');
+ }finally{await page.close()}
+});
+
+// MP-08/MP-10/MP-11: an explicit capability acknowledgement is fail-closed.
+test('MP-08/MP-10/MP-11 negotiated font requirements cannot silently use legacy metadata',async()=>{
+ const page=await viewer();try{
+  await page.evaluate(()=>window.r.requireNativeFonts(true));
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'awaiting native certificate'}])));
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false);
+  await apply(page,delta(2,[{op:'fonts',id:'n1',required:[]}]));
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true);
+ }finally{await page.close()}
+});
