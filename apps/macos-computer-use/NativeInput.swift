@@ -66,10 +66,56 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
     }
 }
 
+// The release of the press the helper currently owns, kept on disk so a respawned helper can release what a
+// dead generation left down: a synthetic down posted to the session tap survives its poster until logout.
+struct OwnedInputJournal {
+    let url: URL
+    static let standard = OwnedInputJournal(url: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Chariox Computer Helper/owned-input.journal"))
+    func record(_ release: CGEvent) throws {
+        do {
+            guard let data = release.data as Data? else { throw Refusal.native }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch { throw tagged(.disabled, "owned-journal-unavailable") }
+    }
+    func clear() { try? FileManager.default.removeItem(at: url) }
+    func pending() -> CGEvent? { (try? Data(contentsOf: url)).flatMap { CGEvent(withDataAllocator: nil, data: $0 as CFData) } }
+}
+
+private func ownedControlDown(_ release: CGEvent, _ state: CGEventSourceStateID,
+                              _ keyState: (CGEventSourceStateID, CGKeyCode) -> Bool,
+                              _ buttonState: (CGEventSourceStateID, CGMouseButton) -> Bool) -> Bool {
+    switch release.type {
+    case .keyUp: return keyState(state, CGKeyCode(release.getIntegerValueField(.keyboardEventKeycode)))
+    case .leftMouseUp: return buttonState(state, .left)
+    case .rightMouseUp: return buttonState(state, .right)
+    case .otherMouseUp: return buttonState(state, .center)
+    default: return false
+    }
+}
+
 @MainActor final class NativeInputSeat {
     private var ownedRelease: CGEvent?
     private(set) var unresolved = false
     private var running = false
+    private let journal: OwnedInputJournal?
+    init(journal: OwnedInputJournal? = nil) { self.journal = journal }
+    private func released() { ownedRelease = nil; journal?.clear() }
+    // Release the control a dead helper generation left down. Only a session-level down with the hardware up
+    // is ours to release; a hardware hold belongs to the human and is never touched.
+    func recoverStaleRelease(keyState: (CGEventSourceStateID, CGKeyCode) -> Bool = { CGEventSource.keyState($0, key: $1) },
+                             buttonState: (CGEventSourceStateID, CGMouseButton) -> Bool = { CGEventSource.buttonState($0, button: $1) },
+                             postingAllowed: () -> Bool = { CGPreflightPostEventAccess() && AXIsProcessTrusted() },
+                             post: (CGEvent) -> Void) throws {
+        guard let release = journal?.pending() else { return }
+        if ownedControlDown(release, .combinedSessionState, keyState, buttonState),
+           !ownedControlDown(release, .hidSystemState, keyState, buttonState) {
+            guard postingAllowed() else { throw tagged(.ownedInput, "owned-release-failed") }
+            release.flags = []; post(release)
+        }
+        journal?.clear()
+    }
     func dispatch(_ plan: NativeInputPlan, fence: () throws -> Void,
                   releaseFence: () throws -> Void, post: (CGEvent) -> Void) async throws {
         guard !unresolved, ownedRelease == nil else { throw tagged(.ownedInput, "owned-release-failed") }
@@ -81,11 +127,12 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
                 try fence()
                 event.flags = []
                 // Record before posting so orderly cancellation cannot miss a down.
-                if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown].contains(event.type) {
-                    ownedRelease = plan.events.last
+                if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown].contains(event.type), let release = plan.events.last {
+                    try journal?.record(release)
+                    ownedRelease = release
                 }
                 post(event)
-                if [.leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp].contains(event.type) { ownedRelease = nil }
+                if [.leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp].contains(event.type) { released() }
                 // Let the listen-only tap fence the next event and pending Actions.
                 try await Task.sleep(nanoseconds: ownedRelease == nil ? 5_000_000 : plan.dwellNanoseconds)
                 try fence()
@@ -94,7 +141,7 @@ func nativeInputPlan(_ input: [String: Any], surface: NativeSurface) throws -> N
             if let release = ownedRelease {
                 do { try releaseFence() }
                 catch { unresolved = true; throw tagged(.ownedInput, "owned-release-failed") }
-                release.flags = []; post(release); ownedRelease = nil
+                release.flags = []; post(release); released()
             }
             throw error
         }

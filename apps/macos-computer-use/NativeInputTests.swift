@@ -97,6 +97,38 @@ import AppKit
             }
         }
         print("PASS production release fence refuses seven destination losses; safe Action cancellation releases")
+        // A dead helper generation leaves its owned key down in the session state. A respawned helper that
+        // finds the journalled release releases exactly that key, and only while the hardware is up.
+        let journalURL = FileManager.default.temporaryDirectory.appendingPathComponent("owned-input-\(getpid()).journal")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let journal = OwnedInputJournal(url: journalURL)
+        let keyPlan = try nativeInputPlan(["kind":"hold", "key":"Right", "duration_ms":10], surface: surface)
+        var journalled = false
+        try await NativeInputSeat(journal: journal).dispatch(keyPlan, fence: {}, releaseFence: {},
+            post: { if $0.type == .keyDown { journalled = journal.pending() != nil } })
+        precondition(journalled, "owned down posted before it was journalled")
+        precondition(journal.pending() == nil, "completed press stayed journalled")
+        try journal.record(keyPlan.events.last!)
+        let held: (CGEventSourceStateID, CGKeyCode) -> Bool = { state, key in key == 124 && state == .combinedSessionState }
+        var recovered: [CGEventType] = []
+        try NativeInputSeat(journal: journal).recoverStaleRelease(keyState: held, buttonState: { _, _ in false }, postingAllowed: { true }) {
+            recovered.append($0.type); precondition($0.getIntegerValueField(.keyboardEventKeycode) == 124)
+        }
+        precondition(recovered == [.keyUp] && journal.pending() == nil, "respawned helper did not release the dead generation's key")
+        for (name, state) in [("hardware-held", { (_: CGEventSourceStateID, key: CGKeyCode) in key == 124 }),
+                              ("already-up", { (_: CGEventSourceStateID, _: CGKeyCode) in false })] {
+            try journal.record(keyPlan.events.last!)
+            recovered = []
+            try NativeInputSeat(journal: journal).recoverStaleRelease(keyState: state, buttonState: { _, _ in false }) { recovered.append($0.type) }
+            precondition(recovered.isEmpty && journal.pending() == nil, "\(name): released a key the helper does not own")
+        }
+        let postable = false
+        try journal.record(keyPlan.events.last!)
+        do {
+            try NativeInputSeat(journal: journal).recoverStaleRelease(keyState: held, buttonState: { _, _ in false }, postingAllowed: { postable }) { _ in }
+            preconditionFailure("recovery posted without post permission")
+        } catch { precondition(refusalKind(error) == .ownedInput && journal.pending() != nil, "failed recovery must stay journalled") }
+        print("PASS respawned helper releases the dead generation's journalled key only while the hardware is up")
         print("PASS paired native coordinate conversion, owned release/cancel/reset fencing and bounded input refusals")
     }
 }

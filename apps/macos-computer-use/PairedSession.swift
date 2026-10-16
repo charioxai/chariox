@@ -246,7 +246,7 @@ func pairedInput(_ input: [String: Any], scope: Request, surface: NativeSurface)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &lease, socklen_t(MemoryLayout<timeval>.size))
     try send(fd, ["token": token, "epoch": epoch, "pid": Int(getpid())])
     let session = try PairedSession(fd: fd, epoch: epoch, scope: bootstrap["scope"],
-        nativeInput: bootstrap["physical_input"] as? Bool == true ? PairedNativeInput() : nil)
+        nativeInput: bootstrap["physical_input"] as? Bool == true ? PairedNativeInput(journal: .standard) : nil)
     let reader = PairingReader(fd: fd)
     // Socket waiting must not block the main run loop that delivers human events.
     while let line = await reader.next(), let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
