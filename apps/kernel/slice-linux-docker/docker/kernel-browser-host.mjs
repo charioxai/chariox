@@ -371,6 +371,14 @@ export class KernelBrowserHost {
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
+  /** PERF_AUDIT 4.2.3 (protocol 540): a viewer that holds frames pushed before its registration
+   * response asks for its first frame at registration; the kernel's relay pump starts there
+   * instead of waiting for the viewer's first acknowledgement (one round trip per stream open). */
+  initialPush(command, result) {
+    const stream = command.initial_push === true && this.displays.get(result?.subscription_id);
+    if (stream) stream.initial_push = true;
+    return result;
+  }
   // MP-08/MP-10/MP-11 (BROWSER-UX-14): the band's window epoch (for a 519 BrowserChrome
   // subscription) and the Tab Chrome's own strip shows, as last observed by the kernel.
   chromeWindow() {
@@ -667,10 +675,10 @@ export class KernelBrowserHost {
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
-    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return subscribeVisiblePage(this,command,scope,signal);
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
-      return subscribeRegion(this,command,scope,signal);
+      return this.initialPush(command,await subscribeRegion(this,command,scope,signal));
     }
     if(command.op==='display_input_target'||command.op==='input'&&command.binding_id) {
       const {regionInput,regionInputTarget}=await import('./kernel-browser-display-regions.mjs');
@@ -689,7 +697,7 @@ export class KernelBrowserHost {
       stream.lastCreditAt=Date.now();
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);
-      if (command.op === "display_attach") return { attached: true, generation: this.generation };
+      if (command.op === "display_attach") return { attached: true, generation: this.generation, ...(stream.initial_push ? { initial_push: true } : {}) };
       const {displayCredit, displayPushCredit} = await import('./kernel-browser-display-credit.mjs');
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
@@ -716,7 +724,7 @@ export class KernelBrowserHost {
       throw new UserDomainRefusal("not_granted");
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
-    if (command.op === "display_subscribe") return reserveDisplay(this,async()=>{
+    if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
       if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
@@ -732,7 +740,7 @@ export class KernelBrowserHost {
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
-    });
+    }));
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }

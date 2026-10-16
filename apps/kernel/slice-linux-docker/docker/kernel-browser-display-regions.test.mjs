@@ -292,3 +292,15 @@ test('MP-08/MP-10/MP-11 frame delivery reuses one fresh source lease while input
   assert.equal('cachedCurrent' in stream.regionSource.options,false,'the delivery cache is separate from fresh source admission');
  }finally{await stream.close()}
 });
+
+// vidlat 07:52Z (C10): band input bumps its stream's input epoch/time and emits a numeric input_dispatch.
+test('MP-08/MP-10 band input marks the band stream input epoch at dispatch',async()=>{
+ const f=fixture('browser_chrome'),events=[];f.host.timing=Object.assign(()=>{},{event:(name,fields)=>events.push([name,fields.kind])});
+ f.host.inputEpochs=new Map();f.host.inputChangedAt=new Map();
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ f.host.arbiter={input:async({onDispatch})=>{onDispatch();return {dispatched:true};}};
+ const command={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'key',key:'a'}};
+ assert.deepEqual(await regionInput(f.host,command,'terminal:a'),{dispatched:true});
+ assert.equal(f.host.inputEpochs.get('t'),1);assert(f.host.inputChangedAt.get('t')>0);assert.deepEqual(events,[['input_dispatch',3]]);
+ await [...f.host.displays.values()][0].close();
+});

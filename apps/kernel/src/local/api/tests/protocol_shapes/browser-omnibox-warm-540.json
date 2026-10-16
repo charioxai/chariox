@@ -12,5 +12,15 @@
         "browser_lockdown": "managed"
       }
     }
+  },
+  "initial_push_request": {
+    "KernelBrowser": {
+      "command": { "op": "display_subscribe", "tab_id": "tab-2", "generation": 7, "codecs": ["avc1.420033", "png"], "bitrate": 2000000, "device_scale_factor": 2, "initial_push": true }
+    }
+  },
+  "band_input_response": {
+    "KernelBrowser": {
+      "result": { "dispatched": true, "chrome_window": { "window_generation": 3, "active_tab_id": "tab-3", "auxiliary": [{ "auxiliary_id": 9, "x": 119, "y": 87, "width": 1078, "height": 212 }] } }
+    }
   }
 }

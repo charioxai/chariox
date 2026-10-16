@@ -206,6 +206,12 @@ export class ChromeWindows {
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
+  /** Is Chrome's omnibox list shown right now (re-read, not the last poll)? */
+  async omniboxShown() {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return !!this.omniboxLive;
+  }
   /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
   onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
@@ -420,7 +426,7 @@ export class InputArbiter {
     const window = this.host.chromeWindow?.(), tab = [...this.host.tabs.values()].find(t => t.target_id === active);
     return window && tab ? {...reply, chrome_window: {...window, active_tab_id: tab.tab_id}} : reply;
   }
-  async dispatchInput({stream, command, signal}, follow) {
+  async dispatchInput({stream, command, signal, onDispatch}, follow) {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const source = stream?.regionSource, input = command.input ?? {};
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
@@ -462,8 +468,10 @@ export class InputArbiter {
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
+    // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.
     const dispatched = async action => {
       let done;
+      onDispatch?.();
       try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
@@ -478,7 +486,11 @@ export class InputArbiter {
       let tab;
       // Review #1016 P2: an admitted native popup (menu, dropdown, dialog) owns the keys while it is
       // current (rechecked here): Chrome's UI, not the page's remembered field.
-      if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
+      // Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed;
+      // it owns the keys only while Chrome shows the list (re-read now). Otherwise the page's own fences apply.
+      if (bandChord(keysym, modifiers)) tab = await switching();
+      else if (popup && (!source.overPage || await this.windows.omniboxShown?.() === true)) await activeAdmitted();
+      else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;

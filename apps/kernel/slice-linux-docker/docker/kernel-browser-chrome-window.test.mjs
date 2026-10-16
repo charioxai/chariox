@@ -663,3 +663,42 @@ test("MP-08/MP-10 a click that opens a Tab the kernel has not adopted yet leaves
   const reply = await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input: { kind: "click", x: 600, y: 12 } } });
   assert.deepEqual(reply, { dispatched: true });
 });
+
+// Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed; it must not
+// carry keys past the page's fences. Closed list + a page field focused through the Computer surface: the
+// retained popup binding's text and chords get the sensitive-field fence; a shown list keeps the keys in Chrome.
+test("MP-11 a closed warm omnibox list does not carry keys past the page's sensitive-field fence", async () => {
+  const evaluated = [];
+  const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "da" } } }
+    : method === "Runtime.evaluate" ? (evaluated.push(params.expression), { result: { value: true } }) : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-a", { tab_id: "host-tab-a", target_id: "ta", document_id: "da" }]]), tabGroups: { active: async () => "ta" },
+    browser: { inputCapture: { physicalFocus: async (_c, _s, read) => read() }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  let shown = false;
+  const windows = { inWindowCurrent: async source => source.isCurrent(), omniboxShown: async () => shown, focusOmnibox() {} };
+  const arbiter = new InputArbiter(host, windows);
+  const chords = [];
+  const source = { surface: "browser_auxiliary", overPage: true, isCurrent: () => true, chord: async (...args) => (chords.push(args), true) };
+  const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input } });
+  await assert.rejects(send({ kind: "text", text: "s" }), { code: "user_domain_sensitive_requires_focus" });
+  await assert.rejects(send({ kind: "key", key: "a", modifiers: 4 }), { code: "user_domain_sensitive_requires_focus" });
+  assert.equal(chords.length, 0, "no native key reached the page");
+  shown = true; evaluated.length = 0;
+  assert.equal((await send({ kind: "text", text: "w" })).dispatched, true);
+  assert.equal(evaluated.length, 0, "a shown list owns the keys (Chrome's UI)");
+});
+
+// vidlat 07:52Z (C10): a band input marks its dispatch at the final native action boundary (after every
+// fence, before XTest), once per native action, never for a refused one, so band frames can be graded as
+// input-triggered exactly as page frames are.
+test("MP-08/MP-10 a band input marks each native dispatch after its fences", async () => {
+  const order = [];
+  const active = { target: "ta" };
+  const arbiter = new InputArbiter(followHost(active), {});
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (order.push("click"), true), chord: async () => (order.push("chord"), true) };
+  const send = (input, tab_id = "host-tab-a") => arbiter.input({ stream: { regionSource: source }, command: { tab_id, document_id: "da", generation: 3, input }, onDispatch: () => order.push("dispatch") });
+  await send({ kind: "click", x: 300, y: 12 });
+  await send({ kind: "key", key: "t", modifiers: 4 });
+  assert.deepEqual(order, ["dispatch", "click", "dispatch", "chord"]);
+  await assert.rejects(send({ kind: "click", x: 300, y: 12 }, "host-tab-b"), { code: "user_domain_stale_reference" });
+  assert.equal(order.length, 4, "a refused input marks nothing");
+});

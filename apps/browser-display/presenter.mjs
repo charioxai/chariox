@@ -11,6 +11,9 @@ export const desktopMinimumProtocolVersion = 474;
 export const pushProtocolVersion = 491;
 // MP-08/MP-10/MP-11: this optional shared resumption path requires 525.
 export const resumeProtocolVersion = 525;
+// PERF_AUDIT 4.2.3: a transport that holds frames pushed before its registration response asks for
+// the first frame at registration instead of after its first acknowledgement (one round trip).
+export const initialPushProtocolVersion = 540;
 const VP9='vp09.00.10.08';
 const videoCodecs=['vp8','avc1.420033','vp09.00.50.08','vp09.00.40.08',VP9];
 // Empty credits must not saturate a narrow link with control traffic. Admitted
@@ -263,7 +266,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   if(globalThis.Worker&&globalThis.VideoDecoder){try{warmDecoder=new WorkerVideoDecoder();}catch{/* Normal presenter admission handles unavailable codecs. */}}
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
-    :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer});}
+    :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer,
+      ...(pushMode&&transport.initialPush===true&&transport.kernelProtocolVersion>=initialPushProtocolVersion?{initial_push:true}:{})});}
   catch(error){warmDecoder?.close();options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
