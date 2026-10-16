@@ -159,10 +159,10 @@ test("executeShellCommand mutates user config", async () => {
   assert.equal(pathResult.ok, true)
   assert.equal(pathResult.message, "/home/.chariox/config.json")
   assert.equal(keysResult.ok, true)
-  assert.match(keysResult.message ?? "", /providers\.workspace_live_sync/)
+  assert.doesNotMatch(keysResult.message ?? "", /workspace_live_sync/) // MP-08 OWNER-20
   assert.equal(schemaResult.ok, true)
   assert.equal(schemaResult.format, "json")
-  assert.match(schemaResult.message ?? "", /provider_reload/)
+  assert.equal(schemaResult.message, "[]") // MP-08 OWNER-20: the only fixture key is discontinued Live Sync
   assert.equal(setResult.ok, true)
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)

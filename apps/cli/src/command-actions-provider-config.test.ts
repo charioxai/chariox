@@ -152,8 +152,8 @@ test("config command renders kernel mutation effects", async () => {
   })
 
   assert.deepEqual(updates, [])
-  assert.deepEqual(notices, ["providers.workspace_live_sync (enum; live; provider_reload unset values=off|managed|tracked)"])
-  assert.deepEqual(flashes, ["listed 1 config key"])
+  assert.deepEqual(notices, ["(no config keys)"]) // MP-08 OWNER-20: discontinued key stays hidden
+  assert.deepEqual(flashes, ["listed 0 config keys"])
 })
 
 test("provider processes command lists and tears down safe daemon-tracked processes", async () => {
