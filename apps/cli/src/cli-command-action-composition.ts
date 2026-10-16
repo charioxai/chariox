@@ -235,7 +235,7 @@ export type CliCommandActionCompositionDeps = {
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
-  prepareSessionSelection?: (session: { id: string }) => void
+  prepareSessionSelection?: (session: { id: string }) => void | (() => void)
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn

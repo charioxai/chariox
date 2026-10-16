@@ -34,6 +34,7 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getSubmitting: () => boolean
   getFooterHint: () => string
   isAttached: () => boolean
+  getSessionHydrating?: () => boolean
   getSession: () => RuntimeSession
   getConnectedClientCount: () => number
   getMultiAgentMode: () => boolean
@@ -74,7 +75,9 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         hotkeyToggleLabel: deps.getHotkeyToggleLabel(),
         workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
       })
-      : SESSION_NEW_FOOTER_HINT
+      : deps.getSessionHydrating?.()
+        ? `Loading session ${deps.getSession().alias?.trim() || deps.getSession().id}…`
+        : SESSION_NEW_FOOTER_HINT
     const footerFlashWidth = footerFlash && footerFlash.display !== "toast" ? ` • ${footerFlash.message}`.length : 0
     const compactFooterWidth = deps.getTerminalWidth
       ? Math.max(0, deps.getTerminalWidth() - footerFlashWidth)

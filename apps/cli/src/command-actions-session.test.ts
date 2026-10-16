@@ -309,3 +309,13 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+test("MP-08 / MP-10 OWNER-24 failed reference lookup settles its selected placeholder", async () => {
+  let settled = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    ...{ prepareSessionSelection: () => () => { settled = true } },
+    resolveSession: async () => { throw new Error("unknown session") },
+  }))
+  await assert.rejects(handlers.handleSessionCommand({ kind: "session", raw: "/session attach missing", action: "attach", args: ["missing"], value: "missing" }), /unknown session/)
+  assert.equal(settled, true)
+})

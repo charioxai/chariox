@@ -1226,3 +1226,10 @@ test("attachBinding adopts the attached session response layout immediately", as
   assert.deepEqual(appliedLayouts, ["split", "split"])
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
 })
+
+test("MP-08 / MP-10 OWNER-24 pending selection is hydrating before reference lookup", () => {
+  let hydrating = false
+  const { deps } = createBaseDeps({ setSessionHydratingState: (value: boolean) => { hydrating = value } })
+  createSessionLifecycleController(deps as never).prepareSessionSelection({ id: "next" })
+  assert.equal(hydrating, true, "the selected placeholder must not render a waiting room")
+})

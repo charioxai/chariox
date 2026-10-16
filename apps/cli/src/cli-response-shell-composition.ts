@@ -331,6 +331,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getSubmitting: deps.submitting,
     getFooterHint: deps.footerHint,
     isAttached: deps.isAttached,
+    getSessionHydrating: deps.sessionHydrating,
     getSession: deps.sessionState,
     getConnectedClientCount: deps.connectedClientCount,
     getMultiAgentMode: deps.multiAgentMode,

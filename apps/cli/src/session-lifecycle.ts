@@ -273,8 +273,15 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       deps.setStatusLine(`Loading session ${session.alias?.trim() || session.id}…`)
+      deps.setSessionHydratingState(true)
       deps.updateSessionChrome()
       deps.requestRender()
+      return () => {
+        if (deps.attachmentState() || deps.sessionState().id !== session.id) return
+        deps.setSessionHydratingState(false)
+        deps.updateSessionChrome()
+        deps.requestRender()
+      }
     }
   }
 
