@@ -357,6 +357,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \

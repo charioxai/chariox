@@ -1012,6 +1012,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-controller-apps.mjs",
         "browser-controller-bar.mjs",
         "browser-focus-world.mjs",
+        "kernel-browser-screenshot.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",

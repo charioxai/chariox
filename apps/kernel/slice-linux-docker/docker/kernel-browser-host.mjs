@@ -1,3 +1,4 @@
+import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
@@ -25,9 +26,8 @@ import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs"
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
-import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
+import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
+import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
@@ -503,35 +503,8 @@ export class KernelBrowserHost {
   async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
     return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
   }
-  async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
-    const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? this.viewport().device_scale_factor;
-    const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
-      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]},{ record: reason => this.timing('region_frame_masked ' + reason, timestamp()) })
-      : {async afterCapture(){return [];}} : null;
-    const data = await captureProtectedPage(this.browser, tab, this.protection.values,
-      this.protection.targets.filter(target => target.kind === "browser"), async () => {
-        const at = timestamp();
-        const sample = async () => {
-          const compositor=this.compositors.get(tab.tab_id)?.source;
-          if(clip)compositor?.pause();
-          try{return await this.browser.inputCapture.run(connection,sessionId,()=>connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId),{resumeFocus:false})}
-          finally{if(clip)compositor?.resume()}
-        };
-        const policy=this.protection;
-        const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
-        this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
-        return data;
-      }, scale, clip);
-    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
-    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
-    const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
-    this.timing('protected_capture', started);
-    if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: `image/${format}`, data_base64: data, width, height, ...(protectedCapture ? { protected_regions } : {}) };
+  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
+    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
   }
   async subscribe(tab, boundFrames = false, owner = null) {
     await this.closeCompositors(tab.tab_id);

@@ -28,7 +28,12 @@ Visible-page previews also reuse the mirror's live connection/session/loader
 reference before native admission. Replacing that reference retires the lease,
 even if a loader value returns. The shared region setup reuses that same live
 binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
-policy and mask fences remain mandatory before delivery.
+policy and mask fences remain mandatory before delivery. Screenshot capture
+and native attestation also reuse that current owner before/after capture;
+unknown owners still query the renderer. Same-loader reference replacement or
+session/connection mismatch refuses the image. Screenshot masking policy lives
+in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and
+slice bundles include the same module.
 
 Whole-page previews now also apply the same live Chrome-UI overlap query as
 streamed page regions after readback. While an omnibox list or dialog overlaps

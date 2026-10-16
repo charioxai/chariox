@@ -1,3 +1,4 @@
+import {captureDocumentOwner} from './kernel-browser-screenshot.mjs';
 import {resumeAfterCapturePresentation} from './browser-capture-presentation.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: OS-neutral capture interface: start/subscribe/sample/close.
@@ -93,6 +94,7 @@ export class LinuxCapture {
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
+   const documentOwner=captureDocumentOwner(this.browser,this.tab,this.connection,this.sessionId);
    this.phase='presentation';await this.connection.presentationFence?.recoverFailed?.();
    this.phase='bounds';const readback=await this.prepareReadback();
    // A DOM mutation may retire the first fence while it is measured (busy
@@ -128,7 +130,7 @@ export class LinuxCapture {
     else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
    }
    if(!matched)throw Error('native attestation RGB differed');
-   await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
+   if(documentOwner)documentOwner.assertCurrent();else await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    if(!this.valid())throw Error('native attestation retired');
    this.attested=true;this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
   }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host')+' '+nativeRefusalReason(error,this.helperStage),performance.timeOrigin+performance.now());await this.close();throw error}
