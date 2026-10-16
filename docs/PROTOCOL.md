@@ -183,6 +183,12 @@ still routes opaque packets and owns no session state.
 `provider_accounts`, `provider_catalog`, `provider_commands`, `terminal_commands`.
 An omitted section means unchanged only when its returned revision equals the
 client's revision. No cache means `known: null`, returning all four sections.
+Model discovery for a scope the kernel has not yet read can take many seconds.
+A caller that already holds a catalog (`known` set) is answered at once: accounts,
+commands and revisions are current, `provider_catalog` is omitted with the caller's
+own revision, discovery continues in the background and `client_catalog_changed`
+follows when it ends. Accounts are read after discovery, and a discovery that an
+invalidation overtook is kept as stale metadata, never turned into a failed read.
 Provider kinds/availability are projected from `provider_catalog`; a session's
 live agent roster is never part of this cache. Account selection and admission
 remain kernel-owned and caller-scoped.
