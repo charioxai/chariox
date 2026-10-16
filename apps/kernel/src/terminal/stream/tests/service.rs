@@ -1441,3 +1441,23 @@ fn public_history_legacy_tool_records_are_not_client_output() {
         );
     }
 }
+
+// MP-08/MP-10/MP-11: the owner-resume instruction is agent-only like the
+// assessment and correction instructions; the agent's reply stays visible.
+#[test]
+fn owner_resume_prompt_echo_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "task-resume-prompt-1-5",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-1",
+        vec!["attachment-1".into()],
+        b"Owner explicitly resumed this task.",
+    );
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+}

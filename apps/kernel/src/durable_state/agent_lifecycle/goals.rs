@@ -221,6 +221,12 @@ pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
 pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(CORRECTION_PROMPT_PREFIX)
 }
+pub(super) const OWNER_RESUME_PROMPT_PREFIX: &str = "task-resume-";
+/// The owner's Resume is a UI action; the instruction the kernel sends the
+/// agent for it is internal protocol text and never a user prompt row.
+pub(crate) fn is_owner_resume_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(OWNER_RESUME_PROMPT_PREFIX)
+}
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
     completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }
