@@ -53,7 +53,14 @@ detach or document replacement permanently retire that lease's measurement,
 even if values later return. A late initial measurement is refused. Unknown
 observers/documents/metrics retain fresh renderer queries. Native publication
 still checks the active window/tab freshly, all fill-target masks and exact RGB
-attestation; this cache creates no pixel or input authority.
+attestation; this cache creates no pixel or input authority. Display admission also exposes
+its existing in-flight reservation privately to preview scheduling. Only a
+matching viewer/tab/generation native request (while its document resolves,
+then only for that resolved document) extends the 2.5-second
+discovery wait to the five-second native first-sample budget, so heavy observer
+work does not start over a known pending native initialization. Wrong scopes,
+documents and other display kinds do not extend it. Expiry and cancellation
+remain bounded; a reservation grants no frame or input.
 
 Screenshot masking policy lives
 in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and
