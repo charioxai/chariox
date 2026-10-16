@@ -305,13 +305,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 stream_key.clone(),
                                 crate::history::leased_projection::ProjectedToolState {
                                     state: history_store.load_leased_tool_state(&stream_key)?,
-                                    stream_key,
+                                    stream_key: stream_key.clone(),
                                     session_id: leased_agent.backing_session_id.clone(),
                                     agent_id: leased_agent.backing_agent_id.clone(),
                                     provider_run_id: provider_run_id.to_string(),
                                     identity,
                                 },
                             );
+                        }
+                        let tool = tool_states.get_mut(&stream_key).expect("tool state loaded");
+                        let snapshot_key = leased_provider_run_history_chunk_key(
+                            &leased_agent,
+                            provider_run_id,
+                            &chunk,
+                        );
+                        if tool.state.record_history(
+                            snapshot_key,
+                            &chunk.bytes,
+                            tool.identity.is_some(),
+                        ) {
+                            output_chunks.push(chunk);
                         }
                         continue;
                     }
@@ -1257,6 +1270,64 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         outcome.accepted = true;
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent_snapshot(session_id, agent_id)?;
+        let restore_run_selection = pending_application
+            .as_ref()
+            .and_then(Option::as_ref)
+            .is_none_or(|result| {
+                remote.active_worker_provider_run_id.as_deref() == Some(provider_run_id)
+                    || active.as_ref().is_some_and(|active| {
+                        result
+                            .completions
+                            .iter()
+                            .any(|completion| completion.completed.id() == active.id())
+                    })
+                    || (result.retain_native_binding && active.is_none())
+            });
+        // Run snapshots are observable even when a ready journal skips effects.
+        // An old completed page must not select its run over a newer successor.
+        let leased_agent_id = agent
+            .remote_execution()
+            .map(|remote| remote.leased_agent_id.clone())
+            .unwrap_or_else(|| agent_id.to_string());
+        let projected_provider_run_id =
+            crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
+        if let Some(provider_run) = provider_run {
+            let projected_run = provider_run.projected_for_home_agent_with_id(
+                projected_provider_run_id.clone(),
+                session_id.to_string(),
+                agent_id.to_string(),
+            );
+            let projected_run = self
+                .app
+                .update_remote_provider_run_projection(projected_run);
+            if restore_run_selection {
+                let _ = self
+                    .app
+                    .sessions
+                    .set_active_provider_run(session_id, Some(projected_run.id().to_string()));
+            }
+            if let Ok(agent) = self.app.agents.get_agent(agent_id) {
+                if restore_run_selection && agent.remote_execution().is_some() {
+                    let _ = self
+                        .app
+                        .agents
+                        .set_remote_execution_active_worker_provider_run_id(
+                            agent_id,
+                            Some(provider_run_id.to_string()),
+                        );
+                    let _ = self.app.agents.set_agent_runtime_profile(
+                        agent_id,
+                        projected_run.provider(),
+                        Some(projected_run.model().to_string()),
+                        projected_run.variant().map(str::to_string),
+                        projected_run.resume_state().clone(),
+                    );
+                }
+            }
+        }
         if let Some(Some(result)) = pending_application {
             self.restore_home_projection_settlements(session_id, agent_id, &result)?;
             outcome.completions = result.completions;
@@ -1276,44 +1347,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     ack.delivery.sequence,
                     &admitted_event,
                 )?;
-        }
-        let leased_agent_id = agent
-            .remote_execution()
-            .map(|remote| remote.leased_agent_id.clone())
-            .unwrap_or_else(|| agent_id.to_string());
-        let projected_provider_run_id =
-            crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
-        if let Some(provider_run) = provider_run {
-            let projected_run = provider_run.projected_for_home_agent_with_id(
-                projected_provider_run_id.clone(),
-                session_id.to_string(),
-                agent_id.to_string(),
-            );
-            let projected_run = self
-                .app
-                .update_remote_provider_run_projection(projected_run);
-            let _ = self
-                .app
-                .sessions
-                .set_active_provider_run(session_id, Some(projected_run.id().to_string()));
-            if let Ok(agent) = self.app.agents.get_agent(agent_id) {
-                if agent.remote_execution().is_some() {
-                    let _ = self
-                        .app
-                        .agents
-                        .set_remote_execution_active_worker_provider_run_id(
-                            agent_id,
-                            Some(provider_run_id.to_string()),
-                        );
-                    let _ = self.app.agents.set_agent_runtime_profile(
-                        agent_id,
-                        projected_run.provider(),
-                        Some(projected_run.model().to_string()),
-                        projected_run.variant().map(str::to_string),
-                        projected_run.resume_state().clone(),
-                    );
-                }
-            }
         }
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         for (index, prompt) in prompts.into_iter().enumerate() {

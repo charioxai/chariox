@@ -1,6 +1,15 @@
 # Managed Path-1 parity inventory (MP-11)
 
 
+## MP-08 / MP-10 / MP-11: history-only leased tool delivery
+
+The worker now sends durable tool snapshots when no terminal record has owned
+that tool's delivery. Later history-only status updates use the same retained
+page/ACK owner; existing streamed tool deltas keep their projection state. The
+state is worker-local bookkeeping, with no wire shape or managed-placement
+branch. A fail-first guard covers history-only updates, store reopen and lost
+page ACKs. Source checks alone do not establish live recovery acceptance.
+
 ## MP-08 / MP-10 / MP-11: bounded native catalog pages (531/139)
 
 Real hosted output identified a Codex0.159.3 `plugin/list` response over14MiB;
@@ -49,6 +58,11 @@ recovery guards exercise 130 real history-store records, page acknowledgements,
 lost acknowledgement retry, future-sequence rejection and single successor
 admission through the reconciliation entry point. They do not establish live
 provider, client, hosted recovery or MP-10 acceptance.
+
+Ready-journal replay also restores the authenticated worker run snapshot and
+rebuilds a dispatch for its exact admitted successor only while delivery is still
+Accepted. Dispatching/Delivered prompts keep normal receipt reconciliation, and
+an older completed page cannot select its run over a newer successor.
 
 Home application now retains an admitted page and its local result until receipt
 commit and queue admission finish. Per-page prompt/output/notice identities and

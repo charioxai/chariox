@@ -301,6 +301,16 @@ impl RemoteLeaseRuntime<'_> {
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
             .is_some()
         {
+            if let Some((active, intent)) = crate::app::KernelAgentService::new(self.app)
+                .recover_admitted_remote_prompt_intent(
+                    session_id,
+                    agent_id,
+                    expected_head.expect("head checked above"),
+                )?
+            {
+                dispatches.push(intent);
+                return Ok(Some(active));
+            }
             return Ok(None);
         }
         let Some(remote) = self

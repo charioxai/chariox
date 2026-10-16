@@ -561,7 +561,10 @@ without removing the successor. Check the current worker/lease/run admission,
 including rejection of altered retained bytes and foreign callers.
 
 Record kernel/client/relay/Cloud identities, fault timing and body-free delivery
-counters. Drive browser reload at DPR1/2 and both 1440x900 and 1920x1080; record
+counters. Require a durable provider-tool row and a ready application journal
+before the deliberate receipt crash; output text alone cannot prove that the
+fault armed. Compare worker/home tool history counts after recovery. Drive
+browser reload at DPR1/2 and both 1440x900 and 1920x1080; record
 initial visible recovery state and definitive restored transcript, then inspect
 recordings for blank or stuck frames. A source-only pass or composer placeholder
 alone does not establish this live acceptance. Run the separate lost-page-ACK
@@ -570,3 +573,10 @@ sequence gap and single history/settlement after re-ACK. Clean up exact owned
 processes, temporary provider copies, network controls and stack.
 
 MP-08 / MP-10 / MP-11 workflow repeat: interrupt receipt/result saves on a failed workflow page, reopen both real stores, and require the exact node failure and one failure event to survive. Workflow transitions must commit before the page result becomes ready; replay must skip a node already terminal without replaying handoffs or failure events.
+
+MP-08 / MP-10 / MP-11 final-journal cleanup repeat: fail deletion only for the
+final page after the exact successor is admitted. Remove the fault without
+restarting and require that successor to reach the worker exactly once. Also
+restart with that admitted successor still Accepted; the normal restart sweep
+must recover its dispatch. A ready native journal must restore its worker-run
+snapshot and runtime profile without selecting an old run over a newer turn.

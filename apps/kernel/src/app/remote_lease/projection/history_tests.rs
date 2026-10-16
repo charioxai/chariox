@@ -265,3 +265,77 @@ fn mp08_projection_lost_reply_replays_output_after_store_reopen() {
         "lost consuming reply discarded the worker output"
     );
 }
+
+#[test]
+fn mp08_history_only_tool_snapshots_survive_retained_delivery_and_reopen() {
+    let (mut app, leased) = worker_lease();
+    let run = super::explicit_completion_tests::provider_run(
+        "run",
+        &leased.backing_session_id,
+        &leased.backing_agent_id,
+        "managed-dev-stub",
+        "managed-dev-stub",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.providers_mut().insert_run_for_test(run);
+    for (index, status) in ["running", "completed"].into_iter().enumerate() {
+        let payload = serde_json::to_string(&serde_json::json!({
+            "id": "read-history-only", "name": "Read", "status": status,
+            "output": format!("public source line {index}"),
+        }))
+        .unwrap();
+        app.append_history_entry(
+            &leased.backing_session_id,
+            crate::history::SessionHistoryEntry::provider_output(
+                &leased.backing_session_id,
+                "run",
+                Some(&leased.backing_agent_id),
+                TerminalOutputKind::ProviderTool,
+                Some("read-history-only".into()),
+                payload.clone(),
+            ),
+        );
+        let event = RemoteLeaseRuntime::new(&mut app)
+            .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+            .unwrap()
+            .expect("history-only tool must create a delivery")
+            .1;
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            output_chunks,
+            delivery: Some(receipt),
+            ..
+        } = &event
+        else {
+            panic!("receipted history projection required")
+        };
+        assert_eq!(
+            output_chunks.len(),
+            1,
+            "a tool absent from terminal records must reach home"
+        );
+        assert_eq!(output_chunks[0].kind, TerminalOutputKind::ProviderTool);
+        assert_eq!(output_chunks[0].bytes, payload.as_bytes());
+        let path = app.operational_history_store().path().to_path_buf();
+        app.operational_history = crate::history::OperationalHistoryStore::open(path).unwrap();
+        let retry = RemoteLeaseRuntime::new(&mut app)
+            .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(
+            serde_json::to_value(retry).unwrap(),
+            serde_json::to_value(&event).unwrap(),
+            "lost page ACK replays identical retained bytes"
+        );
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .acknowledge_leased_runtime_projection(&leased.id, "run", receipt)
+            .unwrap());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+            .unwrap()
+            .is_none());
+    }
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}

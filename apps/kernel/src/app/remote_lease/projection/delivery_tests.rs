@@ -275,7 +275,7 @@ fn mp08_home_projection_receipt_failure_is_restart_safe() {
 
 #[test]
 fn mp08_home_projection_partial_application_and_queue_boundary_are_restart_safe() {
-    for boundary in ["result", "cleanup", "native"] {
+    for boundary in ["result", "cleanup", "native", "cleanup-dispatching", "cleanup-delivered"] {
         home_projection_fault_is_restart_safe(boundary);
     }
 }
@@ -353,14 +353,22 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
             home_session_id: session.id().into(),
             home_agent_id: agent.id().into(),
             provider_run_id: "run".into(),
-            provider_run: (boundary == "native").then(|| {
+            provider_run: matches!(
+                boundary,
+                "native" | "cleanup-dispatching" | "cleanup-delivered"
+            )
+            .then(|| {
                 let mut run = super::explicit_completion_tests::provider_run(
                     "run",
                     "worker-session",
                     "worker-agent",
                     "claude",
                     "claude",
-                    crate::provider::ProviderClientInterface::NativeTui,
+                    if boundary == "native" {
+                        crate::provider::ProviderClientInterface::NativeTui
+                    } else {
+                        crate::provider::ProviderClientInterface::Chariox
+                    },
                 );
                 run.mark_running();
                 run
@@ -416,7 +424,7 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
         let trigger = match boundary {
             "receipt" | "native" => "CREATE TRIGGER fail_home_receipt BEFORE INSERT ON leased_projection_delivery_receipts BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END;",
             "result" => "CREATE TRIGGER fail_home_receipt BEFORE UPDATE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected result failure'); END;",
-            "cleanup" => "CREATE TRIGGER fail_home_receipt BEFORE DELETE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected cleanup failure'); END;",
+            "cleanup" | "cleanup-dispatching" | "cleanup-delivered" => "CREATE TRIGGER fail_home_receipt BEFORE DELETE ON home_projection_applications BEGIN SELECT RAISE(FAIL, 'injected cleanup failure'); END;",
             _ => unreachable!(),
         };
         connection.execute_batch(trigger).unwrap();
@@ -440,7 +448,29 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 successor.id()
             );
         }
-        if boundary == "cleanup" && final_page {
+        if matches!(boundary, "cleanup-dispatching" | "cleanup-delivered") && final_page {
+            let phase = if boundary == "cleanup-dispatching" {
+                crate::session::DurablePromptDeliveryPhase::Dispatching
+            } else {
+                crate::session::DurablePromptDeliveryPhase::Delivered
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                successor.id(),
+                phase,
+                Some("successor-run".into()),
+                None,
+            )
+            .unwrap();
+            app.agents
+                .set_remote_execution_active_worker_provider_run_id(
+                    agent.id(),
+                    Some("successor-run".into()),
+                )
+                .unwrap();
+        }
+        if boundary.starts_with("cleanup") && final_page {
             // A successor may already start before an old journal cleanup retry.
             app.agents
                 .set_agent_state(agent.id(), crate::agent::AgentState::Working)
@@ -533,7 +563,9 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
         );
         assert_eq!(
             recovered.remote_dispatches.len(),
-            usize::from(final_page && boundary != "cleanup"),
+            usize::from(
+                final_page && !matches!(boundary, "cleanup-dispatching" | "cleanup-delivered")
+            ),
             "one successor admission: {boundary}"
         );
         let active = app
@@ -548,7 +580,34 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
                 original.id()
             }
         );
+        if matches!(boundary, "cleanup-dispatching" | "cleanup-delivered") && final_page {
+            assert_eq!(
+                app.agents
+                    .get_agent(agent.id())
+                    .unwrap()
+                    .remote_execution()
+                    .unwrap()
+                    .active_worker_provider_run_id
+                    .as_deref(),
+                Some("successor-run"),
+                "an old journal cannot select its old run over the successor"
+            );
+        }
         if boundary == "native" {
+            let run_id = crate::provider::projected_leased_provider_run_id("leased", "run");
+            let run = app
+                .provider_run_projection
+                .get(&run_id)
+                .expect("ready journal must restore the retained worker run snapshot");
+            assert_eq!(run.state(), crate::provider::ProviderRunState::Running);
+            assert_eq!(run.agent_instance_id(), Some(agent.id()));
+            assert_eq!(
+                app.sessions
+                    .get_session(session.id())
+                    .unwrap()
+                    .active_provider_run_id(),
+                Some(run_id.as_str())
+            );
             assert_eq!(
                 app.agents
                     .get_agent(agent.id())
@@ -584,4 +643,14 @@ fn home_projection_fault_is_restart_safe(boundary: &str) {
             active.id()
         );
     }
+}
+
+#[test]
+fn mp08_review_f6_cleanup_reemits_the_exact_unsent_successor() {
+    home_projection_fault_is_restart_safe("cleanup");
+}
+
+#[test]
+fn mp08_review_f6_ready_journal_restores_worker_run_snapshot() {
+    home_projection_fault_is_restart_safe("native");
 }

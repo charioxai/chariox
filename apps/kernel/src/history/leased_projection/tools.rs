@@ -12,6 +12,8 @@ pub(crate) struct ToolProjectionState {
     #[serde(default)]
     delta_offsets: std::collections::BTreeMap<String, u64>,
     revision: u64,
+    #[serde(default)]
+    history_owned: bool,
 }
 
 impl ToolProjectionState {
@@ -69,7 +71,27 @@ impl ToolProjectionState {
             self.delta_offsets.insert(field.into(), offset);
         }
         self.revision += 1;
+        self.history_owned = false;
         true
+    }
+
+    pub(crate) fn record_history(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Streamed deltas already own their tool's projection. A tool with
+        // no terminal record must instead project its durable snapshots,
+        // including later status changes, through the same retained delivery.
+        if self.revision != 0 && !self.history_owned {
+            return false;
+        }
+        let changed = self.record(snapshot_key, bytes, stable_identity);
+        if changed {
+            self.history_owned = true;
+        }
+        changed
     }
 }
 
