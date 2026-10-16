@@ -522,7 +522,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
     }
@@ -536,7 +535,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         if let Some(replayed) =
@@ -552,7 +550,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
         )?;
         let provider_run_id = match &prepared.provider_run {
@@ -580,7 +577,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )?;
         let provider_run_id = match &prepared.provider_run {
@@ -658,7 +654,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<PreparedLeasedPromptSubmission, DaemonError> {
         let leased_agent = self
@@ -671,14 +666,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })?;
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
-        let required_skill_context = if let Some(required_skills) = required_skills.as_deref() {
-            self.apply_required_remote_skills(&leased_agent, required_skills)?;
-            self.required_remote_skill_prompt_context(&leased_agent, prompt)?
-        } else {
-            String::new()
-        };
-        let hidden_system_context =
-            join_hidden_context(hidden_system_context, &required_skill_context);
+        let hidden_system_context = hidden_system_context.to_string();
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         if let Some(mode) = git_context
             .as_ref()
@@ -832,7 +820,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     ) -> Result<(String, Option<crate::app::KernelPromptDispatch>), DaemonError> {
         let leased_agent = self
             .app
@@ -915,9 +902,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
-        if let Some(required_skills) = required_skills.as_deref() {
-            self.apply_required_remote_skills(&leased_agent, required_skills)?;
-        }
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
         if self.leased_turn_is_waiting_for_capacity(leased_agent_id) {
@@ -1484,7 +1468,6 @@ mod receipt_tests {
                 None,
                 Some(context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should accept the prompt");
@@ -1658,7 +1641,6 @@ mod receipt_tests {
                 None,
                 Some(context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should accept the prompt");
@@ -1812,7 +1794,6 @@ mod receipt_tests {
                 "queued steer payload\n",
                 "",
                 Vec::new(),
-                None,
             )
             .expect("worker should prepare exact steer");
         assert!(
@@ -1844,7 +1825,6 @@ mod receipt_tests {
                 "queued steer payload\n",
                 "",
                 Vec::new(),
-                None,
             )
             .expect("exact retry should read the prior receipt");
         assert!(
@@ -1872,7 +1852,6 @@ mod receipt_tests {
                 "rejected steer payload\n",
                 "",
                 Vec::new(),
-                None,
             )
             .expect("second exact steer should prepare");
         assert!(rejected_dispatch.is_some());
@@ -1940,7 +1919,6 @@ mod receipt_tests {
                     "late original relay request\n",
                     "",
                     Vec::new(),
-                    None,
                 )
                 .is_err(),
             "a delayed original request must not dispatch after a rejection tombstone"

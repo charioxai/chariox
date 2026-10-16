@@ -313,13 +313,11 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 message: "only `mcp list`, `mcp show`, `mcp install-json`, `mcp update-json`, `mcp uninstall`, `mcp import`, `mcp grant`, and `mcp revoke` are routed for metaagent command execution yet".to_string(),
             }),
         },
-        "skill" | "skills" => match tokens.get(1).map(String::as_str) {
-            Some(
-                "list" | "ls" | "show" | "get" | "install" | "update" | "uninstall"
-                | "remove" | "import" | "grant" | "revoke",
-            ) => Some(MetaCommandExecutionPolicy::Routed),
+        "skills" => match tokens.get(1).map(String::as_str) {
+            None | Some("list" | "ls" | "show" | "get" | "load" | "preview" | "mutate") =>
+                Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `skill list`, `skill show`, `skill install`, `skill update`, `skill uninstall`, `skill import`, `skill grant`, and `skill revoke` are routed for metaagent command execution yet".to_string(),
+                message: "use skills list|load|preview|mutate; skills have no grant/revoke operation".into(),
             }),
         },
         "extension" | "extensions" => match (

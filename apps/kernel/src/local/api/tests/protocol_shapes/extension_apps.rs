@@ -8,7 +8,7 @@ fn app_discovery_cursor_is_part_of_the_versioned_shared_tool_contract() {
     };
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 533);
     let args = ListExtensionsArgs {
-        kind: Some("app".into()),
+        kind: Some(crate::transport::runtime_tools::ExtensionListKind::App),
         apps_cursor: Some("app-099".into()),
     };
     let snapshot = json!({"kind":"app","apps_cursor":"app-099"});

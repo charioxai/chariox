@@ -291,14 +291,9 @@ impl KernelRuntimeOwnedState {
                     &provider_run,
                     started_next.prompt(),
                 );
-                let granted_skill_context =
-                    self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-                let hidden_system_context = join_hidden_context(
-                    &self.hidden_context_with_failed_requests(
-                        agent_id,
-                        started_next.hidden_system_context(),
-                    ),
-                    &granted_skill_context,
+                let hidden_system_context = self.hidden_context_with_failed_requests(
+                    agent_id,
+                    started_next.hidden_system_context(),
                 );
                 let (source_client_id, _source_user_id) =
                     self.prompt_source_attribution(started_next);

@@ -172,7 +172,6 @@ fn export_kernel_context_mode(
         &mut budget,
         without_credentials,
     )?;
-    export_skills(&sources.skill_root, &mut extensions, &mut budget)?;
     export_scripts(&sources.script_root, &mut extensions, &mut budget)?;
     let referenced_connector_adapters =
         export_connectors(&sources.connector_root, &mut extensions, &mut budget)?;
@@ -284,44 +283,6 @@ fn export_mcps(
                 kind: ExtensionKind::Mcp,
                 scope: KernelExtensionScope::User,
                 name,
-                definition_sha256: extension_definition_hash(&definition)?,
-                definition,
-            },
-        )?;
-    }
-    Ok(())
-}
-
-fn export_skills(
-    root: &Path,
-    extensions: &mut Vec<KernelExtensionSnapshot>,
-    budget: &mut SnapshotMemoryBudget,
-) -> Result<(), DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(vec![root.to_path_buf()]);
-    for metadata in registry.list()? {
-        let skill_root = metadata
-            .path
-            .parent()
-            .ok_or_else(|| kernel_context_error("skill metadata path has no parent"))?;
-        let mut package = registry.package(&metadata.name)?.ok_or_else(|| {
-            kernel_context_error(format!(
-                "skill `{}` disappeared during export",
-                metadata.name
-            ))
-        })?;
-        let executable_paths = skill_executable_paths(skill_root, &package)?;
-        package.metadata.path = PathBuf::from("SKILL.md");
-        let definition = KernelExtensionDefinition::Skill {
-            package,
-            executable_paths,
-        };
-        push_extension(
-            extensions,
-            budget,
-            KernelExtensionSnapshot {
-                kind: ExtensionKind::Skill,
-                scope: KernelExtensionScope::User,
-                name: metadata.name,
                 definition_sha256: extension_definition_hash(&definition)?,
                 definition,
             },
@@ -923,7 +884,6 @@ fn push_extension(
         ));
     }
     let file_count = match &extension.definition {
-        KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
         KernelExtensionDefinition::Script { .. } => 1,
         KernelExtensionDefinition::Mcp { runtime, .. } => {
             runtime.as_ref().map_or(0, |runtime| runtime.files.len())
@@ -1029,40 +989,6 @@ pub(super) fn extension_definition_hash(
         .map_err(|error| {
             kernel_context_error(format!("serialize kernel Extension definition: {error}"))
         })
-}
-
-fn skill_executable_paths(
-    skill_root: &Path,
-    package: &crate::skill::CharioxSkillPackage,
-) -> Result<Vec<String>, DaemonError> {
-    validate_portable_package_paths(package.files.iter().map(|file| file.path.as_str()))?;
-    let mut executable_paths = Vec::new();
-    for packaged_file in &package.files {
-        let relative = Path::new(&packaged_file.path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-        {
-            return Err(kernel_context_error(
-                "skill package contains a nonportable path",
-            ));
-        }
-        let (bytes, metadata) =
-            read_bounded_regular_file_with_metadata(&skill_root.join(relative), MAX_FILE_BYTES)?;
-        if sha256_hex(&bytes) != packaged_file.sha256 {
-            return Err(kernel_context_error(format!(
-                "skill package file `{}` changed during export",
-                packaged_file.path
-            )));
-        }
-        validate_safe_package_file(&packaged_file.path, &bytes)?;
-        if is_executable(&metadata) {
-            executable_paths.push(packaged_file.path.clone());
-        }
-    }
-    executable_paths.sort();
-    Ok(executable_paths)
 }
 
 fn export_portable_mcp(

@@ -277,13 +277,6 @@ impl CommandRouter {
             | LocalDaemonRequest::GetConnector(_)
             | LocalDaemonRequest::ListConnectors(_)
             | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::UpsertSkill(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)
             | LocalDaemonRequest::SkillsV2(_)) => Box::pin(async move {
                 let credential_vault = self
                     .config_projection

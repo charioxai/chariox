@@ -13,7 +13,8 @@ public enum LocalDaemonRequest: Encodable, Sendable {
     case startProviderLogin(provider: String)
     case logoutProvider(provider: String)
     case listMcpServers(workspaceID: String?)
-    case listSkills(workspaceID: String?)
+    case runtimeCapabilities
+    case createProject(name: String)
     case skillsV2(SkillsV2Request)
     case submitPrompt(sessionID: String, attachmentID: String, targetAgentID: String?, prompt: String)
     case cancelActivePrompt(sessionID: String, attachmentID: String)
@@ -113,11 +114,11 @@ public enum LocalDaemonRequest: Encodable, Sendable {
             )
         case let .skillsV2(request):
             try container.encode(request, forKey: DynamicCodingKey("SkillsV2"))
-        case let .listSkills(workspaceID):
-            try container.encode(
-                WorkspaceScopedPayload(workspaceID: workspaceID),
-                forKey: DynamicCodingKey("ListSkills")
-            )
+        case .runtimeCapabilities:
+            try container.encodeNil(forKey: DynamicCodingKey("RelayStatus"))
+        case let .createProject(name):
+            try container.encode(SkillsV2CreateProjectRequest.Payload(name: name), forKey: DynamicCodingKey("CreateProject"))
+
         case let .submitPrompt(sessionID, attachmentID, targetAgentID, prompt):
             try container.encode(
                 SubmitPromptPayload(

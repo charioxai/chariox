@@ -867,7 +867,6 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         } => {
@@ -882,7 +881,6 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
                 )
@@ -960,7 +958,6 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         } => {
@@ -974,7 +971,6 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                     provider_launch_credential,
                 )
@@ -1044,7 +1040,6 @@ pub(super) async fn handle_daemon_peer_request(
             prompt,
             hidden_system_context,
             attachments,
-            required_skills,
         } => {
             let steered = router
                 .relay_steer_leased_prompt(
@@ -1054,7 +1049,6 @@ pub(super) async fn handle_daemon_peer_request(
                     &prompt,
                     &hidden_system_context,
                     attachments,
-                    required_skills,
                 )
                 .await;
             match steered {
@@ -1480,10 +1474,9 @@ pub(super) async fn handle_daemon_peer_request(
                 .dispatch_forwarded_capability_runtime_tool_call(context, tool_name, arguments)
                 .await;
             match handled {
-                Ok((result, skill_package, remote_extension_manifest)) => {
+                Ok((result, remote_extension_manifest)) => {
                     RelayPeerResponse::CapabilityRuntimeToolHandled {
                         result,
-                        skill_package,
                         remote_extension_manifest,
                     }
                 }
@@ -1870,12 +1863,27 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::EnsureRemoteSkillPackages { context, packages, manifest } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages {
+            execution_lease_id,
+            context,
+            packages,
+            manifest,
+        } => {
             let ensured = router
-                .relay_ensure_remote_skill_packages(context.clone(), packages)
+                .relay_ensure_remote_skill_packages(
+                    context.clone(),
+                    execution_lease_id.clone(),
+                    manifest.clone(),
+                    packages,
+                )
                 .await;
             match ensured {
-                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { context, manifest, materialized },
+                Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured {
+                    execution_lease_id,
+                    context,
+                    manifest,
+                    materialized,
+                },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -2877,7 +2885,6 @@ mod tests {
                 None,
                 Some(git_context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should accept the prompt");
@@ -3012,7 +3019,6 @@ mod tests {
                 prompt: "late original steer must not reach provider input\n".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await;

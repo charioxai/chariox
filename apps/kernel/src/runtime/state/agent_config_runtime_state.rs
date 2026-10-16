@@ -25,10 +25,6 @@ impl KernelRuntimeState {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
                     .await
             }
-            crate::extension::ExtensionKind::Skill => {
-                self.grant_agent_skill(agent_ref, grant.name, caller_user_id)
-                    .await
-            }
             crate::extension::ExtensionKind::Script => {
                 self.ensure_agent_extension_tool_names_available(
                     agent_ref,
@@ -145,9 +141,7 @@ impl KernelRuntimeState {
                         reserved.extend(connector.allowed_operation_tool_names(max_safety));
                     }
                 }
-                crate::extension::ExtensionKind::Mcp
-                | crate::extension::ExtensionKind::Skill
-                | crate::extension::ExtensionKind::App => {}
+                crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::App => {}
             }
         }
         let proposed_names = match proposed.kind {
@@ -163,9 +157,9 @@ impl KernelRuntimeState {
                     crate::connector::ConnectorSafety::parse(proposed.max_safety.as_deref())?;
                 connector.allowed_operation_tool_names(max_safety)
             }
-            crate::extension::ExtensionKind::Mcp
-            | crate::extension::ExtensionKind::Skill
-            | crate::extension::ExtensionKind::App => Vec::new(),
+            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::App => {
+                Vec::new()
+            }
         };
         for name in proposed_names {
             if reserved.contains(&name) {
@@ -199,10 +193,6 @@ impl KernelRuntimeState {
             }
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
-            }
-            crate::extension::ExtensionKind::Skill => {
-                self.revoke_agent_skill(agent_ref, name, caller_user_id)
-                    .await
             }
             crate::extension::ExtensionKind::Script => {
                 let agent = self.owned.revoke_agent_extension(
@@ -352,56 +342,6 @@ impl KernelRuntimeState {
                 agent_id: agent.id().to_string(),
                 name: name.to_string(),
             })
-            .await?;
-        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
-        Ok(agent)
-    }
-
-    pub(crate) async fn grant_agent_skill(
-        &self,
-        agent_ref: &str,
-        name: String,
-        caller_user_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.authorize_current_forwarded_binding()?;
-        let agent = self
-            .owned
-            .grant_agent_skill(agent_ref, name.clone(), caller_user_id)?;
-        self.append_agent_durable_event("agent.skill_granted", &agent, Some(&name))
-            .await?;
-        self.ensure_remote_skill_packages_for_agent(&agent).await?;
-        self.append_home_extension_named_grant_audit_event(
-            "home_extension.grant.created",
-            &agent,
-            caller_user_id,
-            crate::extension::ExtensionKind::Skill,
-            &name,
-        )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
-            .await?;
-        self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
-        Ok(agent)
-    }
-
-    pub(crate) async fn revoke_agent_skill(
-        &self,
-        agent_ref: &str,
-        name: &str,
-        caller_user_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let agent = self
-            .owned
-            .revoke_agent_skill(agent_ref, name, caller_user_id)?;
-        self.append_agent_durable_event("agent.skill_revoked", &agent, Some(name))
-            .await?;
-        self.append_home_extension_named_grant_audit_event(
-            "home_extension.grant.revoked",
-            &agent,
-            caller_user_id,
-            crate::extension::ExtensionKind::Skill,
-            name,
-        )?;
-        self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(agent.session_id(), agent.id())?;
         Ok(agent)

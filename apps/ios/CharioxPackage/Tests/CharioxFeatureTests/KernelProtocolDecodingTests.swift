@@ -463,35 +463,13 @@ import Testing
     #expect(mcps[0].transport.keys.contains("stdio"))
 }
 
-@Test func skillsListedResponseDecodesSkills() throws {
-    let json = """
-    {
-      "type": "response",
-      "request_id": "request-skill-list",
-      "response": {
-        "SkillsListed": {
-          "skills": [
-            {
-              "name": "swiftui-expert",
-              "description": "SwiftUI guidance",
-              "short_description": "SwiftUI",
-              "path": "/skills/swiftui"
-            }
-          ]
-        }
-      },
-      "error": null
-    }
-    """
-
+@Test func legacySkillsListedHasNoCompatibilityDecoder() throws {
+    let json = #"{"type":"response","request_id":"legacy","response":{"SkillsListed":{"skills":[]}},"error":null}"#
     let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
-    guard case let .skillsListed(skills) = frame.response else {
-        Issue.record("Expected SkillsListed response")
+    guard case .unknown("SkillsListed") = frame.response else {
+        Issue.record("Legacy skills must not decode into an executable catalog")
         return
     }
-
-    #expect(skills[0].name == "swiftui-expert")
-    #expect(skills[0].shortDescription == "SwiftUI")
 }
 
 @Test func sessionResponseDecodesPromptStateAndInteractions() throws {

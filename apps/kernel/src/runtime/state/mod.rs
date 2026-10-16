@@ -390,7 +390,6 @@ mod prompt_dispatch;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
-mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
 mod provider_account_admission;

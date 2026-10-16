@@ -560,7 +560,6 @@ async fn launch_remote_room_provider(
             workflow_context: None,
             git_context: None,
             required_mcps: Vec::new(),
-            required_skills: None,
             remote_extension_manifest: remote_extension_manifest.clone(),
             provider_launch_credential: None,
         },

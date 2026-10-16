@@ -326,16 +326,6 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
                     reason: "different definition hash, older source".to_string(),
                 }],
             }],
-            skills: vec![crate::local::ProviderCapabilityImportEntry {
-                kind: "skill".to_string(),
-                name: "qa".to_string(),
-                provider: "codex".to_string(),
-                source: "/repo/.codex/skills/qa".to_string(),
-                hash: Some("hash-2".to_string()),
-                action: "already_installed".to_string(),
-                reason: "matching skill package already installed in Chariox".to_string(),
-                duplicates: Vec::new(),
-            }],
         },
     };
 
@@ -361,7 +351,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "431b8a8d30850209aad51fab65d31ffb9e8d9ff6ced4533fbc92f96c12ba6060"
+        "c7f4cbcd3df68c892a2eb0b5b887dbad4af91923f0b9c547db6df239fb3110fc"
     );
 }
 

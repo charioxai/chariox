@@ -633,17 +633,7 @@ impl CommandRouter {
                     &agents,
                 )
             }
-            "skill" | "skills" => {
-                let agents = self.runtime_state.session_agents(session.id());
-                meta_extension_request(
-                    session,
-                    metaagent,
-                    ExtensionKind::Skill,
-                    "skill",
-                    &tokens[1..],
-                    &agents,
-                )
-            }
+            "skills" => super::request::meta_skills_request(session, metaagent, &tokens[1..]),
             "extension" | "extensions"
                 if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))
                     && tokens.get(2).map(String::as_str) == Some("app") =>

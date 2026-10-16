@@ -182,25 +182,6 @@ impl SkillCatalogStorage {
         Ok(file)
     }
     pub(super) fn directory(&self, relative: &Path) -> Result<PathBuf, DaemonError> {
-        let mut path = self.home.clone();
-        for part in relative.components() {
-            let std::path::Component::Normal(part) = part else {
-                return Err(failure("invalid catalog path"));
-            };
-            path.push(part);
-            match fs::create_dir(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(_) => return Err(failure("cannot create catalog directory")),
-            }
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|_| failure("cannot inspect catalog directory"))?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(failure(
-                    "catalog directory must be owned state, not a symlink",
-                ));
-            }
-        }
-        Ok(path)
+        super::paths::owned_directory(&self.home, relative)
     }
 }

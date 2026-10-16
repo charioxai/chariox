@@ -23,23 +23,23 @@ impl Drop for Fixture {
 fn skills_v2_package_cache_tampering_is_rejected() {
     let f = Fixture::new();
     let p = package::package_skill_directory(&f.0.join("source")).unwrap();
-    let root = package::materialize_skill_package(&f.0.join("out"), &p).unwrap();
+    let root = package::materialize_skill_package_for_id(&f.0.join("out"), "skill-1", &p).unwrap();
     std::fs::write(root.join("SKILL.md"), "tampered").unwrap();
-    assert!(package::materialize_skill_package(&f.0.join("out"), &p).is_err());
+    assert!(package::materialize_skill_package_for_id(&f.0.join("out"), "skill-1", &p).is_err());
 }
 #[test]
 fn skills_v2_package_duplicate_paths_are_rejected() {
     let f = Fixture::new();
     let mut p = package::package_skill_directory(&f.0.join("source")).unwrap();
     p.files.push(p.files[0].clone());
-    assert!(package::materialize_skill_package(&f.0.join("out"), &p).is_err());
+    assert!(package::materialize_skill_package_for_id(&f.0.join("out"), "skill-1", &p).is_err());
 }
 #[test]
 fn skills_v2_package_receiver_file_count_is_bounded() {
     let f = Fixture::new();
     let mut p = package::package_skill_directory(&f.0.join("source")).unwrap();
     p.files = vec![p.files[0].clone(); 513];
-    assert!(package::materialize_skill_package(&f.0.join("out"), &p).is_err());
+    assert!(package::materialize_skill_package_for_id(&f.0.join("out"), "skill-1", &p).is_err());
 }
 #[cfg(unix)]
 #[test]
@@ -53,7 +53,8 @@ fn skills_v2_package_executable_modes_are_in_complete_digest() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     let after = package::package_skill_directory(&f.0.join("source")).unwrap();
     assert_ne!(before.version_hash, after.version_hash);
-    let out = package::materialize_skill_package(&f.0.join("out"), &after).unwrap();
+    let out =
+        package::materialize_skill_package_for_id(&f.0.join("out"), "skill-1", &after).unwrap();
     assert_ne!(
         std::fs::metadata(out.join("helper.sh"))
             .unwrap()

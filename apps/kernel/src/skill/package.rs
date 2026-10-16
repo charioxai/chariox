@@ -1,5 +1,5 @@
 //! MP-08 / MP-10 / MP-11: bounded immutable instruction payloads, including modes.
-use super::{managed_capability_root, CharioxSkillMetadata};
+use super::CharioxSkillMetadata;
 use crate::{error::DaemonError, mcp::validate_registry_name};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -47,12 +47,6 @@ fn failure(message: &str) -> DaemonError {
     }
 }
 
-pub fn materialize_skill_package(
-    base_dir: &Path,
-    package: &CharioxSkillPackage,
-) -> Result<PathBuf, DaemonError> {
-    materialize_skill_package_for_id(base_dir, &package.metadata.name, package)
-}
 pub(super) fn materialize_skill_package_for_id(
     base_dir: &Path,
     id: &str,
@@ -218,15 +212,6 @@ pub(crate) fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
         hasher.update([0, u8::from(file.executable), 0]);
     }
     format!("{:x}", hasher.finalize())
-}
-pub(crate) fn remote_skill_materialization_base(_workspace: impl AsRef<Path>) -> PathBuf {
-    if let Some(root) = managed_capability_root() {
-        return root.join("state/skill-materializations");
-    }
-    crate::config::DaemonConfig::default_user_config_path()
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("state/skill-materializations")
 }
 pub(crate) fn package_skill_directory(
     skill_dir: &Path,

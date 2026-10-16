@@ -3673,13 +3673,6 @@ impl KernelRuntimeState {
                 &provider_run,
                 &dispatch.prompt,
             );
-            let granted_skill_context = owned.granted_skill_hidden_context(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &prompt_with_handoff,
-            )?;
-            let hidden_system_context =
-                join_hidden_context(&hidden_system_context, &granted_skill_context);
             let (source_client_id, _source_user_id) =
                 owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
@@ -3740,11 +3733,7 @@ impl KernelRuntimeState {
         );
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
-        let provider_prompt = owned.apply_granted_skill_summary(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_hidden_context,
-        )?;
+        let provider_prompt = prompt_with_hidden_context;
         let uses_claude_native_bridge =
             crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
         let provider_pty_input =

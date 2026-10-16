@@ -29,7 +29,6 @@ fn leased_prompt_submission_request(
             prompt_summary: "worker receipt restart fixture".to_string(),
         }),
         required_mcps: Vec::new(),
-        required_skills: None,
         remote_extension_manifest: Default::default(),
         provider_launch_credential: None,
     }
@@ -284,7 +283,6 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
                 prompt: "accepted queued steer\n".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await

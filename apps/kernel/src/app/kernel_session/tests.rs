@@ -156,16 +156,6 @@ fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
     path
 }
 
-fn install_test_skill(workspace: &std::path::Path, name: &str) {
-    let skill_dir = workspace.join(".chariox").join("skills").join(name);
-    fs::create_dir_all(&skill_dir).expect("skill dir should be created");
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        format!("---\nname: {name}\ndescription: Workflow-code test skill\n---\nUse this skill.\n"),
-    )
-    .expect("skill should be written");
-}
-
 mod bootstrap;
 mod workflow_code_apply;
 mod workflow_code_preflight;

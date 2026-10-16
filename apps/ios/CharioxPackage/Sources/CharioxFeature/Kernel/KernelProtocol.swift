@@ -127,7 +127,8 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case providerLoginStarted(ProviderLoginStart)
     case providerLoggedOut(String)
     case mcpServersListed([CharioxMcpServerConfig])
-    case skillsListed([CharioxSkillMetadata])
+    case runtimeCapabilities([String])
+    case projectCreated(SkillsV2JSON)
     case skillsV2(SkillsV2Response)
     case promptSubmitted(RuntimeSession)
     case promptCancelled
@@ -207,14 +208,19 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
             self = .mcpServersListed(payload.mcps)
             return
         }
+        if let key = container.allKeys.first(where: { $0.stringValue == "ProjectCreated" }) {
+            let payload = try container.decode(SkillsV2ProjectCreatedResponse.Payload.self, forKey: key)
+            self = .projectCreated(payload.project)
+            return
+        }
         if let key = container.allKeys.first(where: { $0.stringValue == "SkillsV2" }) {
             let payload = try container.decode(SkillsV2Payload.self, forKey: key)
             self = .skillsV2(payload.result)
             return
         }
-        if let key = container.allKeys.first(where: { $0.stringValue == "SkillsListed" }) {
-            let payload = try container.decode(SkillsListedPayload.self, forKey: key)
-            self = .skillsListed(payload.skills)
+        if let key = container.allKeys.first(where: { $0.stringValue == "RelayStatus" }) {
+            let payload = try container.decode(RuntimeCapabilitiesPayload.self, forKey: key)
+            self = .runtimeCapabilities(payload.status.capabilities ?? [])
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "PromptSubmitted" }) {
@@ -457,8 +463,11 @@ private struct McpServersListedPayload: Decodable, Equatable, Sendable {
     let mcps: [CharioxMcpServerConfig]
 }
 
-private struct SkillsListedPayload: Decodable, Equatable, Sendable {
-    let skills: [CharioxSkillMetadata]
+private struct RuntimeCapabilitiesPayload: Decodable, Equatable, Sendable {
+    struct Status: Decodable, Equatable, Sendable {
+        let capabilities: [String]?
+    }
+    let status: Status
 }
 
 private struct PromptSubmittedPayload: Decodable, Equatable, Sendable {

@@ -88,7 +88,6 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
         )
@@ -172,7 +171,6 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
     );
@@ -239,7 +237,6 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
     ));
@@ -320,7 +317,6 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
         )

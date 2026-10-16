@@ -28,7 +28,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<LaunchProviderRequest, DaemonError> {
         let leased_agent = self
@@ -39,9 +38,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if let Some(required_skills) = required_skills.as_deref() {
-            self.apply_required_remote_skills(&leased_agent, required_skills)?;
-        }
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             &leased_agent,
@@ -123,7 +119,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let request = self.prepare_leased_native_provider_launch(
@@ -136,7 +131,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
         )?;
         self.app.launch_leased_provider(request)
@@ -286,7 +280,6 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native launch request should prepare");
@@ -367,7 +360,6 @@ mod tests {
                 None,
                 None,
                 vec![required],
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native run should launch");
@@ -483,7 +475,6 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 manifest.clone(),
             )
             .expect("native run should launch");
@@ -559,7 +550,6 @@ mod tests {
             None,
             None,
             vec![required],
-            Some(Vec::new()),
             crate::extension::RemoteExtensionManifest::default(),
         );
 

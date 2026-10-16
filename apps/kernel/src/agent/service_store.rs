@@ -470,14 +470,6 @@ impl AgentServiceStore {
         self.write().revoke_mcp(agent_ref, name)
     }
 
-    pub fn grant_skill(&self, agent_ref: &str, name: String) -> Result<AgentInstance, DaemonError> {
-        self.write().grant_skill(agent_ref, name)
-    }
-
-    pub fn revoke_skill(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
-        self.write().revoke_skill(agent_ref, name)
-    }
-
     pub fn revoke_extension(
         &self,
         agent_ref: &str,

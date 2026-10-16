@@ -111,11 +111,6 @@ pub enum KernelExtensionDefinition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime: Option<KernelMcpStdioRuntimeSnapshot>,
     },
-    Skill {
-        package: crate::skill::CharioxSkillPackage,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        executable_paths: Vec<String>,
-    },
     Script {
         script: KernelScriptSnapshot,
     },
@@ -273,16 +268,6 @@ impl fmt::Debug for KernelExtensionDefinition {
                     &runtime.as_ref().map_or(0, |runtime| runtime.files.len()),
                 )
                 .finish_non_exhaustive(),
-            Self::Skill {
-                package,
-                executable_paths,
-            } => formatter
-                .debug_struct("Skill")
-                .field("name", &package.metadata.name)
-                .field("version_hash", &package.version_hash)
-                .field("file_count", &package.files.len())
-                .field("executable_file_count", &executable_paths.len())
-                .finish(),
             Self::Script { script } => formatter
                 .debug_struct("Script")
                 .field("runtime", &script.runtime)

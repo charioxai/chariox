@@ -554,21 +554,8 @@ impl KernelRuntimeState {
             )? {
                 return Ok(());
             }
-            let agent = self.owned.agent_store.get_agent(agent_id)?;
-            let (prompt, _) = match self
-                .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
-                .await
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    attempt = attempt.saturating_add(1);
-                    self.log_remote_prompt_recovery_retry(
-                        session_id, agent_id, &dispatch, attempt, &error,
-                    );
-                    tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
-                    continue;
-                }
-            };
+            let _agent = self.owned.agent_store.get_agent(agent_id)?;
+            let prompt = dispatch.prompt.clone();
             let attachments = dispatch.attachments.clone();
             let attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)

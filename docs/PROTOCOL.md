@@ -357,7 +357,7 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
-- MP-08 / MP-10 / MP-11: Skills v2 (local 533 / peer 141) replaces the v8 skill-grant requirement contract. Home-selected instruction packages and scope/state/revision follow every leased execution placement through `EnsureRemoteSkillPackages`. Worker receipt validation is lease-bound; received packages must not synthesize agent grants or become a worker catalog. The older standard-worker no-copy exception does not apply to skills. MCP requirements and placement are unchanged.
+- MP-08 / MP-10 / MP-11: Skills v2 (local 533 / peer 141) replaces the v8 skill-grant requirement contract. Home-selected instruction packages and scope/state/revision follow every leased execution placement through `EnsureRemoteSkillPackages`. Both request and receipt require the current `execution_lease_id`; each materialization binds its stable `skill_id` and complete digest. Received packages must not synthesize agent grants or become a worker catalog. The older standard-worker no-copy exception does not apply to skills. MCP requirements and placement are unchanged.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
@@ -377,7 +377,7 @@ MP-08 / MP-10 / MP-11: Project-scoped skills bind the Project ID, independent
 of Workspace membership. Local 533 adds `CreateProject { name }` /
 `ProjectCreated { project }` through the ordinary Project service/actor. A named
 Project can have `workspace_ids: []`; its legacy `workspace_id` shadow is empty,
-never an executable cwd. Add a Workspace before starting a provider session.
+never an executable cwd. A session chooses a valid execution cwd separately; choosing it does not add a Project folder.
 
 Native TUI MCP and skill placement:
 

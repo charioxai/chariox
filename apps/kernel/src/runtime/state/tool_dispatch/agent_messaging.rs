@@ -498,7 +498,6 @@ fn session_agent_description(
         "location": location,
         "extensions": {
             "mcps": extension_names(crate::extension::ExtensionKind::Mcp),
-            "skills": extension_names(crate::extension::ExtensionKind::Skill),
             "scripts": extension_names(crate::extension::ExtensionKind::Script),
             "connectors": extension_names(crate::extension::ExtensionKind::Connector),
         },

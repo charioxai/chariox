@@ -52,7 +52,6 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
             None,
             Some(remote_git_context("home-prompt-1")),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -68,7 +67,6 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
             "REMOTE_STEER_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .expect("first remote steer should deliver");
@@ -83,7 +81,6 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
             "REMOTE_STEER_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .expect("duplicate remote steer should replay its acknowledgement");
@@ -103,7 +100,6 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
                 None,
                 Some(remote_git_context("home-prompt-2")),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("second leased prompt should submit");
@@ -118,7 +114,6 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
             "REMOTE_STEER_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .expect("the next turn should accept a fresh steer namespace");
@@ -220,7 +215,6 @@ async fn leased_provider_tool_list_exposes_workflow_tools_for_fresh_and_reused_d
                 Some(workflow_context),
                 Some(remote_git_context("home-prompt-tools-1")),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("leased workflow prompt should submit")
@@ -269,7 +263,6 @@ async fn leased_provider_tool_list_exposes_workflow_tools_for_fresh_and_reused_d
                     Some(queued_workflow_context),
                     Some(remote_git_context("home-prompt-tools-2")),
                     Vec::new(),
-                    None,
                     crate::extension::RemoteExtensionManifest::default(),
                 )
                 .expect("reused leased workflow prompt should submit");

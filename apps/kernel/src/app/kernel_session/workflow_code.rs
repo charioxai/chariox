@@ -186,10 +186,6 @@ impl<'a> KernelSessionService<'a> {
                 Some(workspace_id),
                 &grant.name,
             ),
-            ExtensionKind::Skill => crate::runtime::capability_registry::ensure_skill_exists(
-                Some(workspace_id),
-                &grant.name,
-            ),
             ExtensionKind::Script => {
                 let environment =
                     grant

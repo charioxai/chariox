@@ -254,40 +254,6 @@ pub(super) fn validate(payload: &KernelContextPayload) -> Result<(), DaemonError
                     files(packaged)?;
                 }
             }
-            KernelExtensionDefinition::Skill {
-                package,
-                executable_paths,
-            } => {
-                let crate::skill::CharioxSkillPackage {
-                    metadata,
-                    version_hash: _,
-                    files,
-                } = package;
-                let crate::skill::CharioxSkillMetadata {
-                    name,
-                    description,
-                    short_description,
-                    path,
-                } = metadata;
-                string(name)?;
-                string(description)?;
-                if let Some(text) = short_description {
-                    string(text)?;
-                }
-                validate_bytes(path.to_str().ok_or_else(refused)?, b"")?;
-                for path in executable_paths {
-                    validate_bytes(path, b"")?;
-                }
-                for crate::skill::CharioxSkillPackageFile {
-                    path,
-                    content_base64,
-                    sha256: _,
-                    executable: _,
-                } in files
-                {
-                    encoded(path, content_base64)?;
-                }
-            }
             KernelExtensionDefinition::Script { script } => {
                 let KernelScriptSnapshot {
                     runtime,

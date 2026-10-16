@@ -277,6 +277,7 @@ pub struct RemoteProviderAccountSyncContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSkillMaterialization {
+    pub skill_id: String,
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
@@ -445,12 +446,6 @@ pub struct RequiredRemoteMcp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequiredRemoteSkill {
-    pub name: String,
-    pub version_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpAvailability {
     pub name: String,
     pub expected_hash: String,
@@ -587,7 +582,7 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RelayPeerRequest {
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -721,8 +716,6 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -757,8 +750,6 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -787,8 +778,6 @@ pub enum RelayPeerRequest {
         hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -966,6 +955,7 @@ pub enum RelayPeerRequest {
         workspace_directories: std::collections::BTreeMap<String, String>,
     },
     EnsureRemoteSkillPackages {
+        execution_lease_id: String,
         manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
@@ -1184,8 +1174,6 @@ pub enum RelayPeerResponse {
     WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1241,6 +1229,7 @@ pub enum RelayPeerResponse {
         project_id: String,
     },
     RemoteSkillPackagesEnsured {
+        execution_lease_id: String,
         context: RemoteSkillSyncContext,
         manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,

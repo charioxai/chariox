@@ -898,14 +898,6 @@ impl KernelRuntimeState {
                 } else {
                     callback_state.required_remote_mcps_for_agent(&agent)?
                 };
-                let required_skills = if native_provider_run {
-                    Some(
-                        callback_state
-                            .required_remote_skills_for_native_provider_launch(&agent)?,
-                    )
-                } else {
-                    None
-                };
                 let mut config = callback_state.config_snapshot().await;
                 if let (Some(relay_url), Some(relay_token)) = (
                     remote_execution.relay_url.clone(),
@@ -927,7 +919,6 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context: Some(git_context),
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };

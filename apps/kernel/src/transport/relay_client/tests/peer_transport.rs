@@ -245,7 +245,6 @@ fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted(
         workflow_context: None,
         git_context: None,
         required_mcps: Vec::new(),
-        required_skills: None,
         remote_extension_manifest: Default::default(),
         provider_launch_credential: Some(
             crate::transport::relay_peer::RemoteProviderLaunchCredential {
@@ -562,7 +561,6 @@ async fn proxied_peer_requests_are_handled_through_relay() {
             workflow_context: None,
             git_context: None,
             required_mcps: Vec::new(),
-            required_skills: None,
             remote_extension_manifest: Default::default(),
             provider_launch_credential: Some(
                 crate::transport::relay_peer::RemoteProviderLaunchCredential {

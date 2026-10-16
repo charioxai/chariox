@@ -68,18 +68,28 @@ fn skills_v2_native_references_reject_client_paths_and_unbound_references() {
 
 #[test]
 fn skills_v2_transfer_requires_revision_manifest_and_bound_receipt() {
-    let wire = serde_json::json!({"kind":"ensure_remote_skill_packages", "context": {
+    let wire = serde_json::json!({"kind":"ensure_remote_skill_packages", "execution_lease_id":"lease-epoch-1", "context": {
         "home_kernel_id":"home","home_session_id":"s","home_agent_id":"a","leased_agent_id":"lease"
     },"manifest":{"catalog_revision":8,"project_id":"p","skills":[{
         "skill_id":"skill1","digest":"digest1","scope":{"kind":"chariox"},"state":"manual"
     }]},"packages":[]});
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "604a811e641198ccdc79b461592e6562e08b5c536f80f79711e0922f893ba4e0"
+    );
     let request: RelayPeerRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let mut unbound = wire.clone();
+    unbound
+        .as_object_mut()
+        .unwrap()
+        .remove("execution_lease_id");
+    assert!(serde_json::from_value::<RelayPeerRequest>(unbound).is_err());
     let mut old = wire.clone();
     old.as_object_mut().unwrap().remove("manifest");
     assert!(serde_json::from_value::<RelayPeerRequest>(old).is_err());
     let response = serde_json::json!({"kind":"remote_skill_packages_ensured",
-        "context":wire["context"],"manifest":wire["manifest"],"materialized":[]});
+        "context":wire["context"],"execution_lease_id":wire["execution_lease_id"],"manifest":wire["manifest"],"materialized":[]});
     assert_eq!(
         serde_json::to_value(
             serde_json::from_value::<RelayPeerResponse>(response.clone()).unwrap()
@@ -206,4 +216,36 @@ fn skills_v2_unwired_runtime_is_not_advertised_by_protocol_foundation() {
     );
     assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
         .contains(&crate::local::SKILLS_V2_RUNTIME_CAPABILITY));
+}
+
+// MP-08 / MP-10 / MP-11: there is no old Skill grant/RPC compatibility decoder.
+#[test]
+fn skills_v2_removed_grants_and_legacy_rpcs_are_rejected() {
+    assert!(
+        serde_json::from_value::<crate::extension::ExtensionKind>(serde_json::json!("skill"))
+            .is_err()
+    );
+    for name in [
+        "UpsertSkill",
+        "InstallSkill",
+        "UpdateSkill",
+        "UninstallSkill",
+        "ImportSkills",
+        "GetSkill",
+        "ListSkills",
+    ] {
+        assert!(
+            serde_json::from_value::<LocalDaemonRequest>(
+                serde_json::json!({name: {"workspace_id":null}})
+            )
+            .is_err(),
+            "{name}"
+        );
+    }
+    let mut old = serde_json::json!({"kind":"submit_leased_prompt", "leased_agent_id":"leased-agent-1", "expected_profile":{
+        "provider":"codex", "account_profile":"account-123", "model":"gpt-6-luna", "effort":"low"
+    }, "prompt":"hello", "attachments":[]});
+    assert!(serde_json::from_value::<RelayPeerRequest>(old.clone()).is_ok());
+    old["required_skills"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<RelayPeerRequest>(old).is_err());
 }

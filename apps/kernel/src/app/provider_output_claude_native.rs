@@ -462,8 +462,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .and_then(Value::as_str)
                     .is_some()
                 {
-                    let context =
-                        self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    // MP-08 / MP-10 / MP-11: retired grants add no hidden context.
+                    let context = String::new();
                     crate::provider::ensure_claude_native_hidden_context_fits(
                         provider_run_id,
                         &context,
@@ -1308,23 +1308,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
     }
 
-    fn claude_native_prompt_context(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt: &str,
-    ) -> Result<String, DaemonError> {
-        let agent = self.app.agents.get_agent(agent_id)?;
-        let session = self.app.sessions.get_session(session_id)?;
-        let skill_grants = agent.skill_grants();
-        crate::skill::format_granted_skill_prompt_context(
-            agent.agent_ref(),
-            &skill_grants,
-            session.workspace_id(),
-            prompt,
-        )
-    }
-
     fn consume_accepted_failed_request_context(
         &mut self,
         session_id: &str,
@@ -1659,12 +1642,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     prompt.attachments.to_vec(),
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                 )?;
-            let skill_context =
-                self.claude_native_prompt_context(session_id, agent_id, &visible)?;
             join_claude_context([
                 envelope.hidden_system_context,
                 origin_context,
-                skill_context,
                 native_hidden,
                 attachment_context,
             ])

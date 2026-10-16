@@ -18,16 +18,16 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     std::fs::create_dir_all(workspace.join("schemas")).expect("schema directory should be created");
-    let skill_dir = workspace
-        .join(".chariox")
-        .join("skills")
-        .join("meta-workflow-code-skill");
-    std::fs::create_dir_all(&skill_dir).expect("workflow-code test skill dir should be created");
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: meta-workflow-code-skill\ndescription: Meta workflow-code test skill.\n---\nUse this skill only in meta workflow-code tests.\n",
-    )
-    .expect("workflow-code test skill should be written");
+    crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
+        &workspace,
+    )])
+    .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+        "meta-workflow-code-mcp",
+        "/bin/echo",
+        vec![],
+    ))
+    .expect("workflow-code test MCP should install");
+
     let schema_path = workspace.join("schemas/final.json");
     std::fs::write(
         &schema_path,
@@ -183,7 +183,7 @@ const planner = workflow.node({
   instructions: "Plan and complete.",
   canCompleteWorkflowRun: true,
   extensions: [
-    { kind: "skill", name: "meta-workflow-code-skill" }
+    { kind: "mcp", name: "meta-workflow-code-mcp" }
   ],
   canvas: { x: 40, y: 80 }
 })
@@ -372,13 +372,13 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                         .is_some_and(|grants| {
                             grants.iter().any(|grant| {
                                 grant.get("kind").and_then(serde_json::Value::as_str)
-                                    == Some("skill")
+                                    == Some("mcp")
                                     && grant.get("name").and_then(serde_json::Value::as_str)
-                                        == Some("meta-workflow-code-skill")
+                                        == Some("meta-workflow-code-mcp")
                             })
                         })
             })),
-        "applied workflow-code should create the planner with the rebound provider/model and skill grant: {:?}",
+        "applied workflow-code should create the planner with the rebound provider/model and MCP grant: {:?}",
         applied.payload
     );
     assert!(

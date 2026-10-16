@@ -713,7 +713,7 @@ mod tests {
             "Do not include runtime ids in provider rebindings",
             "Do not rebind existing-agent nodes",
             "Generated runtime ids are never authored in the script",
-            "Supported `kind` values are `\"mcp\"`, `\"skill\"`, `\"script\"`, and `\"connector\"`",
+            "Supported `kind` values are `\"mcp\"`, `\"script\"`, `\"connector\"`, and `\"app\"`",
             "Script grants must include `environment`",
             "If no queues are defined",
             "Queue aliases must be unique after normalization",

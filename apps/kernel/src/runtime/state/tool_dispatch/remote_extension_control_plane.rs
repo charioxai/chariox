@@ -194,6 +194,12 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        crate::transport::runtime_tools::validate_extension_tool_arguments(tool_name, &arguments)
+            .map_err(|_| DaemonError::LocalTransport {
+            operation: "forward extension arguments",
+            message: "invalid extension arguments; skills are instructions and have no grant path"
+                .into(),
+        })?;
         let workspace_context = self
             .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
@@ -274,7 +280,6 @@ impl KernelRuntimeState {
                     .await?;
                 let RelayPeerResponse::CapabilityRuntimeToolHandled {
                     result,
-                    skill_package,
                     remote_extension_manifest,
                 } = response
                 else {
@@ -284,7 +289,7 @@ impl KernelRuntimeState {
                     });
                 };
                 if original_response.is_none() {
-                    original_response = Some((result, skill_package));
+                    original_response = Some(result);
                 }
                 #[cfg(test)]
                 self.pause_capability_response_before_apply();
@@ -321,14 +326,8 @@ impl KernelRuntimeState {
             }
             Ok::<_, DaemonError>(())
         }.await;
-        let (result, skill_package) =
+        let result =
             remote_extension_refresh_result::preserve_original_result(original_response, refresh)?;
-        let result = self.apply_remote_skill_package_response(
-            &workspace_context.root,
-            &remote_context.home_kernel_id,
-            result,
-            skill_package,
-        )?;
         Ok(Some(result))
     }
 
@@ -340,7 +339,6 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
@@ -360,18 +358,17 @@ impl KernelRuntimeState {
             Ok(())
         })
         .await?;
-        let (result, package) = self
+        let result = self
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,
                 &context.home_agent_id,
                 &tool_name,
                 arguments,
-                true,
             )
             .await?;
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
         let manifest = self.remote_extension_manifest_for_agent(&agent)?;
-        Ok((result, package, manifest))
+        Ok((result, manifest))
     }
 
     pub(super) async fn dispatch_capability_runtime_tool_call(
@@ -389,13 +386,12 @@ impl KernelRuntimeState {
             });
         };
         let session_id = provider_run.session_id().to_string();
-        let (result, _) = self
+        let result = self
             .dispatch_capability_runtime_tool_call_for_agent(
                 &session_id,
                 &agent_id,
                 tool_name,
                 arguments,
-                false,
             )
             .await?;
         Ok(result)
@@ -407,75 +403,49 @@ impl KernelRuntimeState {
         agent_id: &str,
         tool_name: &str,
         arguments: serde_json::Value,
-        include_skill_package: bool,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         match tool_name {
-            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
-                self.handle_list_session_agents_runtime_tool(&session, &agent),
-                None,
-            )),
-            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok((
-                self.handle_get_session_agent_runtime_tool(&session, &agent, arguments),
-                None,
-            )),
-            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => {
+                Ok(self.handle_list_session_agents_runtime_tool(&session, &agent))
+            }
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => {
+                Ok(self.handle_get_session_agent_runtime_tool(&session, &agent, arguments))
+            }
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => {
                 self.handle_send_agent_message_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
+                    .await
+            }
             crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
             }
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
-                self.handle_request_extension_runtime_tool(
-                    &session,
-                    &agent,
-                    session_id,
-                    arguments,
-                    include_skill_package,
-                )
-                .await
+                self.handle_request_extension_runtime_tool(&session, &agent, session_id, arguments)
+                    .await
             }
-            crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
+            crate::transport::runtime_tools::REGISTER_MCP_TOOL => {
                 self.handle_register_mcp_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
-                self.handle_register_skill_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => {
                 self.handle_register_environment_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => {
                 self.handle_register_script_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => {
                 self.handle_register_connector_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => {
                 self.handle_register_connector_adapter_path_runtime_tool(
                     &session, &agent, arguments,
                 )
-                .await?,
-                None,
-            )),
+                .await
+            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_capability_runtime_tool_call",
                 message: format!("unknown capability runtime tool `{tool_name}`"),

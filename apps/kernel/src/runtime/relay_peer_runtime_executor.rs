@@ -186,7 +186,6 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     structured_endpoint: Option<String>,
     provider_session_id: Option<String>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     provider_launch_credential: Option<
         crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -203,7 +202,6 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         )
@@ -250,7 +248,6 @@ pub(crate) async fn submit_relay_leased_prompt(
     workflow_context: Option<RemoteWorkflowTurnContext>,
     git_context: Option<RemoteGitTurnContext>,
     required_mcps: Vec<RequiredRemoteMcp>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     provider_launch_credential: Option<
         crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -266,7 +263,6 @@ pub(crate) async fn submit_relay_leased_prompt(
             workflow_context,
             git_context,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
             provider_launch_credential,
         )
@@ -311,7 +307,6 @@ pub(crate) async fn steer_relay_leased_prompt(
     prompt: &str,
     hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,
-    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
 ) -> Result<(String, bool), DaemonError> {
     runtime_state
         .steer_relay_leased_prompt(
@@ -321,7 +316,6 @@ pub(crate) async fn steer_relay_leased_prompt(
             prompt,
             hidden_system_context,
             attachments,
-            required_skills,
         )
         .await
 }
@@ -329,10 +323,12 @@ pub(crate) async fn steer_relay_leased_prompt(
 pub(crate) async fn ensure_relay_remote_skill_packages(
     runtime_state: &KernelRuntimeState,
     context: RemoteSkillSyncContext,
+    execution_lease_id: String,
+    manifest: crate::skill::v2::SkillTransferManifest,
     packages: Vec<CharioxSkillPackage>,
 ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
     runtime_state
-        .ensure_relay_remote_skill_packages(context, packages)
+        .ensure_relay_remote_skill_packages(context, execution_lease_id, manifest, packages)
         .await
 }
 

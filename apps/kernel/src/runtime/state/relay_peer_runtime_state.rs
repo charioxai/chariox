@@ -432,7 +432,6 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -458,7 +457,6 @@ impl KernelRuntimeState {
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                 )
             })
@@ -580,7 +578,6 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -731,7 +728,6 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                 )
             })
@@ -858,7 +854,6 @@ impl KernelRuntimeState {
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     ) -> Result<(String, bool), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let steer_id = steer_id.to_string();
@@ -888,7 +883,6 @@ impl KernelRuntimeState {
                         &prompt,
                         &hidden_system_context,
                         attachments.clone(),
-                        required_skills.clone(),
                     )
                 })
                 .await;
@@ -991,13 +985,15 @@ impl KernelRuntimeState {
     pub(crate) async fn ensure_relay_remote_skill_packages(
         &self,
         context: RemoteSkillSyncContext,
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<CharioxSkillPackage>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.ensure_remote_skill_packages(context, packages)
+            runtime.ensure_remote_skill_packages(context, execution_lease_id, manifest, packages)
         })
         .await
     }
@@ -1573,7 +1569,6 @@ mod relay_native_provider_launch_tests {
                     None,
                     None,
                     Vec::new(),
-                    Some(Vec::new()),
                     crate::extension::RemoteExtensionManifest::default(),
                     None,
                 )
@@ -1622,7 +1617,6 @@ mod relay_native_provider_launch_tests {
                     None,
                     None,
                     Vec::new(),
-                    Some(Vec::new()),
                     crate::extension::RemoteExtensionManifest::default(),
                 )
                 .expect("matching native request should prepare");
@@ -1737,7 +1731,6 @@ mod relay_native_provider_launch_tests {
                     None,
                     None,
                     Vec::new(),
-                    Some(Vec::new()),
                     crate::extension::RemoteExtensionManifest::default(),
                     None,
                 )
@@ -1757,7 +1750,6 @@ mod relay_native_provider_launch_tests {
                     None,
                     None,
                     Vec::new(),
-                    Some(Vec::new()),
                     crate::extension::RemoteExtensionManifest::default(),
                     None,
                 )
