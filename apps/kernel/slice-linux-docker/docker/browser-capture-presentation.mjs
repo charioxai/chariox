@@ -56,15 +56,17 @@ async function presentationWorld(owner, connection, sessionId) {
   if (owner?.connection !== connection || !frame || frame.connection !== connection || frame.sessionId !== sessionId ||
       typeof frame.frame.loaderId !== 'string' || !frame.frame.loaderId) return null;
   let world = owner.focusWorldsByTarget?.get(target);
-  const validWorld = () => world?.documentId === frame.frame.loaderId && Number.isSafeInteger(world.contextId) && world.contextId > 0;
+  const validWorld = () => world?.documentId === frame.frame.loaderId && world.connection === connection &&
+    world.sessionId === sessionId && world.frameId === frame.frame.id && Number.isSafeInteger(world.contextId) && world.contextId > 0;
   const cached = validWorld();
   if (!cached && typeof owner.ensureFocusWorld === 'function') {
     world = await owner.ensureFocusWorld(connection, sessionId, target, frame.frame);
     if (owner.connection !== connection || owner.currentPageFrame(target) !== frame) throw Error('MP-11: screenshot presentation owner retired');
   }
   if (!validWorld()) return null;
-  return { contextId: world.contextId, cached, current: () => owner.connection === connection && owner.currentPageFrame(target) === frame &&
-    owner.focusWorldsByTarget.get(target) === world && world.documentId === frame.frame.loaderId };
+  const contextId = world.contextId;
+  return { contextId, cached, current: () => owner.connection === connection && owner.currentPageFrame(target) === frame &&
+    owner.focusWorldsByTarget.get(target) === world && validWorld() && world.contextId === contextId };
 }
 
 export function fenceScreenshotPresentation(connection) {

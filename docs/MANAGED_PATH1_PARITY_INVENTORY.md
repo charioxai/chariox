@@ -18,6 +18,11 @@ the current owner again. A first preview may create its isolated world through t
 owner before the mirror observer starts; owner replacement during creation
 also keeps the fence closed. Unknown or mismatched frame bindings retain fresh discovery;
 there is no parallel document cache or relaxation of the pixel predicate.
+World creation is coalesced for the same connection/session/frame/loader. A late
+old-document result or failure cannot replace or retire a newer cached world.
+The restoration proof checks those scope fields and the context as well as
+frame/world identity before opening the fence. `browser-focus-world.mjs` owns
+this shared world lifecycle; the controller delegates to it.
 
 Visible-page previews also reuse the mirror's live connection/session/loader
 reference before native admission. Replacing that reference retires the lease,

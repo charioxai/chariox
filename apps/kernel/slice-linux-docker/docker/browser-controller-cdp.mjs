@@ -1,3 +1,4 @@
+import {FOCUS_WORLD,ensureFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
@@ -49,7 +50,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 // Focus is read in a controller-owned isolated world: a page can redefine
 // document.visibilityState in its own world, but not in this one.
-const FOCUS_WORLD = "chariox-controller-focus";
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -506,18 +506,8 @@ export class BrowserCdpClient {
   // One isolated world per document: polls reuse it, a new document gets a new one.
   // Input capture emulates focus while it runs: report the physical visibility
   // it captured before enabling emulation instead.
-  async ensureFocusWorld(connection, sessionId, targetId, frame) {
-    let world = this.focusWorldsByTarget.get(targetId);
-    if (world?.documentId !== frame.loaderId) {
-      const created = await connection.send(
-        "Page.createIsolatedWorld",
-        { frameId: frame.id, worldName: FOCUS_WORLD, grantUniveralAccess: false },
-        sessionId,
-      );
-      world = { documentId: frame.loaderId, contextId: created?.executionContextId };
-      this.focusWorldsByTarget.set(targetId, world);
-    }
-    return world;
+  ensureFocusWorld(connection, sessionId, targetId, frame) {
+    return ensureFocusWorld(this, connection, sessionId, targetId, frame);
   }
   async observeNote(request) { return observeBrowserNote(this, request); }
 

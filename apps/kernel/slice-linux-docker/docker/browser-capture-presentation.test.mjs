@@ -62,8 +62,8 @@ test('MP-08/MP-10/MP-11 a failed restoration recovers only after repeating its o
 // MP-08/MP-10/MP-11: restoration reuses the same event-owned document, never a stale context.
 function ownedPresentation(connection) {
  let frame={connection,sessionId:'session',frame:{id:'top',loaderId:'doc'}};
- const owner={connection,targetsBySession:new Map([['session','target']]),focusWorldsByTarget:new Map([['target',{documentId:'doc',contextId:7}]]),currentPageFrame:()=>frame};
- return {owner,replace:()=>{frame={...frame};owner.focusWorldsByTarget.set('target',{documentId:'doc',contextId:8});}};
+ const owner={connection,targetsBySession:new Map([['session','target']]),focusWorldsByTarget:new Map([['target',{documentId:'doc',frameId:'top',connection,sessionId:'session',contextId:7}]]),currentPageFrame:()=>frame};
+ return {owner,replace:()=>{frame={...frame};owner.focusWorldsByTarget.set('target',{documentId:'doc',frameId:'top',connection,sessionId:'session',contextId:8});}};
 }
 test('MP-08/MP-10/MP-11 warm screenshot restoration uses the live owner world without renderer discovery',async()=>{
  const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Runtime.evaluate')return {result:{value:true}};assert.fail('no renderer discovery: '+method);}};
@@ -81,10 +81,10 @@ test('MP-11 same-loader owner replacement cannot prove restoration; recovery res
 });
 
 test('MP-11 a foreign session, connection, document or invalid world uses fresh isolated discovery',async()=>{
- for(const kind of ['session','connection','document','context']){
+ for(const kind of ['session','connection','document','context','world_session','world_connection','world_frame']){
   const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'top'}}};if(method==='Page.createIsolatedWorld')return {executionContextId:3};if(method==='Runtime.evaluate')return {result:{value:true}};return {data:'png'};}};
   const {owner}=ownedPresentation(connection),frame=owner.currentPageFrame(),world=owner.focusWorldsByTarget.get('target');
-  if(kind==='session')frame.sessionId='foreign';if(kind==='connection')frame.connection={};if(kind==='document')world.documentId='old';if(kind==='context')world.contextId=0;
+  if(kind==='session')frame.sessionId='foreign';if(kind==='connection')frame.connection={};if(kind==='document')world.documentId='old';if(kind==='context')world.contextId=0;if(kind==='world_session')world.sessionId='foreign';if(kind==='world_connection')world.connection={};if(kind==='world_frame')world.frameId='foreign';
   fenceScreenshotPresentation(connection);connection.presentationFence.bindOwner(owner);await connection.send('Page.captureScreenshot',{},'session');
   assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Page.getFrameTree','Page.createIsolatedWorld','Runtime.evaluate'],kind);assert.equal(sent.at(-1).params.contextId,3);
  }
@@ -93,7 +93,7 @@ test('MP-11 a foreign session, connection, document or invalid world uses fresh 
 test('MP-08/MP-10/MP-11 a first preview creates its world through the known document owner without querying its frame tree',async()=>{
  const sent=[],connection={send:async(method,params)=>{sent.push({method,params});if(method==='Page.captureScreenshot')return {data:'png'};if(method==='Page.createIsolatedWorld')return {executionContextId:9};if(method==='Runtime.evaluate')return {result:{value:true}};assert.fail('owner already knows the frame: '+method);}};
  const {owner}=ownedPresentation(connection);owner.focusWorldsByTarget.clear();let created=0;
- owner.ensureFocusWorld=async(c,s,target,frame)=>{assert.equal(c,connection);assert.equal(s,'session');assert.equal(frame.id,'top');created++;const result=await c.send('Page.createIsolatedWorld',{frameId:frame.id,worldName:'trusted-focus'},s),world={documentId:frame.loaderId,contextId:result.executionContextId};owner.focusWorldsByTarget.set(target,world);return world;};
+ owner.ensureFocusWorld=async(c,s,target,frame)=>{assert.equal(c,connection);assert.equal(s,'session');assert.equal(frame.id,'top');created++;const result=await c.send('Page.createIsolatedWorld',{frameId:frame.id,worldName:'trusted-focus'},s),world={documentId:frame.loaderId,frameId:frame.id,connection:c,sessionId:s,contextId:result.executionContextId};owner.focusWorldsByTarget.set(target,world);return world;};
  fenceScreenshotPresentation(connection);connection.presentationFence.bindOwner(owner);await connection.send('Page.captureScreenshot',{},'session');
  assert.equal(created,1);assert.deepEqual(sent.map(x=>x.method),['Page.captureScreenshot','Page.createIsolatedWorld','Runtime.evaluate']);assert.equal(sent.at(-1).params.contextId,9);
  await connection.send('Page.captureScreenshot',{},'session');assert.equal(created,1,'subsequent restoration reuses the exact owner world');
