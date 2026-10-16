@@ -82,9 +82,11 @@ export class BrowserMirror2Renderer {
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
+  // MP-08/MP-10/MP-11: a completed empty page can paint without another packet.
+  onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     this.empty = URL.createObjectURL(new Blob([]))
-    this.navigation = new Mirror2Navigation(container)
+    this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) this.onEmptyPaint?.() })
     const owner = container.ownerDocument
     owner.addEventListener('pointerup', this.releasePointer, true)
     owner.addEventListener('pointercancel', this.releasePointer, true)
@@ -772,7 +774,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.onEmptyPaint = undefined; this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
     const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
@@ -808,11 +810,11 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
-export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
+export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 539')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
@@ -845,6 +847,11 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
   try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
+  // Notify consumers when the empty-page timer presents the last applied
+  // frame. A silent/stalled credit must not keep the previous View attached.
+  renderer.onEmptyPaint = () => {
+    if (!closed && base && !base.fallback && base.snapshot_complete === true && renderer.painted !== false && renderer.frame.dataset.mirrorSequence === String(base.sequence)) handlers.presented?.(base)
+  }
   let chain: Promise<void> = Promise.resolve()
   // Packets apply one at a time. A failed application rejects only its own
   // caller (which asks for a reset); later packets still drain.

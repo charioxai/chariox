@@ -730,3 +730,9 @@ does not bound that CPU time. The cap has not increased in539. Near-cap first
 packet/continuation input timings still need quiet-host evidence before acceptance
 or any further cap increase. B3 functional runs and source tests are not that
 timing evidence.
+
+MP-08 / MP-10 / MP-11 completed-empty presentation: the local two-second timer
+notifies the View with the last applied frame metadata. Idle or stalled credits
+cannot postpone View promotion after that timer. The packet callback still runs
+only for received/applied packets; presentation creates no sequence or ACK and
+is fenced by the current applied sequence, renderer lifetime and frame identity.

@@ -1090,3 +1090,37 @@ test('MP-11 collapsed range is rechecked after a pending selection refusal',asyn
   assert.equal(result,null);
  }finally{await page.close()}
 });
+
+// MP-08/MP-10/MP-11: an idle completed page must present without another reply.
+test('MP-10 completed empty paint notifies the attached consumer without another packet', async()=>{
+ const page=await viewer();try{
+  await page.evaluate(async packet=>{
+   window.r.close();window.paintNotifications=[];let first=true;
+   window.attached=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+    const command=request.KernelBrowser.command;
+    if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
+    if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
+    if(first){first=false;return{KernelBrowser:{result:packet}}}
+    return new Promise(()=>{});
+   }},document.getElementById('c'),{tab_id:'t',generation:1,device_scale_factor:1},{failure:e=>{throw e},presented:packet=>window.paintNotifications.push({sequence:packet.sequence,painted:window.attached?.renderer.painted})});
+  },{...snapshot(page2([])),nodes:[[1,0,1],[1,1,'html'],[1,1,'body']]} );
+  await page.waitForFunction(()=>window.paintNotifications.some(n=>n.painted),null,{timeout:3000});
+  assert.deepEqual(await page.evaluate(()=>window.paintNotifications.filter(n=>n.painted)),[{sequence:1,painted:true}]);
+ }finally{await page.evaluate(()=>window.attached?.close());await page.close()}
+});
+
+for(const preserveFrame of [false,true])test(`MP-11 closed empty attachment never emits a deferred presentation preserve=${preserveFrame}`,async()=>{
+ const page=await viewer();try{
+  await page.evaluate(async({packet,preserveFrame})=>{
+   window.r.close();window.presented=[];let first=true;
+   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+    const command=request.KernelBrowser.command;
+    if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
+    if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
+    if(first){first=false;return{KernelBrowser:{result:packet}}}return new Promise(()=>{});
+   }},document.getElementById('c'),{tab_id:'t',generation:1,device_scale_factor:1},{failure:e=>{throw e},presented:p=>window.presented.push(p.sequence)});
+   while(!mirror.renderer.frame.dataset.mirrorSequence)await new Promise(r=>setTimeout(r,10));await mirror.close({preserveFrame});
+  },{packet:{...snapshot(page2([])),nodes:[[1,0,1],[1,1,'html'],[1,1,'body']]},preserveFrame});
+  await new Promise(r=>setTimeout(r,2200));assert.deepEqual(await page.evaluate(()=>window.presented),[]);
+ }finally{await page.close()}
+});

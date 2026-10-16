@@ -4140,7 +4140,11 @@ just like focus, scroll and selection; resets always carry the boolean.
 The shared renderer requires protocol 539. It keeps the previous inert page
 while an incoming prefix has no visible viewport content. Only confirmed
 completion starts the bounded two-second hold for an intentionally empty page.
-Visible content may paint before completion; the serializer and opaque relay
+A completed empty timer also emits a local presentation notification carrying
+only the last applied packet metadata, so View promotion does not wait for another
+credit. This neither creates a packet nor advances sequence/acknowledgement state;
+closed renderers and replaced frames cannot publish it. Visible content may paint
+before completion; the serializer and opaque relay
 chunk transport remain bounded and keep their existing input/band interleaving.
 The field does not relax observation protection, frame admission or input fences.
 

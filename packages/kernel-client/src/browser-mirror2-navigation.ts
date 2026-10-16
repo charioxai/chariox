@@ -64,7 +64,7 @@ export class Mirror2Navigation {
   private cancelLoad: (() => void) | undefined
   private emptyTimer: ReturnType<typeof setTimeout> | undefined
   private cancelEmpty(): void { clearTimeout(this.emptyTimer); this.emptyTimer = undefined }
-  constructor(private container: HTMLElement) { [this.frame, this.loaded] = this.create() }
+  constructor(private container: HTMLElement, private onEmptyPaint?: () => void) { [this.frame, this.loaded] = this.create() }
   private create(): [HTMLIFrameElement, Promise<void>] {
     const frame = this.container.ownerDocument.createElement('iframe')
     frame.setAttribute('sandbox', 'allow-same-origin')
@@ -100,7 +100,7 @@ export class Mirror2Navigation {
         const frame = this.frame
         this.emptyTimer = setTimeout(() => {
           this.emptyTimer = undefined
-          if (this.frame === frame && frame.contentDocument?.body) this.reveal()
+          if (this.frame === frame && frame.contentDocument?.body) { this.reveal(); this.onEmptyPaint?.() }
         }, 2000)
       }
       return
