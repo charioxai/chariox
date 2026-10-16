@@ -118,6 +118,21 @@ class KeyboardTextTests(unittest.TestCase):
         close.assert_called_once()
         self.assertEqual(connection.text,'ab')
 
+    # Review #1016 @52a7bb1ee P3: text with a key guard probes the root grabs; probe and press share
+    # one server grab so no client can grab the key between them, also without a focus target (the
+    # native-computer agent path passes before_press, whose focus target already takes the grab).
+    def test_mp11_text_key_guard_and_press_share_the_server_grab(self):
+        connection=Display();connection.grabbed=False;module=helper(connection)
+        connection.grab_server=lambda:setattr(connection,'grabbed',True)
+        connection.ungrab_server=lambda:setattr(connection,'grabbed',False)
+        probes=[]
+        def guard(conn,codes):probes.append(connection.grabbed)
+        with patch.object(module.time,'sleep'),patch.object(module.signal,'signal'):
+            module.type_text('ab',pace_seconds=0,connection=connection,key_guard=guard)
+        self.assertEqual(probes,[True,True])
+        self.assertEqual(connection.text,'ab')
+        self.assertFalse(connection.grabbed)
+
     def test_keymap_client_can_reply_before_the_protected_server_grab(self):
         connection=Display();connection.grabbed=False
         connection.grab_server=lambda:setattr(connection,'grabbed',True)

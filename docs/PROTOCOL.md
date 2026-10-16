@@ -4125,6 +4125,22 @@ under its observed-frame, live-focus and epoch guards (before 530 they were
 document-bound `display_input` chords, which refuse any focused frame). Clients
 feature-detect 530; no client floor moves.
 
+MP-08 / MP-10 / MP-11: allocated 540/148 keeps the omnibox suggestion list's
+stream warm. While the person's keys are in the band's address bar (a click on
+it, Ctrl+L, typing there; at most 30 s without such input) the Browser state's
+`chrome_window.auxiliary` keeps listing the last list of that window epoch under
+the same `auxiliary_id` with `height: 0` (nothing visible), so a viewer keeps
+its `browser_auxiliary` stream and the next list paints from a running stream
+instead of a new subscription (r12 quiet host: ~0.9 s list first paint). The
+stream is the same in-window popup capture as before: every readback carries the
+active Tab's masks at the page's native origin, input on it is refused outside
+the live list, and it covers no page region while closed. Enter, Tab, another
+toolbar button, the strip or another browser shortcut end it; a state read
+while it is warm re-reads Chrome's list first. `browser-omnibox-warm-540.json`
+pins the shape (Rust hash test `mp08_mp10_mp11_browser_omnibox_warm_540_snapshot`).
+Clients feature-detect 540 (a pre-540 viewer shows a zero-height popup box);
+no client floor moves.
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;

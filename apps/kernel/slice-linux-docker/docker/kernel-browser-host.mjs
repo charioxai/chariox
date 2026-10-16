@@ -644,6 +644,8 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // newest observation, as at a navigation commit
       return this.observe(this.tabState(), tab, scope);
     }
+    // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
+    if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile(), null, scope);
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);

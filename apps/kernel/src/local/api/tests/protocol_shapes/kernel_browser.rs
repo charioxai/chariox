@@ -440,6 +440,27 @@ fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
     assert!(serde_json::from_value::<LocalDaemonRequest>(request).is_err());
 }
 
+// MP-08/MP-10/MP-11 (BROWSER-UX-14): allocated 540/148 keeps the omnibox list's
+// `chrome_window.auxiliary` entry with visible height 0 while the address bar has the
+// person's keys, so a viewer keeps its stream and the next list paints from it.
+#[test]
+fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 540);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 148);
+    let bytes = include_bytes!("browser-omnibox-warm-540.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "d4b2015e816e29d78230f2e394f9596b964350a26e24d6e40805d5831016063e"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);

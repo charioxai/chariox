@@ -204,17 +204,19 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
             # MP-11: inspect native leaf protection outside the server grab;
             # fence its X focus inside the grab before each physical batch.
             if before_press is not None:before_press()
+            # MP-08 / MP-11: one keystroke batch under the X server grab.
+            # Other display clients cannot change native focus (or install a
+            # root key grab the key guard probes) between the check and physical
+            # input delivery. Never refocus a target.
+            grab = expected_target is not None or key_guard is not None
             # MP-08/MP-10/MP-11: prepare the mapping while the focused client
             # can still read it. A server grab would block its keymap reply.
-            if expected_target is not None:
+            if grab:
                 keyboard._resolve(keysym)
                 # A field or clipboard may become private during the client
                 # reply wait. Re-admit immediately before the focus-fenced press.
                 if before_press is not None: before_press()
-            # MP-08 / MP-11: one keystroke batch under the X server grab.
-            # Other display clients cannot change native focus between the
-            # target check and physical input delivery. Never refocus a target.
-            if expected_target is not None:
+            if grab:
                 connection.grab_server()
             try:
                 if expected_target is not None:
@@ -228,7 +230,7 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
                 active_keysym = None
                 connection.sync()
             finally:
-                if expected_target is not None:
+                if grab:
                     connection.ungrab_server()
                     connection.sync()
             # Pace on this process, not in the X server's request queue. Killing

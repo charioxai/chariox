@@ -153,12 +153,11 @@ pub(super) async fn handle_subscribe(
             None => {
                 // MP-11: answer the viewer and release whatever the attach just bound;
                 // a dropped registration would hang the viewer on a rotated lease.
-                if let (Some(id), Some(generation)) = (
-                    binding.get("subscription_id").and_then(|v| v.as_str()),
-                    binding.get("generation").and_then(|v| v.as_u64()),
-                ) {
+                if let Some((subscription_id, generation)) =
+                    rejected_delivery_release(&binding, &display_id, &generation)
+                {
                     let release = crate::local::KernelBrowserCommand::Unsubscribe {
-                        subscription_id: id.into(),
+                        subscription_id,
                         generation,
                     };
                     let _ = router
@@ -355,6 +354,24 @@ fn resumed_delivery(binding: &serde_json::Value, previous: &str) -> Option<(Stri
     (id != previous && binding.get("resumed")?.as_bool()?).then(|| (id.to_string(), generation))
 }
 
+/// The delivery a rejected resume binding must release: its own id/generation where present,
+/// else the pre-attach id and the generation the attach was admitted under.
+fn rejected_delivery_release(
+    binding: &serde_json::Value,
+    previous: &str,
+    generation: &str,
+) -> Option<(String, u64)> {
+    let id = binding
+        .get("subscription_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(previous);
+    let generation = binding
+        .get("generation")
+        .and_then(|v| v.as_u64())
+        .or_else(|| generation.parse().ok())?;
+    Some((id.to_string(), generation))
+}
+
 fn display_subscription_caller(
     router: &CommandRouter,
     identity: Option<RelayCallerIdentity>,
@@ -369,8 +386,36 @@ fn display_subscription_caller(
 
 #[cfg(test)]
 mod resumed_delivery_tests {
-    use super::resumed_delivery;
+    use super::{rejected_delivery_release, resumed_delivery};
     use serde_json::json;
+    // Review #1016 @52a7bb1ee P3: a rejected binding without a numeric generation (or id) is
+    // still released, with the pre-attach id/generation the attach was admitted under.
+    #[test]
+    fn mp11_a_rejected_resumed_binding_is_always_released() {
+        let release = |binding, generation| rejected_delivery_release(&binding, "s1", generation);
+        assert_eq!(
+            release(json!({"subscription_id": "s2", "generation": 7}), "6"),
+            Some(("s2".into(), 7))
+        );
+        assert_eq!(
+            release(json!({"subscription_id": "s2"}), "6"),
+            Some(("s2".into(), 6))
+        );
+        assert_eq!(
+            release(json!({"subscription_id": "s2", "generation": "7"}), "6"),
+            Some(("s2".into(), 6))
+        );
+        assert_eq!(
+            release(json!({"generation": 7}), "6"),
+            Some(("s1".into(), 7))
+        );
+        assert_eq!(release(json!(null), "6"), Some(("s1".into(), 6)));
+        assert_eq!(
+            release(json!({"subscription_id": 3}), "x"),
+            None,
+            "no generation at all"
+        );
+    }
     #[test]
     fn mp11_resumed_delivery_requires_a_new_marked_generation_bound_id() {
         let ok = json!({"subscription_id": "s2", "generation": 7, "resumed": true});
