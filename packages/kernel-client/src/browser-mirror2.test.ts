@@ -6,6 +6,7 @@ import { setFlagsFromString } from 'node:v8'
 import { runInNewContext } from 'node:vm'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
 import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
+import { RelayFrameReceiver } from './relay-frame-transport.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
 // MP-08/MP-10/MP-11: these scalar/queue fixtures start with a painted surface;
@@ -582,4 +583,39 @@ test('MP-11 completion header is boolean; pre-539 kernels are refused before sub
     await assert.rejects(attachBrowserMirror2({ protocolVersion, request: async () => { called = true } }, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure() {} }), /requires protocol 539/)
     assert.equal(called, false)
   }
+})
+
+
+test('MP-10: a progressing 700 KB response over two seconds does not start another transfer', async () => {
+  let nexts = 0, resends = 0
+  const receiver = new RelayFrameReceiver(), applied: number[] = []
+  const transport = { protocolVersion: 539, receiving: () => receiver.receiving(), request: async (request: any): Promise<any> => {
+    const command = request.KernelBrowser.command
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    const turn = ++nexts; if (command.resend) resends++
+    if (turn > 2) return new Promise(() => {})
+    if (turn === 1) return { KernelBrowser: { result: packet(1, true) } }
+    const body = JSON.stringify({ KernelBrowser: { result: packet(2, false) }, padding: 'a'.repeat(700_000) })
+    let complete: string | null = null
+    for (let offset = 0; offset < body.length; offset += 16_384) {
+      complete = receiver.receive(JSON.stringify({ kind: 'transport_chunk', transfer_id: 1, offset, total_bytes: body.length, payload: body.slice(offset, offset + 16_384) }), () => {})
+      if (!complete) await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return JSON.parse(complete!)
+  } }
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const mirror = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure() {} }, { credits: 1, waitMs: 0, renderer })
+  try { await until(() => applied.length === 2, 2800); assert.equal(applied.length, 2); assert.equal(resends, 0) }
+  finally { await mirror.close() }
+})
+
+test('MP-10: validated chunk progress suppresses recovery only while the transfer advances', async () => {
+  const receiver = new RelayFrameReceiver()
+  receiver.receive(JSON.stringify({kind:'transport_chunk',transfer_id:1,offset:0,total_bytes:700_000,payload:'x'}), () => {})
+  assert.equal(receiver.receiving(), true)
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  assert.equal(receiver.receiving(), false, 'a stalled response cannot keep recovery paused')
+  assert.throws(() => receiver.receive(JSON.stringify({kind:'transport_chunk',transfer_id:1,offset:0,total_bytes:700_000,payload:'x'}), () => {}))
+  assert.equal(receiver.receiving(), false, 'invalid bytes cannot refresh progress')
 })

@@ -19,9 +19,9 @@ const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
-// A packet still unacknowledged this long after it was issued, while a later credit names an older
-// base, was lost with its reply (a dropped socket): it is sent again, in order, with its original bytes.
-const RESEND_MS = 1500, HISTORY_BYTES = 8 * 1024 * 1024;
+// MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
+// explicit viewer recovery credit resends history, preserving its original bytes.
+const HISTORY_BYTES = 8 * 1024 * 1024;
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
@@ -178,10 +178,10 @@ export class Mirror2 {
   async watchCss(world, frameId, streamId) {
     const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000");
     world.holdInitialPaint = large;
-    const pending = this.css.pending(world.sessionId);
-    const ready = this.css.watch(world, frameId, streamId);
-    if (large || pending) ready.catch(() => { world.cssFailed = true; });
-    else await ready;
+    const cssAt = timestamp();
+    // Activation re-reads sheet owners; ordinary pages need not await resource
+    // bodies in DOM.enable/CSS.enable before their first sanitized snapshot.
+    this.css.watch(world, frameId, streamId).then(() => this.host.timing?.('mirror2_css_ready', cssAt), () => { world.cssFailed = true; });
   }
   async evaluate(world, expression, awaitPromise = false) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
@@ -426,25 +426,26 @@ export class Mirror2 {
     if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     const wire = await this.encode(stream, packet);
-    this.host.timing?.event?.('mirror2_packet', { sequence, reset: Number(reset), bytes: Buffer.byteLength(JSON.stringify(wire)), raw_bytes: wire.packet_bytes ?? Buffer.byteLength(JSON.stringify(packet)) });
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
   }
   // Issued packets by sequence (bounded), for lost-reply resends.
   remember(stream, sequence, wire, reset) {
-    if (reset || !stream.history) { stream.history = new Map(); stream.historyBytes = 0; stream.resent = 0; }
-    const bytes = JSON.stringify(wire).length; stream.history.set(sequence, { wire, at: Date.now(), bytes }); stream.historyBytes += bytes;
+    if (reset || !stream.history) { stream.history = new Map(); stream.historyBytes = 0;  }
+    const bytes = Buffer.byteLength(JSON.stringify(wire)); stream.history.set(sequence, { wire, bytes }); stream.historyBytes += bytes;
+    this.host.timing?.event?.('mirror2_packet', { sequence, reset: Number(reset), bytes, raw_bytes: wire.packet_bytes ?? bytes });
     for (const [old, entry] of stream.history) { if (stream.history.size <= 16 && stream.historyBytes <= HISTORY_BYTES || old === sequence) break; stream.history.delete(old); stream.historyBytes -= entry.bytes; }
   }
   // A resend (protocol 501) names the packet it lacks: the one after its base, without the in-flight window.
   lost(stream, command, scope, resend = false) {
+    if (!resend) return null;
     const after = command.after_sequence;
     if (!Number.isSafeInteger(after) || after <= 0 || after >= stream.issued || this.service.streams.get(command.subscription_id) !== stream) return null;
-    const next = resend ? after + 1 : Math.max(after, stream.resent ?? 0) + 1, entry = stream.history?.get(next);
-    if (!entry || !resend && Date.now() - entry.at < RESEND_MS) return null;
+    const next = after + 1, entry = stream.history?.get(next);
+    if (!entry) return null;
     this.service.require(command.subscription_id, scope, command.generation);
-    stream.resent = next; this.host.timing?.('mirror2_resend', timestamp());
+    this.host.timing?.('mirror2_resend', timestamp());
     return entry.wire;
   }
   // Protocol 489: the body (without media) deflates in the subscription's

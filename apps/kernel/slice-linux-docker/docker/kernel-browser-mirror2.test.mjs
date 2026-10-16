@@ -435,3 +435,25 @@ test('MP-10: mirror world attributes target, observer installation and CSS setup
   assert.deepEqual(marks.map(([stage]) => stage), ['mirror2_world_target', 'mirror2_world_install', 'mirror2_world_css']);
   assert.ok(marks.every(([, at]) => Number.isFinite(at)));
 });
+
+
+test('MP-10: an older credit base does not resend a 700 KB packet still in transit', () => {
+  const stream = { issued: 2 }, service = { host: {}, streams: new Map([['s', stream]]), require() {} }, mirror = new Mirror2(service);
+  mirror.remember(stream, 2, { wire: 2, sequence: 2, packet_base64: 'a'.repeat(700_000) }, false);
+  stream.history.get(2).at = Date.now() - 2000;
+  const command = { subscription_id: 's', generation: 1, after_sequence: 1 };
+  assert.equal(mirror.lost(stream, command, 'scope'), null);
+  assert.equal(mirror.lost(stream, { ...command, resend: true }, 'scope', true), stream.history.get(2).wire, 'explicit recovery still returns the original packet');
+});
+
+
+test('MP-10: CSS activation does not block the first mirror world', async () => {
+  const mirror = new Mirror2({ host: {} });
+  let finish;
+  mirror.evaluate = async () => false;
+  mirror.css.watch = () => new Promise(resolve => { finish = resolve; });
+  const world = { sessionId: 's' };
+  try {
+    assert.equal(await Promise.race([mirror.watchCss(world, 'f', 'stream').then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 50))]), true);
+  } finally { finish(); }
+});

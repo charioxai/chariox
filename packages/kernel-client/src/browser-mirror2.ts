@@ -106,7 +106,7 @@ export class BrowserMirror2Renderer {
   // Keep identity local; diagnostics contain only the fixed stage and durations.
   private navigationPaint(): void {
     const frame = this.frame
-    if (!this.painted || this.paintFrame === frame) return
+    if (!this.painted || this.paintFrame === frame || typeof requestAnimationFrame !== 'function') return
     this.paintFrame = frame
     const started = this.navigationAt
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -802,7 +802,7 @@ export class BrowserMirror2Renderer {
   }
 }
 
-export interface Mirror2Transport { protocolVersion: number; request(request: unknown, options?: {onWritten?:()=>void}): Promise<unknown> }
+export interface Mirror2Transport { receiving?(): boolean; protocolVersion: number; request(request: unknown, options?: {onWritten?:()=>void}): Promise<unknown> }
 // Protocol 489: the kernel deflates packet bodies in the subscription's
 // context (sync flush per packet, a fresh context per reset), so the viewer
 // inflates them strictly in sequence order. Inflation is bounded before parsing.
@@ -885,10 +885,11 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     if (buffered.size > 8) { buffered.clear(); wantReset = true }
     // A gap is a reply lost with a dropped socket (or one overtaken by milliseconds: its duplicate is ignored):
     // the missing packet is asked for at once (protocol 501 resend). A gap that outlives its resend resets.
+    if (buffered.size && transport.receiving?.()) setTimeout(() => { if (!closed) void drain().catch(() => { wantReset = true; fill() }) }, GAP_MS)
     if (!buffered.size) gapSince = 0
-    else if (!gapSince) {
+    else if (!gapSince && !transport.receiving?.()) {
       const since = gapSince = performance.now(); wantResend = true; fill()
-      const check = (): void => { if (gapSince !== since || !buffered.size || closed) return; if (resendOutstanding) { setTimeout(check, GAP_MS); return } buffered.clear(); gapSince = 0; wantReset = true; fill() }
+      const check = (): void => { if (gapSince !== since || !buffered.size || closed) return; if (resendOutstanding || transport.receiving?.()) { setTimeout(check, GAP_MS); return } buffered.clear(); gapSince = 0; wantReset = true; fill() }
       setTimeout(check, GAP_MS)
     }
   }); chain = run.catch(() => { buffered.clear(); gapSince = 0 }); return run }
@@ -908,7 +909,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     // hold its packet until the request timeout: once it is the oldest and overdue, a resend fetches that packet.
     // The kernel starts a queued credit's wait when its predecessor is answered: the oldest is overdue a wait after that.
     const entry = { reset, oldestAt: outstanding.length ? 0 : performance.now() }; outstanding.push(entry)
-    const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
+    const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset || transport.receiving?.()) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
     setTimeout(overdue, waitMs + LOST_MS)
     request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
