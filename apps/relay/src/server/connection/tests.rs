@@ -1467,7 +1467,7 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
 
 // MP-08 / MP-10 / MP-11: a healthy peer acknowledging many small frames in one
 // read must never lose its connection (browser control WebSocket 1006).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn burst_of_small_frame_receipts_keeps_the_connection() {
     use futures_util::{SinkExt, StreamExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1505,41 +1505,31 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
             break peer.sender.clone();
         }
     };
-    const FRAMES: usize = 400;
+    const FRAMES: usize = 700;
     for n in 0..FRAMES {
         let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
         sender.send(Message::Text(request.into())).await.unwrap();
     }
-    let mut receiver = crate::frame_transport::FrameReceiver::default();
-    let mut receipts = Vec::new();
-    let mut delivered = 0;
-    while delivered < FRAMES {
-        let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
-            .await
-            .expect("small frames must be delivered")
-            .unwrap()
-            .unwrap()
-        else {
-            continue;
-        };
-        let (complete, receipt) = receiver.receive(&text).unwrap();
-        receipts.extend(receipt);
-        delivered += complete
-            .is_some_and(|text| text.contains("small-"))
-            .then_some(1)
-            .unwrap_or(0);
-    }
-    // One flush: the relay reads the whole receipt burst before its writer can drain it.
-    for receipt in receipts {
-        client.feed(Message::Text(receipt.into())).await.unwrap();
-    }
-    client.flush().await.unwrap();
     sender
         .send(Message::Text(
             r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
         ))
         .await
         .unwrap();
+    let mut receiver = crate::frame_transport::FrameReceiver::default();
+    let mut receipts = Vec::new();
+    // The wire window admits many small frames; read until it stalls on credit.
+    while let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout(Duration::from_millis(300), client.next()).await
+    {
+        receipts.extend(receiver.receive(&text).unwrap().1);
+    }
+    assert!(receipts.len() > 64, "the window must admit a receipt burst");
+    // One flush: the relay reads the whole receipt burst before its writer can drain it.
+    for receipt in receipts {
+        client.feed(Message::Text(receipt.into())).await.unwrap();
+    }
+    client.flush().await.unwrap();
     loop {
         let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
             .await
@@ -1549,7 +1539,11 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
         else {
             continue;
         };
-        if receiver.receive(&text).unwrap().0.is_some_and(|text| text.contains("after-burst")) {
+        let (complete, receipt) = receiver.receive(&text).unwrap();
+        if let Some(receipt) = receipt {
+            client.send(Message::Text(receipt.into())).await.unwrap();
+        }
+        if complete.is_some_and(|text| text.contains("after-burst")) {
             break;
         }
     }

@@ -13,6 +13,11 @@ pub fn is_display_scope(scope: Option<&str>) -> bool {
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
 pub const WINDOW_BYTES: usize = 64 * 1024;
+/// Smallest chunk frame on the wire. The byte window bounds unacknowledged
+/// frames at WINDOW_BYTES / MIN_FRAME_BYTES, so a receipt queue of that depth
+/// can never overflow for a conforming peer.
+pub const MIN_FRAME_BYTES: usize = 64;
+pub const MAX_UNACKED_FRAMES: usize = WINDOW_BYTES / MIN_FRAME_BYTES;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
@@ -216,6 +221,19 @@ mod tests {
             "63f2c15eb230dffa4358b314b5c798c07ac7d6c726781fd09314f6e2810b9e05"
         );
     }
+    #[test]
+    fn receipt_queue_holds_every_frame_the_window_admits() {
+        let smallest = serde_json::to_string(&TransportFrame::TransportChunk {
+            transfer_id: 1,
+            offset: 0,
+            total_bytes: 0,
+            payload: String::new(),
+        })
+        .unwrap();
+        assert!(smallest.len() >= MIN_FRAME_BYTES);
+        assert!(MAX_UNACKED_FRAMES * smallest.len() >= WINDOW_BYTES);
+    }
+
     #[test]
     fn malformed_chunks_do_not_allocate_declared_totals_or_acknowledge_overlap() {
         let mut receiver = FrameReceiver::default();
