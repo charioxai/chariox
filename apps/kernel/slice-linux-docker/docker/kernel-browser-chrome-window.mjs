@@ -198,6 +198,12 @@ export class ChromeWindows {
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
+  /** Is Chrome's omnibox list shown right now (re-read, not the last poll)? */
+  async omniboxShown() {
+    this.omnibox = await this.readOmnibox();
+    this.refreshAuxiliary(this.rows);
+    return !!this.omniboxLive;
+  }
   /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
   onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
@@ -470,7 +476,11 @@ export class InputArbiter {
       let tab;
       // Review #1016 P2: an admitted native popup (menu, dropdown, dialog) owns the keys while it is
       // current (rechecked here): Chrome's UI, not the page's remembered field.
-      if (bandChord(keysym, modifiers)) tab = await switching(); else if (popup) await activeAdmitted(); else await textTarget();
+      // Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed;
+      // it owns the keys only while Chrome shows the list (re-read now). Otherwise the page's own fences apply.
+      if (bandChord(keysym, modifiers)) tab = await switching();
+      else if (popup && (!source.overPage || await this.windows.omniboxShown?.() === true)) await activeAdmitted();
+      else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
       else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
