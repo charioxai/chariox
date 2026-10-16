@@ -1,5 +1,6 @@
 // MP-08/MP-10/MP-11: Room placement reuses the shared producer and 525 lifetime.
 import test from 'node:test';
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {RoomSharedDisplay} from './room-shared-display.mjs';
 const policy={unknown:false,targets:[],values:[]};
@@ -87,6 +88,12 @@ test('MP-08/MP-10/MP-11 worker trace joins each viewer and resumed delivery with
   f.syncClock();
   const resumed=await f.request({op:'display_resume_attach',subscription_id:a.subscription_id,observed_by:offer.observed_by,generation:1});
   await f.request({op:'screenshot',subscription_id:resumed.subscription_id,observed_by:offer.observed_by,generation:1,after_sequence:0,push:{reset:true,congested:false}});
+  const join=id=>Number(createHash('sha256').update(id).digest().readBigUInt64BE(0)>>12n);
+  const subscriptions=events.filter(e=>e.stage==='room_display_subscribed');
+  assert.deepEqual(subscriptions.map(e=>[e.viewer,e.delivery,e.stream_join]),[[1,1,join(a.subscription_id)],[2,1,join(b.subscription_id)]],'MP-10 concurrent initial opens need an exact opaque stream join, never order inference');
+  const recoveries=events.filter(e=>e.stage==='room_display_resumed');
+  assert.deepEqual(recoveries.map(e=>[e.viewer,e.delivery,e.stream_join]),[[1,2,join(resumed.subscription_id)]],'MP-10 a resumed delivery joins its fresh public stream hint to the same anonymous viewer');
+  assert.notEqual(recoveries[0].stream_join,subscriptions[0].stream_join);
   const first=events.filter(e=>e.stage==='desktop_delivery_first_frame');
   assert.deepEqual(first.map(e=>[e.viewer,e.delivery,e.sequence]),[[1,1,1],[2,1,1],[1,2,1]],'MP-10 anonymous worker first-frame joins missing');
   const outgoing=events.filter(e=>e.stage==='desktop_frame_out'&&e.sequence===1);

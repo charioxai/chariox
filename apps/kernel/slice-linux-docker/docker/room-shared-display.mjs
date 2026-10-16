@@ -1,9 +1,13 @@
 // MP-08/MP-10/MP-11: Room placement for the ordinary protected desktop producer.
 // This adapter has no input seam. The home Room ledger remains its authority.
+import {createHash} from 'node:crypto';
 import {timestamp} from './kernel-browser-timing.mjs';
 import {DesktopDisplay} from './kernel-desktop-display.mjs';
 import {DisplaySessions} from './kernel-display-resumption.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+// MP-10/MP-11: 52 ciphertext-style bits join an opaque public stream hint;
+// never export the hint, lease, observer, caller, key or protected policy.
+const streamJoin=id=>Number(createHash('sha256').update(id).digest().readBigUInt64BE(0)>>12n);
 export class RoomSharedDisplay {
  constructor(desktop,{desktop:options,sessions,timing=()=>{}}={}) {
   this.desktop=desktop;this.generation=1;this.displays=new Map();this.timers=new Map();this.timing=timing;this.pending=Promise.resolve();this.nextViewer=1;
@@ -42,7 +46,7 @@ export class RoomSharedDisplay {
     const stream=this.displays.get(result.subscription_id);this.displays.delete(result.subscription_id);stream.subscription_id=command.lease_id;this.displays.set(stream.subscription_id,stream);result.subscription_id=stream.subscription_id;
    }
    const stream=this.displays.get(result.subscription_id);stream.timingViewer=this.nextViewer++;stream.timingDelivery=1;stream.timingDeliveryStarted=timestamp();
-   this.timing.event?.('room_display_subscribed',{at:stream.timingDeliveryStarted,viewer:stream.timingViewer,delivery:stream.timingDelivery});
+   this.timing.event?.('room_display_subscribed',{at:stream.timingDeliveryStarted,viewer:stream.timingViewer,delivery:stream.timingDelivery,stream_join:streamJoin(stream.subscription_id)});
    return result;
   }
   const id=command.display_subscription_id??command.subscription_id;
@@ -54,7 +58,7 @@ export class RoomSharedDisplay {
    if(command.op!=='display_suspend'&&command.observed_by===id)this.displays.get(result.subscription_id).observed_by=result.subscription_id;
    if(command.op!=='display_suspend'){
     const stream=this.displays.get(result.subscription_id);stream.timingDelivery=(stream.timingDelivery??0)+1;stream.timingDeliveryStarted=timestamp();
-    this.timing.event?.('room_display_resumed',{at:stream.timingDeliveryStarted,viewer:stream.timingViewer,delivery:stream.timingDelivery});
+    this.timing.event?.('room_display_resumed',{at:stream.timingDeliveryStarted,viewer:stream.timingViewer,delivery:stream.timingDelivery,stream_join:streamJoin(stream.subscription_id)});
    }
    if(command.op==='display_resume_attach')await this.display.request({...command,op:'display_attach',subscription_id:result.subscription_id,generation:result.generation},this.displays.get(result.subscription_id).observed_by,{signal});
    return result;
