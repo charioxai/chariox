@@ -114,3 +114,52 @@ fn skills_v2_ownership_reopening_the_same_journal_keeps_catalog_revision() {
         SkillCatalogStorage::new(&f.0, DurableKernelStateStore::open(path).unwrap()).unwrap();
     assert_eq!(restored.recover_projections().unwrap(), expected);
 }
+
+#[test]
+fn skills_v2_transfer_cache_probe_miss_does_not_poison_the_following_transfer() {
+    // MP-08 / MP-10 / MP-11: a restart/cache-miss probe is read-only. The home
+    // can then send the exact package through the same authenticated binding.
+    let f = Fixture::new();
+    let service =
+        SkillCatalogService::new(SkillCatalogStorage::new(&f.0, f.journal("first")).unwrap());
+    let mutation = f.mutation();
+    let prepared = service.prepare(&mutation).unwrap();
+    let published = service.publish_authorized(&mutation, &prepared).unwrap();
+    let record = &published.catalogs[0].skills[0];
+    let payload = prepared[&0].1.clone();
+    let worker = f.0.join("worker");
+    fs::create_dir(&worker).unwrap();
+    let context = serde_json::from_value(serde_json::json!({
+        "home_kernel_id": "home", "home_session_id": "session",
+        "home_agent_id": "agent", "leased_agent_id": "leased"
+    }))
+    .unwrap();
+    let manifest = SkillTransferManifest {
+        catalog_revision: published.revision,
+        project_id: None,
+        skills: vec![SkillTransferEntry {
+            skill_id: record.id.clone(),
+            digest: record.digest.clone(),
+            scope: SkillScope::Chariox,
+            state: SkillState::Auto,
+        }],
+    };
+    assert!(
+        chariox_kernel::skill::transfer::materialize_received_packages(
+            &worker,
+            &context,
+            "lease",
+            &manifest,
+            &[]
+        )
+        .is_err()
+    );
+    let roots = chariox_kernel::skill::transfer::materialize_received_packages(
+        &worker, &context, "lease", &manifest, &[payload]).expect("a missing-cache probe must not leave an empty immutable package that blocks retransmission");
+    assert_eq!(roots.len(), 1);
+    assert!(PathBuf::from(&roots[0].materialized_root)
+        .join("SKILL.md")
+        .is_file());
+    assert!(!worker.join("skills").exists());
+    assert!(!worker.join("state/skills").exists());
+}

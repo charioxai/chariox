@@ -2,7 +2,7 @@
 use super::{
     catalog::{failure, validate_id},
     package::{materialize_skill_package_for_id, package_skill_directory, verify_package},
-    paths::owned_directory,
+    paths::{existing_owned_directory, owned_directory},
     v2::*,
     CharioxSkillPackage,
 };
@@ -108,7 +108,8 @@ pub fn materialize_received_packages(
         let root = if let Some(package) = payloads.get(entry.digest.as_str()) {
             materialize_skill_package_for_id(&base, &entry.skill_id, package)?
         } else {
-            owned_directory(home, &relative.join(&entry.skill_id).join(&entry.digest))?
+            existing_owned_directory(home, &relative.join(&entry.skill_id).join(&entry.digest))
+                .map_err(|_| failure("skill execution cache is missing or invalid; resend the exact package before submitting"))?
         };
         let verified=package_skill_directory(&root).map_err(|_|failure("skill execution cache is missing or invalid; resend the exact package before submitting"))?;
         if verified.version_hash != entry.digest {
