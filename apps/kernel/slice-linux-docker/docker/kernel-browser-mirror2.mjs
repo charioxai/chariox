@@ -230,6 +230,7 @@ export class Mirror2 {
     }
   }
   async next(stream, command, scope, { signal } = {}) {
+    if (command.known_sheets !== undefined && (!Array.isArray(command.known_sheets) || command.known_sheets.length > 128 || command.known_sheets.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror sheet dictionary');
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
     // A queued credit's wait starts when its predecessor is answered (expired
@@ -416,7 +417,7 @@ export class Mirror2 {
     for (const record of [...(packet.nodes ?? []), ...(packet.ops ?? []).flatMap(op => op.op === 'children' ? op.nodes : [])]) if (!stream.introduced.has(record.id)) stream.introduced.set(record.id, sequence);
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr' && TARGET_ATTRIBUTES.has(op.name)).map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.identity.set(id, sequence);
     this.regions.record(stream, packet);
-    if (reset) stream.sheetRefs = new Set();
+    if (reset) stream.sheetRefs = new Set(command.known_sheets ?? []);
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
@@ -589,7 +590,10 @@ export class Mirror2 {
   }
   async sheetOps(world, sheets = []) {
     const ops = [];
-    for (const sheet of sheets) { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); if (text !== null) ops.push({ op: 'css', id: sheet.id, css: text }); }
+    for (let at = 0; at < sheets.length; at += 4) {
+      const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); return text === null ? [] : [{ op: 'css', id: sheet.id, css: text }]; }));
+      ops.push(...batch.flat());
+    }
     return ops;
   }
   // Cross-origin sheets: CDP reads the text regardless of CORS; the page's

@@ -62,19 +62,22 @@ export class Mirror2Navigation {
   painted = false
   private held: HTMLIFrameElement | undefined
   private cancelLoad: (() => void) | undefined
+  private spare: [HTMLIFrameElement, Promise<void>] | undefined
+  private cancelSpareLoad: (() => void) | undefined
   private emptyTimer: ReturnType<typeof setTimeout> | undefined
   private cancelEmpty(): void { clearTimeout(this.emptyTimer); this.emptyTimer = undefined }
   constructor(private container: HTMLElement, private onEmptyPaint?: () => void) { [this.frame, this.loaded] = this.create() }
-  private create(): [HTMLIFrameElement, Promise<void>] {
+  private create(spare = false): [HTMLIFrameElement, Promise<void>] {
     const frame = this.container.ownerDocument.createElement('iframe')
     frame.setAttribute('sandbox', 'allow-same-origin')
     frame.setAttribute('referrerpolicy', 'no-referrer')
     frame.setAttribute('title', 'Mirrored kernel browser page')
     frame.style.cssText = 'width:1280px;height:800px;border:0;display:block;visibility:hidden'
+    if (spare) { frame.inert = true; frame.style.display = 'none' }
     frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirror2SandboxCsp}"></head><body></body></html>`
     const loaded = new Promise<void>(resolve => {
       const finish = () => { frame.removeEventListener('load', finish); resolve() }
-      this.cancelLoad = finish
+      if (spare) this.cancelSpareLoad = finish; else this.cancelLoad = finish
       frame.addEventListener('load', finish, { once: true })
     })
     this.container.append(frame)
@@ -86,7 +89,11 @@ export class Mirror2Navigation {
     if (this.painted) { this.held?.remove(); this.held = this.frame; this.held.inert = true }
     else this.frame.remove() // a second navigation retires only its unpainted prefix
     this.painted = false
-    ;[this.frame, this.loaded] = this.create()
+    if (this.spare) {
+      ;[this.frame, this.loaded] = this.spare; this.spare = undefined
+      this.cancelLoad = this.cancelSpareLoad; this.cancelSpareLoad = undefined
+      this.frame.inert = false; this.frame.style.display = 'block'
+    } else [this.frame, this.loaded] = this.create()
     await this.loaded
   }
   present(complete = false): void {
@@ -111,12 +118,18 @@ export class Mirror2Navigation {
     this.cancelEmpty()
     this.frame.style.visibility = 'visible'; this.painted = true
     this.held?.remove(); this.held = undefined
+    this.spare ??= this.create(true)
+  }
+  private dropSpare(): void {
+    this.cancelSpareLoad?.(); this.cancelSpareLoad = undefined
+    this.spare?.[0].remove(); this.spare = undefined
   }
   preserve(): void {
+    this.dropSpare()
     this.cancelEmpty()
     this.cancelLoad?.()
     if (this.held) { this.frame.remove(); this.frame = this.held; this.held = undefined; this.painted = true }
     this.frame.inert = true; this.frame.style.pointerEvents = 'none'
   }
-  close(): void { this.cancelEmpty(); this.cancelLoad?.(); this.frame.remove(); this.held?.remove(); this.held = undefined }
+  close(): void { this.dropSpare(); this.cancelEmpty(); this.cancelLoad?.(); this.frame.remove(); this.held?.remove(); this.held = undefined }
 }

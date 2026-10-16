@@ -34,6 +34,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
+            known_sheets: vec![],
             wait_ms: None,
             resend: None,
         },
@@ -48,6 +49,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: None,
         },
@@ -56,6 +58,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
         },
@@ -157,6 +160,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
         },
@@ -180,4 +184,26 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value).is_err());
     }
+}
+
+#[test]
+fn browser_mirror2_sheet_cache_539_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: additive extension of mirror's unreleased 539/147 allocation.
+    let snapshot = include_str!("browser-mirror2-sheet-cache-539.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
+        "1062180e6696d05e280a1916c8f08bb6088ae8713e636db26ef06fe7bafc43eb"
+    );
+    let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["command"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["command"]);
+    // The pre-extension shape stays accepted and serializes without a dictionary.
+    let mut legacy = fixture["command"].clone();
+    legacy["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("known_sheets");
+    let request: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), legacy);
 }

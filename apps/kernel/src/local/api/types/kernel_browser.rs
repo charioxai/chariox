@@ -46,6 +46,10 @@ pub enum KernelBrowserCommand {
         after_sequence: u64,
         #[serde(default)]
         drift_nodes: Vec<String>,
+        /// Protocol 539/147 (unreleased mirror allocation): immutable sheet digests
+        /// the viewer retains for this subscription (<= 128, each 24 hex chars).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_sheets: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_ms: Option<u32>,
         /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply

@@ -666,7 +666,7 @@ test('MP-10: review r19 RTL wheel keeps signed offsets and an unrelated axis', a
     await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
       {id:'n4',parent:'n3',kind:'element',tag:'div',attrs:{id:'rtl',style:'width:300px;height:200px;overflow:auto;direction:rtl'}},{id:'n5',parent:'n4',kind:'element',tag:'div',attrs:{style:'width:1200px;height:1200px'}}]));
     await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollTo({left:-200,top:100,behavior:'instant'}));await frames();
-    const box=await page.locator('iframe').boundingBox();await page.mouse.move(box.x+150,box.y+100);await page.mouse.wheel(0,16);await page.waitForTimeout(350);
+    const box=await page.locator('iframe:not([inert])').boundingBox();await page.mouse.move(box.x+150,box.y+100);await page.mouse.wheel(0,16);await page.waitForTimeout(350);
     assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-200,'vertical wheel leaves negative horizontal position unchanged');
     await page.mouse.wheel(16,0);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-184,'positive horizontal step moves within signed bounds');
     await page.mouse.wheel(-16,0);await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('rtl').scrollLeft),-200,'negative horizontal step is admitted');
@@ -746,8 +746,8 @@ test('MP-08/MP-10/MP-11 replacement subtree retains its live index for subsequen
   await apply(page,delta(2,[{op:'children',id:'n3',children:['n4'],nodes:nodes.slice(3)}]));
   assert.equal(await page.evaluate(()=>window.r.dom.get('n4')===window.r.frame.contentDocument.querySelector('div')),true,'the visible replacement owns its source ID');
   await apply(page,delta(3,[{op:'children',id:'n4',children:['n5','n6'],nodes:[{id:'n6',parent:'n4',kind:'text',text:'live update after replacement'}]}]));
-  assert.equal(await page.frameLocator('iframe').getByText('live update after replacement').isVisible(),true);
-  await page.frameLocator('iframe').getByRole('button',{name:'replacement action'}).click();
+  assert.equal(await page.frameLocator('iframe:not([inert])').getByText('live update after replacement').isVisible(),true);
+  await page.frameLocator('iframe:not([inert])').getByRole('button',{name:'replacement action'}).click();
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'),'replacement input retains its node ID');
  }finally{await page.close()}
 });
@@ -760,8 +760,8 @@ for(const shadow of [false,true])test(`MP-08/MP-10/MP-11 promoted known child ke
   assert.equal(await page.evaluate(()=>window.r.dom.get('n5')===window.r.frame.contentDocument.querySelector('button')),true,'moving a descendant out must not retire its live index with the removed wrapper');
   assert.equal(await page.evaluate(()=>window.r.records.get('n5')?.parent),'n3','the live record follows its new parent');
   await apply(page,delta(3,[{op:'children',id:'n5',children:['n6','n8'],nodes:[{id:'n8',parent:'n5',kind:'text',text:'still live after promotion'}]}]));
-  assert(await page.frameLocator('iframe').getByText('still live after promotion',{exact:false}).isVisible());
-  await page.frameLocator('iframe').getByRole('button',{name:'promoted action'}).click();
+  assert(await page.frameLocator('iframe:not([inert])').getByText('still live after promotion',{exact:false}).isVisible());
+  await page.frameLocator('iframe:not([inert])').getByRole('button',{name:'promoted action'}).click();
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
  }finally{await page.close()}
 });
@@ -776,8 +776,8 @@ test('MP-08/MP-10/MP-11 promoted frame child keeps its index after frame retirem
   await apply(page,delta(2,[{op:'children',id:'n3',children:['n5'],nodes:[]}]));
   assert.equal(await page.evaluate(()=>window.r.dom.get('n5')===window.r.frame.contentDocument.querySelector('button')),true,'adopting a frame descendant must not retire its live index with the removed frame');
   await apply(page,delta(3,[{op:'children',id:'n5',children:['n6','n10'],nodes:[{id:'n10',parent:'n5',kind:'text',text:'live after frame promotion'}]}]));
-  assert(await page.frameLocator('iframe').getByText('live after frame promotion',{exact:false}).isVisible());
-  await page.frameLocator('iframe').getByRole('button',{name:'promoted frame action'}).click();
+  assert(await page.frameLocator('iframe:not([inert])').getByText('live after frame promotion',{exact:false}).isVisible());
+  await page.frameLocator('iframe:not([inert])').getByRole('button',{name:'promoted frame action'}).click();
   assert((await page.evaluate(()=>window.sent)).some(a=>a.kind==='click'&&a.node_id==='n5'));
  }finally{await page.close()}
 });
@@ -836,7 +836,8 @@ test('MP-10 navigation keeps the prior page until the continued document has vis
     await apply(page,delta(4,[{op:'children',id:'n5',children:['n6','n8'],nodes:[
       {id:'n8',parent:'n5',kind:'element',tag:'h1'},{id:'n9',parent:'n8',kind:'text',text:'Sign in to GitHub'}]}],{document_id:'next'}));
     await frames();assert.match(await shown(),/Sign in to GitHub/);assert.doesNotMatch(await shown(),/Prior page stays visible/);
-    assert.equal(await page.locator('#c > iframe').count(),1,'MP-11: the retired document is released');
+    assert.equal(await page.locator('#c > iframe:not([inert])').count(),1,'MP-11: one active document; the retired document is released');
+    assert.equal(await page.locator('#c > iframe[inert]').count(),1,'one inert preloaded spare');
   } finally { await page.close(); }
 });
 
@@ -845,7 +846,7 @@ test('MP-11 navigation retires unpainted replacements, preserves the last paint 
   try {
     const old = [{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},
       {id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'input',attrs:{id:'old'}}];
-    await apply(page,snapshot(old));await page.locator('#c > iframe').contentFrame().locator('input').click();await page.evaluate(async()=>{await window.r.settleInput();window.sent=[]});
+    await apply(page,snapshot(old));await page.locator('#c > iframe:not([inert])').contentFrame().locator('input').click();await page.evaluate(async()=>{await window.r.settleInput();window.sent=[]});
     const head = [{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'}];
     await apply(page,{...snapshot(head),sequence:2,document_id:'next'});
     await page.keyboard.type('must not reach the new document');
@@ -865,8 +866,8 @@ test('MP-11 same-document protection reset replaces the live field immediately',
     const base=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'}];
     await apply(page,snapshot([...base,{id:'n4',parent:'n3',kind:'element',tag:'input',attrs:{id:'field'}}]));
     await apply(page,{...snapshot([...base,{id:'n4',parent:'n3',kind:'mask',tag:'input',size:[100,30]}]),sequence:2});
-    assert.equal(await page.locator('#c > iframe').count(),1,'MP-11: a policy reset cannot retain the unmasked field');
-    assert.equal(await page.locator('#c > iframe').evaluate(f=>f.contentDocument.querySelector('[aria-label="Protected content"]')?.getBoundingClientRect().width),100);
+    assert.equal(await page.locator('#c > iframe:not([inert])').count(),1,'MP-11: a policy reset cannot retain the unmasked field');
+    assert.equal(await page.locator('#c > iframe:not([inert])').evaluate(f=>f.contentDocument.querySelector('[aria-label="Protected content"]')?.getBoundingClientRect().width),100);
   }finally{await page.close();}
 });
 
@@ -876,7 +877,7 @@ test('MP-10 a continued page containing only an open shadow root can paint', asy
   await apply(page,snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Prior'}]));
   await apply(page,{...snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
     {id:'n4',parent:'n3',kind:'element',tag:'div'},{id:'n5',parent:'n4',kind:'shadow'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'Shadow page'}]),sequence:2,document_id:'shadow'});
-  assert.equal(await page.locator('#c > iframe').count(),1);assert.equal(await page.evaluate(()=>window.r.painted),true);
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1);assert.equal(await page.evaluate(()=>window.r.painted),true);
  }finally{await page.close();}
 });
 
@@ -987,7 +988,7 @@ for (const prior of [false,true]) test(`MP-10 completed empty document releases 
   if(prior)await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Previous site'}])));
   await apply(page,{...snapshot(page2([])),document_id:prior?'empty':'d',sequence:prior?2:1});
   await page.waitForFunction(()=>window.r.painted,{},{timeout:3000});
-  assert.equal(await page.locator('#c > iframe').count(),1,'a completed blank page must retire the previous site');
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1,'a completed blank page must retire the previous site');
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
   assert.equal(await page.evaluate(()=>getComputedStyle(window.r.frame).visibility),'visible');
  }finally{await page.close();}
@@ -1013,7 +1014,7 @@ test('MP-10 empty-document hold never releases a head-only continuation',async()
   assert.equal(await page.locator('#c > iframe').count(),2);
   await apply(page,delta(3,[{op:'children',id:'n2',children:['n3','n4'],nodes:[{id:'n4',parent:'n2',kind:'element',tag:'body'}]}],{document_id:'empty'}));
   await page.waitForFunction(()=>window.r.painted,{},{timeout:3000});
-  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1);
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
  }finally{await page.close();}
 });
@@ -1043,7 +1044,7 @@ test('MP-10 a hidden body prefix cannot time out over a held page',async()=>{
   assert.equal(await page.locator('#c > iframe').count(),2);
   await apply(page,{...delta(3,[{op:'children',id:'n3',children:['n4','n6'],nodes:[{id:'n6',parent:'n3',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'Actual viewport'}]}],{document_id:'large'}),snapshot_complete:true});
   await page.waitForFunction(()=>window.r.painted);
-  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1);
   assert((await page.evaluate(()=>window.r.frame.contentDocument.body.innerText)).includes('Actual viewport'));
  }finally{await page.close()}
 });
@@ -1057,7 +1058,7 @@ test('MP-10 completion after an empty prefix starts a bounded empty-page hold', 
   assert.equal(await page.evaluate(()=>window.r.painted),false);
   await apply(page,{...delta(3),document_id:'empty',snapshot_complete:true});
   await page.waitForFunction(()=>window.r.painted,null,{timeout:3000});
-  assert.equal(await page.locator('#c > iframe').count(),1);
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1);
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.body.innerText),'');
  } finally { await page.close() }
 });
@@ -1140,4 +1141,41 @@ test('MP-10: navigation paint diagnostics follow a revealed frame and a paint op
     assert.deepEqual(observed, marks, 'the host client can export the same paint mark without reading mirrored content');
     assert.ok(marks[0].duration_ms >= 0 && Number.isFinite(marks[0].ended_ms));
   } finally { await page.close(); }
+});
+
+test('MP-10 a same-site navigation reuses retained CSS without carrying its text again', async () => {
+ const page=await viewer();
+ try {
+  const digest='a'.repeat(24),nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css_ref:digest},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'First destination'}];
+  await apply(page,{...snapshot(nodes),sheets:{[digest]:'p{color:rgb(12,34,56)}'}});
+  assert.deepEqual(await page.evaluate(()=>window.r.knownSheets()),[digest]);
+  await apply(page,{...snapshot(nodes.map(r=>r.id==='n7'?{...r,text:'Second destination'}:r)),document_id:'second',sequence:2});
+  assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').textContent),'Second destination');
+  assert.equal(await page.evaluate(()=>window.r.frame.contentWindow.getComputedStyle(window.r.frame.contentDocument.querySelector('p')).color),'rgb(12, 34, 56)');
+ }finally{await page.close();}
+});
+
+test('MP-10 image hydration keeps the existing font-face rule alive', async () => {
+ const page=await viewer();
+ try {
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'@font-face{font-family:MirrorFont;src:url("mr:r1")}p{background-image:url("mr:r2")}'},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'element',tag:'p'},{id:'n7',parent:'n6',kind:'text',text:'Visible destination'}];
+  await apply(page,snapshot(nodes));
+  await page.evaluate(()=>{const d=window.r.frame.contentDocument;window.fontFaceBefore=[...d.styleSheets].flatMap(s=>[...s.cssRules]).find(r=>r.type===5)});
+  const data=Buffer.from([137,80,78,71,13,10,26,10]);
+  await apply(page,delta(2,[],{resources:[{key:'r2',resource_id:createHash('sha256').update(data).digest('hex'),mime_type:'image/png',data_base64:data.toString('base64')}]}));
+  assert.equal(await page.evaluate(()=>{const d=window.r.frame.contentDocument;return [...d.styleSheets].flatMap(s=>[...s.cssRules]).find(r=>r.type===5)===window.fontFaceBefore}),true,'unrelated image bytes must not reparse/restart the font face');
+ }finally{await page.close();}
+});
+
+test('MP-10 next navigation consumes one preloaded inert sandbox and closes the spare', async () => {
+ const page=await viewer();
+ try {
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},{id:'n4',parent:'n3',kind:'text',text:'First destination'}];
+  await apply(page,snapshot(nodes));
+  assert.equal(await page.evaluate(()=>{window.spare=document.querySelector('#c > iframe[inert]');return !!window.spare&&getComputedStyle(window.spare).display==='none'}),true);
+  await apply(page,{...snapshot(nodes.map(r=>r.id==='n4'?{...r,text:'Next destination'}:r)),sequence:2,document_id:'next'});
+  assert.equal(await page.evaluate(()=>window.r.frame===window.spare&&!window.r.frame.inert),true);
+  assert.equal(await page.locator('#c > iframe:not([inert])').count(),1);
+  await page.evaluate(()=>window.r.close());assert.equal(await page.locator('#c > iframe').count(),0);
+ }finally{await page.close();}
 });

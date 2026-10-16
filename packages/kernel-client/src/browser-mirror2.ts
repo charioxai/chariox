@@ -1,3 +1,5 @@
+import { Mirror2FontStyle } from './browser-mirror2-fonts.js'
+import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
 // sanitized stylesheets and attributes are rebuilt in a script-free sandbox;
@@ -25,7 +27,7 @@ const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', m
 // Controls whose state the viewer's own UI commits (its popup or picker); protocol 492 `set` carries the result.
 const PICKED = new Set('date time datetime-local month week color range'.split(' '))
 const picked = (el: Element): boolean => el.localName === 'select' || el.closest('select') !== null || el.localName === 'input' && PICKED.has((el as HTMLInputElement).type)
-type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[] } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
+type Styled = { kind: 'css' | 'attr'; raw: string; node: Element; keys: string[]; fontStyle?: Mirror2FontStyle } | { kind: 'adopted'; raw: string[]; node: Document | ShadowRoot; keys: string[] }
 
 function bytesOf(data: string): Uint8Array { return Uint8Array.from(atob(data), c => c.charCodeAt(0)) }
 async function digest(bytes: Uint8Array): Promise<string> {
@@ -397,7 +399,7 @@ export class BrowserMirror2Renderer {
     return { key: resource.key, resource_id: resource.resource_id, mime_type: resource.mime_type, data_base64: partial.data_base64 }
   }
   private restyle(entry: Styled): void {
-    if (entry.kind === 'css') entry.node.textContent = this.substitute(entry.raw)
+    if (entry.kind === 'css') { if (entry.fontStyle) entry.fontStyle.paint(text => this.substitute(text)); else entry.node.textContent = this.substitute(entry.raw) }
     else if (entry.kind === 'attr') { entry.node.setAttribute('style', this.substitute(entry.raw)); const record = this.records.get(this.ids.get(entry.node) ?? ''); if (record) this.opaqueLayout(record, entry.node) }
     else {
       const { node: root, raw } = entry as Extract<Styled, { kind: 'adopted' }>
@@ -406,7 +408,9 @@ export class BrowserMirror2Renderer {
     }
   }
   private setStyled(id: string, entry: Styled | null): void {
-    if (!entry) { this.styled.delete(id); return }
+    const previous = this.styled.get(id)
+    if (!entry) { if (previous?.kind === 'css') previous.fontStyle?.remove(); this.styled.delete(id); return }
+    if (entry.kind === 'css') { entry.fontStyle = previous?.kind === 'css' && previous.node === entry.node ? previous.fontStyle : undefined; entry.fontStyle ??= new Mirror2FontStyle(entry.node); entry.fontStyle.set(entry.raw) }
     entry.keys = entry.kind === 'adopted' ? entry.raw.flatMap(text => this.keysOf(text)) : this.keysOf(entry.raw)
     this.styled.set(entry.kind === 'adopted' ? `${id}#adopted` : entry.kind === 'attr' ? `${id}#style` : id, entry)
     this.restyle(entry)
@@ -559,6 +563,7 @@ export class BrowserMirror2Renderer {
     if (record.adopted?.length) this.setStyled(record.id, { kind: 'adopted', raw: record.adopted as string[], node: root, keys: [] })
   }
   private forget(id: string): void {
+    const style = this.styled.get(id); if (style?.kind === 'css') style.fontStyle?.remove()
     const node = this.dom.get(id), kind = this.records.get(id)?.kind
     if (kind === 'tile' || kind === 'mask') this.counts[kind]--
     this.dom.delete(id); this.records.delete(id); this.styled.delete(id); this.styled.delete(`${id}#style`); this.styled.delete(`${id}#adopted`)
@@ -598,12 +603,15 @@ export class BrowserMirror2Renderer {
     const meta = doc.createElement('meta'); meta.httpEquiv = 'Content-Security-Policy'; meta.content = mirror2SandboxCsp; head.prepend(meta)
   }
   private sheets = new Map<string, string>()
+  private sheetCache = new Mirror2SheetCache()
+  knownSheets(): string[] { return this.sheetCache.digests() }
   async apply(wire: Mirror2Packet): Promise<void> {
     const started = performance.now()
     if (this.disposed || !this.doc) throw Error('MP-08: mirror unavailable')
     if (!wire.reset && (wire.base_sequence !== this.sequence || wire.document_id !== this.documentId)) throw Error('MP-11: mirror lost base')
-    const packet = resolveMirror2Sheets(wire, this.sheets)
+    const packet = resolveMirror2Sheets(wire, this.sheets, this.sheetCache.texts)
     validateMirror2Packet(packet, this.records)
+    this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
     if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
@@ -658,6 +666,7 @@ export class BrowserMirror2Renderer {
         }
         const view = this.frame.contentWindow!, position = rootScroll ?? packet.scroll; view.scrollTo(position[0]!, position[1]!); this.applied.set(this.doc, [view.scrollX, view.scrollY])
       }
+      for (const entry of this.styled.values()) if (entry.kind === 'css') entry.fontStyle?.attach()
       this.navigation.present(packet.snapshot_complete === true)
       this.navigationPaint()
       this.sequence = packet.sequence; this.documentId = packet.document_id
@@ -796,7 +805,7 @@ export class BrowserMirror2Renderer {
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
-    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
+    this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
     const owner = this.container.ownerDocument
     owner.removeEventListener('pointerup', this.releasePointer, true)
     owner.removeEventListener('pointercancel', this.releasePointer, true)
@@ -809,7 +818,7 @@ export class BrowserMirror2Renderer {
   }
 }
 
-export interface Mirror2Transport { receiving?(): boolean; protocolVersion: number; request(request: unknown, options?: {onWritten?:()=>void}): Promise<unknown> }
+export interface Mirror2Transport { prioritize?():()=>void; receiving?(): boolean; protocolVersion: number; request(request: unknown, options?: {onWritten?:()=>void}): Promise<unknown> }
 // Protocol 489: the kernel deflates packet bodies in the subscription's
 // context (sync flush per packet, a fresh context per reset), so the viewer
 // inflates them strictly in sequence order. Inflation is bounded before parsing.
@@ -832,14 +841,17 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
   if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 539')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
-  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }); const subscription_id = subscribed.subscription_id as string
+  const releaseHold = transport.prioritize?.() ?? (() => {})
+  let priorityReleased = false
+  const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
+  const subscribed = await request({ op: 'mirror_subscribe', ...binding, wire: 2 }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()
@@ -868,11 +880,12 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } })
-  renderer.onTiming = handlers.timing
-  try { await renderer.ready() } catch (error) { renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
+  renderer.onTiming = sample => { if (sample.stage === 'mirror_navigation_paint') releasePriority(); handlers.timing?.(sample) }
+  try { await renderer.ready() } catch (error) { releasePriority(); renderer.close(); await request({ op: 'mirror_close', subscription_id, generation: binding.generation }).catch(() => {}); throw error }
   // Notify consumers when the empty-page timer presents the last applied
   // frame. A silent/stalled credit must not keep the previous View attached.
   renderer.onEmptyPaint = () => {
+    if (!closed && renderer.painted !== false) releasePriority()
     if (!closed && base && !base.fallback && base.snapshot_complete === true && renderer.painted !== false && renderer.frame.dataset.mirrorSequence === String(base.sequence)) handlers.presented?.(base)
   }
   let chain: Promise<void> = Promise.resolve()
@@ -885,6 +898,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       if (!next.fallback) await renderer.apply(next)
       // Only an applied packet ends a failure streak (a reply that cannot be applied does not).
       base = next; failures = 0; failingSince = 0
+      if (next.fallback || renderer.painted === undefined) releasePriority()
       if (next.reset || next.ops?.length || next.resources.length || next.tiles.length) activeAt = performance.now()
       applied = next.sequence
       if (next.reset) { wantReset = false; wantResend = false }
@@ -919,7 +933,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
     const entry = { reset, oldestAt: outstanding.length ? 0 : performance.now() }; outstanding.push(entry)
     const overdue = (): void => { if (closed || !outstanding.includes(entry)) return; if (outstanding[0] !== entry || entry.reset || transport.receiving?.()) { setTimeout(overdue, LOST_MS); return } const left = entry.oldestAt + waitMs + LOST_MS - performance.now(); if (left > 0) { setTimeout(overdue, left); return } if (!resendOutstanding && applied) { wantResend = true; fill() } }
     setTimeout(overdue, waitMs + LOST_MS)
-    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
+    request({ op: 'mirror_next', subscription_id, generation: binding.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], ...(renderer.knownSheets?.().length ? { known_sheets: renderer.knownSheets() } : {}), wait_ms: waitMs, ...(resend ? { resend: true } : {}) })
       .then(async (packet: Mirror2WirePacket) => {
         answered = true
         if (!packet || packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0) throw Error('MP-11: foreign mirror packet')
@@ -937,7 +951,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         if (generation === failGeneration) { failures++; failGeneration++; if(!closed) handlers.diagnostic?.(answered ? "mirror_apply_retry" : "mirror_credit_retry",error,applied) }
         if (answered) wantReset = true; else wantResend = true
         failingSince ||= performance.now()
-        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; handlers.diagnostic?.(fatal(error) ? "mirror_fatal" : terminal(error) ? "mirror_binding_retired" : "mirror_failing_streak",error,applied); inflater?.close(); renderer.close({preserveFrame:preserveFrameOnFailure}); handlers.failure(error); void closeRemote() }
+        if (!closed && (fatal(error) || terminal(error) || performance.now() - failingSince > failingMs)) { closed = true; releasePriority(); handlers.diagnostic?.(fatal(error) ? "mirror_fatal" : terminal(error) ? "mirror_binding_retired" : "mirror_failing_streak",error,applied); inflater?.close(); renderer.close({preserveFrame:preserveFrameOnFailure}); handlers.failure(error); void closeRemote() }
       })
       .finally(() => { outstanding.splice(outstanding.indexOf(entry), 1); if (outstanding[0] && !outstanding[0].oldestAt) outstanding[0].oldestAt = performance.now(); if (resend) resendOutstanding = false; inflight--; if (!closed) setTimeout(fill, failures ? Math.min(4000, 250 * 2 ** (failures - 1)) : 0) })
   }
@@ -957,7 +971,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       await renderer.settleInput?.()
       if(closed)throw Error('MP-08: mirror closed')
     },
-    async close(options?:{preserveFrame?:boolean}) { clearTimeout(firstWait); if (!closed) { closed = true; inflater?.close() } renderer.close(options); await closeRemote() },
+    async close(options?:{preserveFrame?:boolean}) { releasePriority(); clearTimeout(firstWait); if (!closed) { closed = true; inflater?.close() } renderer.close(options); await closeRemote() },
     takeover: () => request({ op: 'display_takeover', tab_id: binding.tab_id, generation: binding.generation }),
     release: () => request({ op: 'display_release', tab_id: binding.tab_id, generation: binding.generation }),
   }

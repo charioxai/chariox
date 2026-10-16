@@ -4153,3 +4153,22 @@ The frozen header fixture `browser-mirror2-completion-539.json` is hash-pinned b
 controller, compact-header and renderer drills cover pending prefixes, completion
 wakes (including between credits), completed empty pages and pre-539 rejection.
 These supplementary checks do not replace the MP-10 real hosted UI/timing matrix.
+
+#### MP-08 / MP-10 / MP-11: retained mirror sheets in the unreleased 539/147 allocation
+
+A `mirror_next` credit may carry `known_sheets`, at most 128 lowercase 24-digit
+hexadecimal stylesheet digests. These name sanitized CSS texts that this viewer
+actually retains until its subscription closes. Omission means no retained
+cross-document dictionary, preserving the existing client path. A reset includes
+all other sheet definitions; deltas keep the existing snapshot dictionary.
+The kernel uses the advertised digests only to omit repeated CSS text. They do
+not authorize a document, input, resource fetch or observation.
+
+The viewer keeps an immutable subscription dictionary of at most 128 sheets and
+8 MiB of UTF-8 text. It never evicts an advertised entry while a credit or reset
+could still refer to it. Additional definitions use ordinary per-document delivery.
+Every resolved CSS use passes the existing sandbox/CSS validation. Closing the
+renderer discards both dictionaries. This extends mirror's own unreleased
+539/147 allocation additively, as allocated by the coordinator; no new protocol
+number or client floor is introduced. `browser-mirror2-sheet-cache-539.json` pins
+the request extension and its hash, including legacy omission/round-trip coverage.

@@ -1,4 +1,4 @@
-import { KernelCatalogReads } from './kernel-catalog-reads.js'
+import { KernelCatalogReads, captureKernelCatalogRead } from './kernel-catalog-reads.js'
 import { RelayFrameReceiver, relayTransportUrl, relayResponseInProgress } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -248,6 +248,8 @@ type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  prioritizeInteractiveDisplay(): () => void { return this.catalogReads.hold() }
+
   isReceivingKernelResponse(): boolean { return relayResponseInProgress(this.getWebSocket("control")) }
 
   private readonly catalogReads = new KernelCatalogReads()
@@ -391,6 +393,7 @@ export class LocalIpcClient {
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
+    request = captureKernelCatalogRead(request)
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
       admittedSocket = await this.ensureWebSocket("control")

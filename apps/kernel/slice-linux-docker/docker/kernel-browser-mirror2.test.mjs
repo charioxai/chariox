@@ -467,3 +467,17 @@ test('MP-10: a current event-bound frame avoids duplicate cold target/frame quer
  const mirror=new Mirror2({host:{browser}});mirror.watchCss=async()=>{};
  assert.equal((await mirror.world({target_id:'t',document_id:'doc'},{id:'stream'})).frame,frame);
 });
+
+test('MP-11 retained sheet advertisements are bounded before issuing a credit', async () => {
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0};mirror.packet=async()=>({sequence:1});
+ for(const known_sheets of [false,['not-a-digest'],Array(129).fill('a'.repeat(24))]) await assert.rejects(mirror.next(stream,{known_sheets},'scope'),/invalid mirror sheet dictionary/);
+ assert.equal((await mirror.next(stream,{known_sheets:['a'.repeat(24)]},'scope')).sequence,1);
+});
+
+test('MP-10 independent sheet bodies overlap in batches of at most four and retain cascade order', async () => {
+ const mirror=new Mirror2({host:{}});let active=0,peak=0;
+ mirror.crossOriginSheet=async(_world,url)=>{peak=Math.max(peak,++active);await new Promise(resolve=>setTimeout(resolve,2));active--;return url;};
+ const sheets=Array.from({length:10},(_,n)=>({id:`n${n}`,url:`sheet${n}`}));
+ const ops=await mirror.sheetOps({},sheets);
+ assert.equal(peak,4);assert.deepEqual(ops.map(op=>op.id),sheets.map(sheet=>sheet.id));
+});

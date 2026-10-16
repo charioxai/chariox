@@ -85,8 +85,8 @@ export function decodeMirror2Records(rows: unknown, context: string | null): Mir
 }
 // Stylesheet digests resolve against this snapshot epoch's sheet table (the
 // texts are validated wherever they are used, like inline texts).
-export function resolveMirror2Sheets(packet: Mirror2Packet, known: Map<string, string>): Mirror2Packet {
-  if (packet.reset) known.clear()
+export function resolveMirror2Sheets(packet: Mirror2Packet, known: Map<string, string>, retained?: ReadonlyMap<string, string>): Mirror2Packet {
+  if (packet.reset) { known.clear(); for (const [digest, text] of retained ?? []) known.set(digest, text) }
   if (packet.sheets !== undefined) {
     if (!packet.sheets || typeof packet.sheets !== 'object' || Array.isArray(packet.sheets) || Object.keys(packet.sheets).length > 4096) fail('sheets')
     for (const [digest, text] of Object.entries(packet.sheets)) { if (!/^[a-f0-9]{24}$/.test(digest) || typeof text !== 'string') fail('sheets'); known.set(digest, text) }

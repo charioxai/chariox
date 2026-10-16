@@ -619,3 +619,11 @@ test('MP-10: validated chunk progress suppresses recovery only while the transfe
   assert.throws(() => receiver.receive(JSON.stringify({kind:'transport_chunk',transfer_id:1,offset:0,total_bytes:700_000,payload:'x'}), () => {}))
   assert.equal(receiver.receiving(), false, 'invalid bytes cannot refresh progress')
 })
+
+
+test('MP-11 a reset can reuse only immutable sheets actually retained by this viewer', () => {
+  const digest = 'd'.repeat(24), known = new Map<string, string>(), retained = new Map([[digest, 'p{color:red}']])
+  const reset = base(tree({id:'n3',parent:'n2',kind:'element',tag:'style',css_ref:digest}))
+  assert.equal(resolveMirror2Sheets(reset, known, retained).nodes![2]!.css, 'p{color:red}')
+  assert.throws(() => resolveMirror2Sheets({...reset,nodes:tree({id:'n3',parent:'n2',kind:'element',tag:'style',css_ref:'e'.repeat(24)})}, known, retained), /sheet reference/)
+})
