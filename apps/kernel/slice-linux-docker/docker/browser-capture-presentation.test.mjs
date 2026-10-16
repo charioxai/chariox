@@ -41,3 +41,11 @@ test('MP-08/MP-10 CSS activation and screenshot deadlines survive the presentati
  assert.equal(sent[0][3],css,'A bounded CSS watcher must keep its own timeout');
  assert.equal(sent[1][3],capture,'Capture must keep its own timeout');
 });
+
+
+test('MP-08/MP-10/MP-11 restoration wake waits for overlapping captures and never bypasses a failed restore',async()=>{
+ let clock=100,wakes=0;const fence=new CapturePresentationFence(()=>clock),first=deferred(),second=deferred();
+ const a=fence.run(()=>first.promise,async()=>{}),b=fence.run(()=>second.promise,async()=>{throw Error('unrestored')});
+ const cancel=fence.whenStable(()=>{wakes++});clock=200;first.resolve();await a;clock=202;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(wakes,0);
+ second.resolve();await assert.rejects(b,/unrestored/);clock=300;await new Promise(resolve=>setTimeout(resolve,5));assert.equal(wakes,0);assert.equal(fence.stable(clock),false);cancel();
+});

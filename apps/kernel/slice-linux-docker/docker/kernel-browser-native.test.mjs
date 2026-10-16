@@ -347,3 +347,22 @@ test('MP-08/MP-10/MP-11 startup sample wait is bounded and exits immediately whe
   assert.equal(at,retire?40:5000);assert.equal(source.latest,undefined);
  }
 });
+
+
+test('MP-08/MP-10/MP-11 screenshot restoration coalesces native retries without admitting transient pixels',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');
+ let clock=100,finish,wakes=0,released=0;
+ const fence=new CapturePresentationFence(()=>clock),held=new Promise(resolve=>finish=resolve),restored=fence.run(()=>held,async()=>{});
+ const source=new LinuxCapture({connection:{presentationFence:fence}});source.valid=()=>!source.closed;source.wake=()=>{wakes++};
+ try{
+  for(let n=0;n<20;n++){source.pending={captured_ms:101,release:()=>{released++}};await source.publish()}
+  assert.equal(wakes,0,'transient rejections must not force another readback');assert.equal(released,20);assert(!source.latest);
+  clock=200;finish();await restored;clock=202;await new Promise(resolve=>setTimeout(resolve,10));assert.equal(wakes,1,'one fresh readback after restoration');assert(!fence.stable(101),'old transient pixels remain rejected');
+ }finally{await source.close()}
+});
+test('MP-08/MP-10/MP-11 closing native capture cancels its pending restoration wake',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');let clock=100,finish,wakes=0;
+ const fence=new CapturePresentationFence(()=>clock),restored=fence.run(()=>new Promise(resolve=>finish=resolve),async()=>{});
+ const source=new LinuxCapture({connection:{presentationFence:fence}});source.valid=()=>!source.closed;source.wake=()=>{wakes++};source.pending={captured_ms:101,release(){}};
+ await source.publish();await source.close();clock=200;finish();await restored;clock=202;await new Promise(resolve=>setTimeout(resolve,10));assert.equal(wakes,0);
+});

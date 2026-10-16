@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-10 / MP-11 capture restoration retries (2026-10-16)
+
+Browser and Computer native sources share the capture presentation fence. Every
+readback intersecting a screenshot or its compositor restoration remains
+inadmissible. A rejected readback now registers one cancellable retry after
+successful restoration, instead of immediately forcing another readback while
+the same fence is active. Overlapping captures must all restore; a failed
+restoration keeps the fence closed. Closing either source cancels its retry.
+
+Security anchors: `browser-capture-presentation.mjs`, `kernel-browser-native.mjs`
+and `kernel-desktop-source.mjs` in `apps/kernel/slice-linux-docker/docker/`.
+The pixel predicate, document/window leases and Vault masks are unchanged.
+Focused regressions cover retry coalescing, cancellation, overlap and failed
+restoration. They supplement real ordinary/managed drills and do not establish
+live acceptance or an independent semantic review of these anchors.
+
 ## MP-08 / MP-10 / MP-11 native global shortcut admission (2026-10-15)
 
 Physical agent keyboard batches probe the exact X11 root passive key grabs

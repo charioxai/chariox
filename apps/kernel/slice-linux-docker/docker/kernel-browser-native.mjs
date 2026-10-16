@@ -1,3 +1,4 @@
+import {resumeAfterCapturePresentation} from './browser-capture-presentation.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: OS-neutral capture interface: start/subscribe/sample/close.
 // Linux XDamage/XShm implementation; macOS unsupported until ScreenCaptureKit.
@@ -141,7 +142,7 @@ export class LinuxCapture {
    // after the capture: a readback holding the list's pixels always sees it open.
    if(this.occluded&&await this.occluded()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
-    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
+    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;resumeAfterCapturePresentation(this,this.connection.presentationFence,()=>this.wake(true));continue;
    }
    if(!this.valid())break;
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
@@ -247,7 +248,7 @@ export class LinuxCapture {
   this.child.stdin.write(JSON.stringify(command)+'\n');return true;
  }
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.closed=true;this.presentationResume?.();this.presentationResume=null;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){

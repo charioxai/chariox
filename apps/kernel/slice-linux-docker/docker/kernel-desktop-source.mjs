@@ -1,4 +1,5 @@
 // MP-08 / MP-11: protected desktop source for the shared XDamage/codec pipeline.
+import {resumeAfterCapturePresentation} from './browser-capture-presentation.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -182,7 +183,7 @@ export class DesktopSource {
     const presentation=this.binding.browser?.()?.connection?.presentationFence;
     const start=captured??sample.raw.captured_ms,end=start+(sample.raw.capture_ms??0);
     if(presentation&&!presentation.stable(start,end)){
-      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();void this.wake();return;
+      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
     }
     // Serial 0 withholds every kernel-browser window: publish at once.
     if(serial===0)this.publish(sample);
@@ -254,7 +255,7 @@ export class DesktopSource {
   }
   async close() {
     if(this.closed&&!this.child&&!this.oracle)return;
-    this.closed=true;
+    this.closed=true;this.presentationResume?.();this.presentationResume=null;
     for(const raw of [this.latest?.raw,...this.pending.map(item=>item.sample.raw),this.next])raw?.release?.();
     this.latest=null;this.pending=[];this.next=null;this.listeners.clear();
     const child=this.child,oracle=this.oracle,poolRoot=this.poolRoot;this.child=null;this.oracle=null;this.poolRoot=null;
