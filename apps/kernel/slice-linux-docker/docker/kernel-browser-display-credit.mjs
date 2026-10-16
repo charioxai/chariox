@@ -32,9 +32,9 @@ export async function displayCredit(host, stream, command, signal) {
     if(!regionAlive())throw Error('MP-11: region lease retired');
     if(empty())return {generation:host.generation,frame_sent:false,display_frame:null};
   }
-  // MP-08/MP-10/MP-11: empty-only scheduling never reads or grants pixels.
-  // A possible frame still re-admits its live region before any capture/encode.
-  if(region&&!await stream.regionCurrent())throw Error('MP-11: region lease retired');
+  // MP-08/MP-10/MP-11: the source masks every sample after fresh admission.
+  // The synchronous lifetime guard above admits preparation; the credit's one
+  // fresh region query follows all encoding/pacing awaits before delivery.
   const native = cachedSource?.native===true&&cachedSource.attested;
   let tab;
   try { tab = region ? stream.regionSource.tab : await host.displayTarget({ tab_id: stream.tab_id, generation: command.generation },native); }

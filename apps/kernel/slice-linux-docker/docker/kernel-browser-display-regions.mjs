@@ -65,7 +65,9 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
     rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
     attestationState:lease.attestationState,
-    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent()&&await host.arbiter.isActiveTab(tab,window)&&await lease.isCurrent()};
+    // The owner's fresh viewport query proves geometry and the active target
+    // together; a second active() query repeats the same native admission.
+    isCurrent:()=>lease.isAlive()&&window.isCurrent(),validateCurrent:async()=>window.isCurrent()&&await window.isPageCurrent(tab.target_id)&&await lease.isCurrent()};
    args.occluded=async()=>await host.chromeWindows?.inWindowOverNow?.(args.rect)===true;
   }catch(error){await lease.close();throw error;}
  } else {

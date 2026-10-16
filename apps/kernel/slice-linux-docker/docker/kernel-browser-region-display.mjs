@@ -11,9 +11,9 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   const pageTab=overlayTab??tab;
   const {connection,sessionId}=await host.browser.resolvePageTarget(pageTab.target_id);
   const scale=window.scale,sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[target.kind]??0;
-  const validateCurrent=args.validateCurrent&&(async()=>{
+  const validateCurrent=args.validateCurrent&&(async(lease_phase=1)=>{
    const at=performance.timeOrigin+performance.now();
-   try{return await args.validateCurrent();}finally{host.timing.event?.('native_live_lease',{at,source_kind:sourceKind});}
+   try{return await args.validateCurrent();}finally{host.timing.event?.('native_live_lease',{at,source_kind:sourceKind,lease_phase});}
   });
   // Browser UI survives page navigation; the frame document is its window epoch.
   // A dialog overlay's frames belong to the window epoch too; its page document fences it separately.
@@ -36,7 +36,7 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},
    {timing:host.timing,encoder:new PortableEncoder()});
   Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,regionPlacement:placement,
-   regionCurrent:validateCurrent??lease.isCurrent});
+   regionCurrent:validateCurrent?()=>validateCurrent(2):lease.isCurrent});
   const close=stream.close.bind(stream);let closing,offRetire;
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);

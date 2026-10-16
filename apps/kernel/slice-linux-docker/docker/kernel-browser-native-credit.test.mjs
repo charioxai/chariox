@@ -9,6 +9,17 @@ function fixture(){
   producer:{source,frames:[]},refiner:{quietMs:300}};
  return {source,stream,policy,sample,empty:()=>nativeCreditEmpty(stream,source,policy,0,-Infinity,1,200)};
 }
+// MP-08/MP-10/MP-11: a producer descriptor is already masked by its source.
+// The full DisplayStream retirement path is covered in display-regions.test.
+function regionCreditHost(f){
+ Object.assign(f.source,{tab:{tab_id:'t',target_id:'target',document_id:'d'},connection:{},sessionId:'s'});
+ Object.assign(f.stream,{sequence:1,device_scale_factor:1,codec:'avc1.420033',encoder:{},compositorRegionRevision:0,
+  canPatchNative:()=>false,shiftKind:()=>null,refinerDocument:'d',
+  frame:async(_source,_document,_after,validate)=>{assert.equal(await validate(),false);return null;}});
+ Object.assign(f.stream.producer,{feedback(){},take:()=>({...f.sample,motion:true})});
+ f.stream.refiner.request=()=>null;
+ return {generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map(),timing(){},compositorFor:async()=>f.source};
+}
 test('MP-08/MP-10 busy native encoding of a fresh serial skips repeated CDP inventories',()=>{
  for(const work of ['active','pending']){
   const f=fixture();f.sample.serial=2;f.stream.producer[work]={};f.stream.canPatchNative=()=>false;
@@ -85,23 +96,23 @@ test('MP-08/MP-10/MP-11 empty region credits keep cheap fences without querying 
  Object.defineProperty(f.sample.raw,'pixels',{get(){reads++;throw Error('empty credit read pixels')}});
  Object.assign(f.source,{native:true,closed:false,changedAt:performance.now(),regionRevision:0});
  Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>{queries++;return true}});
- const host={generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map()};
+ const host=regionCreditHost(f);
  const command={generation:1,after_sequence:1,push:{}};
  const result=await displayCredit(host,f.stream,command);assert.equal(result.frame_sent,false);assert.equal(queries,0);assert.equal(reads,0);
  f.source.valid=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.source.valid=()=>true;
  f.stream.regionLease.isAlive=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.stream.regionLease.isAlive=()=>true;
  await assert.rejects(displayCredit(host,f.stream,{...command,generation:0}),/region lease retired/);
  f.stream.previous=null;f.stream.regionCurrent=async()=>{queries++;return false};
- await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);assert.equal(queries,1,'a possible frame still requires fresh live admission');assert.equal(reads,0);
+ assert.equal((await displayCredit(host,f.stream,command)).frame_sent,false);assert.equal(queries,1,'a possible frame still requires fresh final delivery admission');assert.equal(reads,0);
 });
 
-test('MP-08/MP-10/MP-11 an empty wait becoming ready admits only after waiting and before pixels',async()=>{
+test('MP-08/MP-10/MP-11 an empty wait becoming ready keeps fresh final admission after waiting',async()=>{
  const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture();let waited=false,queries=0;
  Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});
  f.stream.producer.waitReady=async()=>{waited=true;f.stream.previous=null};
  Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>{queries++;assert(waited);return false}});
- const host={generation:1,protection:f.policy,inputEpochs:new Map(),inputChangedAt:new Map()};
- await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1}),/region lease retired/);assert.equal(queries,1);assert(waited);
+ const host=regionCreditHost(f);
+ assert.equal((await displayCredit(host,f.stream,{generation:1,after_sequence:1})).frame_sent,false);assert.equal(queries,1);assert(waited);
 });
 
 for(const change of ['generation','window','cancellation'])test(`MP-08/MP-10/MP-11 an empty wait still refuses ${change} retirement`,async()=>{
