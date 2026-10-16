@@ -26,6 +26,9 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) queued_local_prompts_started: usize,
     pub(crate) orphaned_workflow_prompts_finalized: usize,
     pub(crate) failed_reconciliations: usize,
+    pub(crate) unconfirmed_prompts_failed: usize,
+    /// Prompts whose delivery could not be proven in this pass.
+    pub(crate) transcript_pending_targets: Vec<DurableRestartRecoveryTarget>,
 }
 
 pub(super) enum UncertainLocalRecoveryOutcome {
@@ -43,6 +46,9 @@ pub(super) enum CancelledLocalPromptRestartOutcome {
 type DurableRestartRecoveryTarget = (String, String, String);
 type DurableRestartDispatchTarget = (String, String, String, String);
 const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
+/// Wall-clock bound on proving prompt delivery after a restart. Each pass also scans provider
+/// transcripts, so an attempt count alone would stretch this to a quarter of an hour.
+const TRANSCRIPT_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
 
@@ -86,6 +92,9 @@ impl KernelRuntimeState {
         let state = self.clone();
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
+            // A SIGKILLed kernel leaves its Codex app-servers holding the native thread
+            // writers that recovery is about to resume; reclaim them first.
+            state.reap_orphaned_provider_processes_at_startup().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
@@ -93,8 +102,9 @@ impl KernelRuntimeState {
                 );
             }
             let mut attempt = 0_u32;
+            let observation_started = tokio::time::Instant::now();
             let mut pending_dispatch_targets = dispatch_targets;
-            let summary = loop {
+            let mut summary = loop {
                 let mut summary = state
                     .recover_durable_runtime_after_restart_targets(
                         &recovery_targets,
@@ -136,12 +146,16 @@ impl KernelRuntimeState {
                 }
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
+                    || observation_started.elapsed() >= TRANSCRIPT_OBSERVATION_WINDOW
                 {
                     break summary;
                 }
                 attempt = attempt.saturating_add(1);
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             };
+            summary.unconfirmed_prompts_failed = state
+                .fail_unconfirmed_restart_prompts(&summary.transcript_pending_targets)
+                .await;
             crate::logging::info_with_fields(
                 "durable_state.recovery",
                 "reconciled durable runtime work after kernel restart",
@@ -156,6 +170,7 @@ impl KernelRuntimeState {
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
                     "failed_reconciliations": summary.failed_reconciliations,
+                    "unconfirmed_prompts_failed": summary.unconfirmed_prompts_failed,
                 }),
             );
         }))
@@ -448,6 +463,11 @@ impl KernelRuntimeState {
                             UncertainLocalRecoveryOutcome::TranscriptPending,
                         )) => {
                             summary.transcript_recovery_pending += 1;
+                            summary.transcript_pending_targets.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
@@ -500,6 +520,11 @@ impl KernelRuntimeState {
                         }
                         Ok(UncertainLocalRecoveryOutcome::TranscriptPending) => {
                             summary.transcript_recovery_pending += 1;
+                            summary.transcript_pending_targets.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
@@ -526,6 +551,123 @@ impl KernelRuntimeState {
         // of leaving event-delivery runs parked in `BlockedOnWorkspaceClaim` forever.
         self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         summary
+    }
+
+    /// The observation window is over and no provider transcript proves delivery. Replaying
+    /// could repeat external side effects and there is nothing to resume, so the prompt ends as
+    /// failed (failing its workflow run) instead of holding its agent in a thinking state forever.
+    async fn fail_unconfirmed_restart_prompts(
+        &self,
+        pending_targets: &[DurableRestartRecoveryTarget],
+    ) -> usize {
+        const MESSAGE: &str = "the kernel restarted while this prompt was being delivered and its delivery could not be confirmed; it was not replayed to avoid repeating its effects, resend it to retry";
+        let mut failed = 0;
+        for (session_id, agent_id, prompt_id) in pending_targets {
+            let Ok(session) = self.owned.session_store.get_session(session_id) else {
+                continue;
+            };
+            let still_pending = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .is_some_and(|prompt| prompt.id() == prompt_id);
+            if !still_pending {
+                continue;
+            }
+            let provider_run_id = self
+                .owned
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .map(|run| run.id().to_string());
+            match self.owned.settle_failed_local_prompt_for_optional_run(
+                session_id,
+                agent_id,
+                prompt_id,
+                provider_run_id.as_deref(),
+                MESSAGE,
+            ) {
+                Ok(Some(_)) => {
+                    failed += 1;
+                    self.owned.record_notice(
+                        session_id,
+                        provider_run_id.as_deref(),
+                        self.owned
+                            .attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!("Prompt `{prompt_id}` failed: {MESSAGE}"),
+                    );
+                    self.spawn_workflow_prompt_dispatches(
+                        self.owned.workflow_maybe_start_next_queued_prompt(session_id),
+                    );
+                    self.start_next_queued_prompt_after_restart(session_id, agent_id)
+                        .await;
+                }
+                Ok(None) => {}
+                Err(error) => log_restart_recovery_failure(session_id, agent_id, prompt_id, &error),
+            }
+        }
+        failed
+    }
+
+    /// Reclaim this kernel's own Codex app-servers left behind by a previous process. Disabled
+    /// by an unbounded orphan TTL, which test kernels use so they never touch live kernels.
+    async fn reap_orphaned_provider_processes_at_startup(&self) {
+        if self.owned.config_projection.snapshot().provider_process_orphan_ttl_ms == u64::MAX {
+            return;
+        }
+        let now_ms = crate::session::unix_epoch_ms();
+        // No tracked process can be idle yet; a zero orphan age takes every unowned one.
+        match self
+            .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, u64::MAX, 0))
+            .await
+        {
+            Ok(summary) if summary.orphan_processes_reaped > 0 => {
+                crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "reclaimed orphaned provider processes after kernel restart",
+                    serde_json::json!({
+                        "orphan_processes_reaped": summary.orphan_processes_reaped,
+                    }),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "failed to reclaim orphaned provider processes",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+    }
+
+    async fn start_next_queued_prompt_after_restart(&self, session_id: &str, agent_id: &str) {
+        let Some(queued_prompt_id) = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .state_parts(&session, agent_id)
+                    .1
+                    .front()
+                    .map(|prompt| prompt.id().to_string())
+            })
+        else {
+            return;
+        };
+        match self.recover_queued_local_prompt_after_restart(
+            session_id,
+            agent_id,
+            &queued_prompt_id,
+            false,
+        ) {
+            Ok(Some(dispatches)) => self.spawn_workflow_prompt_dispatches(dispatches),
+            Ok(None) => {}
+            Err(error) => log_restart_recovery_failure(session_id, agent_id, &queued_prompt_id, &error),
+        }
     }
 
     async fn finalize_orphaned_workflow_prompt_after_restart(
@@ -558,29 +700,8 @@ impl KernelRuntimeState {
         // Recover the next provider prompt directly instead of asking the workflow
         // queue to create another run.  The latter leaves a Ready node stranded
         // because the invocation was already claimed before the restart.
-        let queued_prompt_id = self
-            .owned
-            .session_store
-            .get_session(session_id)
-            .ok()
-            .and_then(|session| {
-                self.owned
-                    .prompt_state_owner
-                    .state_parts(&session, agent_id)
-                    .1
-                    .front()
-                    .map(|prompt| prompt.id().to_string())
-            });
-        if let Some(queued_prompt_id) = queued_prompt_id {
-            if let Some(dispatches) = self.recover_queued_local_prompt_after_restart(
-                session_id,
-                agent_id,
-                &queued_prompt_id,
-                false,
-            )? {
-                self.spawn_workflow_prompt_dispatches(dispatches);
-            }
-        }
+        self.start_next_queued_prompt_after_restart(session_id, agent_id)
+            .await;
         Ok(())
     }
 
@@ -2794,6 +2915,234 @@ mod tests {
         assert!(
             leaked_records.is_empty(),
             "kernel-recovery envelope must never be echoed to other attachments; leaked records = {leaked_records:#?}",
+        );
+    }
+    // MP-08/MP-10/MP-11: a workflow run killed right after its prompt was dispatched has no
+    // provider identity to resume. It must settle by itself once the observation window ends.
+    #[tokio::test(start_paused = true)]
+    async fn unconfirmed_workflow_prompt_fails_once_the_observation_window_ends() {
+        let config = DaemonConfig::for_tests();
+        let worktree = std::env::current_dir().expect("test workspace should resolve");
+        let (session_id, agent_id, workflow_run_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, agent) = KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    worktree.to_string_lossy(),
+                    worktree.to_string_lossy(),
+                ))
+                .expect("session should create");
+            let attachment = KernelSessionService::new(&mut app)
+                .attach(AttachRequest::new(
+                    session.id(),
+                    "attachment-killed-workflow",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+                .expect("attachment should attach");
+            let codex_agent = app
+                .agents_mut()
+                .set_agent_runtime_profile_with_account_profile(
+                    agent.id(),
+                    "codex",
+                    Some("gpt-5.5".to_string()),
+                    None,
+                    Some("default".to_string()),
+                    crate::provider::ProviderResumeState::default(),
+                )
+                .expect("codex profile should seed");
+            app.durable_state_store()
+                .append_event(
+                    "agent.runtime_profile_updated",
+                    Some(codex_agent.id().to_string()),
+                    serde_json::json!({"agent": &codex_agent, "reason": "test_killed_workflow"}),
+                )
+                .expect("profile should persist");
+            let workflow = app
+                .sessions_mut()
+                .create_workflow(session.id(), Some("killed-workflow".to_string()))
+                .expect("workflow should create");
+            let node = app
+                .sessions_mut()
+                .add_workflow_node(session.id(), workflow.id(), agent.id())
+                .expect("node should create");
+            let endpoint = app
+                .sessions_mut()
+                .create_workflow_endpoint(
+                    session.id(),
+                    workflow.id(),
+                    node.id(),
+                    Some("entry".to_string()),
+                )
+                .expect("endpoint should create");
+            let run = app
+                .sessions_mut()
+                .invoke_workflow_endpoint(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("run".to_string()),
+                )
+                .expect("workflow run should create");
+            let node_run_id = run.node_runs()[0].id().to_string();
+            app.sessions_mut()
+                .prepare_workflow_turn(
+                    session.id(),
+                    run.id(),
+                    &node_run_id,
+                    format!("workflow-ack:{node_run_id}"),
+                    "run".to_string(),
+                    None,
+                    None,
+                )
+                .expect("workflow turn should prepare");
+            app.sessions_mut()
+                .start_workflow_node_run(session.id(), run.id(), &node_run_id)
+                .expect("workflow node should start");
+            let prompt = PromptQueueItem::new(
+                "prompt-killed-workflow",
+                attachment.id(),
+                agent.id(),
+                "run",
+                PromptStatus::Queued,
+            )
+            .with_workflow_context(run.id(), &node_run_id);
+            let prompt = match app
+                .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+                .expect("prompt should start")
+            {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("prompt should start immediately")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            )
+            .expect("dispatch intent should persist");
+            let snapshot = app
+                .sessions()
+                .get_session(session.id())
+                .expect("session should load");
+            app.durable_state_store()
+                .persist_workflow_runtime_transition(&snapshot, "test killed workflow")
+                .expect("workflow run should persist");
+            (
+                session.id().to_string(),
+                agent.id().to_string(),
+                run.id().to_string(),
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let runtime = router.runtime_state();
+        let run_status = |runtime: &KernelRuntimeState| {
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should load")
+                .workflow_run(&workflow_run_id)
+                .expect("workflow run should survive")
+                .status()
+        };
+        assert_eq!(run_status(&runtime), crate::session::WorkflowRunStatus::Running);
+
+        let mut task = runtime.spawn_durable_restart_recovery();
+        let _ = (&mut task.0).await;
+
+        assert_eq!(
+            run_status(&runtime),
+            crate::session::WorkflowRunStatus::Failed,
+            "an unconfirmed prompt must not hold its run in Running forever",
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(session.active_prompt_for_agent(&agent_id).is_none());
+        let run = session.workflow_run(&workflow_run_id).expect("run exists");
+        assert!(
+            run.failure_events()
+                .iter()
+                .any(|event| event.message().contains("could not be confirmed")),
+            "the run must record why it failed: {:?}",
+            run.failure_events(),
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should exist")
+                .state(),
+            crate::agent::AgentState::Error,
+        );
+    }
+    // MP-08/MP-10/MP-11: SIGKILL leaves the previous kernel's Codex app-servers running; they
+    // keep the native thread writers that restart recovery needs, so startup must reclaim them.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restart_recovery_reaps_orphaned_provider_processes_of_this_kernel() {
+        let mut config = DaemonConfig::for_tests();
+        config.runtime_mcp_port = 20_000 + (std::process::id() % 20_000) as u16;
+        config.provider_process_orphan_ttl_ms = 30_000;
+        let marker = format!("orphan-marker-{:032x}", rand::random::<u128>());
+        let launch = format!(
+            "(exec -a 'codex app-server -c mcp_servers.chariox.url=\"http://{}:{}/mcp\" {marker}' sleep 300 &) &",
+            config.runtime_mcp_host, config.runtime_mcp_port
+        );
+        let status = std::process::Command::new("bash")
+            .args(["-c", &launch])
+            .status()
+            .expect("orphan stand-in should launch");
+        assert!(status.success());
+        let find_orphan = || {
+            let output = std::process::Command::new("pgrep")
+                .args(["-f", &marker])
+                .output()
+                .expect("pgrep should run");
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .filter_map(|pid| pid.parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        };
+        let orphans = (0..50)
+            .find_map(|_| {
+                let found = find_orphan();
+                if found.is_empty() {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                (!found.is_empty()).then_some(found)
+            })
+            .expect("orphan stand-in should be visible");
+
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let mut task = router.runtime_state().spawn_durable_restart_recovery();
+        let _ = (&mut task.0).await;
+
+        let survivors = find_orphan();
+        for pid in &orphans {
+            // Cleanup for the failing case; the pid came from this test's own marker.
+            if *pid > 1 {
+                unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+            }
+        }
+        assert!(
+            survivors.is_empty(),
+            "restart recovery must reclaim its orphaned provider processes: {survivors:?}",
         );
     }
 }

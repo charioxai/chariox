@@ -641,7 +641,7 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
 #[test]
 fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 523);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 547);
     let payload = EncryptedRelayPayload {
         sender_public_key: "key".into(),
         nonce: "nonce".into(),

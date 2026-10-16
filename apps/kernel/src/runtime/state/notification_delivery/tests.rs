@@ -1161,3 +1161,311 @@ async fn notification_inject_structured_pending_survives_restart_before_actor_wr
     assert_ne!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
     assert!(matches!(item.status(), WorkflowQueuedPromptStatus::Running));
 }
+
+#[tokio::test]
+async fn notification_inject_waits_for_target_permission_without_marking_send_uncertain() {
+    // MP-08 / MP-10 / MP-11: waiting for a human must not start a native
+    // acknowledgement timeout, or block a different agent's notification.
+    for target_permission in [true, false] {
+        let (_root, runtime, session_id, id) = fixture(false, 1).await;
+        let agent_id = {
+            let mut sessions = runtime.owned.session_store.write();
+            let mut session = sessions.get_session(&session_id).unwrap();
+            let agent = session.workflow_runs()[0].node_runs()[0]
+                .agent_id()
+                .to_owned();
+            session.add_active_interaction(RuntimeInteraction::new(
+                "held-permission",
+                if target_permission {
+                    &agent
+                } else {
+                    "another-agent"
+                },
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Critical,
+                Some("Approve provider tool?".into()),
+                "Read a public documentation page",
+                vec![RuntimeInteractionChoice::new(
+                    "allow", "Allow", "allow", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+            sessions.restore_session(session);
+            agent
+        };
+        let before = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let admission = runtime
+            .owned
+            .prepare_notification_injection(&session_id, &id)
+            .unwrap();
+        if target_permission {
+            assert!(
+                admission.is_none(),
+                "defer injection until its own agent's permission is answered"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .workflow_queued_prompts(),
+                before.workflow_queued_prompts(),
+                "no send intent, fallback or queue mutation while permission is pending"
+            );
+            {
+                let mut sessions = runtime.owned.session_store.write();
+                let mut session = sessions.get_session(&session_id).unwrap();
+                session.remove_active_interaction("held-permission");
+                sessions.restore_session(session);
+            }
+            let admitted = runtime
+                .owned
+                .prepare_notification_injection(&session_id, &id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(admitted.queued.id(), id);
+            assert_eq!(admitted.dispatch.agent_id, agent_id);
+        } else {
+            assert!(
+                admission.is_some(),
+                "another agent's permission must not block this target"
+            );
+        }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: a send whose outcome cannot be proven is held, never re-sent, but it
+// must be visible on the item and the user must be able to decide, instead of a silent hold.
+async fn held_notification() -> (
+    crate::test_support::TestWorktree,
+    KernelRuntimeState,
+    String,
+    String,
+) {
+    let (root, runtime, session, id) = fixture(false, 1).await;
+    let injection = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .mark_notification_submit(&session, &injection, None)
+        .unwrap();
+    (root, runtime, session, id)
+}
+
+fn queued_item(runtime: &KernelRuntimeState, session: &str, id: &str) -> WorkflowQueuedPrompt {
+    runtime
+        .owned
+        .session_store
+        .get_session(session)
+        .unwrap()
+        .workflow_queued_prompts()
+        .iter()
+        .find(|item| item.id() == id)
+        .unwrap()
+        .clone()
+}
+
+fn notice_texts(runtime: &KernelRuntimeState, session: &str) -> Vec<String> {
+    runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session, None)
+        .unwrap()
+        .iter()
+        .map(|entry| serde_json::to_string(entry).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn unconfirmed_notification_send_is_marked_held_until_its_deadline_with_one_notice() {
+    let (_root, runtime, session, id) = held_notification().await;
+    let now = unix_epoch_ms();
+    runtime.owned.hold_unconfirmed_notification_sends(now);
+    assert_eq!(
+        queued_item(&runtime, &session, &id).delivery_uncertain_until_ms(),
+        None,
+        "a send still inside its normal latency window is not yet uncertain"
+    );
+    let later = now + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1;
+    runtime.owned.hold_unconfirmed_notification_sends(later);
+    runtime.owned.hold_unconfirmed_notification_sends(later);
+    let item = queued_item(&runtime, &session, &id);
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Running);
+    assert_eq!(
+        item.delivery_uncertain_until_ms(),
+        item.notification_deadline_ms(),
+        "the item itself must show how long it is held"
+    );
+    let notices = notice_texts(&runtime, &session)
+        .into_iter()
+        .filter(|text| text.contains("delivery to the running agent is uncertain"))
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "one notice per hold, not one per pump tick");
+    assert!(notices[0].contains(&format!("/workflow queue retry {id}")));
+    assert!(notices[0].contains(&format!("/workflow queue remove {id}")));
+}
+
+#[tokio::test]
+async fn retrying_a_held_notification_readmits_it_for_a_fresh_injection() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    let retried = runtime
+        .owned
+        .resolve_held_notification_delivery(&session, &id, true)
+        .unwrap()
+        .expect("a held notification can be retried");
+    assert_eq!(retried.status(), WorkflowQueuedPromptStatus::Queued);
+    assert_eq!(retried.delivery_uncertain_until_ms(), None);
+    assert!(retried
+        .publication_invocation()
+        .unwrap()
+        .caller
+        .get("notification_steer")
+        .is_none());
+    assert!(
+        runtime
+            .owned
+            .prepare_notification_injection(&session, &id)
+            .unwrap()
+            .is_some(),
+        "the retried item is admitted into the active turn again"
+    );
+}
+
+#[tokio::test]
+async fn discarding_a_held_notification_retires_it_for_good() {
+    let (_root, runtime, session, id) = held_notification().await;
+    let discarded = runtime
+        .owned
+        .resolve_held_notification_delivery(&session, &id, false)
+        .unwrap()
+        .expect("a held notification can be discarded");
+    assert_eq!(discarded.status(), WorkflowQueuedPromptStatus::Cancelled);
+    assert_eq!(discarded.delivery_uncertain_until_ms(), None);
+    assert!(runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .is_none());
+    assert!(
+        runtime
+            .owned
+            .resolve_held_notification_delivery(&session, &id, true)
+            .unwrap()
+            .is_none(),
+        "a settled item is no longer a held delivery"
+    );
+}
+
+#[tokio::test]
+async fn held_notification_expires_with_a_reason_at_its_deadline() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    let mut snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    snapshot
+        .notification_prompt_mut(&id)
+        .unwrap()
+        .notification_invocation_mut()
+        .unwrap()
+        .input["deadline_ms"] = serde_json::json!(0);
+    runtime
+        .owned
+        .durable_state_store
+        .persist_workflow_runtime_transition(&snapshot, "expired held fixture")
+        .unwrap();
+    runtime.owned.session_store.write().restore_session(snapshot);
+    runtime.deliver_pending_notification_injections().await;
+    let item = queued_item(&runtime, &session, &id);
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
+    assert!(
+        notice_texts(&runtime, &session)
+            .iter()
+            .any(|text| text.contains("never confirmed") && text.contains(&id)),
+        "the definitive outcome carries its reason"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a retried delivery that lands must leave no stale held record behind,
+// or a restart resurrects it as a held item whose receipt is already delivered.
+#[tokio::test]
+async fn retried_notification_that_lands_is_not_restored_as_held_after_restart() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime
+        .owned
+        .resolve_held_notification_delivery(&session, &id, true)
+        .unwrap()
+        .expect("a held notification can be retried");
+    let injection = runtime
+        .owned
+        .prepare_notification_injection(&session, &id)
+        .unwrap()
+        .expect("the retried item is admitted into the active turn again");
+    runtime
+        .owned
+        .mark_notification_submit(&session, &injection, None)
+        .unwrap();
+    runtime
+        .owned
+        .settle_notification_injection(&session, &injection, true)
+        .unwrap();
+    let owner = runtime
+        .owned
+        .session_store
+        .get_session(&session)
+        .unwrap()
+        .host_daemon_id()
+        .to_owned();
+    let restored = runtime
+        .owned
+        .durable_state_store
+        .load_workflow_hot_states(&owner)
+        .unwrap()
+        .into_iter()
+        .find(|(s, _)| s == &session)
+        .unwrap()
+        .1;
+    let item = restored.workflow_queued_prompts.iter().find(|item| item.id() == id);
+    assert!(
+        item.is_none_or(|item| item.status() == WorkflowQueuedPromptStatus::Completed
+            && item.delivery_uncertain_until_ms().is_none()),
+        "a delivered retry must not restore as a held item: {item:?}"
+    );
+}
+
+#[tokio::test]
+async fn held_notification_whose_receipt_already_settled_is_retired() {
+    let (_root, runtime, session, id) = held_notification().await;
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute(
+        "UPDATE app_outbox SET state='delivered' WHERE queued_prompt_id=?1",
+        [&id],
+    )
+    .unwrap();
+    drop(db);
+    runtime
+        .owned
+        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 2);
+    let item = queued_item(&runtime, &session, &id);
+    assert_eq!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
+    assert_eq!(item.delivery_uncertain_until_ms(), None);
+}

@@ -144,7 +144,7 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
 
   const updateQueuedWorkflowPrompt = async (
     queueItemRef: string,
-    patch: { prompt?: string | null; queueRef?: string | null },
+    patch: { prompt?: string | null; queueRef?: string | null; retryDelivery?: boolean },
   ) => {
     const response = await deps.sendRequest(
       updateQueuedWorkflowPromptRequest(deps.sessionId(), queueItemRef, patch),

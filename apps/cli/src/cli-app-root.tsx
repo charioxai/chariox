@@ -864,7 +864,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setEntries: (nextEntries) => {
       setEntries(reconcile(nextEntries))
     },
-    setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
+    setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState, setProviderRunState,
     setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
     attachmentState, sessionState, selectedWorkflowId, selectedWorkflowNodeId,
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
@@ -1001,6 +1001,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    bootstrapProviderLaunch: props.bootstrap.deferred?.providerLaunch,
     onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
     handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,

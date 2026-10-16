@@ -3614,6 +3614,17 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
 
+### Held notification delivery — local 547 / relay peer 155 (MP-08 / MP-10 / MP-11)
+
+A notification injection whose send intent has no proven outcome is held by the kernel
+(never re-sent) until its deadline. Protocol 547 projects that hold on the queued item as
+`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
+`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh
+injection and may arrive twice), or discard with the existing `RemoveQueuedWorkflowPrompt`,
+which now also accepts a held item. At the deadline the kernel retires a held item with a
+notice naming the reason. TUI: `/workflow queue retry|remove <item>`. Relay peer 155 binds
+the embedded local response union to local 547 (coordinator allocation 547/155).
+
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
 Coordinator allocation for the main-merged owner-managed contract. Local 520
@@ -3721,3 +3732,17 @@ existing ownership enrollment and receipt validation; it adds no wire fields.
 Upgrade admission retains released main520 as well as signed R515 and S523.
 Existing feature minima remain unchanged. These source checks do not establish
 signed-image or live ordinary/managed acceptance.
+
+### MP-07 / MP-08 / MP-09 / MP-10 / MP-11: round W union, local 547 / peer 155
+
+Coordinator-allocated local protocol 547 and relay peer 155 combine the Path-1
+523/131 contract above with the held-notification retry/discard contract. The
+schema-5 target-bound Vault package, ordinary ownership and enrollment paths,
+and managed lifecycle evidence retain their existing authority. A managed
+placement does not select another provider, prompt, history or permission path.
+
+The shared transition policy admits signed T–V protocol 523 in both directions,
+alongside the existing released predecessors. Provisional notification protocol
+521 was never released and remains excluded. The Browser/Computer and peer
+notification snapshot hashes bind the combined 547/155 identity. Source and
+snapshot checks do not establish signed managed-machine acceptance.

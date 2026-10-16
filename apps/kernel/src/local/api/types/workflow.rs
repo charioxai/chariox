@@ -802,6 +802,9 @@ pub struct UpdateQueuedWorkflowPromptRequest {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_ref: Option<String>,
+    /// Re-admit a held notification whose delivery was uncertain (it may then arrive twice).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry_delivery: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

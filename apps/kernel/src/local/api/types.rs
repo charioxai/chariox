@@ -285,4 +285,7 @@ pub use workspace::*;
 /// Version 523 combines the landed 520/128 contract above with Path-1 Vault
 /// packages, lifecycle enrollment retention and update diagnostics (MP-07/08/11;
 /// coordinator allocation 2026-10-14, retained for round T).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 523;
+/// Version 547 combines the Path-1 523 contract with explicit notification
+/// retry/discard and uncertain-delivery projection (peer 155; coordinator W;
+/// MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 547;
