@@ -40,7 +40,7 @@ export function waitingRoomProjectOptions(
       || left.name.localeCompare(right.name)
     ))
   return [
-    { id: DEFAULT_PROJECT_SELECTION_ID, label: `Auto (${(projects ?? []).find(project => project.kind === "default" && project.workspace_id === workspaceId)?.name ?? (workspaceId?.split("/").filter(Boolean).at(-1) || "workspace project")})` },
+    { id: DEFAULT_PROJECT_SELECTION_ID, label: `Auto (${(projects ?? []).find(project => project.kind === "default" && project.workspace_id === workspaceId)?.name ?? "new project"})` },
     ...existing.map((project) => ({
       id: existingProjectSelectionId(project.id),
       label: project.name,

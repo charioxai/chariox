@@ -41,7 +41,7 @@ test("project selector offers a named Project from a supporting Workspace", () =
   assert.deepEqual(
     waitingRoomProjectOptions([multiRepo], "/chariox-cloud").map(({ id, label }) => ({ id, label })),
     [
-      { id: "default", label: "Auto (chariox-cloud)" },
+      { id: "default", label: "Auto (new project)" },
       { id: "existing:multi", label: "Chariox" },
       { id: "new", label: "New" },
     ],
