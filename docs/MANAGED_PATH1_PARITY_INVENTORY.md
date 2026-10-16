@@ -46,7 +46,14 @@ ordinary/headless state and mutations retain renderer discovery. Pixel and input
 admission continue to require their own current document proof. When native New Tab input discovers
 an unadopted active target, that inventory read also avoids loading background
 renderers. The arbiter then resolves the active target's document independently
-before ledger admission; pending metadata cannot serve as that proof.
+before ledger admission; pending metadata cannot serve as that proof. A visible-page lease may reuse its initial
+layout metrics only with the same event-owned document, applied metric key and
+live native-window observer epoch. Resize, zoom, tab/window changes, observer
+detach or document replacement permanently retire that lease's measurement,
+even if values later return. A late initial measurement is refused. Unknown
+observers/documents/metrics retain fresh renderer queries. Native publication
+still checks the active window/tab freshly, all fill-target masks and exact RGB
+attestation; this cache creates no pixel or input authority.
 
 Screenshot masking policy lives
 in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and

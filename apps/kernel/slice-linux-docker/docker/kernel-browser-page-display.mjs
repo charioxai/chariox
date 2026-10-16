@@ -35,11 +35,15 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
    ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
    :host.tabs.get(tab.tab_id)?.document_id===document);
   const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
+  const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
+  // The existing native observer retires this measurement on resize, zoom,
+  // tab/window changes or detach. A cold binding retains fresh measurement.
+  const viewportGuard=frameProof&&typeof metrics==='string'?host.tabGroups?.nativeStateGuard?.():null;
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
-  const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent();
-  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
+  const alive=()=>host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
+  const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};

@@ -38,6 +38,12 @@ export class NativeTabState {
    this.active=this.viewport?.target_id??null;
   }
  }
+ // A caller may reuse its own observation only inside this native epoch.
+ guard(){
+  if(!this.usable())return null;
+  const epoch=this.epoch,session=this.session;
+  return ()=>this.usable()&&this.epoch===epoch&&this.session===session;
+ }
  cachedActive(){return this.usable()?this.active:null;}
  cachedViewport(){return this.usable()?this.viewport:null;}
  close(){this.closed=true;this.detach();this.off?.();this.off=null;}

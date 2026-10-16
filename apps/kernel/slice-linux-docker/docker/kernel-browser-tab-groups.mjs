@@ -129,6 +129,7 @@ export class ChromeTabGroups {
   /** A target-specific read is geometry only, never active-Tab authority. */
   viewport(target){return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`,target===undefined?'viewport':undefined);}
   nativeStateSupported(){return this.nativeState.supported;}
+  nativeStateGuard(){return this.nativeState.guard();}
   cachedActive(){return this.nativeState.cachedActive();}
   cachedViewport(){return this.nativeState.cachedViewport();}
   close(){this.nativeState.close();}
