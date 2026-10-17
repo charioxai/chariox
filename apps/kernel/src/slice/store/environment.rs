@@ -4,6 +4,16 @@ pub(crate) const ENVIRONMENT_USE_ADMISSION_EXPIRED: &str =
     "Room Environment operation admission deadline expired before dispatch";
 pub(crate) const SHARED_DISPLAY_READ_OPERATION: &str = "environment.display.read";
 
+/// MP-10: numeric recovery timing only (operation label and durations).
+fn trace_admission(operation: &str, lock_ms: u128, total_ms: u128, route_waits: u32) {
+    if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1") {
+        eprintln!(
+            "[chariox.env_admission] {operation} {} lock_ms={lock_ms} total_ms={total_ms} route_waits={route_waits}",
+            crate::session::unix_epoch_ms()
+        );
+    }
+}
+
 impl SliceStore {
     /// Fair admission for controller routes and viewer reads. Frame reads share
     /// admission so one viewer's network wait cannot stall every other viewer.
@@ -61,9 +71,12 @@ impl SliceStore {
                 }
             }
         };
+        let queued = std::time::Instant::now();
         let admission = tokio::time::timeout_at(deadline, acquire)
             .await
             .map_err(|_| timed_out())?;
+        let lock_ms = queued.elapsed().as_millis();
+        let mut route_waits = 0u32;
         loop {
             // Register before checking the marker so a synchronous release
             // between the check and await cannot lose its wakeup.
@@ -85,6 +98,7 @@ impl SliceStore {
                 .guard_environment_use_with_route_admission(&slice.id, session_id, operation, true)
             {
                 Ok(guard) => {
+                    trace_admission(operation, lock_ms, queued.elapsed().as_millis(), route_waits);
                     return Ok(SliceEnvironmentUseGuard {
                         _operation: guard,
                         _queue: Some(admission),
@@ -93,7 +107,7 @@ impl SliceStore {
                 Err(DaemonError::LocalTransport {
                     operation: "slice.operation",
                     ..
-                }) => {}
+                }) => route_waits += 1,
                 Err(error) => return Err(error),
             }
             tokio::time::timeout_at(deadline, changed)
