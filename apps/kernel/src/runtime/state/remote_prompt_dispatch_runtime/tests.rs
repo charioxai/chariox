@@ -987,6 +987,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id.clone(),
                         worker_provider_run_id: run_id.clone(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1459,6 +1460,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: listener_prompt_id.clone(),
                         worker_provider_run_id: "worker-run-completed-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
@@ -1620,6 +1622,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id,
                         worker_provider_run_id: String::new(),
                         phase:
@@ -1750,6 +1753,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id,
                         worker_provider_run_id: "worker-run-after-retry".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1879,6 +1883,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "different-home-prompt".to_string(),
                         worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1916,6 +1921,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "different-home-prompt".to_string(),
                         worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1998,6 +2004,7 @@ mod receipt_reconciliation {
     #[test]
     fn exact_worker_receipt_selects_active_association_completed_drain_or_hold() {
         let active = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-1".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2016,6 +2023,7 @@ mod receipt_reconciliation {
             &active_action
         ));
         let completed = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-2".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
@@ -2043,6 +2051,7 @@ mod receipt_reconciliation {
                         "home-prompt-1",
                         "lease-1",
                         Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                            rejection_reason: None,
                             home_prompt_id: "home-prompt-1".to_string(),
                             worker_provider_run_id: "worker-run-1".to_string(),
                             phase,
@@ -2058,6 +2067,7 @@ mod receipt_reconciliation {
                     "home-prompt-1",
                     "lease-1",
                     Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "home-prompt-1".to_string(),
                         worker_provider_run_id: "worker-run-1".to_string(),
                         phase,
@@ -2077,6 +2087,7 @@ mod receipt_reconciliation {
                 "home-prompt-1",
                 "lease-1",
                 Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "other-prompt".to_string(),
                     worker_provider_run_id: "worker-run-3".to_string(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2091,6 +2102,7 @@ mod receipt_reconciliation {
     #[test]
     fn exact_unadmitted_worker_receipt_rejects_only_the_original_prompt_and_lease() {
         let rejected = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: String::new(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
@@ -2099,7 +2111,20 @@ mod receipt_reconciliation {
         };
         assert_eq!(
             remote_prompt_receipt_action("home-prompt-1", "lease-1", Some(rejected.clone())),
-            Ok(RemotePromptReceiptAction::RejectUnadmitted)
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(None))
+        );
+        assert_eq!(
+            remote_prompt_receipt_action(
+                "home-prompt-1",
+                "lease-1",
+                Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: Some("account is signed out".to_string()),
+                    ..rejected.clone()
+                })
+            ),
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(Some(
+                "account is signed out".to_string()
+            )))
         );
         for conflicting in [
             crate::transport::relay_peer::LeasedPromptReceipt {
@@ -2217,6 +2242,7 @@ mod receipt_reconciliation {
                 ));
                 Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: active_prompt_id,
                         worker_provider_run_id: "worker-receipt-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2239,6 +2265,7 @@ mod receipt_reconciliation {
                 assert!(app.try_lock().is_ok());
                 Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id.to_string(),
                         worker_provider_run_id: "worker-completed-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,

@@ -77,6 +77,12 @@ async fn leased_prompt_is_rejected_before_launch_when_the_account_needs_sign_in(
         .get(&leased.id, "home-prompt-1")
         .expect("the refused admission is recorded");
     assert_eq!(receipt.receipt.phase, WorkerPromptReceiptPhase::Rejected);
+    let reason = receipt
+        .receipt
+        .rejection_reason
+        .as_deref()
+        .expect("the refusal reason travels with the receipt");
+    assert!(reason.contains("is not authenticated"), "{reason}");
     assert!(app
         .providers()
         .get_run_for_agent(&leased.backing_session_id, &leased.backing_agent_id)

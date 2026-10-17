@@ -4,10 +4,10 @@ use super::*;
 #[test]
 fn credfix_logout_shapes_are_versioned_hashed_and_backward_compatible() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 541);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 549);
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        149
+        157
     );
     let snapshot = serde_json::json!({
         "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -34,6 +34,6 @@ fn credfix_logout_shapes_are_versioned_hashed_and_backward_compatible() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bc88f3f902709065c58d5a5c01fdd14cb479b3330997d298aaa830e388e48679"
+        "d162ebb07acce6f378880057bdf0cb5ab0b3cff3e794804aa2688f8ca4751337"
     );
 }

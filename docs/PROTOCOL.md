@@ -1,6 +1,17 @@
 # Chariox v1 Protocol
 
-### Provider login copies (local protocol 541 / relay peer 149)
+### Worker refusal reason (local protocol 549 / relay peer 157)
+
+`LeasedPromptReceipt.rejection_reason` (optional, omitted when absent) carries
+why a worker refused a leased prompt (for example a signed-out provider account
+on that machine). It is set only on a rejected admission receipt, is one line of
+at most 200 characters, and is also stored in the worker's durable prompt receipt
+(old stored receipts load without it). The home appends it to "worker durably
+rejected exact prompt ..." so the pane and TUI show the real reason. An older
+worker sends no field and the message is unchanged; an older home ignores it. No
+minimum supported client protocol changes.
+
+### Provider login copies (local protocol 549 / relay peer 157; branch-only 541 / 149 never released)
 
 Decision record: [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md). Two
 optional fields, both omitted when false, so older clients and kernels keep

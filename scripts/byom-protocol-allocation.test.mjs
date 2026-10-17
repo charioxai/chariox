@@ -4,12 +4,12 @@ import test from "node:test"
 
 const read = path => readFileSync(new URL("../" + path, import.meta.url), "utf8")
 
-test("MP-08 / MP-11 C5 keeps its coordinator allocated local 520 / relay peer 128 minimums at the current local 541 / peer 149", () => {
+test("MP-08 / MP-11 C5 keeps its coordinator allocated local 520 / relay peer 128 minimums at the current local 549 / peer 157", () => {
   const local = read("apps/kernel/src/local/api/types.rs")
   const peer = read("apps/kernel/src/transport/relay_peer.rs")
-  assert.match(local, /LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 541;/)
-  assert.match(peer, /RELAY_PEER_PROTOCOL_VERSION: u32 = 149;/)
-  assert.match(read("packages/kernel-client/src/kernel-types.ts"), /LOCAL_DAEMON_PROTOCOL_VERSION = 541\b/)
+  assert.match(local, /LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 549;/)
+  assert.match(peer, /RELAY_PEER_PROTOCOL_VERSION: u32 = 157;/)
+  assert.match(read("packages/kernel-client/src/kernel-types.ts"), /LOCAL_DAEMON_PROTOCOL_VERSION = 549\b/)
   assert.doesNotMatch(local + peer, /PROTOCOL-ALLOCATION-PENDING/)
   const helpers = read("packages/kernel-client/src/ipc-managed-context-requests.ts")
   assert.match(helpers, /OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 520\b/)

@@ -983,6 +983,7 @@ async fn notification_inject_remote_ack_loss_reconciles_after_real_bootstrap() {
             .unwrap();
         // Worker has either applied it (ACK lost) or durably rejected it; home sees neither.
         let receipt = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: id.clone(),
             worker_provider_run_id: "worker-run".into(),
             target_home_prompt_id: injection.dispatch.target_active_prompt_id.clone(),

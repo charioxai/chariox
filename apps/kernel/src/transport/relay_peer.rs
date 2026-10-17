@@ -110,7 +110,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// released; MP-08/MP-11).
 /// Version 149 binds the embedded local response union to local protocol 541:
 /// `ProviderLoggedOut.local_only` and `LogoutProvider.end_everywhere` (MP-08/MP-10/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 149;
+/// Version 157 binds the embedded local response union to local protocol 549 and
+/// adds `LeasedPromptReceipt.rejection_reason` for a worker-refused prompt (MP-08/MP-10/MP-11).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 157;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -499,6 +501,9 @@ pub struct LeasedPromptReceipt {
     pub target_home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_lease_id: Option<String>,
+    /// Why the worker refused the prompt; set only for a rejected admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1315,7 +1320,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1352,7 +1357,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1374,7 +1379,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1440,7 +1445,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1484,7 +1489,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1659,7 +1664,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1706,6 +1711,7 @@ mod tests {
 
         let active = RelayPeerResponse::LeasedPromptReceiptQueried {
             receipt: Some(LeasedPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Active,
@@ -1733,6 +1739,7 @@ mod tests {
 
         let completed = RelayPeerResponse::LeasedPromptReceiptQueried {
             receipt: Some(LeasedPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Completed,
@@ -1768,6 +1775,7 @@ mod tests {
         ] {
             let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "home-prompt-1".to_string(),
                     worker_provider_run_id: String::new(),
                     phase,
@@ -1819,6 +1827,7 @@ mod tests {
         for (phase, phase_wire) in steer_receipts {
             let response = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "queued-steer-1".to_string(),
                     worker_provider_run_id: "worker-run-1".to_string(),
                     phase,
@@ -1964,7 +1973,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 541);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 549);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1991,7 +2000,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2029,7 +2038,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2088,7 +2097,7 @@ mod owner_managed_context_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
@@ -2107,7 +2116,7 @@ mod workflow_notification_128_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_128_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 149);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
@@ -2138,26 +2147,26 @@ mod workflow_notification_128_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 149,
+                protocol_version: 157,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 149,
+                protocol_version: 157,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 149,
+                protocol_version: 157,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 149,
+                protocol_version: 157,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 149,
+                protocol_version: 157,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2178,7 +2187,7 @@ mod workflow_notification_128_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "6bda8321009a576748c7c12da7b1c4fb926f9bf7e0fd09c312d46d75ef5ead8f"
+            "9a5a621161ba74c1f5f99c20ab4cf523ca8400be97a68f577e880b5aabf8b0d0"
         );
     }
 }

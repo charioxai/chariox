@@ -2914,6 +2914,7 @@ mod tests {
             decode_lease_worker_response(&source_private_key, exact),
             RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: home_prompt_id.to_string(),
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2954,6 +2955,7 @@ mod tests {
             decode_lease_worker_response(&source_private_key, repeated),
             RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: home_prompt_id.to_string(),
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2986,6 +2988,7 @@ mod tests {
             decode_lease_worker_response(&source_private_key, reconciled),
             RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: tombstone_steer_id.to_string(),
                     worker_provider_run_id: provider_run_id.clone(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
@@ -3048,6 +3051,7 @@ mod tests {
             decode_lease_worker_response(&source_private_key, tombstone_retry),
             RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: tombstone_steer_id.to_string(),
                     worker_provider_run_id: provider_run_id,
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,

@@ -286,4 +286,6 @@ pub use workspace::*;
 /// `LogoutProvider.end_everywhere`: signing out a provider login that other
 /// machines hold removes only the local copy unless the user explicitly ends
 /// the session everywhere (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 541;
+/// Version 549 (relay peer 157) adds `LeasedPromptReceipt.rejection_reason`: the
+/// reason a worker refused a leased prompt reaches the home pane (MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 549;
