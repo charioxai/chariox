@@ -20,6 +20,7 @@ export const POPUP_CORNER = 16;
 export const OMNIBOX_LIST_HEIGHT = 344;
 /** Protocol 540: an address bar without the person's input for this long no longer keeps its list stream warm. */
 const OMNIBOX_WARM_MS = 30_000;
+const omniboxSeenKey = t => `${t.browser_generation}:${t.xid}:${t.bounds.width}x${t.bounds.height}@${t.scale}`;
 /** A state read right after an address-bar key waits this long for the list that key opens. */
 const OMNIBOX_LIST_WAIT_MS = 250;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
@@ -52,7 +53,7 @@ const noInventory = async () => { throw new UserDomainRefusal('stale_reference')
 export class ChromeWindows {
   constructor(host, {inventory = noInventory} = {}) {
     this.host = host; this.inventory = inventory;
-    this.windowGeneration = 0; this.bound = null; this.listeners = new Set();
+    this.windowGeneration = 0; this.omniboxSeen = new Map(); this.bound = null; this.listeners = new Set();
     this.auxiliaryIds = new Map(); this.auxiliarySequence = 0;
   }
   onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -173,7 +174,7 @@ export class ChromeWindows {
     // visible), so the next list paints from a running stream instead of a new one (r12: ~0.9 s).
     const popup = live ? (last && last.x === live.x && last.y === live.y && last.width === live.width && live.height <= last.height ? last : full)
       : this.omniboxWarm() ? last : null;
-    if (popup) this.omniboxLast = {...popup, window_generation: tabbed.window_generation};
+    if (popup) { this.omniboxLast = {...popup, window_generation: tabbed.window_generation}; this.noteOmnibox(tabbed, popup); }
     this.omniboxLive = live;
     if (popup && bound.length < 8) {
       const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
@@ -194,9 +195,17 @@ export class ChromeWindows {
     this.healedAt = now;
     await this.resolve().catch(() => {});
   }
-  /** The last list rect of this window (window CSS px), or null. */
+  /** The last list rect of this window (window CSS px), or null. A window that is rebound at the same X
+   * window, size, scale and Chrome process (a native capture fit and back) keeps the list rect Chrome showed
+   * there: it is the same proven rect, so the first list after the rebind paints from a warm stream. */
   omniboxRect(tabbed = this.bound?.tabbed) {
-    return tabbed && this.omniboxLast?.window_generation === tabbed.window_generation ? this.omniboxLast : null;
+    if (!tabbed) return null;
+    return this.omniboxLast?.window_generation === tabbed.window_generation ? this.omniboxLast : this.omniboxSeen.get(omniboxSeenKey(tabbed)) ?? null;
+  }
+  noteOmnibox(tabbed, {x, y, width, height}) {
+    const key = omniboxSeenKey(tabbed);
+    this.omniboxSeen.delete(key); this.omniboxSeen.set(key, {x, y, width, height});
+    if (this.omniboxSeen.size > 4) this.omniboxSeen.delete(this.omniboxSeen.keys().next().value);
   }
   /** Protocol 540: the address bar has (`on`) or lost the person's keys; `ago` backdates it (ms). */
   focusOmnibox(on, ago = 0) {

@@ -266,6 +266,22 @@ test("MP-08/MP-11 a toolbar click before the window's first list arms the list w
   assert.equal(windows.onOmnibox(520), null, "no list seen in this window: the span is unknown, not 'not the address bar'");
 });
 
+// r24 (cold first list): the list rect Chrome showed in a window is remembered for the same X window, size, scale
+// and Chrome process, so a window rebound at that geometry keeps its warm list; any other geometry starts unknown.
+test("MP-08/MP-11 a window rebound at the same geometry keeps the list rect it proved, another geometry does not", () => {
+  const { windows } = fake();
+  const at = (generation, over = {}) => ({ browser_generation: 3, xid: 0x600001, window_generation: generation, scale: 1, bounds: { width: 1280, height: 887, ...over.bounds }, ...over });
+  assert.equal(windows.omniboxRect(at(1)), null);
+  windows.noteOmnibox(at(1), { x: 100, y: 87, width: 995, height: 344 });
+  windows.omniboxLast = { x: 100, y: 87, width: 995, height: 344, window_generation: 1 };
+  assert.deepEqual(windows.omniboxRect(at(2)), { x: 100, y: 87, width: 995, height: 344 }, "same window, size, scale and Chrome");
+  assert.equal(windows.onOmnibox.call({ omniboxRect: () => windows.omniboxRect(at(2)) }, 500), true);
+  assert.equal(windows.omniboxRect(at(2, { bounds: { width: 1280, height: 700 } })), null, "another size");
+  assert.equal(windows.omniboxRect(at(2, { scale: 2 })), null, "another scale");
+  assert.equal(windows.omniboxRect(at(2, { xid: 0x600002 })), null, "another X window");
+  assert.equal(windows.omniboxRect(at(2, { browser_generation: 4 })), null, "another Chrome process");
+});
+
 // MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
 // A native omnibox check must observe physical focus, not that logical wake-up.
 test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
