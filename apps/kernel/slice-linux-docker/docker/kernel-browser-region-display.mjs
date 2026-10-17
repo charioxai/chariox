@@ -39,6 +39,8 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    {timing:host.timing,encoder:new PortableEncoder()});
   Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionWindow:window,regionOffset:offset,regionPlacement:placement,
    regionCurrent:validateCurrent?()=>validateCurrent(2):lease.isCurrent,
+   // A key carries no coordinates: admit it from the same event-bound snapshot as frame publication (fresh read on a miss).
+   ...(publishCurrent?{regionInputCurrent:input=>input?.kind==='key'?publishCurrent(2):stream.regionCurrent()}:{}),
    // Input keeps the fresh regionCurrent path. Only frame delivery reuses the
    // source-publication snapshot, bounded by native owner and document events.
    ...(cachedCurrent?{regionFrameCurrent:()=>{host.timing.event?.('native_cached_lease',{source_kind:sourceKind,lease_phase:2});return lease.isAlive()&&window.isCurrent()&&cachedCurrent();}}:{})});

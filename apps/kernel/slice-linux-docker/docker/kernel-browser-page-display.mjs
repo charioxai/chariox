@@ -73,7 +73,7 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
   assertNotCancelled(signal);
   const tab=host.tabs.get(command.tab_id);if(!tab)refuse();
   visiblePageInputSource(host,stream,tab,scope);
-  if(!await stream.regionCurrent())refuse();
+  if(!await (stream.regionInputCurrent??stream.regionCurrent)(input))refuse();
   visiblePageInputSource(host,stream,tab,scope);
  };
  await inputGuard();

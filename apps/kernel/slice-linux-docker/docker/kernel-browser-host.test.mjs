@@ -1857,6 +1857,50 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
  }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));
 
+// vidlat r34: a warm native key admits from the event-bound owner snapshot; coordinate input still reads live.
+function keyAdmission(host,tab,connection,{cachedActive}={}){
+ const keys=[],reads={fresh:0,key:0,active:0};
+ const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},click:()=>true,wake(){}};
+ const stream={close:async()=>{},subscription_id:'key-admit',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,css_width:1280,css_height:712,
+  regionCurrent:async()=>{reads.fresh++;return true},regionInputCurrent:async input=>{if(input?.kind==='key'){reads.key++;return true}reads.fresh++;return true}};
+ host.displays.set(stream.subscription_id,stream);
+ host.tabGroups={active:async()=>{reads.active++;return tab.target_id},cachedActive:()=>cachedActive===undefined?tab.target_id:cachedActive};
+ const original=connection.send;connection.send=async(method,params,session)=>method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")?{result:{value:true}}:original(method,params,session);
+ return {keys,reads,stream,restore:()=>{host.displays.delete(stream.subscription_id);connection.send=original;}};
+}
+const keyCommand=(host,tab,kind='key')=>({op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:kind==='key'?{kind:'key',key:'a'}:{kind:'click',x:10,y:20}});
+test('MP-08/MP-10/MP-11 a warm native key makes no live active-Tab or geometry read',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection);
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
+  assert.deepEqual(f.keys,[[97,false]]);assert.equal(f.reads.fresh,0,'no fresh geometry/layout read');assert.equal(f.reads.active,0,'no live active-Tab read');assert(f.reads.key>0);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a native key still refuses when the snapshot says another Tab is in front or the admission fails',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:'another-target'});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a').catch(()=>{});
+  assert.deepEqual(f.keys,[],'no native key for a Tab that is not in front');assert.equal(f.reads.active,0);
+  f.stream.regionInputCurrent=async()=>false;host.tabGroups.cachedActive=()=>tab.target_id;
+  await assert.rejects(inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a'),{code:'user_domain_stale_reference'});
+  assert.deepEqual(f.keys,[]);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot miss; coordinate input always does',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:null});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
+  assert.equal(f.reads.active,1,'a miss reads live');assert.equal(f.keys.length,1);
+  f.reads.active=0;host.tabGroups.cachedActive=()=>tab.target_id;
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a');
+  assert(f.reads.active>=1,'a click ignores the snapshot');assert(f.reads.fresh>0,'a click reads geometry live');
+ }finally{f.restore();}
+}));
+
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');

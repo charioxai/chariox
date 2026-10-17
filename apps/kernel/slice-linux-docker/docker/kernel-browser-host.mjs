@@ -448,8 +448,9 @@ export class KernelBrowserHost {
     return result;
   }
   /** Review #1016 P1: whether `tab` is Chrome's active Tab right now (live, not the last observation). */
-  async nativeFront(tab) {
-    const active = await this.tabGroups?.active?.().catch(() => null);
+  // `cached`: a key may use the owner snapshot until an activation/resize/detach event retires it (a miss reads live).
+  async nativeFront(tab, { cached = false } = {}) {
+    const active = (cached ? this.tabGroups?.cachedActive?.() : null) ?? await this.tabGroups?.active?.().catch(() => null);
     return !!active && active === tab.target_id;
   }
   // MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts, or another actor,
@@ -824,7 +825,7 @@ export class KernelBrowserHost {
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
         const candidate=nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source;
-        const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
+        const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab,{cached:command.input?.kind==='key'})?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
@@ -848,7 +849,8 @@ export class KernelBrowserHost {
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
-      if (command.input.kind === 'scroll' && command._display_input === true) return this.observe(this.tabState(), null, scope);
+      // A viewer's key is the same: no input-lane reconcile (the lane serializes the next key behind it).
+      if (['scroll', 'key'].includes(command.input.kind) && command._display_input === true) return this.observe(this.tabState(), null, scope);
       const result = this.observe(await this.reconcile(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
