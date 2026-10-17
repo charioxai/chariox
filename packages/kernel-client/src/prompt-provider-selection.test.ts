@@ -286,3 +286,10 @@ test("a lagging run of the previous provider cannot revert a committed provider 
 
   assert.equal(projected, committed)
 })
+
+test("the previous provider's run does not describe an agent switched away from it", () => {
+  const run = providerRun({ id: "run-claude", agent_instance_id: "agent-1", provider: "claude-p", model: "claude-haiku-5-5" })
+
+  assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "codex", model: "gpt-5.6-luna" })), null)
+  assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "claude-p", model: "claude-haiku-5-5" })), run)
+})

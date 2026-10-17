@@ -16,6 +16,7 @@ import {
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
 import { sessionAgentPaneStatusBadgeForSession } from "@chariox/kernel-client/session-runtime-status"
+import { providerRunForPromptSelection } from "@chariox/kernel-client/prompt-provider-selection"
 import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
@@ -243,13 +244,14 @@ function renderFooter(
     : null
   renderTaskParts(state.taskParts, task)
   renderStatusBadgeTexts(state.badgeTexts, badge.label, badge.tone, options)
-  const activeRun = options.providerRun && options.providerRun.agent_instance_id === agent?.id
+  const run = agent ? providerRunForPromptSelection(options.providerRun, agent) : null
+  const activeRun = run
     ? {
-        agentInstanceId: options.providerRun.agent_instance_id,
-        provider: options.providerRun.provider,
-        accountProfile: options.providerRun.account_profile,
-        model: options.providerRun.model,
-        variant: options.providerRun.variant,
+        agentInstanceId: run.agent_instance_id,
+        provider: run.provider,
+        accountProfile: run.account_profile,
+        model: run.model,
+        variant: run.variant,
       }
     : null
   const provider = activeRun?.provider

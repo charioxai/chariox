@@ -71,7 +71,10 @@ export function providerRunForPromptSelection(
   if (!providerRun || !focusedAgent) {
     return providerRun
   }
-  return providerRun.agent_instance_id === focusedAgent.id ? providerRun : null
+  // A run of the agent's previous provider no longer describes it.
+  return providerRun.agent_instance_id === focusedAgent.id && sameHarness(providerRun.provider, focusedAgent.provider)
+    ? providerRun
+    : null
 }
 
 export function applyProviderRunProfileToSession(
@@ -89,7 +92,7 @@ export function applyProviderRunProfileToSession(
   const agents = session.agents.map((agent) => {
     // Only the kernel commits a provider switch; a lagging run of the
     // previous provider must not revert it.
-    if (agent.id !== agentId || agent.provider !== providerRun.provider) {
+    if (agent.id !== agentId || !sameHarness(agent.provider, providerRun.provider)) {
       return agent
     }
     if (
@@ -142,4 +145,11 @@ export function normalizePromptProvider(provider?: string | null): string | null
     return null
   }
   return provider
+}
+
+// OpenCode runs report their backend provider (e.g. "openai").
+const harnessIds = new Set(["opencode", "codex", "claude-headless", "claude-p"])
+function sameHarness(left: string, right: string): boolean {
+  const harness = (id: string) => id === "claude" ? "claude-p" : harnessIds.has(id) ? id : "opencode"
+  return harness(left) === harness(right)
 }
