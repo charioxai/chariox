@@ -1937,7 +1937,7 @@ test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never de
  host.busyInputs.retryMs=5;let busy=true,refuseFirst=true;
  connection.beforeSend=async(method,params)=>{
   if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
-  if(!busy&&refuseFirst&&method==='Input.insertText'){refuseFirst=false;throw Object.assign(Error('refused'),{code:'user_domain_not_granted'})}
+  if(!busy&&method==='Runtime.evaluate'){fixture.secretFocused=refuseFirst;refuseFirst=false}
  };
  for(const text of ['h','t','t','p'])await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
  busy=false;
