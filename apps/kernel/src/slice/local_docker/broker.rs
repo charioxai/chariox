@@ -386,6 +386,21 @@ pub(super) fn configured() -> bool {
     broker_is_configured()
 }
 
+/// True while a broker operation holds the connection; a first start keeps it for minutes, and
+/// callers that only read diagnostics must not queue behind it.
+pub(super) fn busy() -> bool {
+    #[cfg(unix)]
+    {
+        BROKER.get().is_some_and(|state| {
+            matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 pub(super) fn provider_auth_protected(container: &str) -> io::Result<bool> {
     if !broker_is_configured() {
         return Ok(false);
@@ -936,6 +951,92 @@ mod tests {
         let execution = reader.join().expect("reader").expect("exchange succeeds");
         assert!(execution.output.status.success());
         fake.join().expect("fake broker");
+    }
+
+    #[test]
+    fn slice_logs_return_progress_while_the_broker_holds_a_pending_provision() {
+        use super::super::tests::{test_options, test_record};
+        // A configured broker is what routes the log diagnostics through the busy connection.
+        std::env::set_var(BROKER_REQUIRED_ENV, "1");
+        let (writer, mut broker) = UnixStream::pair().expect("socket pair should open");
+        *BROKER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("broker state") = Some(BrokerConnection {
+            reader: BufReader::new(writer.try_clone().expect("socket should clone")),
+            writer,
+        });
+        let record = test_record();
+        let mut options = test_options();
+        options.root =
+            std::env::temp_dir().join(format!("chariox-slice-pending-logs-{}", std::process::id()));
+        let log_path = super::super::local_docker_slice_action_log_path(
+            &options.root,
+            &record,
+            super::super::LocalDockerSliceAction::Provision,
+        );
+        std::fs::create_dir_all(log_path.parent().expect("log parent")).expect("log dir");
+        std::fs::write(
+            &log_path,
+            "[slice-linux] progress: Loading the slice image 5 MB of 10 MB (50%)\n",
+        )
+        .expect("progress line");
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let fake = std::thread::spawn(move || {
+            let mut header = [0_u8; 4];
+            broker.read_exact(&mut header).expect("request header");
+            let mut request = vec![0_u8; u32::from_be_bytes(header) as usize];
+            broker.read_exact(&mut request).expect("request body");
+            hold.recv().expect("the test releases the response");
+            write_frame(
+                &mut broker,
+                r#"{"status":0,"stdoutBase64":"","stderrBase64":""}"#,
+            );
+        });
+        let provision = std::thread::spawn(|| {
+            execute_with_disk_evidence(&BrokerRequest::Docker { args: &[] }, &mut |_| {})
+        });
+        while !busy() {
+            assert!(!provision.is_finished(), "the provision must stay pending");
+            std::thread::yield_now();
+        }
+        let (collected, entries) = std::sync::mpsc::channel();
+        let (collect_record, collect_options) = (record.clone(), options.clone());
+        std::thread::spawn(move || {
+            let _ = collected.send(super::super::collect_local_docker_slice_logs(
+                &collect_record,
+                &collect_options,
+                None,
+            ));
+        });
+        let result = entries.recv_timeout(Duration::from_secs(5));
+        release.send(()).expect("fake broker is waiting");
+        provision
+            .join()
+            .expect("provision")
+            .expect("exchange succeeds");
+        fake.join().expect("fake broker");
+        *BROKER
+            .get()
+            .expect("broker state")
+            .lock()
+            .expect("broker state") = None;
+        std::env::remove_var(BROKER_REQUIRED_ENV);
+        let _ = std::fs::remove_dir_all(&options.root);
+        let entries = result
+            .expect("slice logs must not wait for the busy broker")
+            .expect("logs should collect");
+        let provision_log = entries
+            .iter()
+            .find(|entry| entry.source == "provision")
+            .expect("provision log is present");
+        assert!(provision_log
+            .text
+            .contains("Loading the slice image 5 MB of 10 MB (50%)"));
+        assert!(entries
+            .iter()
+            .filter(|entry| entry.source == "runtime" || entry.source == "container")
+            .all(|entry| entry.text.contains("Docker broker is busy")));
     }
 
     #[test]

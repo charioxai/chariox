@@ -937,8 +937,18 @@ pub fn collect_local_docker_slice_logs(
             ));
         }
     }
-    entries.push(local_docker_runtime_log_entry(record, tail_lines));
-    entries.push(local_docker_container_log_entry(record, tail_lines));
+    if broker::busy() {
+        // A start holds the broker for minutes; its progress is in the action logs above.
+        entries.extend(["runtime", "container"].map(|source| SliceLogEntry {
+            source: source.to_string(),
+            path: None,
+            text: "not read: the Docker broker is busy with another operation (a first start can take several minutes); request the logs again when it finishes".to_string(),
+            truncated: false,
+        }));
+    } else {
+        entries.push(local_docker_runtime_log_entry(record, tail_lines));
+        entries.push(local_docker_container_log_entry(record, tail_lines));
+    }
     Ok(entries)
 }
 
