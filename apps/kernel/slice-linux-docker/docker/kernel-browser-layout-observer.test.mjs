@@ -10,7 +10,7 @@ import path from 'node:path';
 import {observeLayout,MAX_AGE_MS,observerSource} from './kernel-browser-layout-observer.mjs';
 
 // Fake connection: records installs and lets a test emit CDP events.
-const fake=({fail=false}={})=>{
+const fake=({fail=false,fault=null}={})=>{
   const listeners=new Set(),sent=[];
   return {sent,
     subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},
@@ -18,6 +18,7 @@ const fake=({fail=false}={})=>{
     listeners,
     async send(method,params,sessionId){
       sent.push({method,params,sessionId});
+      if(fault?.method===method){if(fault.reject)throw Error('timeout');return fault.result;}
       if(fail&&method==='Runtime.evaluate')return {exceptionDetails:{text:'boom'}};
       if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f'}}};
       if(method==='Page.createIsolatedWorld')return {executionContextId:7};
@@ -71,6 +72,20 @@ test('MP-11 child frames and other sessions do not retire the verdict',async()=>
 test('MP-11 a failed install or a connection without events leaves no observer, so every publication reads',async()=>{
   const failing=fake({fail:true});assert.equal(await observeLayout(failing,'s'),null);assert.equal(failing.listeners.size,0);
   assert.equal(await observeLayout({send:async()=>({})},'s'),null);
+});
+const tornDown=c=>c.sent.some(s=>s.method==='Runtime.evaluate'&&s.params.contextId===7&&s.params.expression.includes(bindingOf(c)+'Stop'))&&c.sent.some(s=>s.method==='Runtime.removeBinding'&&s.params.name===bindingOf(c));
+for(const [name,fault]of [
+  ['a thrown install',{method:'Runtime.evaluate',result:{exceptionDetails:{text:'boom'}}}],
+  ['an install that timed out in the page',{method:'Runtime.evaluate',reject:true}],
+])test(`MP-11 ${name} tears the page-side observers down and drops the binding`,async()=>{
+  const c=fake({fault});assert.equal(await observeLayout(c,'s'),null);
+  assert.equal(c.listeners.size,0);
+  assert.ok(tornDown(c),'stop script evaluated in the private world and binding removed');
+});
+test('MP-11 a failure before the world exists still removes the binding',async()=>{
+  const c=fake({fault:{method:'Page.createIsolatedWorld',reject:true}});assert.equal(await observeLayout(c,'s'),null);
+  assert.ok(c.sent.some(s=>s.method==='Runtime.removeBinding'&&s.params.name===bindingOf(c)));
+  assert.ok(!c.sent.some(s=>s.method==='Runtime.evaluate'),'no context to tear down');
 });
 test('MP-11 close removes the listener and the binding',async()=>{
   const [o,c]=await ready();o.close();
@@ -170,6 +185,22 @@ real('MP-11 real Chrome: close disconnects every page-side observer and listener
     await page(`document.body.append(document.createElement('i'));document.body.style.width='500px';dispatchEvent(new Event('resize'));document.fonts.dispatchEvent(new Event('loadingdone'))`);
     await settle(300);
     assert.equal(reports.length,0,'no page-side observer fired after close');
+  }finally{await browser.close();}
+});
+real('MP-11 real Chrome: an install that throws midway leaves no page-side observer behind',async()=>{
+  const browser=await launch();
+  try{
+    const {page}=browser;
+    const res=await page(`(()=>{
+      globalThis.hits=0;globalThis.cxb=()=>{globalThis.hits++;};
+      MutationObserver=class{observe(){throw Error('boom');}disconnect(){}};
+      let thrown=false;try{${observerSource('cxb')}}catch{thrown=true;}
+      return thrown;})()`);
+    assert.equal(res.result.value,true,'the poisoned install throws');
+    await page(`dispatchEvent(new Event('resize'));document.fonts.dispatchEvent(new Event('loadingdone'));document.body.style.width='400px'`);
+    await settle(300);
+    assert.equal((await page(`globalThis.hits`)).result.value,0,'no listener or observer survived the failed install');
+    assert.equal((await page(`typeof globalThis.cxbStop`)).result.value,'undefined');
   }finally{await browser.close();}
 });
 real('MP-11 real Chrome: the observer world is invisible to page scripts',async()=>{

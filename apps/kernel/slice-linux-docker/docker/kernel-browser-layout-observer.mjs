@@ -12,16 +12,19 @@ export const MAX_AGE_MS=250;
 // any DOM or attribute mutation, font and image loads, CSS transitions/animations, page show.
 // Scrolling alone changes none of the four values and does not retire the verdict.
 export const observerSource=binding=>`(()=>{
- const call=globalThis[${JSON.stringify(binding)}];let queued=false;
+ const call=globalThis[${JSON.stringify(binding)}],stopName=${JSON.stringify(binding+'Stop')};let queued=false,resize,mutation;
  const fire=()=>{if(queued)return;queued=true;queueMicrotask(()=>{queued=false;call('1');});};
- const root=document.documentElement,abort=new AbortController(),opts={capture:true,passive:true,signal:abort.signal};
- for(const type of ['resize','pageshow','load','transitionrun','transitionend','animationstart','animationiteration','animationend'])addEventListener(type,fire,opts);
- visualViewport?.addEventListener('resize',fire,opts);
- const resize=new ResizeObserver(fire);resize.observe(root);if(document.body)resize.observe(document.body);
- const mutation=new MutationObserver(fire);mutation.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});
- document.fonts?.addEventListener('loadingdone',fire,{signal:abort.signal});
- document.addEventListener('readystatechange',fire,{signal:abort.signal});
- globalThis[${JSON.stringify(binding+'Stop')}]=()=>{abort.abort();resize.disconnect();mutation.disconnect();queued=true;delete globalThis[${JSON.stringify(binding+'Stop')}];};
+ const abort=new AbortController(),opts={capture:true,passive:true,signal:abort.signal};
+ const stop=globalThis[stopName]=()=>{abort.abort();resize?.disconnect();mutation?.disconnect();queued=true;delete globalThis[stopName];};
+ try{
+  const root=document.documentElement;
+  for(const type of ['resize','pageshow','load','transitionrun','transitionend','animationstart','animationiteration','animationend'])addEventListener(type,fire,opts);
+  visualViewport?.addEventListener('resize',fire,opts);
+  resize=new ResizeObserver(fire);resize.observe(root);if(document.body)resize.observe(document.body);
+  mutation=new MutationObserver(fire);mutation.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});
+  document.fonts?.addEventListener('loadingdone',fire,{signal:abort.signal});
+  document.addEventListener('readystatechange',fire,{signal:abort.signal});
+ }catch(e){stop();throw e;}
 })()`;
 export async function observeLayout(connection,sessionId,now=()=>performance.now()){
   if(typeof connection?.subscribe!=='function')return null;
@@ -29,6 +32,11 @@ export async function observeLayout(connection,sessionId,now=()=>performance.now
   let generation=0,confirmed=-1,confirmedAt=0,dead=false,contextId=null,installing=true;
   const retire=()=>{generation++;};
   const kill=()=>{dead=true;retire();off();};
+  // Best effort: stop the page-side observers while their context lives, then drop the binding.
+  const teardown=()=>{
+    if(contextId!==null)connection.send('Runtime.evaluate',{expression:`globalThis[${JSON.stringify(binding+'Stop')}]?.()`,contextId},sessionId).catch(()=>{});
+    connection.send('Runtime.removeBinding',{name:binding},sessionId).catch(()=>{});
+  };
   const off=connection.subscribe(message=>{
     const {method,params}=message;
     if(method==='Chariox.browserDisconnected'){kill();return;}
@@ -45,7 +53,7 @@ export async function observeLayout(connection,sessionId,now=()=>performance.now
     contextId=created.executionContextId;
     const result=await connection.send('Runtime.evaluate',{expression:observerSource(binding),contextId},sessionId);
     if(result.exceptionDetails)throw Error('layout observer install');
-  }catch{kill();return null;}
+  }catch{kill();teardown();return null;}
   installing=false;retire();
   return {
     /** True only while the last matching fresh read is still provably current. */
@@ -59,8 +67,7 @@ export async function observeLayout(connection,sessionId,now=()=>performance.now
     /** Disconnect the page-side observers (while their context lives), then drop the binding. */
     close(){
       const live=!dead;off();dead=true;
-      if(live)connection.send('Runtime.evaluate',{expression:`globalThis[${JSON.stringify(binding+'Stop')}]?.()`,contextId},sessionId).catch(()=>{});
-      connection.send('Runtime.removeBinding',{name:binding},sessionId).catch(()=>{});
+      if(live)teardown();else connection.send('Runtime.removeBinding',{name:binding},sessionId).catch(()=>{});
     },
   };
 }
