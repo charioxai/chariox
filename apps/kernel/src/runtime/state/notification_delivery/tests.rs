@@ -1310,7 +1310,11 @@ async fn unconfirmed_notification_send_is_marked_held_until_its_deadline_with_on
         .into_iter()
         .filter(|text| text.contains("delivery to the running agent is uncertain"))
         .collect::<Vec<_>>();
-    assert_eq!(notices.len(), 1, "one notice per hold, not one per pump tick");
+    assert_eq!(
+        notices.len(),
+        1,
+        "one notice per hold, not one per pump tick"
+    );
     assert!(notices[0].contains(&format!("/workflow queue retry {id}")));
     assert!(notices[0].contains(&format!("/workflow queue remove {id}")));
 }
@@ -1318,9 +1322,9 @@ async fn unconfirmed_notification_send_is_marked_held_until_its_deadline_with_on
 #[tokio::test]
 async fn retrying_a_held_notification_readmits_it_for_a_fresh_injection() {
     let (_root, runtime, session, id) = held_notification().await;
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+    );
     let retried = runtime
         .owned
         .resolve_held_notification_delivery(&session, &id, true)
@@ -1383,7 +1387,9 @@ async fn retrying_a_held_notification_sends_under_a_fresh_steer_identity() {
             prompt_id: seen[seen.len() - 2].clone(),
             provider_run_id: retry.dispatch.provider_run_id.clone(),
             result: Err(DaemonError::ProviderPromptSteerRejected {
-                source: Box::new(super::notification_error("late result of a superseded attempt")),
+                source: Box::new(super::notification_error(
+                    "late result of a superseded attempt",
+                )),
             }),
             settlement_retry_attempt: 0,
         };
@@ -1403,7 +1409,9 @@ async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt()
     use crate::transport::relay_peer::{LeasedPromptReceipt, LeasedPromptReceiptPhase};
     let (_root, runtime, session, id) = fixture(false, 1).await;
     let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
-    let agent_id = snapshot.workflow_runs()[0].node_runs()[0].agent_id().to_owned();
+    let agent_id = snapshot.workflow_runs()[0].node_runs()[0]
+        .agent_id()
+        .to_owned();
     let binding = crate::agent::RemoteAgentBinding {
         worker_kernel_id: "worker".into(),
         worker_machine_id: "machine".into(),
@@ -1430,9 +1438,9 @@ async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt()
         .owned
         .mark_notification_submit(&session, &first, Some(&binding))
         .unwrap();
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+    );
     runtime
         .owned
         .resolve_held_notification_delivery(&session, &id, true)
@@ -1464,7 +1472,10 @@ async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt()
         .settle_notification_remote_receipt(
             &session,
             &id,
-            &receipt(&first.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerAccepted),
+            &receipt(
+                &first.dispatch.prompt_id,
+                LeasedPromptReceiptPhase::SteerAccepted
+            ),
         )
         .is_err());
     runtime
@@ -1472,7 +1483,10 @@ async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt()
         .settle_notification_remote_receipt(
             &session,
             &id,
-            &receipt(&retry.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerDispatching),
+            &receipt(
+                &retry.dispatch.prompt_id,
+                LeasedPromptReceiptPhase::SteerDispatching,
+            ),
         )
         .unwrap();
     assert!(queued_item(&runtime, &session, &id).notification_send_unconfirmed());
@@ -1481,7 +1495,10 @@ async fn retried_remote_notification_settles_only_from_its_own_attempt_receipt()
         .settle_notification_remote_receipt(
             &session,
             &id,
-            &receipt(&retry.dispatch.prompt_id, LeasedPromptReceiptPhase::SteerAccepted),
+            &receipt(
+                &retry.dispatch.prompt_id,
+                LeasedPromptReceiptPhase::SteerAccepted,
+            ),
         )
         .unwrap();
     assert_eq!(
@@ -1518,9 +1535,9 @@ async fn discarding_a_held_notification_retires_it_for_good() {
 #[tokio::test]
 async fn held_notification_expires_with_a_reason_at_its_deadline() {
     let (_root, runtime, session, id) = held_notification().await;
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+    );
     let mut snapshot = runtime.owned.session_store.get_session(&session).unwrap();
     snapshot
         .notification_prompt_mut(&id)
@@ -1533,7 +1550,11 @@ async fn held_notification_expires_with_a_reason_at_its_deadline() {
         .durable_state_store
         .persist_workflow_runtime_transition(&snapshot, "expired held fixture")
         .unwrap();
-    runtime.owned.session_store.write().restore_session(snapshot);
+    runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(snapshot);
     runtime.deliver_pending_notification_injections().await;
     let item = queued_item(&runtime, &session, &id);
     assert_eq!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
@@ -1550,9 +1571,9 @@ async fn held_notification_expires_with_a_reason_at_its_deadline() {
 #[tokio::test]
 async fn retried_notification_that_lands_is_not_restored_as_held_after_restart() {
     let (_root, runtime, session, id) = held_notification().await;
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+    );
     runtime
         .owned
         .resolve_held_notification_delivery(&session, &id, true)
@@ -1587,10 +1608,15 @@ async fn retried_notification_that_lands_is_not_restored_as_held_after_restart()
         .find(|(s, _)| s == &session)
         .unwrap()
         .1;
-    let item = restored.workflow_queued_prompts.iter().find(|item| item.id() == id);
+    let item = restored
+        .workflow_queued_prompts
+        .iter()
+        .find(|item| item.id() == id);
     assert!(
-        item.is_none_or(|item| item.status() == WorkflowQueuedPromptStatus::Completed
-            && item.delivery_uncertain_until_ms().is_none()),
+        item.is_none_or(
+            |item| item.status() == WorkflowQueuedPromptStatus::Completed
+                && item.delivery_uncertain_until_ms().is_none()
+        ),
         "a delivered retry must not restore as a held item: {item:?}"
     );
 }
@@ -1598,9 +1624,9 @@ async fn retried_notification_that_lands_is_not_restored_as_held_after_restart()
 #[tokio::test]
 async fn held_notification_whose_receipt_already_settled_is_retired() {
     let (_root, runtime, session, id) = held_notification().await;
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 1,
+    );
     let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
     db.execute(
         "UPDATE app_outbox SET state='delivered' WHERE queued_prompt_id=?1",
@@ -1608,9 +1634,9 @@ async fn held_notification_whose_receipt_already_settled_is_retired() {
     )
     .unwrap();
     drop(db);
-    runtime
-        .owned
-        .hold_unconfirmed_notification_sends(unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 2);
+    runtime.owned.hold_unconfirmed_notification_sends(
+        unix_epoch_ms() + UNCONFIRMED_SEND_NOTICE_AFTER_MS + 2,
+    );
     let item = queued_item(&runtime, &session, &id);
     assert_eq!(item.status(), WorkflowQueuedPromptStatus::Cancelled);
     assert_eq!(item.delivery_uncertain_until_ms(), None);

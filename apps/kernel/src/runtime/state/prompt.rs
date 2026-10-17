@@ -197,7 +197,8 @@ impl KernelRuntimeOwnedState {
         self.cancel_active_prompt_only_for_provider_run(session_id, agent_id, provider_run_id)?;
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
-        let released_claim = provider_run_id.is_some_and(|run_id| self.clear_prompt_activity(run_id));
+        let released_claim =
+            provider_run_id.is_some_and(|run_id| self.clear_prompt_activity(run_id));
         let _ = self.session_snapshot(session_id)?;
         // Workflow failure settlement releases the claim by run/node identity before
         // prompt activity is cleared by provider-run identity. Preserve that signal so

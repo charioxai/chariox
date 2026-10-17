@@ -598,7 +598,8 @@ impl KernelRuntimeState {
                         format!("Prompt `{prompt_id}` failed: {MESSAGE}"),
                     );
                     self.spawn_workflow_prompt_dispatches(
-                        self.owned.workflow_maybe_start_next_queued_prompt(session_id),
+                        self.owned
+                            .workflow_maybe_start_next_queued_prompt(session_id),
                     );
                     self.start_next_queued_prompt_after_restart(session_id, agent_id)
                         .await;
@@ -613,7 +614,13 @@ impl KernelRuntimeState {
     /// Reclaim this kernel's own Codex app-servers left behind by a previous process. Disabled
     /// by an unbounded orphan TTL, which test kernels use so they never touch live kernels.
     async fn reap_orphaned_provider_processes_at_startup(&self) {
-        if self.owned.config_projection.snapshot().provider_process_orphan_ttl_ms == u64::MAX {
+        if self
+            .owned
+            .config_projection
+            .snapshot()
+            .provider_process_orphan_ttl_ms
+            == u64::MAX
+        {
             return;
         }
         let now_ms = crate::session::unix_epoch_ms();
@@ -667,7 +674,9 @@ impl KernelRuntimeState {
         ) {
             Ok(Some(dispatches)) => self.spawn_workflow_prompt_dispatches(dispatches),
             Ok(None) => {}
-            Err(error) => log_restart_recovery_failure(session_id, agent_id, &queued_prompt_id, &error),
+            Err(error) => {
+                log_restart_recovery_failure(session_id, agent_id, &queued_prompt_id, &error)
+            }
         }
     }
 
@@ -1535,7 +1544,9 @@ mod tests {
 
     /// A workflow prompt that was queued but never delivered: published (autonomous) or
     /// started by a user (`/workflow start`).
-    fn runtime_with_queued_workflow_prompt(published: bool) -> (KernelRuntimeState, String, String) {
+    fn runtime_with_queued_workflow_prompt(
+        published: bool,
+    ) -> (KernelRuntimeState, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let workspace = std::env::current_dir().expect("test workspace should resolve");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -3087,7 +3098,10 @@ mod tests {
                 .expect("workflow run should survive")
                 .status()
         };
-        assert_eq!(run_status(&runtime), crate::session::WorkflowRunStatus::Running);
+        assert_eq!(
+            run_status(&runtime),
+            crate::session::WorkflowRunStatus::Running
+        );
 
         let mut task = runtime.spawn_durable_restart_recovery();
         let _ = (&mut task.0).await;

@@ -256,7 +256,11 @@ impl KernelRuntimeOwnedState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if request.retry_delivery {
             let queued_prompt = self
-                .resolve_held_notification_delivery(&request.session_id, &request.queue_item_ref, true)?
+                .resolve_held_notification_delivery(
+                    &request.session_id,
+                    &request.queue_item_ref,
+                    true,
+                )?
                 .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                     session_id: request.session_id.clone(),
                     workflow_id: "workflow".to_string(),
@@ -292,9 +296,11 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::RemoveQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if let Some(queued_prompt) =
-            self.resolve_held_notification_delivery(&request.session_id, &request.queue_item_ref, false)?
-        {
+        if let Some(queued_prompt) = self.resolve_held_notification_delivery(
+            &request.session_id,
+            &request.queue_item_ref,
+            false,
+        )? {
             let session = self.workflow_session(&request.session_id)?;
             return Ok(LocalDaemonResponse::QueuedWorkflowPromptRemoved {
                 queued_prompt,

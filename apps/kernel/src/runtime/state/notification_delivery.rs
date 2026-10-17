@@ -306,7 +306,8 @@ impl KernelRuntimeOwnedState {
                 let key = (session.id().to_owned(), item.id().to_owned());
                 if item.delivery_uncertain_until_ms().is_some() {
                     already_held.push(key);
-                } else if now.saturating_sub(item.updated_at_ms()) >= UNCONFIRMED_SEND_NOTICE_AFTER_MS
+                } else if now.saturating_sub(item.updated_at_ms())
+                    >= UNCONFIRMED_SEND_NOTICE_AFTER_MS
                 {
                     due.push(key);
                 }
@@ -341,25 +342,33 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         id: &str,
     ) -> Result<(), DaemonError> {
-        self.durable_state_store.with_workflow_runtime_transition_lock(|| {
-            let mut sessions = self.session_store.write();
-            let mut after = sessions.get_session(session_id)?;
-            let Some(held) = after
-                .workflow_queued_prompts()
-                .iter()
-                .find(|item| item.id() == id && item.notification_send_unconfirmed())
-                .cloned()
-            else {
-                return Ok(());
-            };
-            if self.durable_state_store.notification_queue_is_owned(&after, &held)? {
-                return Ok(());
-            }
-            after.notification_prompt_mut(id).unwrap().mark_cancelled();
-            self.durable_state_store.persist_workflow_runtime_transition(&after, "notification_inject_stale_held_retired")?;
-            sessions.restore_session(after);
-            Ok(())
-        })
+        self.durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let mut sessions = self.session_store.write();
+                let mut after = sessions.get_session(session_id)?;
+                let Some(held) = after
+                    .workflow_queued_prompts()
+                    .iter()
+                    .find(|item| item.id() == id && item.notification_send_unconfirmed())
+                    .cloned()
+                else {
+                    return Ok(());
+                };
+                if self
+                    .durable_state_store
+                    .notification_queue_is_owned(&after, &held)?
+                {
+                    return Ok(());
+                }
+                after.notification_prompt_mut(id).unwrap().mark_cancelled();
+                self.durable_state_store
+                    .persist_workflow_runtime_transition(
+                        &after,
+                        "notification_inject_stale_held_retired",
+                    )?;
+                sessions.restore_session(after);
+                Ok(())
+            })
     }
 
     fn hold_unconfirmed_notification_send(

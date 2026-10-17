@@ -467,7 +467,8 @@ fn collect_process_observations(proc_root: &Path) -> Result<Vec<ProcessObservati
             continue;
         };
         let process_dir = entry.path();
-        let Some(executable_path) = process_executable_path(fs::read_link(process_dir.join("exe")))?
+        let Some(executable_path) =
+            process_executable_path(fs::read_link(process_dir.join("exe")))?
         else {
             continue;
         };
@@ -500,7 +501,9 @@ fn process_executable_path(link: std::io::Result<PathBuf>) -> Result<Option<Path
     match link {
         Ok(path) => Ok(Some(path)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(Some(PathBuf::new())),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Ok(Some(PathBuf::new()))
+        }
         Err(error) => Err(freshness_error(&format!(
             "process executable cannot be inspected: {error}"
         ))),
@@ -611,16 +614,21 @@ fn is_bubblewrap(observation: &ProcessObservation) -> bool {
 }
 
 fn is_chariox_runtime(observation: &ProcessObservation) -> bool {
-    ["chariox", "chariox-kernel", "chariox-relay", "chariox-managed-bootstrap"]
-        .iter()
-        .any(|name| comm_matches(&observation.executable_name, name))
+    [
+        "chariox",
+        "chariox-kernel",
+        "chariox-relay",
+        "chariox-managed-bootstrap",
+    ]
+    .iter()
+    .any(|name| comm_matches(&observation.executable_name, name))
         || matches!(
-        observation
-            .executable_path
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some("chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap")
-    )
+            observation
+                .executable_path
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap")
+        )
 }
 
 fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
@@ -671,9 +679,10 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        is_linux_boot_id, is_os_machine_id, is_release_digest, parse_parent_pid, process_executable_path,
-        validate_freshness_evidence, validate_old_generation_runtime_identity_report,
-        validate_process_observations, ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
+        is_linux_boot_id, is_os_machine_id, is_release_digest, parse_parent_pid,
+        process_executable_path, validate_freshness_evidence,
+        validate_old_generation_runtime_identity_report, validate_process_observations,
+        ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
         ManagedKernelRuntimeIdentityReport, ProcessObservation,
     };
     use crate::managed_bootstrap::release::VerifiedReleaseEvidence;
@@ -736,7 +745,12 @@ mod tests {
             executable_path: release.join("usr/local/bin/chariox-managed-bootstrap"),
         };
         assert!(validate_process_observations(&[current.clone()], 10, &release).is_ok());
-        let retired = ProcessObservation { pid: 12, parent_pid: 0, executable_name: "chariox-managed".to_string(), executable_path: PathBuf::new() };
+        let retired = ProcessObservation {
+            pid: 12,
+            parent_pid: 0,
+            executable_name: "chariox-managed".to_string(),
+            executable_path: PathBuf::new(),
+        };
         assert!(validate_process_observations(&[current, retired], 10, &release).is_err());
     }
 
@@ -747,7 +761,10 @@ mod tests {
             process_executable_path(Err(Error::from(ErrorKind::PermissionDenied))).unwrap(),
             Some(PathBuf::new())
         );
-        assert_eq!(process_executable_path(Err(Error::from(ErrorKind::NotFound))).unwrap(), None);
+        assert_eq!(
+            process_executable_path(Err(Error::from(ErrorKind::NotFound))).unwrap(),
+            None
+        );
         assert!(process_executable_path(Err(Error::from(ErrorKind::InvalidData))).is_err());
 
         let release = PathBuf::from("/release");
@@ -757,9 +774,21 @@ mod tests {
             executable_name: "chariox-managed-bootstrap".to_string(),
             executable_path: release.join("usr/local/bin/chariox-managed-bootstrap"),
         };
-        let init = ProcessObservation { pid: 1, parent_pid: 0, executable_name: "systemd".to_string(), executable_path: PathBuf::new() };
-        assert!(validate_process_observations(&[current.clone(), init.clone()], 10, &release).is_ok());
-        let retired = ProcessObservation { pid: 12, parent_pid: 1, executable_name: "chariox-kernel".to_string(), executable_path: PathBuf::new() };
+        let init = ProcessObservation {
+            pid: 1,
+            parent_pid: 0,
+            executable_name: "systemd".to_string(),
+            executable_path: PathBuf::new(),
+        };
+        assert!(
+            validate_process_observations(&[current.clone(), init.clone()], 10, &release).is_ok()
+        );
+        let retired = ProcessObservation {
+            pid: 12,
+            parent_pid: 1,
+            executable_name: "chariox-kernel".to_string(),
+            executable_path: PathBuf::new(),
+        };
         assert!(validate_process_observations(&[current, init, retired], 10, &release).is_err());
     }
 
