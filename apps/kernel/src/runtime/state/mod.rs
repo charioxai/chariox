@@ -87,6 +87,7 @@ mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
+mod owner_context_review;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
@@ -347,6 +348,9 @@ struct SlicePrivateRelayConnector {
     task: std::thread::JoinHandle<()>,
 }
 
+mod agent_account_selection;
+#[cfg(test)]
+mod agent_account_selection_tests;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
@@ -423,6 +427,8 @@ mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
+mod relay_leased_projection_runtime;
+mod relay_leased_prompt_admission_runtime;
 mod relay_peer_runtime_state;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
@@ -906,18 +912,22 @@ impl KernelRuntimeState {
         self.app_lock_wait_probe = Some(probe);
     }
 
-    pub(crate) async fn with_app_side_effect<R>(
-        &self,
-        operation: impl FnOnce(&mut DaemonApp) -> R,
-    ) -> R {
+    pub(crate) async fn with_app_side_effect<R, F>(&self, operation: F) -> R
+    where
+        F: FnOnce(&mut DaemonApp) -> R,
+    {
         #[cfg(test)]
         if let Some(probe) = &self.app_lock_wait_probe {
             probe.notify_one();
         }
         let (result, dispatches) = {
-            let mut app =
-                crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
-                    .await;
+            // MP-08 / MP-10 / MP-11: static closure types identify the blocking
+            // runtime operation without recording its arguments or provider data.
+            let mut app = crate::runtime::app_lock::lock_app_instrumented(
+                &self.app,
+                std::any::type_name::<F>(),
+            )
+            .await;
             let result = operation(&mut app);
             let dispatches = app.take_deferred_workflow_remote_prompt_dispatches();
             (result, dispatches)

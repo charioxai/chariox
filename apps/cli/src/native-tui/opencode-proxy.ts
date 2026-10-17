@@ -57,6 +57,7 @@ type OpenCodeProxyOptions = {
 
 export type OpenCodeNativeProxy = {
   server: http.Server
+  close: () => Promise<void>
   bindProviderRun: (run: RuntimeProviderRun) => void
 }
 
@@ -69,12 +70,16 @@ export async function startOpenCodeProxy(options: OpenCodeProxyOptions): Promise
     initialModel: null,
   }
   const server = http.createServer((request, response) => {
-    handleProxyRequest(request, response, options, state).catch((error) => {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    response.once("close", abort)
+    handleProxyRequest(request, response, options, state, controller.signal).catch((error) => {
+      if (response.destroyed) return
       if (!response.headersSent) {
         response.writeHead(502, { "content-type": "application/json" })
       }
       response.end(JSON.stringify({ error: formatError(error) }))
-    })
+    }).finally(() => response.off("close", abort))
   })
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
@@ -86,6 +91,11 @@ export async function startOpenCodeProxy(options: OpenCodeProxyOptions): Promise
   })
   return {
     server,
+    close() {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+      server.closeAllConnections()
+      return closed
+    },
     bindProviderRun(run) {
       state.providerRunId = run.id
       state.initialModel = run.model?.trim() || null
@@ -100,6 +110,7 @@ async function handleProxyRequest(
   response: ServerResponse,
   options: OpenCodeProxyOptions,
   state: OpenCodeProxyState,
+  signal: AbortSignal,
 ): Promise<void> {
   const method = request.method ?? "GET"
   const path = request.url ?? "/"
@@ -107,7 +118,7 @@ async function handleProxyRequest(
   options.debug("request", { method, path })
   const promptMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/(?:message|prompt_async)(?:\?.*)?$/) : null
   if (promptMatch && isKernelRequest) {
-    await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, false)
+    await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, false, null, signal)
     return
   }
   if (promptMatch) {
@@ -215,11 +226,11 @@ async function handleProxyRequest(
   }
 
   if (!isKernelRequest && method === "GET" && new URL(path, options.upstreamBaseUrl).pathname === "/event") {
-    await proxyOpenCodeEventsForNativeTui(request, response, options.upstreamBaseUrl, state, options.debug)
+    await proxyOpenCodeEventsForNativeTui(request, response, options.upstreamBaseUrl, state, options.debug, signal)
     return
   }
 
-  await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, !isKernelRequest, state.initialModel)
+  await proxyToOpenCode(request, response, options.upstreamBaseUrl, options.debug, !isKernelRequest, state.initialModel, signal)
 }
 
 async function proxyToOpenCode(
@@ -229,6 +240,7 @@ async function proxyToOpenCode(
   debug: OpenCodeProxyDebug,
   redactForNativeTui = false,
   initialModel: string | null = null,
+  signal: AbortSignal,
 ): Promise<void> {
   const method = request.method ?? "GET"
   const target = new URL(request.url ?? "/", upstreamBaseUrl)
@@ -236,6 +248,7 @@ async function proxyToOpenCode(
   const init: RequestInit = {
     method,
     headers,
+    signal,
   }
   if (method !== "GET" && method !== "HEAD") {
     const body = await readRequestBuffer(request)
@@ -273,6 +286,7 @@ async function proxyToOpenCode(
   }
   await new Promise<void>((resolve, reject) => {
     const stream = Readable.fromWeb(upstream.body as never)
+    stream.once("error", reject)
     const readable = redactForNativeTui
       ? stream.pipe(target.pathname === "/event"
         ? createSseHiddenInstructionRedactor()

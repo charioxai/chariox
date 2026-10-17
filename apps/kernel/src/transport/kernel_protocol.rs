@@ -506,6 +506,39 @@ impl WaitingRoomInventoryEventProjection {
     }
 }
 
+// MP-08 / MP-10 / MP-11: admission may precede output; settlement never does.
+pub(crate) fn prompt_admission_activity_event(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Option<KernelEvent> {
+    let previous = previous?;
+    if snapshot.session.id() != previous.session.id()
+        || snapshot.agent_activity.len() != previous.agent_activity.len()
+        || snapshot.room_workflows != previous.room_workflows
+        || snapshot.agent_activity.iter().any(|(id, activity)| {
+            previous
+                .agent_activity
+                .get(id)
+                .is_none_or(|old| old.last_completed_turn != activity.last_completed_turn)
+        })
+    {
+        return None;
+    }
+    let admitted = snapshot.agent_activity.iter().any(|(id, activity)| {
+        activity.active_prompt_count > 0
+            && previous.agent_activity.get(id).is_some_and(|old| {
+                activity.active_prompt_count > old.active_prompt_count
+                    || activity.active_turn.as_ref().map(|turn| &turn.prompt_id)
+                        != old.active_turn.as_ref().map(|turn| &turn.prompt_id)
+            })
+    });
+    admitted.then(|| KernelEvent::AgentActivityChanged {
+        session_id: snapshot.session.id().to_string(),
+        agent_activity: Box::new(snapshot.agent_activity.clone()),
+        agent_activity_revision: snapshot.metadata.last_event_id,
+    })
+}
+
 pub(crate) fn agent_activity_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -846,6 +879,18 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        // MP-08 / MP-10 / MP-11: only this native receipt-recovery class
+        // crosses the shared projection without losing its machine-readable code.
+        DaemonError::RelayTransport {
+            operation,
+            code,
+            retryable: true,
+            ..
+        } if *operation == "native provider transport"
+            && code == "native_transport_reconnecting" =>
+        {
+            kernel_error("native_transport_reconnecting", error, true)
+        }
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
@@ -854,6 +899,18 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::RelayPeerCleanupAbsent { .. } => {
             kernel_error("local_transport_error", error, false)
         }
+        // MP-08 / MP-10 / MP-11: profile absence/isolation needs an explicit
+        // account action; repeating the same launch cannot repair it.
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "resolve account profile" =>
+        {
+            kernel_error("local_transport_error", error, false)
+        }
+        // MP-08 / MP-10 / MP-11: absent Projects need setup, not transport retries.
+        DaemonError::LocalTransport {
+            operation: "project.get",
+            ..
+        } => kernel_error("local_transport_error", error, false),
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),

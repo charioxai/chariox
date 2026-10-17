@@ -8,6 +8,29 @@ use crate::transport::relay_peer::{
 use super::RemoteLeaseRuntime;
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    // MP-08 / MP-10 / MP-11: the runtime pump validates the same leased scope.
+    pub(crate) fn leased_provider_output_session(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<String, DaemonError> {
+        let leased = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let run = self.app.providers.get_run(provider_run_id)?;
+        if run.session_id() != leased.backing_session_id
+            || run.agent_instance_id() != Some(leased.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: leased.backing_session_id.clone(),
+                provider_run_id: provider_run_id.into(),
+            });
+        }
+        Ok(leased.backing_session_id.clone())
+    }
+
     pub(crate) fn native_interaction_context_for_backing_agent(
         &mut self,
         backing_session_id: &str,

@@ -452,3 +452,150 @@ MCP/skill drills must validate:
   provider runs, permissions, attachment materialization, history, and status.
 - Any protocol shape changes must bump `LOCAL_DAEMON_PROTOCOL_VERSION`, update
   protocol snapshot/hash tests, and add a focused drill.
+
+
+## MP-07 / MP-08 / MP-10 / MP-11: receipted output recovery drill (531/139)
+
+Use the real built CLI/native Codex 0.159.3, real home and worker kernels,
+real hosted WSS relay, and the real product-linked Codex account. Record exact
+source and binary hashes. The validation turn uses gpt-6-luna with low effort.
+A local source test is supplementary; it does not accept this drill.
+
+1. From a fresh product session, attach the native TUI to the home session and
+   select the remote worker normally. Open the same session in the real web app
+   at DPR1 (1440×900 and1920×1080) and DPR2. Start a normal workspace tool turn.
+2. During output, interrupt only the owned client's/worker's relay connection,
+   including a reply-lost interval while the transport remains open. Keep the
+   real client uplink near8Mbit/s and real RTT at least60ms. Never use an internal
+   projection RPC as a substitute for the user's native/Web flow.
+3. Restore connectivity normally. The worker must replay the same delivery
+   sequence and bytes until home acknowledges it. Push and poll must use one
+   delivery head. A stale lease/run or a skipped acknowledgement must not consume
+   that head. Provider account state, prompts and output never enter transport
+   diagnostics.
+4. Watch the native and web recordings. The complete answer and tool result
+   must appear once, before the turn settles; the next normal prompt must work.
+   Reload using ordinary browser navigation at every density/window size. The
+   model, answer, tool result and history must restore without an error/blank
+   frame. Inspect screenshots and the recording, not only DOM assertions.
+5. Retain screenshots, body-free transport/receipt logs, canonical history
+   counts and exact commands outside Git. Show the base losing output and the
+   candidate recovering it. Only a review-clean, functional candidate proceeds
+   to the dedicated-worker two-hour gate. Release only this drill's processes,
+   account copies, state, stack, containers and copied binaries.
+
+Focused supplementary guards include
+`mp08_projection_lost_reply_replays_output_after_store_reopen`,
+`mp08_projection_acknowledgement_cannot_skip_or_cross_a_binding`,
+`mp08_projection_pages_retain_output_before_settlement_and_replay_exact_bytes`,
+`mp08_projection_home_deduplicates_replayed_output_and_rechecks_admission`,
+and `mp08_projection_delivery_531_139_snapshot_and_hash`.
+
+MP-08 / MP-10 / MP-11 additionally require a remote workflow with validated
+pending final output and a transcript spanning several retained pages. Output-only
+pages must retain the active prompt/run binding; the matching final completion
+must determine success, cancellation or failure. Exercise a final failure and
+verify every output page arrives before failure is visible. The home-side
+`mp08_projection_paged_workflow_waits_for_final_failure_with_valid_output`
+is a supplementary regression, not that live workflow drill.
+
+MP-08 / MP-10 / MP-11 completed-receipt recovery must also cover a lost home
+submission acknowledgement with at least64 unprojected worker history records.
+Submit through the real client, queue a successor, interrupt only the owned home
+connection before its submission reply arrives, and let the real worker finish.
+Recover the same durable Dispatching prompt through normal reconnect/restart.
+Every scoped intermediate page must be applied and acknowledged before the exact
+prompt/run completion settles home and admits the successor once. Repeat with a
+lost page acknowledgement; output and settlement must remain exactly once.
+Record base failure and candidate recovery, actual history/delivery counts,
+client screenshots/recordings and owned cleanup. The
+`mp08_completed_receipt_reconciles_history_backlog_without_resubmitting`,
+`mp08_completed_receipt_reconciles_dispatching_prompt_with_history_backlog`,
+`mp08_completed_receipt_reacks_lost_ack_without_replaying_history` and
+`mp08_completed_receipt_rejects_unadmitted_history_page` checks are supplementary
+guards through actual receipt reconciliation and worker paging, with an encrypted
+test relay and a stub provider; they are not the real hosted client/provider drill.
+
+
+### MP-08 / MP-10 / MP-11: native catalog backpressure and reload states
+
+The real Codex0.159.3 `plugin/list` reply can exceed14MiB. With the same hosted
+stack and worker uplink at8Mbit/s, attach the official native client and join its
+session in two real browsers before submitting native A, queued web B/Steer and
+successor C. The base must demonstrate the large reply exceeding the native
+recovery window. The candidate must preserve that exact official reply through
+bounded gzip pages/receipts, keep the native connection alive and admit/settle
+all normal prompts. Record only page sizes/offsets and lifecycle metadata, never
+the plugin payload or provider configuration. Exercise lost-page replies too.
+
+For every ordinary reload, observe both browsers after the first paint, including
+the inactive view. At DPR1 in1440×900 and1920×1080 and at DPR2, inventory loading
+must show a loading state, never Account unavailable or a false red offline
+badge. Require a stable restored view, then inspect the complete recording and
+screenshots. A DOM check ending at the first restored frame cannot accept this
+case. Original intermittent restore errors remain blockers until the actual
+failing flow is green; source tests and a simple held-session reload are not
+substitutes. The dedicated-worker two-hour and quiet-host timing gates remain.
+
+MP-08 / MP-10 / MP-11: while an official native catalog burst is backpressured,
+close the attachment normally, then separately revoke its run authority. Both
+must close the upstream socket and release retained frame/byte permits promptly;
+reattaching must not accumulate old sockets. Cover both the32-frame queue and
+32MiB connection budget. The four `mp08_native_capacity_*` local socket tests
+prove these capacity/cancellation boundaries only; they do not replace the real
+native-client drill. Fresh waiting-room entry also must show Loading Catalog
+while discovery is idle or retrying; only a completed failure is unavailable.
+
+
+### MP-08 / MP-10 / MP-11: home page application crash boundary
+
+Use the real compiled TUI to submit a real leased provider task and queue its
+successor over hosted WSS. On the lane-owned home history database only, fail
+the delivery-receipt write after a provider history item commits. Crash and
+restart the home kernel while the worker retains that unacknowledged page.
+Show duplicated durable output on the base. On the candidate, require one
+history copy, one exact original settlement, one successor admission and no
+pending application after recovery. Repeat source fault injection before the
+application-result save and after receipt/queue admission; replay must finish
+without removing the successor. Check the current worker/lease/run admission,
+including rejection of altered retained bytes and foreign callers.
+
+Record kernel/client/relay/Cloud identities, fault timing and body-free delivery
+counters. Require a durable provider-tool row and a ready application journal
+before the deliberate receipt crash; output text alone cannot prove that the
+fault armed. Compare worker/home tool history counts after recovery. Drive
+browser reload at DPR1/2 and both 1440x900 and 1920x1080; record
+initial visible recovery state and definitive restored transcript, then inspect
+recordings for blank or stuck frames. A source-only pass or composer placeholder
+alone does not establish this live acceptance. Run the separate lost-page-ACK
+cell without the home receipt-write fault; prove the home-applied/worker-unacked
+sequence gap and single history/settlement after re-ACK. Clean up exact owned
+processes, temporary provider copies, network controls and stack.
+
+MP-08 / MP-10 / MP-11 workflow repeat: interrupt receipt/result saves on a failed workflow page, reopen both real stores, and require the exact node failure and one failure event to survive. Workflow transitions must commit before the page result becomes ready; replay must skip a node already terminal without replaying handoffs or failure events.
+
+MP-08 / MP-10 / MP-11 final-journal cleanup repeat: fail deletion only for the
+final page after the exact successor is admitted. Remove the fault without
+restarting and require that successor to reach the worker exactly once. Also
+restart with that admitted successor still Accepted; the normal restart sweep
+must recover its dispatch. A ready native journal must restore its worker-run
+snapshot and runtime profile without selecting an old run over a newer turn.
+After restart, restore the successor's live provider snapshot before replaying
+the older ready journal. Require the successor's cached run to remain Running
+and selected, with the older home projection retired; checking only the remote
+binding ID misses a stale snapshot that retires the live replacement.
+
+MP-08 / MP-10 / MP-11 drain ownership repeat: keep the receipt-write fault
+active through home restart, then remove it without another prompt, reload or
+reattach. The active drain must resume its admitted page and finish both turns;
+deduplication alone is insufficient. In the separate completed-backlog ACK cell,
+require worker completion and at least64 retained history records before home
+reconnects. Delaying an ACK with netem requires replacing the loss queue to flush
+already queued bytes; changing its loss percentage alone does not prove the
+fault armed.
+
+MP-08 / MP-10 / MP-11 completed-backlog duplicate check: compare the home and
+worker tool-row multisets after a backlog that spans several retained pages.
+A bounded terminal batch can lag the 64-event history window, so a tool already
+projected from durable snapshots must not be projected again from its later
+terminal records; row counts alone hide this.

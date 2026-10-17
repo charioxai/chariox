@@ -411,6 +411,29 @@ exit 2
         assert!(error.to_string().contains("setup-token launch path"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
+        // The worker cannot authenticate a replica itself: home supplies the
+        // Claude token per launch, so an unobserved replica must not block
+        // prompt admission, while an expired observation still does.
+        let registry = app.provider_account_profile_registry();
+        registry
+            .require_authenticated("owner-a", "claude", "work", None, "MP-08 worker submit")
+            .expect("unobserved Claude replica defers to the launch credential");
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                "work",
+                ProviderAccountAuthState::Expired,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(registry
+            .require_authenticated("owner-a", "claude", "work", None, "MP-08 worker submit")
+            .is_err());
+
         let mut wrong_owner = materialization;
         wrong_owner.profile.owner_user_id = "owner-b".to_string();
         assert!(RemoteLeaseRuntime::new(&mut app)

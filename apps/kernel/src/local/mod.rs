@@ -7,6 +7,9 @@ pub use api::{
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
 mod api;
+pub use api::{
+    NativeProviderTransportGzipFragment, NativeProviderTransportOperation, NativeProviderTransportRequest, NativeProviderTransportResult,
+};
 mod client;
 mod harness;
 pub(crate) mod ipc;
@@ -294,6 +297,7 @@ pub fn default_access_holder_pid() -> std::io::Result<u32> {
     crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
 
+pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
 pub use api::{
     ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
     DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,

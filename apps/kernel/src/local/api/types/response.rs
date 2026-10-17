@@ -3,6 +3,8 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    NativeProviderTransport { result: NativeProviderTransportResult },
+    SshMachine { machine: SshMachineResult },
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
@@ -100,6 +102,9 @@ pub enum LocalDaemonResponse {
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
         agent_activity_revision: u64,
+        /// Exclusive terminal record ID at this snapshot, including drained records.
+        #[serde(default)]
+        terminal_output_watermark: u64,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
     BrowserImportConsent { request_id: String, status: BrowserImportConsentStatus, },

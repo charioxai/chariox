@@ -1,5 +1,4 @@
 use crate::app::RemoteLeaseRuntime;
-use crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::runtime::projection::SessionSnapshotProjection;
@@ -15,26 +14,6 @@ use crate::transport::relay_peer::{
 use super::*;
 
 impl KernelRuntimeState {
-    async fn update_relay_leased_prompt_admission_receipt(
-        &self,
-        leased_agent_id: &str,
-        home_prompt_id: &str,
-        phase: WorkerPromptReceiptPhase,
-        worker_provider_run_id: Option<String>,
-    ) -> Result<(), DaemonError> {
-        let leased_agent_id = leased_agent_id.to_string();
-        let home_prompt_id = home_prompt_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_prompt_receipt(
-                &leased_agent_id,
-                &home_prompt_id,
-                phase,
-                worker_provider_run_id.as_deref(),
-            )
-        })
-        .await
-    }
-
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.with_app_side_effect(|app| app.relay_registration())
             .await
@@ -114,63 +93,72 @@ impl KernelRuntimeState {
         previous_snapshot: Option<SessionSnapshotProjection>,
         last_workflow_design_sequence: u64,
     ) -> WatchResult {
-        let session_id = session_id.to_string();
-        let attachment_id = attachment_id.to_string();
         let previous_snapshot_for_compare = previous_snapshot.clone();
-        let mut result = self
-            .with_app_side_effect({
-                let session_id = session_id.clone();
-                let attachment_id = attachment_id.clone();
-                move |app| {
-                    crate::runtime_transport::watch_subscription_state(
-                        app,
-                        &session_id,
-                        &attachment_id,
-                        false,
-                        None,
-                        last_workflow_design_sequence,
+        if self
+            .owned
+            .ensure_attachment_in_session(session_id, attachment_id)
+            .is_err()
+        {
+            return WatchResult::Unavailable("Current session is no longer available.".to_string());
+        }
+        // MP-08 / MP-10 / MP-11: provider output has one kernel runtime pump.
+        // Clients drain its committed stream and published state without
+        // acquiring the provider coordinator lock or running its adapters.
+        // Final output is committed before settlement publication, preserving
+        // the existing completion/output watermark barrier for every client.
+        // Capture state before the bounded drain. Output is emitted before its
+        // snapshot; queued pages wake this attachment, and native completion
+        // keeps its existing fixed output-watermark barrier.
+        let projected_snapshot = if !should_check_snapshot {
+            Box::new(None)
+        } else {
+            match self.session_snapshot_projection_for_attachment(
+                &session_id,
+                &attachment_id,
+                self.session_projection_change_sequence(),
+            ) {
+                Ok(mut snapshot) => {
+                    snapshot.metadata.last_event_id = self.session_projection_change_sequence();
+                    Box::new(
+                        (previous_snapshot_for_compare.as_ref() != Some(&snapshot))
+                            .then_some(snapshot),
                     )
                 }
-            })
-            .await;
-        if !should_check_snapshot {
-            return result;
-        }
-        let projected_snapshot = match self.session_snapshot_projection_for_attachment(
-            &session_id,
-            &attachment_id,
-            self.session_projection_change_sequence(),
-        ) {
-            Ok(mut snapshot) => {
-                snapshot.metadata.last_event_id = self.session_projection_change_sequence();
-                Box::new(
-                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
-                )
-            }
-            Err(DaemonError::SessionNotFound { .. })
-            | Err(DaemonError::AttachmentNotFound { .. })
-            | Err(DaemonError::AttachmentNotInSession { .. }) => {
-                return WatchResult::Unavailable(
-                    "Current session is no longer available.".to_string(),
-                );
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.runtime_transport",
-                    "kernel event loop failed to build owned session snapshot",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                Box::new(None)
+                Err(DaemonError::SessionNotFound { .. })
+                | Err(DaemonError::AttachmentNotFound { .. })
+                | Err(DaemonError::AttachmentNotInSession { .. }) => {
+                    return WatchResult::Unavailable(
+                        "Current session is no longer available.".to_string(),
+                    );
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "kernel event loop failed to build owned session snapshot",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    Box::new(None)
+                }
             }
         };
-        if let WatchResult::Ok { snapshot, .. } = &mut result {
-            *snapshot = projected_snapshot;
+        self.publish_credential_copy_notices(session_id);
+        let terminal = &self.owned.terminal_stream;
+        WatchResult::Ok {
+            records: terminal.drain_output_records(session_id, attachment_id),
+            notices: terminal.drain_notice_records(session_id, attachment_id),
+            completions: terminal.drain_completion_records(session_id, attachment_id),
+            workflow_run_updates: terminal.drain_workflow_run_updates(session_id, attachment_id),
+            workflow_design_events: self.owned.workflow_design_events.events_since(
+                session_id,
+                last_workflow_design_sequence,
+                attachment_id,
+            ),
+            snapshot: projected_snapshot,
         }
-        result
     }
 
     pub(crate) async fn create_relay_execution_lease(
@@ -569,286 +557,6 @@ impl KernelRuntimeState {
     }
 
     // Keep the relay request fields explicit, like the adjacent lease adapters.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn submit_relay_leased_prompt(
-        &self,
-        leased_agent_id: &str,
-        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
-        prompt: &str,
-        hidden_system_context: &str,
-        attachments: Vec<RelayPromptAttachment>,
-        workflow_context: Option<RemoteWorkflowTurnContext>,
-        git_context: Option<RemoteGitTurnContext>,
-        required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
-        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
-        provider_launch_credential: Option<
-            crate::transport::relay_peer::RemoteProviderLaunchCredential,
-        >,
-    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
-        let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
-        let leased_agent_id = leased_agent_id.to_string();
-        let prompt = prompt.to_string();
-        let hidden_system_context = hidden_system_context.to_string();
-        let home_prompt_id = git_context
-            .as_ref()
-            .map(|context| context.home_prompt_id.clone())
-            .filter(|prompt_id| !prompt_id.trim().is_empty());
-        let begin_leased_agent_id = leased_agent_id.clone();
-        let begin_home_prompt_id = home_prompt_id.clone();
-        let begin_manifest = remote_extension_manifest.clone();
-        let existing_receipt = self
-            .with_app_side_effect(move |app| {
-                let mut runtime = RemoteLeaseRuntime::new(app);
-                runtime.consume_leased_agent_authorization(&begin_leased_agent_id)?;
-                let Some(home_prompt_id) = begin_home_prompt_id.as_deref() else {
-                    return Ok(None);
-                };
-                // A native provider that has not loaded the current runtime tool
-                // catalog rejects before admission. Check it before a receipt
-                // exists, so the home's bounded retry can resubmit this same
-                // prompt after the refresh instead of meeting a rejection fence.
-                if !runtime.leased_prompt_receipt_recorded(&begin_leased_agent_id, home_prompt_id) {
-                    runtime.ensure_leased_native_runtime_catalog_loaded(
-                        &begin_leased_agent_id,
-                        &begin_manifest,
-                    )?;
-                }
-                runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
-            })
-            .await;
-        let existing_receipt = match existing_receipt {
-            Err(
-                error @ DaemonError::LocalTransport {
-                    operation: "remote runtime tool catalog reload",
-                    ..
-                },
-            ) if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error) => {
-                // Prompt admission also repairs a missed manifest-sync message;
-                // this only queues the same idle refresh, never the prompt.
-                self.update_relay_leased_agent_remote_extension_manifest(
-                    &leased_agent_id,
-                    remote_extension_manifest.clone(),
-                )
-                .await?;
-                return Err(error);
-            }
-            result => result?,
-        };
-        let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
-        if let Some(receipt) = existing_receipt.as_ref() {
-            match receipt.receipt.phase {
-                WorkerPromptReceiptPhase::Accepted => {}
-                WorkerPromptReceiptPhase::Dispatching => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "submit remote leased prompt",
-                        message: "earlier worker submission is unresolved; query its receipt before retrying"
-                            .to_string(),
-                    });
-                }
-                WorkerPromptReceiptPhase::Rejected => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "submit remote leased prompt",
-                        message: "worker rejection receipt fences this home prompt from retry"
-                            .to_string(),
-                    });
-                }
-            }
-        }
-
-        let profile = expected_profile.clone();
-        let replay_leased_agent_id = leased_agent_id.clone();
-        let replay_git_context = git_context.clone();
-        let profile_home_prompt_id = home_prompt_id.clone();
-        let profile_receipt_is_new = new_receipt;
-        let profile_replay = self
-            .with_app_side_effect(move |app| {
-                let mut runtime = RemoteLeaseRuntime::new(app);
-                // A prior profile acknowledgement may have been lost. Home remains
-                // authoritative, including when this is a retry of an active prompt.
-                if let Err(error) = runtime.update_leased_agent_profile(
-                    &replay_leased_agent_id,
-                    profile.provider,
-                    profile.account_profile,
-                    profile.model,
-                    profile.effort,
-                ) {
-                    if let Some(home_prompt_id) = profile_home_prompt_id
-                        .as_deref()
-                        .filter(|_| profile_receipt_is_new)
-                    {
-                        runtime.update_leased_prompt_receipt(
-                            &replay_leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
-                        )?;
-                    }
-                    return Err(error);
-                }
-                let replayed = runtime.replay_active_leased_prompt_submission(
-                    &replay_leased_agent_id,
-                    replay_git_context.as_ref(),
-                )?;
-                if profile_receipt_is_new {
-                    if let (Some(home_prompt_id), Some((worker_provider_run_id, _))) =
-                        (profile_home_prompt_id.as_deref(), replayed.as_ref())
-                    {
-                        runtime.update_leased_prompt_receipt(
-                            &replay_leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Accepted,
-                            Some(worker_provider_run_id.as_str()),
-                        )?;
-                    }
-                }
-                Ok(replayed)
-            })
-            .await?;
-        if let Some(replayed) = profile_replay {
-            return Ok(replayed);
-        }
-        if existing_receipt.is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: "submit remote leased prompt",
-                message: "accepted worker receipt cannot replay from current live state"
-                    .to_string(),
-            });
-        }
-
-        let refresh_lease = leased_agent_id.clone();
-        let refresh_manifest = remote_extension_manifest.clone();
-        let leased_agent_for_prepare = leased_agent_id.clone();
-        let prompt_for_prepare = prompt.clone();
-        let context_for_prepare = home_prompt_id.clone();
-        let prepared = match self
-            .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
-                    &leased_agent_for_prepare,
-                    &prompt_for_prepare,
-                    &hidden_system_context,
-                    attachments,
-                    workflow_context,
-                    git_context,
-                    required_mcps,
-                    required_skills,
-                    remote_extension_manifest,
-                )
-            })
-            .await
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                if let Some(home_prompt_id) = context_for_prepare.as_deref().filter(|_| new_receipt)
-                {
-                    self.update_relay_leased_prompt_admission_receipt(
-                        &leased_agent_id,
-                        home_prompt_id,
-                        WorkerPromptReceiptPhase::Rejected,
-                        None,
-                    )
-                    .await?;
-                }
-                if matches!(
-                    &error,
-                    DaemonError::LocalTransport {
-                        operation: "remote runtime tool catalog reload",
-                        ..
-                    }
-                ) && super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error)
-                {
-                    // Prompt admission also repairs a missed manifest-sync message.
-                    // The preceding preparation validated the lease and collisions;
-                    // this only queues the same idle refresh, never the prompt.
-                    self.update_relay_leased_agent_remote_extension_manifest(
-                        &refresh_lease,
-                        refresh_manifest,
-                    )
-                    .await?;
-                }
-                return Err(error);
-            }
-        };
-        let provider_run_id = match &prepared.provider_run {
-            crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
-                provider_run_id.clone()
-            }
-            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
-                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
-                    {
-                        self.update_relay_leased_prompt_admission_receipt(
-                            &leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
-                        )
-                        .await?;
-                    }
-                    return Err(DaemonError::LocalTransport {
-                        operation: "launch remote provider without credential",
-                        message: format!(
-                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
-                        ),
-                    });
-                }
-                match self
-                    .launch_provider_for_remote_lease_detached(
-                        request.clone(),
-                        provider_launch_credential,
-                    )
-                    .await
-                {
-                    Ok(run) => run.id().to_string(),
-                    Err(error) => {
-                        if let Some(home_prompt_id) =
-                            home_prompt_id.as_deref().filter(|_| new_receipt)
-                        {
-                            self.update_relay_leased_prompt_admission_receipt(
-                                &leased_agent_id,
-                                home_prompt_id,
-                                WorkerPromptReceiptPhase::Rejected,
-                                None,
-                            )
-                            .await?;
-                        }
-                        return Err(error);
-                    }
-                }
-            }
-        };
-        if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
-            self.update_relay_leased_prompt_admission_receipt(
-                &leased_agent_id,
-                home_prompt_id,
-                WorkerPromptReceiptPhase::Dispatching,
-                Some(provider_run_id.clone()),
-            )
-            .await?;
-        }
-        let finish_leased_agent_id = leased_agent_id.clone();
-        let finish_home_prompt_id = home_prompt_id.clone();
-        let finish_provider_run_id = provider_run_id.clone();
-        let outcome = self
-            .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app)
-                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
-            })
-            .await?;
-        if let Some(home_prompt_id) = finish_home_prompt_id.as_deref().filter(|_| new_receipt) {
-            self.update_relay_leased_prompt_admission_receipt(
-                &finish_leased_agent_id,
-                home_prompt_id,
-                WorkerPromptReceiptPhase::Accepted,
-                Some(finish_provider_run_id.clone()),
-            )
-            .await?;
-        }
-        Ok(outcome)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn steer_relay_leased_prompt(
         &self,
@@ -1337,36 +1045,12 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) async fn drain_relay_leased_runtime_projection(
-        &self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-        pump_output: bool,
-        replay_settled_completion: bool,
-        require_authorization: bool,
-    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
-        let leased_agent_id = leased_agent_id.to_string();
-        let provider_run_id = provider_run_id.to_string();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            if require_authorization {
-                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            }
-            runtime.drain_leased_runtime_projection_with_recovery(
-                &leased_agent_id,
-                &provider_run_id,
-                pump_output,
-                replay_settled_completion,
-            )
-        })
-        .await
-    }
-
+    /// True when the shared projector admitted this delivery (including a replay ACK).
     pub(crate) async fn project_relay_remote_runtime_projection(
         &self,
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
         event: crate::transport::relay_peer::RelayPeerEvent,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
             home_session_id,
             home_agent_id,
@@ -1392,8 +1076,9 @@ impl KernelRuntimeState {
             })
             .await?;
         if !outcome.accepted {
-            return Ok(());
+            return Ok(false);
         }
+        let acknowledgement = outcome.acknowledgement.clone();
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
@@ -1403,7 +1088,9 @@ impl KernelRuntimeState {
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
-        if let Some((provider, account_profile, state)) = provider_auth_observation {
+        if let Some((provider, account_profile, state)) =
+            provider_auth_observation.filter(|_| !outcome.replayed)
+        {
             self.apply_remote_slice_provider_auth_observation(
                 &agent_id,
                 &provider,
@@ -1411,7 +1098,19 @@ impl KernelRuntimeState {
                 state,
             )?;
         }
-        Ok(())
+        if let Some(ack) = acknowledgement {
+            if let Err(error) = self.acknowledge_remote_runtime_projection(ack).await {
+                // Application committed. A lost ACK leaves the worker head in
+                // place; the next push or poll re-ACKs without duplicating output.
+                crate::logging::warn_with_fields(
+                    "daemon.relay",
+                    "projection acknowledgement unavailable; retained delivery will retry",
+                    serde_json::json!({"session_id": session_id, "agent_id": agent_id, "error": error.to_string()}),
+                );
+            }
+        }
+
+        Ok(true)
     }
 
     fn apply_remote_slice_provider_auth_observation(

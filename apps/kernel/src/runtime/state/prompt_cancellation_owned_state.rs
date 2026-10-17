@@ -374,12 +374,29 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) {
+        self.record_terminal_prompt_settlement(
+            session_id,
+            agent_id,
+            prompt,
+            provider_run_id,
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
+        );
+    }
+
+    pub(super) fn record_terminal_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
+    ) {
         let settled_at_ms = crate::session::unix_epoch_ms();
         if let Some(provider_run_id) =
             provider_run_id.filter(|run_id| !self.prompt_completion_recorded(run_id))
         {
-            // An acknowledged abort need not produce provider output. Publish
-            // settlement through the same completion stream drained by home.
+            // A definitive settlement need not produce provider output. Publish
+            // it through the same completion stream drained by home.
             self.record_assistant_message_completion(
                 session_id,
                 provider_run_id,
@@ -405,7 +422,7 @@ impl KernelRuntimeOwnedState {
             prompt.id(),
             provider_run_id,
             settled_at_ms,
-            "cancelled",
+            settlement_status.as_str(),
         );
         self.completed_git_turn_snapshots.record_prompt_settlement(
             session_id,
@@ -414,7 +431,7 @@ impl KernelRuntimeOwnedState {
             prompt,
             settled_at_ms,
             Some(prompt.created_at_ms()),
-            crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
+            settlement_status,
         );
     }
 
@@ -454,6 +471,10 @@ impl KernelRuntimeOwnedState {
         let active_prompt = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
+            .filter(|prompt| {
+                expected
+                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
+            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;

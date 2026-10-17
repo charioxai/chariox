@@ -12,6 +12,31 @@ pub(crate) struct ToolProjectionState {
     #[serde(default)]
     delta_offsets: std::collections::BTreeMap<String, u64>,
     revision: u64,
+    #[serde(default)]
+    history_owned: bool,
+    /// While history owns the tool: end of the output bytes per field that its
+    /// durable snapshots already delivered.
+    #[serde(default)]
+    history_end: std::collections::BTreeMap<String, u64>,
+}
+
+const OUTPUT_FIELDS: [&str; 5] = ["output", "stdout", "stderr", "result", "content"];
+
+/// Each output field a snapshot or delta carries, with the end offset of its
+/// bytes in that field's stream. A delta with several fields does not say which
+/// one the offset belongs to, so every field is bounded with it.
+fn output_ends(payload: Option<&serde_json::Value>) -> Vec<(&'static str, u64)> {
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    let start = payload
+        .get("chariox_delta_offset_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    OUTPUT_FIELDS
+        .into_iter()
+        .filter_map(|field| Some((field, start + payload.get(field)?.as_str()?.len() as u64)))
+        .collect()
 }
 
 impl ToolProjectionState {
@@ -69,7 +94,58 @@ impl ToolProjectionState {
             self.delta_offsets.insert(field.into(), offset);
         }
         self.revision += 1;
+        self.history_owned = false;
         true
+    }
+
+    pub(crate) fn record_stream(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Durable snapshots already projected this tool; a later bounded
+        // terminal batch carries copies of them that must not repeat. Output
+        // past what history delivered is new and returns the tool to streaming.
+        if self.history_owned {
+            let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+            let replaced = payload
+                .as_ref()
+                .and_then(|p| p.get("chariox_output_replaced"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let extends = output_ends(payload.as_ref()).into_iter().any(|(field, end)| {
+                replaced || end > self.history_end.get(field).copied().unwrap_or(0)
+            });
+            if !extends {
+                return false;
+            }
+        }
+        self.record(snapshot_key, bytes, stable_identity)
+    }
+
+    pub(crate) fn record_history(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Streamed deltas already own their tool's projection. A tool with
+        // no terminal record must instead project its durable snapshots,
+        // including later status changes, through the same retained delivery.
+        if self.revision != 0 && !self.history_owned {
+            return false;
+        }
+        let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        let changed = self.record(snapshot_key, bytes, stable_identity);
+        if changed {
+            self.history_owned = true;
+            for (field, end) in output_ends(payload.as_ref()) {
+                let covered = self.history_end.entry(field.into()).or_default();
+                *covered = (*covered).max(end);
+            }
+        }
+        changed
     }
 }
 

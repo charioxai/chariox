@@ -180,11 +180,11 @@ The popup shows what the kernel itself established, not what the requester claim
 ### 5.3 Granting access to an external agent (D8, D9)
 
 1. The external agent connects to the kernel’s local Unix socket and requests access to that local kernel. The request contains no session or access level.
-2. The kernel identifies the requesting process through the OS (section 6.1) and raises the passkey popup, naming that process (executable and pid), the local-kernel boundary and proposed lifetime.
+2. The kernel identifies the requesting process through the OS (section 6.1) and raises the passkey popup with one short question naming the requester only by a harness the kernel recognises (otherwise "An external agent"). The executable, pid and process start stay in the audit record, not the popup (owner decision 2026-10-14).
 3. When the user enters the passkey, the kernel authorizes that process and its OS descendants for every ordinary local-kernel operation (section 6.2). No session selection is required, including when the kernel has no sessions yet.
 4. The agent learns only the outcome. No token is issued, so there is nothing it could pass to another process or kernel.
 
-Five minutes before a grant expires, the kernel shows the popup "access for <agent> expires in 5 minutes, extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
+Five minutes before a grant expires, the kernel shows the popup "<agent>'s access ends in 5 minutes. Extend?" (D5). Extending needs the passkey and starts a new term. If nobody extends it, the grant expires.
 
 Only the local Unix socket carries grants. Over TCP loopback an access request is answered with a pointer to the Unix socket (section 6.3). Requests through the relay, from kernel peers, or from Apps are refused. A requester can have one pending request at a time.
 
@@ -246,6 +246,7 @@ Durable events, next to `critical_approval.passkey`, never containing the passke
 - `kernel_access.grant` with outcome `requested`, `granted`, `refused`, `extended`, `expired` or `revoked`, plus the grant id, holder, authorizing terminal and revocation reason.
 - `kernel_access.sudo` with outcome `requested`, `entered`, `refused`, `ended` or `interrupted`, plus the agent, run and turn, and the requester for an external request.
 - Receipts of critical approvals answered by a sudo turn name the turn and the `/sudo` entry that authorized it (D16).
+- Each refusal on the Unix socket carries its own reason code (`kernel_access_human_only`, `kernel_access_not_covered`, `kernel_access_ended`, `kernel_access_already_granted`) and one plain sentence, never a PID; see `docs/PROTOCOL.md`. The kernel keeps a bounded list of holders whose grant ended so a returning holder is told "access ended", not "never covered" (EXT-UX-05).
 - `kernel_access.denied` for each request refused for scope. These are sampled and aggregated so a looping agent cannot flood the log.
 
 Chariox terminals and local grant holders may list the live grants and running sudo turns and revoke them. Minting and extension still require the user’s terminal passkey.
@@ -260,6 +261,8 @@ The kernel identifies the connecting process through the OS, which works only on
 
 - **External agents.** The grant binds to the requesting process: the external agent itself. When the request comes from a helper, such as a `chariox` CLI run by the agent's shell tool, the helper names the agent process among its OS ancestors; the kernel verifies the ancestry, and the popup shows the executable and pid it will authorize. A requester that names a broad ancestor, such as a terminal emulator or a login shell, shows it in the popup. Later connections are accepted from that process and its OS descendants, checked with the same PID-reuse protection, so CLI calls from the agent's own shell tools work. Chariox agents it spawns through the kernel do not inherit (D4).
 - **Kernel-launched agents.** For shell-level CLI access from a sudo turn, the kernel creates a dedicated OS session (`setsid`) at each provider launch and tracks the descendant identities it launched, with PID-reuse protection. Process-group or shared OS-session membership alone is not an identity: on Linux any process in the same session can `setpgid` into another group. A negative test has a sibling agent's process join the target's group and try to use its authority.
+
+MP-08 / MP-10 / MP-11: default Claude attribution also recognizes a still-running native version in the same configured `claude/versions` installation after the launch symlink moves to a newer version. Version names and canonical installation paths are checked; unrelated installations, arbitrary basenames and symlinks escaping that directory do not qualify. This only selects and labels an OS ancestor. It neither grants access nor replaces human passkey confirmation.
 
 **Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
 
@@ -372,7 +375,7 @@ From PR 2 the kernel assigns every connection one class from this fixed vocabula
 5. **Unix socket and external agent grants (D5, D9, D15, D16).**
    - Scope: serve the kernel websocket protocol on a Unix listener at `local_socket_path`, prepared as `apps/kernel/src/local/ipc.rs` does (0600 socket, 0700 directory). It replaces the unused request/response server there. Peer identification: `getpeereid` and `LOCAL_PEERTOKEN` on macOS; `SO_PEERCRED` plus a pidfd or the start time on Linux; other UIDs are refused. Then grants (sections 5.3 to 5.8 and 6): the request and popup, holder verification through the named ancestor, OS descendants, whole-local-kernel ordinary authority with human-only and remote boundaries, lifetime and the extension popup, revocation including process exit, idle subscriptions and passkey rotation (hooked into #700), and audit. On TCP an access request gets a pointer to the Unix socket. macOS and Linux only (open question 5).
    - Depends on: PRs 2, 3 and 4. Protocol: yes (access request, grant events, list and revoke).
-   - Clients: `LocalIpcClient` gains `ws+unix://` endpoints. `chariox access request` names the holder with `--holder-pid`, which defaults to the CLI's grandparent: the agent, when the CLI runs from its shell tool. Terminals list grants with revoke and show the extension popup.
+   - Clients: `LocalIpcClient` gains `ws+unix://` endpoints. `chariox access request` names the holder with `--holder-pid`, which defaults to the nearest installed official provider in the OS-verified ancestor chain, with the CLI's grandparent as the fallback for unknown programs. Terminals list grants with revoke and show the extension popup.
    - Tests: the popup shows the OS-reported executable and pid; a descendant is accepted, a sibling and a reused PID are refused; process exit, expiry, revoke and rotation end the grant at once, idle subscribers included; extension; cross-session/global operations work; remote-kernel requests and secret reads are refused; no session is needed to grant; a grant cannot answer a critical approval; agents a holder spawns get nothing (D4).
    - Must not break: TCP terminals with the token, tokenless clients in log mode, the MCP listener, managed workers.
 6. **The token for every first-party client.**

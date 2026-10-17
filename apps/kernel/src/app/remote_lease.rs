@@ -14,6 +14,8 @@ mod mcp_availability;
 mod native_provider;
 mod project_environment;
 mod projection;
+pub(crate) use projection::RemoteProjectionAcknowledgement;
+mod prompt_activation;
 mod prompt_attachments;
 mod prompt_lifecycle;
 mod provider_account;
@@ -1417,6 +1419,38 @@ mod tests {
     mod catalog_admission;
     mod profile_admission;
     mod project_environment_setup;
+
+    #[test]
+    fn mp08_native_binding_follows_ordinary_and_dedicated_worker_lease_lifetimes() {
+        for role in [
+            crate::config::KernelRuntimeRole::General,
+            crate::config::KernelRuntimeRole::RemoteLeaseWorker,
+        ] {
+            let (mut app, agent) = leased_agent_fixture(false);
+            app.config.kernel_runtime_role = role;
+            let now = crate::session::unix_epoch_ms();
+            app.execution_leases
+                .get_mut(&agent.lease_id)
+                .unwrap()
+                .created_at_ms = now - REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS - 1;
+            let result = RemoteLeaseRuntime::new(&mut app).native_transport_binding(&agent.id);
+            let expired = RemoteLeaseRuntime::new(&mut app)
+                .reconcile_expired_execution_leases(now)
+                .unwrap();
+            if role == crate::config::KernelRuntimeRole::General {
+                assert_eq!(
+                    result.unwrap(),
+                    (agent.backing_session_id, agent.backing_agent_id)
+                );
+                assert!(expired.is_empty());
+                assert!(app.leased_agents.contains_key(&agent.id));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(expired, vec![agent.lease_id]);
+                assert!(!app.leased_agents.contains_key(&agent.id));
+            }
+        }
+    }
 
     #[test]
     fn leased_profile_update_rejects_missing_account_without_retiring_provider() {

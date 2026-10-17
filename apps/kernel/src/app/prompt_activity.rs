@@ -127,6 +127,12 @@ pub(crate) struct ActiveTurnState {
     pub(crate) started_at_ms: u64,
     pub(crate) phase: ActiveTurnPhase,
     pub(crate) settlement_requested: bool,
+    pub(crate) interruption_requested_at_ms: Option<u64>,
+    pub(crate) interruption_retry_sent_at_ms: Option<u64>,
+    pub(crate) native_interruption_confirmed: bool,
+    pub(crate) native_response_started: bool,
+    pub(crate) native_prompt_hook_request_id: Option<String>,
+    pub(crate) native_prompt_hook_resolved: bool,
     // A durable completion failed after authoritative completion was accepted.
     // Unlike assistant-message completion, this allows retry without another
     // provider end event. It belongs to this exact prompt and provider run.
@@ -154,6 +160,12 @@ impl ActiveTurnState {
             started_at_ms: crate::session::unix_epoch_ms(),
             phase: ActiveTurnPhase::Accepted,
             settlement_requested: false,
+            interruption_requested_at_ms: None,
+            interruption_retry_sent_at_ms: None,
+            native_interruption_confirmed: false,
+            native_response_started: false,
+            native_prompt_hook_request_id: None,
+            native_prompt_hook_resolved: false,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
         }
@@ -247,6 +259,103 @@ impl ActiveTurnStore {
             }
             turn.settlement_requested = true;
             record_active_turn_event(turn, "active_turn_mark_settling", true);
+        }
+    }
+
+    pub(crate) fn note_native_response_started(&self, provider_run_id: &str, prompt_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.native_response_started = true;
+            }
+        }
+    }
+
+    pub(crate) fn bind_native_prompt_hook_request(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        request_id: &str,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                if turn.native_prompt_hook_request_id.as_deref() != Some(request_id) {
+                    turn.native_prompt_hook_resolved = false;
+                }
+                turn.native_prompt_hook_request_id = Some(request_id.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn note_native_prompt_hook_resolved(&self, provider_run_id: &str, request_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.native_prompt_hook_request_id.as_deref() == Some(request_id) {
+                turn.native_prompt_hook_resolved = true;
+            }
+        }
+    }
+
+    pub(crate) fn mark_interruption_requested(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        requested_at_ms: u64,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.interruption_requested_at_ms
+                    .get_or_insert(requested_at_ms);
+            }
+        }
+    }
+
+    pub(crate) fn note_native_interruption_delivery(
+        &self,
+        provider_run_id: &str,
+        prompt_id: &str,
+        sent_at_ms: u64,
+    ) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.interruption_retry_sent_at_ms = Some(sent_at_ms);
+            }
+        }
+    }
+
+    pub(crate) fn confirm_native_interruption(&self, provider_run_id: &str, prompt_id: &str) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            if turn.prompt_id == prompt_id {
+                turn.native_interruption_confirmed = true;
+            }
         }
     }
 
@@ -398,7 +507,21 @@ fn merge_active_turn_start(
         if incoming.external_observed_id.is_none() {
             incoming.external_observed_id = existing.external_observed_id.clone();
         }
+        incoming.native_prompt_hook_request_id = incoming
+            .native_prompt_hook_request_id
+            .or_else(|| existing.native_prompt_hook_request_id.clone());
+        if incoming.native_prompt_hook_request_id == existing.native_prompt_hook_request_id {
+            incoming.native_prompt_hook_resolved |= existing.native_prompt_hook_resolved;
+        }
         incoming.settlement_requested |= existing.settlement_requested;
+        incoming.interruption_requested_at_ms = incoming
+            .interruption_requested_at_ms
+            .or(existing.interruption_requested_at_ms);
+        incoming.interruption_retry_sent_at_ms = incoming
+            .interruption_retry_sent_at_ms
+            .or(existing.interruption_retry_sent_at_ms);
+        incoming.native_interruption_confirmed |= existing.native_interruption_confirmed;
+        incoming.native_response_started |= existing.native_response_started;
         if existing.completion_retry_observed_at_ms.is_some() {
             incoming.completion_retry_observed_at_ms = existing.completion_retry_observed_at_ms;
             incoming.completion_retry_attempt = existing.completion_retry_attempt;

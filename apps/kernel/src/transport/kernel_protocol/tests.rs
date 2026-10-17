@@ -489,6 +489,29 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
     let event = agent_activity_changed_event(&current, Some(&previous))
         .expect("prompt runtime activity change should produce agent activity delta");
 
+    assert!(
+        prompt_admission_activity_event(&current, Some(&previous)).is_some(),
+        "MP-08 MP-10 newly admitted work must bypass prior output backlog"
+    );
+    assert!(prompt_admission_activity_event(&previous, Some(&previous)).is_none());
+    let mut admitting_with_metadata = current.clone();
+    admitting_with_metadata
+        .session
+        .set_alias(Some("changed alongside admission".to_string()));
+    assert!(agent_activity_changed_event(&admitting_with_metadata, Some(&previous)).is_none());
+    assert!(
+        prompt_admission_activity_event(&admitting_with_metadata, Some(&previous)).is_some(),
+        "MP-08 MP-10 committed admission is visible before its later full snapshot"
+    );
+    let mut completing = current.clone();
+    completing.agent_activity.get_mut("agent-a").unwrap().last_completed_turn = Some(serde_json::from_value(serde_json::json!({
+        "turn_id":"prior", "prompt_id":"prior", "provider_run_id":"run", "agent_id":"agent-a", "completed_at_ms":9
+    })).unwrap());
+    assert!(
+        prompt_admission_activity_event(&completing, Some(&previous)).is_none(),
+        "MP-08 MP-10 settlement must retain its output boundary"
+    );
+
     match event {
         KernelEvent::AgentActivityChanged {
             session_id,
@@ -815,4 +838,44 @@ fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
         KernelEvent::RoomWorkflowsChanged { inventory } => assert_eq!(inventory.workflow_count, 0),
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+// MP-08 / MP-10 / MP-11: do not turn a missing account into a retry loop.
+#[test]
+fn missing_account_resolution_is_definitive_on_kernel_transport() {
+    let error = DaemonError::LocalTransport {
+        operation: "resolve account profile",
+        message: "account is absent on this kernel; copy login or sign in".into(),
+    };
+    let mapped = map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+    assert_eq!(mapped.message, error.to_string());
+    let transient = DaemonError::LocalTransport {
+        operation: "read account profile registry",
+        message: "temporary read failure".into(),
+    };
+    assert!(map_kernel_error(&transient).retryable);
+}
+
+// MP-08 / MP-10 / MP-11: a missing Project is a permanent lookup miss.
+#[test]
+fn env_ux01_project_lookup_absence_is_not_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.get",
+        message: "project was not found".into(),
+    };
+    let mapped = super::map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+}
+
+// MP-08 / MP-10 / MP-11: only definitive Project misses lose retryability.
+#[test]
+fn env_ux01_unrelated_transport_failures_remain_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.environment.get",
+        message: "connection interrupted".into(),
+    };
+    assert!(super::map_kernel_error(&error).retryable);
 }

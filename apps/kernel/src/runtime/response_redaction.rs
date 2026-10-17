@@ -26,6 +26,7 @@ pub(crate) fn redact_response_for_user(
             session,
             agent_activity,
             agent_activity_revision,
+            terminal_output_watermark,
         } => {
             let room_workflows = crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
@@ -36,6 +37,7 @@ pub(crate) fn redact_response_for_user(
                 room_workflows,
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
+                terminal_output_watermark,
                 session,
             }
         }

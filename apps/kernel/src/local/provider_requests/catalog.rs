@@ -1,9 +1,9 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
-    claude_provider_catalog, default_provider_command_catalogs, resolve_claude_executable,
-    resolve_opencode_executable, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
-    OpenCodeProviderInfo, ProviderAuthStatus,
+    claude_provider_catalog_with_environment, default_provider_command_catalogs,
+    resolve_claude_executable, resolve_opencode_executable, CodexClient, OpenCodeClient,
+    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -37,13 +37,24 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    let focus = request
+        .provider
+        .as_deref()
+        .and_then(crate::provider::canonical_provider_family);
+    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    let claude_environment = registry.resolve_environment(
+        &owner_user_id,
+        "claude",
+        &selected_profiles["claude"].profile_id,
+    )?;
+    let mut catalogs = vec![claude_provider_catalog_with_environment(
+        &claude_environment,
+    )];
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
-    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
     let opencode_profile = selected_profiles
         .get("opencode")
         .expect("OpenCode default profile is migrated");
@@ -138,7 +149,27 @@ pub(crate) fn load_provider_catalog(
             "connected": &catalog.connected,
         }),
     );
-    Ok(catalog)
+    Ok(focused_provider_catalog(catalog, focus))
+}
+
+// MP-08 / MP-10 / MP-11: a provider-scoped account query carries only that family.
+fn focused_provider_catalog(
+    mut catalog: OpenCodeProviderCatalog,
+    focus: Option<&str>,
+) -> OpenCodeProviderCatalog {
+    let Some(focus) = focus else {
+        return catalog;
+    };
+    // Backend choices and default models remain valid while the client loads
+    // another account. Only the requested harness carries its complete model set.
+    for provider in &mut catalog.all {
+        let family = crate::provider::canonical_provider_family(&provider.id).unwrap_or("opencode");
+        if family != focus {
+            let default = catalog.default.get(&provider.id);
+            provider.models.retain(|model, _| default == Some(model));
+        }
+    }
+    catalog
 }
 
 fn resolve_catalog_profiles(
@@ -369,6 +400,10 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
         (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
     let (status, usage) = match provider_family {
         Some("codex") => {
+            // The official app-server caches its login at startup. An explicit
+            // account refresh must observe a native login imported since the
+            // catalog last started this profile's utility server.
+            crate::provider::invalidate_codex_account_endpoint(owner_user_id, &profile.profile_id);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
@@ -1444,6 +1479,66 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn mp08_mp10_provider_scoped_catalog_preserves_backend_switching_and_native_modes() {
+        let ids = [
+            "claude",
+            "claude-p",
+            "claude-headless",
+            "codex",
+            "opencode",
+            "opencode-go",
+            "openai",
+        ];
+        let catalog = OpenCodeProviderCatalog {
+            all: ids
+                .iter()
+                .map(|id| OpenCodeProviderInfo {
+                    id: (*id).into(),
+                    name: (*id).into(),
+                    remote_machine_aliases: vec!["worker".into()],
+                    models: ["default", "alternate"]
+                        .into_iter()
+                        .map(|model| {
+                            (
+                                model.into(),
+                                OpenCodeProviderModel {
+                                    id: model.into(),
+                                    name: model.into(),
+                                    status: "active".into(),
+                                    limit: None,
+                                    variants: BTreeMap::new(),
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
+            connected: ids.iter().map(|id| (*id).into()).collect(),
+            default: ids
+                .iter()
+                .map(|id| ((*id).into(), "default".into()))
+                .collect(),
+        };
+        assert_eq!(focused_provider_catalog(catalog.clone(), None), catalog);
+        for focus in ["claude", "codex", "opencode"] {
+            let scoped = focused_provider_catalog(catalog.clone(), Some(focus));
+            assert_eq!(
+                scoped.all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+                ids
+            );
+            assert_eq!(scoped.connected, catalog.connected);
+            assert_eq!(scoped.default, catalog.default);
+            for provider in &scoped.all {
+                let family =
+                    crate::provider::canonical_provider_family(&provider.id).unwrap_or("opencode");
+                assert_eq!(provider.models.len(), if family == focus { 2 } else { 1 });
+                assert!(provider.models.contains_key("default"));
+                assert_eq!(provider.remote_machine_aliases, ["worker"]);
+            }
+        }
+    }
 
     #[test]
     fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {

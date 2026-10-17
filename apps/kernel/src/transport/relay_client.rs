@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
@@ -24,8 +26,8 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
+    agent_activity_changed_event, event_is_relevant_to_attachment, prompt_admission_activity_event,
+    provider_run_changed_event, runtime_interactions_changed_event, session_metadata_changed_event,
     subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
     workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
     WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
@@ -43,6 +45,7 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
@@ -62,6 +65,7 @@ use envelope_io::{
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
+use local_browser::LocalBrowserDirect;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;

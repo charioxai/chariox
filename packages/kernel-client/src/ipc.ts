@@ -1,3 +1,4 @@
+import { TerminalLocalDirect } from "./terminal-local-direct.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -59,8 +60,9 @@ import {
   normalizeRelayRequest,
 } from "./relay-transport.js"
 import { KernelPendingRequestRegistry } from "./websocket-pending-requests.js"
-import { KernelRequestLifetime, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
+import { KernelRequestLifetime, waitForKernelRequest, waitForKernelRequestReplay } from "./websocket-request-lifetime.js"
 import { formatTransportError, isWebSocketEndpoint } from "./websocket-transport-diagnostics.js"
+import { KernelSocketResponsiveness } from "./kernel-socket-responsiveness.js"
 
 // Slice start can cold-build the managed Linux image before returning the
 // worker kernel endpoint. Keep the control request open long enough for first
@@ -82,9 +84,11 @@ const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // worker, which can outlast the stall window; a replay then meets the first
 // one's operation guard and answers `busy` (or, once the first has finished,
 // restarts the worker again or is refused by the uninstall's generation fence)
-// although the first one succeeds. Once written, they wait for their answer
+// although the first one succeeds. Native socket exchanges also consume input
+// and output once, and their catalogs can exceed the response stall window.
+// Once written, these requests wait for their answer
 // and are never resent; losing the answer rejects with `outcome_unknown`.
-const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp"])
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "NativeProviderTransport"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
@@ -225,7 +229,26 @@ function isHostedPublicationGateway() {
   return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
 }
 
-type LocalIpcClientOptions = {
+export type KernelRequestOptions = { readonly signal?: AbortSignal }
+
+/** MP-08/MP-10: fixed transport metadata only; never auth or packet contents. */
+export type KernelTransportDiagnostic = {
+  lane: "control" | "event"
+  cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "lease_response_refused" | "lease_transport_failed"
+    | "renewal_failed" | "authorization_ended"
+  local: boolean
+  missedPongs: number
+  operation?: string
+  code?: string | null
+  retryable?: boolean
+  closeCode?: number
+  retrying?: boolean
+  sequenceMatches?: boolean
+  expired?: boolean
+}
+
+export type LocalIpcClientOptions = {
+  onTransportDiagnostic?: ((diagnostic: KernelTransportDiagnostic) => void) | undefined
   /** State directory of a private local kernel; never used for relay connections. */
   localAuthEnvironment?: NodeJS.ProcessEnv | undefined
   localAuthToken?: string | undefined
@@ -244,6 +267,7 @@ type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  private readonly transportObserver: LocalIpcClientOptions["onTransportDiagnostic"]
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
   private readonly relayIssuerDaemonId: string | null
@@ -257,6 +281,7 @@ export class LocalIpcClient {
   private renewalCloseRequested = false
   private readonly relayTarget: RelayTarget | null
   private readonly relayIdentity: RelayClientIdentity | null
+  private readonly terminalLocalDirect: TerminalLocalDirect | null
   private relayRenewal: RelayAuthorizationRenewal | null = null
   private relayRenewalNegotiated = false
   private relayAuthorizationFailure: LocalIpcError | null = null
@@ -286,6 +311,7 @@ export class LocalIpcClient {
   private readonly controlRequestRetryDeadlineMs: number
   private readonly controlResponseStallMs: number
   private missedControlPongs = 0
+  private readonly socketResponsiveness = new KernelSocketResponsiveness()
   private missedEventPongs = 0
   private suppressNextControlCloseEvent = false
   private suppressNextEventCloseEvent = false
@@ -296,6 +322,7 @@ export class LocalIpcClient {
   private readonly kernelMaxMissedPongs: number
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
+    this.transportObserver = options.onTransportDiagnostic
     if (!isWebSocketEndpoint(endpoint)) {
       if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
       endpoint = `ws+unix://${endpoint.replace(/^unix:\/\//, "")}`
@@ -365,6 +392,24 @@ export class LocalIpcClient {
         daemon_alias: options.targetDaemonAlias?.trim() || null,
       }
       : null
+    this.terminalLocalDirect = this.relayAuthToken && this.relayTarget && this.relayIdentity
+      ? new TerminalLocalDirect({ relayUrl: this.socketPath, token: () => this.relayAuthToken!, target: this.relayTarget,
+        onDiagnostic: diagnostic => this.reportTransportDiagnostic("control", diagnostic.cause, diagnostic),
+        identity: this.relayIdentity, eligible: () => this.localDirectEligible(this.relayTarget!),
+        retryCarrier: () => {
+          for (const lane of ["control", "event"] as const) {
+            const socket = this.getWebSocket(lane)
+            if (socket && !this.terminalLocalDirect?.isLocal(socket)) this.destroyWebSocket(lane, "retrying local terminal carrier")
+          }
+          this.scheduleReconnect()
+        },
+      }) : null
+  }
+
+  protected localDirectEligible(_target: RelayTarget): boolean { return false }
+
+  isLocalDirectTransport(): boolean {
+    return this.terminalLocalDirect?.isLocal(this.controlWebsocket) === true
   }
 
   supportsKernelEvents() {
@@ -383,18 +428,16 @@ export class LocalIpcClient {
     return this.relayAuthToken != null
   }
 
-  async send<TResponse>(request: unknown): Promise<TResponse> {
+  async send<TResponse>(request: unknown, options: KernelRequestOptions = {}): Promise<TResponse> {
+    options.signal?.throwIfAborted()
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
-      admittedSocket = await this.ensureWebSocket("control")
-      return this.sendWebSocket(query, "control", admittedSocket)
+      const connection = this.ensureWebSocket("control")
+      admittedSocket = options.signal ? await waitForKernelRequest(connection, options.signal) : await connection
+      return this.sendWebSocket(query, "control", admittedSocket, options.signal)
     }, request)
-    if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
-  }
-
-  private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
-    return this.sendWebSocket(request)
+    if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket, options.signal)
+    return this.sendWebSocket<TResponse>(request, "control", undefined, options.signal)
   }
 
   async getManagedTargetResourceTelemetry(options: {
@@ -567,6 +610,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.terminalLocalDirect?.close()
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
       await this.unsubscribeFromKernelEvents()
@@ -600,6 +644,7 @@ export class LocalIpcClient {
   }
 
   destroy(): void {
+    this.terminalLocalDirect?.close()
     this.relayAuthRenewal?.stop()
     this.relayIssuer?.destroy()
     this.clearRuntimeTransportState("kernel client destroyed")
@@ -621,8 +666,8 @@ export class LocalIpcClient {
     this.rejectPending(pendingMessage)
   }
 
-  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
-    const lifetime = this.requestLifetime.capture()
+  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket, signal?: AbortSignal): Promise<TResponse> {
+    const lifetime = signal ? AbortSignal.any([this.requestLifetime.capture(), signal]) : this.requestLifetime.capture()
     const requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
     const retryUntilMs = lane === "control" && !waitsForAuthorization
@@ -630,12 +675,13 @@ export class LocalIpcClient {
       : Date.now()
     const replayAfterWrite = !runsAgainOnReplay(request)
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
+    const relayBinding: { socket: WebSocket | null; request: ReturnType<typeof normalizeRelayRequest> | null } = { socket: null, request: null }
 
     for (;;) {
       lifetime.throwIfAborted()
       let socket: WebSocket
       try {
-        socket = admittedSocket ?? await this.ensureWebSocket(lane)
+        socket = admittedSocket ?? await waitForKernelRequest(this.ensureWebSocket(lane), lifetime)
         if (admittedSocket && (this.getWebSocket(lane) !== admittedSocket || admittedSocket.readyState !== WebSocket.OPEN)) {
           throw new LocalIpcError("admit kernel control", "Kernel connection changed after capability admission; reconcile before retrying")
         }
@@ -645,7 +691,7 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        this.destroyWebSocket(lane)
+        this.destroyWebSocket(lane, "kernel websocket reset", "request_replay")
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
         continue
       }
@@ -662,15 +708,15 @@ export class LocalIpcClient {
         const daemonPublicKey = this.isRelayMode()
           ? this.relayDaemonPublicKeyForSocket(lane, socket)
           : null
-        const relayRequest = this.isRelayMode()
-          ? normalizeRelayRequest(
-            requestId,
-            request,
-            this.relayTarget,
-            daemonPublicKey,
-            this.relayIdentity,
+        // MP-08/MP-11: a delayed reply from this carrier can settle the replay.
+        // Keep its ephemeral response key bound to the request until the socket changes.
+        if (this.isRelayMode() && relayBinding.socket !== socket) {
+          relayBinding.request = normalizeRelayRequest(
+            requestId, request, this.relayTarget, daemonPublicKey, this.relayIdentity,
           )
-          : null
+          relayBinding.socket = socket
+        }
+        const relayRequest = this.isRelayMode() ? relayBinding.request : null
         if (relayRequest) {
           pending.setRelayDecryptResponse((payload) => {
             if (this.getWebSocket(lane) !== socket) {
@@ -688,7 +734,7 @@ export class LocalIpcClient {
       }
 
       try {
-        return await pending.promise
+        return await waitForKernelRequest(pending.promise, lifetime, pending.reject)
       } catch (error) {
         if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()
@@ -700,7 +746,20 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        this.destroyWebSocket(lane)
+        const current = this.getWebSocket(lane)
+        const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
+          && current === socket && socket.readyState === WebSocket.OPEN
+          && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)
+        // MP-10: replay the same command on a responsive carrier. A slow
+        // handler is not a transport failure, and a stale attempt cannot retire
+        // a newer lane. Dead/unproven carriers retain the existing recovery.
+        if (current === socket && !responsiveTimeout) {
+          this.destroyWebSocket(lane, "kernel websocket reset", "request_replay", {
+            code: error instanceof LocalIpcError ? error.code : null,
+          })
+        } else if (responsiveTimeout) {
+          this.reportTransportDiagnostic(lane, "request_replay", { code: "request_timeout", operation: "retry responsive socket" })
+        }
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
     }
@@ -711,7 +770,9 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+      // This relay rejection precedes forwarding, so even a mutation has not
+      // run. A lost acknowledgement still follows the outcome_unknown guard.
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
@@ -875,7 +936,7 @@ export class LocalIpcClient {
     }
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
-      const socket = this.openKernelWebSocket()
+      let socket = this.openKernelWebSocket()
       const relayFrames = new RelayFrameReceiver()
       let settled = false
       this.setConnectingWebSocket(lane, socket)
@@ -951,12 +1012,15 @@ export class LocalIpcClient {
             }
           })
           socket.on("pong", () => {
+            if (this.getWebSocket(lane) !== socket) return
+            this.socketResponsiveness.recordPong(socket)
             this.setMissedKernelPongs(lane, 0)
           })
           socket.once("close", (code: number, reason: Buffer) => {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
+            this.reportTransportDiagnostic(lane, "socket_close", { closeCode: code })
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
             const closeMessage = reason.length > 0
@@ -984,6 +1048,7 @@ export class LocalIpcClient {
             if (this.getWebSocket(lane) !== socket) {
               return
             }
+            this.reportTransportDiagnostic(lane, "socket_error")
             const message = formatTransportError(error, this.socketPath)
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
@@ -1040,7 +1105,21 @@ export class LocalIpcClient {
             }
             this.setRelayDaemonPublicKey(lane, frame.daemon_public_key)
             socket.off("message", handleRelayHandshakeMessage)
-            finalizeOpen()
+            const relaySocket = socket
+            void (async () => {
+              const direct = await this.terminalLocalDirect?.open(frame.daemon_public_key) ?? null
+              if (settled || this.getConnectingWebSocket(lane) !== relaySocket) {
+                direct?.terminate()
+                return
+              }
+              if (direct && direct.readyState === WebSocket.OPEN) {
+                clearConnectListeners()
+                socket = direct
+                this.setConnectingWebSocket(lane, direct)
+                relaySocket.terminate()
+              }
+              finalizeOpen()
+            })().catch(error => fail("connect terminal carrier", error))
             return
           }
           if (frame.kind === "close") {
@@ -1075,7 +1154,11 @@ export class LocalIpcClient {
     if (!claims?.account_id || !claims.user_id) return // Local/operator transports have no Cloud lifetime.
     if (claims.public_key_thumbprint !== this.relayIdentity.publicKeyThumbprint) return
     const renewal: RelayAuthorizationRenewal = new RelayAuthorizationRenewal(claims.exp * 1000,
-      (): Promise<number> => this.renewRelayAuthorization(renewal), message => this.refuseRelayAuthorization(message), message => {
+      (): Promise<number> => this.renewRelayAuthorization(renewal).catch(error => {
+        this.reportTransportDiagnostic("control", "renewal_failed", error instanceof LocalIpcError
+          ? { operation: error.operation, code: error.code, retryable: error.retryable } : {})
+        throw error
+      }), message => this.refuseRelayAuthorization(message), message => {
         this.relayRenewalNotice(message)
       })
     this.relayRenewal = renewal
@@ -1123,7 +1206,8 @@ export class LocalIpcClient {
       const connecting = this.getWebSocketConnectPromise(lane)
       if (connecting) await connecting
       const socket = this.getWebSocket(lane)
-      if (socket?.readyState === WebSocket.OPEN) await reauthenticateRelaySocket(socket, token, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
+      // A direct carrier is authorized by its relay-renewed lease, not this grant.
+      if (socket?.readyState === WebSocket.OPEN && !this.terminalLocalDirect?.isLocal(socket)) await reauthenticateRelaySocket(socket, token, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
     }))
   }
 
@@ -1146,6 +1230,7 @@ export class LocalIpcClient {
 
   private refuseRelayAuthorization(upgradeMessage?: string): void {
     if (this.relayAuthorizationFailure) return
+    this.reportTransportDiagnostic("control", "authorization_ended")
     const message = upgradeMessage ?? "Relay authorization renewal was refused or access was revoked. Connection ended; sign in or pair again."
     this.relayAuthorizationFailure = new LocalIpcError("renew relay authorization", message, "authorization_denied", false)
     this.retireRelayAuthorization(message)
@@ -1220,8 +1305,7 @@ export class LocalIpcClient {
       }
       let eventDecoded = false
       try {
-        const decrypted = subscription.relayDecryptEvent(frame.encrypted_event)
-        const event = kernelEventFromValue(JSON.parse(decrypted))
+        const event = kernelEventFromValue(JSON.parse(subscription.relayDecryptEvent(frame.encrypted_event)))
         this.lastReceivedEventId = frame.event_id
         this.markKernelEventReceived()
         eventDecoded = true
@@ -1336,7 +1420,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat missed; reconnecting",
           })
         }
-        this.destroyWebSocket(lane, "kernel websocket heartbeat missed")
+        this.destroyWebSocket(lane, "kernel websocket heartbeat missed", "heartbeat_missed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1352,7 +1436,7 @@ export class LocalIpcClient {
             message: "kernel websocket heartbeat failed; reconnecting",
           })
         }
-        this.destroyWebSocket(lane, "kernel websocket heartbeat failed")
+        this.destroyWebSocket(lane, "kernel websocket heartbeat failed", "heartbeat_failed")
         if (lane === "event") {
           this.scheduleReconnect()
         }
@@ -1575,7 +1659,17 @@ export class LocalIpcClient {
     })
   }
 
-  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset"): void {
+  private reportTransportDiagnostic(lane: KernelSocketLane, cause: KernelTransportDiagnostic["cause"],
+    details: Partial<KernelTransportDiagnostic> = {}): void {
+    try {
+      this.transportObserver?.({ lane, cause, local: this.terminalLocalDirect?.isLocal(this.getWebSocket(lane)) === true,
+        missedPongs: this.getMissedKernelPongs(lane), ...details })
+    } catch { /* Observers cannot change transport behavior. */ }
+  }
+
+  private destroyWebSocket(lane: KernelSocketLane, message = "kernel websocket reset",
+    cause: KernelTransportDiagnostic["cause"] = "reset", details: Partial<KernelTransportDiagnostic> = {}): void {
+    if (this.getWebSocket(lane)) this.reportTransportDiagnostic(lane, cause, details)
     // Retiring the lane makes its asynchronous close/error callbacks stale.
     // Settle requests here, including untimed human authorization waits.
     this.rejectPending(message, lane)

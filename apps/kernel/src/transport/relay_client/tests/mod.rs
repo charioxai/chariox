@@ -10,4 +10,5 @@ mod remote_agents;
 mod remote_queue;
 mod subscriptions;
 mod support;
+mod token_rollover;
 mod worker_steer_receipt_restart;

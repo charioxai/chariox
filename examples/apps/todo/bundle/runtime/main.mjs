@@ -132,17 +132,27 @@ export default function register(chariox) {
   chariox.schedule.onWake(async wake => {
     if (!wake.id.startsWith('todo-')) return null;
     const id = wake.id.slice('todo-'.length);
-    const remind = withOccurrence => change(todos => {
+    const remind = (withOccurrence, scheduled = true) => change(todos => {
       const todo = todos.find(item => item.id === id);
       if (!todo || todo.done || todo.reminded || String(todo.revision) !== wake.revision) return null;
       todo.reminded = true;
       return todo;
-    }, (_next, todo) => todo && withOccurrence ? { occurrences: [occurrence(todo)] } : {});
-    try {
-      await remind(true);
-    } catch (error) {
-      if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
-      await remind(false);
+    }, (_next, todo) => todo && withOccurrence ? { occurrences: [occurrence(todo, scheduled)] } : {});
+    // A wake's revision and an automation's scheduled admission are distinct.
+    // The ordinary `/app automation add` binding rejects scheduleRevision;
+    // retry that canonical shape only after the first transaction rolled back.
+    // Keep the same occurrence identity (including the Todo revision), so both
+    // binding modes retain atomic reminder marking and redelivery deduplication.
+    for (const scheduled of [true, false]) {
+      try {
+        await remind(true, scheduled);
+        break;
+      } catch (error) {
+        if (scheduled && error?.code === 'INVALID_ARGUMENT') continue;
+        if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
+        await remind(false);
+        break;
+      }
     }
     return null;
   });
@@ -160,13 +170,13 @@ export default function register(chariox) {
     return todo;
   }, (next, todo) => (todo ? wakesFor(next, todo) : {})));
 
-  function occurrence(todo) {
+  function occurrence(todo, scheduled) {
     return {
       automationId: AUTOMATION,
       occurrenceId: chariox.events.occurrenceId(`todo:${todo.id}:${todo.revision}`, todo.due_at_ms),
       eventVersion: 1,
       occurredAtMs: todo.due_at_ms,
-      scheduleRevision: String(todo.revision),
+      ...(scheduled ? { scheduleRevision: String(todo.revision) } : {}),
       payload: { todo_id: todo.id, title: todo.title, due_at_ms: todo.due_at_ms },
       invocation: { prompt: `The Todo "${todo.title}" is due now.`, artifacts: [] },
     };

@@ -87,6 +87,8 @@ impl<'a> KernelAgentService<'a> {
             .run_uses_structured_prompt_io(&provider_run);
         let terminate_unacknowledged_claude = active_prompt.delivery_pending()
             && crate::provider::provider_run_is_claude_headless(&provider_run);
+        let native_claude = crate::provider::provider_run_is_claude_native_tui(&provider_run);
+        let interruption_requested_at_ms = crate::session::unix_epoch_ms();
         if !uses_structured_prompt_io {
             if terminate_unacknowledged_claude {
                 // Before UserPromptSubmit acknowledges delivery, Claude may still
@@ -95,13 +97,13 @@ impl<'a> KernelAgentService<'a> {
                 // normal liveness reconciliation finalizes this cancellation.
                 crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
                     .remove_run(&provider_run_id)?;
-            } else {
+            } else if !native_claude {
                 crate::app::terminal_input::ProviderTerminalInput::new(self.app)
                     .send_provider_input(
                         session_id,
                         &provider_run_id,
                         attachment_id.unwrap_or(active_prompt.source_attachment_id()),
-                        b"\x03",
+                        crate::provider::provider_prompt_abort_input(&provider_run),
                     )?;
             }
         }
@@ -109,6 +111,13 @@ impl<'a> KernelAgentService<'a> {
         let prompt = self
             .app
             .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
+        if native_claude {
+            self.app.active_turns.mark_interruption_requested(
+                &provider_run_id,
+                prompt.id(),
+                interruption_requested_at_ms,
+            );
+        }
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
         if uses_structured_prompt_io {
             self.app.providers.enqueue_structured_prompt_abort(

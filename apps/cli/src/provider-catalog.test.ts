@@ -8,6 +8,7 @@ import {
   normalizeBackendProviderId,
   providerCatalogIsLocalFallback,
   providerDisplayName,
+  selectConfiguredModel,
   type ProviderCatalog,
 } from "./provider-catalog.js"
 
@@ -109,4 +110,51 @@ test("fallback catalog can be marked as local fallback metadata", () => {
   assert.equal(catalog.source, "local_fallback")
   assert.equal(catalog.unavailable_reason, "provider catalog unavailable")
   assert.equal(providerCatalogIsLocalFallback(fallbackProviderCatalog()), false)
+})
+
+// MP-08 / MP-11: local fallback labels must obey the native catalog contract too.
+test("fallback picker uses native names without Chariox branding", () => {
+  const catalog = fallbackProviderCatalog()
+  assert.equal(catalogModelOptions(catalog, "codex")[0]?.label, "gpt-5.4")
+  assert.equal(catalogModelOptions(catalog, "claude-p")[0]?.label, "Sonnet 4.6")
+})
+
+test("picker preserves native provider names, ids and model display names", () => {
+  const catalog: ProviderCatalog = {
+    all: [provider("codex", "Codex", "gpt-6-luna"),
+      provider("claude-p", "Claude -p", "claude-haiku-5-5"),
+      provider("opencode", "OpenCode Zen", "deepseek-v4-flash-free")],
+    connected: ["codex", "claude-p", "opencode"], default: {},
+  }
+  catalog.all[1]!.models["claude-haiku-5-5"]!.name = "Haiku"
+  catalog.all[2]!.models["deepseek-v4-flash-free"]!.name = "DeepSeek V4 Flash (free)"
+  assert.equal(catalogModelOptions(catalog, "codex")[0]?.label, "gpt-6-luna")
+  assert.equal(catalogModelOptions(catalog, "claude-p")[0]?.label, "Haiku")
+  assert.equal(catalogModelOptions(catalog, "opencode")[0]?.label, "DeepSeek V4 Flash (free)")
+  assert.equal(catalogModelOptions(catalog, "opencode")[0]?.id, "opencode/deepseek-v4-flash-free")
+})
+
+// MP-08 / MP-11 saved rolling Claude aliases keep their family after the native catalog lists resolved ids only.
+test("saved Claude aliases select the newest native id of their family on both backends", () => {
+  const claudeModels = (id: string) => {
+    const entry = provider(id, id, "claude-opus-5-5")
+    for (const model of ["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
+      entry.models[model] = { id: model, name: model, status: "active", variants: {} }
+    }
+    return entry
+  }
+  const catalog: ProviderCatalog = {
+    all: [claudeModels("claude-p"), claudeModels("claude-headless")],
+    connected: ["claude-p", "claude-headless"],
+    default: { "claude-p": "claude-opus-5-5", "claude-headless": "claude-opus-5-5" },
+  }
+  for (const backend of ["claude-p", "claude-headless"] as const) {
+    for (const saved of ["haiku", "claude/haiku", "claude-p/haiku", "claude-headless/haiku"]) {
+      assert.equal(selectConfiguredModel(catalog, saved, backend)?.id, `${backend}/claude-haiku-5-5`, `${backend} ${saved}`)
+    }
+    assert.equal(selectConfiguredModel(catalog, "sonnet", backend)?.id, `${backend}/claude-sonnet-5-5`)
+    assert.equal(selectConfiguredModel(catalog, "fable", backend)?.id, `${backend}/claude-fable-5-1`)
+    assert.equal(selectConfiguredModel(catalog, "opus", backend)?.id, `${backend}/claude-opus-5-5`)
+    assert.equal(selectConfiguredModel(catalog, "claude-haiku-4-5", backend)?.id, `${backend}/claude-haiku-4-5`)
+  }
 })

@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { createRequire } from "node:module"
 import test from "node:test"
-import { WebSocketServer } from "ws"
+import WebSocket, { WebSocketServer } from "ws"
 
 import { LocalIpcClient } from "../ipc.js"
 import { runCodexNativeTui } from "./codex.js"
@@ -16,6 +16,8 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-codex-launch-"))
   const servers: WebSocketServer[] = []
   const launches: Record<string, unknown>[] = []
+  const transportScopes: Record<string, unknown>[] = []
+  const connections = new Map<string, { socket: WebSocket; frames: string[] }>()
   let calls = 0
   const server = async (granted: boolean, port = 0) => {
     const ws = new WebSocketServer({ host: "127.0.0.1", port })
@@ -56,6 +58,24 @@ test("MP-08 MP-10 native Codex discovers and invokes the kernel-granted MCP", as
         return { ProviderRunLaunched: { provider_run: { ...run, provider_session_id: payload.provider_session_id ?? null } } }
       case "GetProviderRun": return { ProviderRun: { provider_run: { ...run, provider_session_id: "native-thread" } } }
       case "GetSessionState": return { SessionState: { agent_activity: {} } }
+      case "NativeProviderTransport": {
+        transportScopes.push(payload)
+        const op = payload.operation as { kind: string; connection_id?: string; frames?: string[]; sequence?: number }
+        let connectionId = op.connection_id
+        if (op.kind === "open") {
+          connectionId = `connection-${connections.size}`
+          const socket = new WebSocket(endpoint)
+          const frames: string[] = []
+          socket.on("message", raw => frames.push(raw.toString()))
+          connections.set(connectionId, { socket, frames })
+          await once(socket, "open")
+        }
+        const connection = connections.get(connectionId!)!
+        if (op.kind === "close") connection.socket.close()
+        else for (const frame of op.frames ?? []) connection.socket.send(frame)
+        await new Promise(resolve => setTimeout(resolve, 5))
+        return { NativeProviderTransport: { result: { connection_id: connectionId, sequence: op.sequence ?? 0, frames: connection.frames.splice(0), closed: op.kind === "close" } } }
+      }
       case "PollRuntimeNotices": return { RuntimeNotices: { notices: [] } }
       case "PumpTerminalOutput": return { TerminalOutput: { records: [] } }
       case "RunShellCommand": {
@@ -94,12 +114,14 @@ finally { socket.close(); }
   const previous = process.env.CHARIOX_CODEX_BIN
   process.env.CHARIOX_CODEX_BIN = executable
   try {
-    for (const compatibilityFlags of [["--server-in-kernel"], []]) {
+    for (const compatibilityFlags of [["--server-in-kernel"], [], ["--kernel-url", "ws://remote.kernel.invalid:43119/kernel"]]) {
       await runCodexNativeTui(["--workspace", root, "--worktree", root, ...compatibilityFlags, "--grant-mcp", "echo", "--model", "fixture"])
     }
-    assert.equal(calls, 2)
-    assert.equal(launches.length, 2)
+    assert.equal(calls, 3)
+    assert.equal(launches.length, 3)
     assert.ok(launches.every((launch) => launch.structured_endpoint === null))
+    assert.ok(transportScopes.some(scope => (scope.operation as { kind: string }).kind === "open"), "MP-08/MP-10/MP-11: direct remote kernel launch must use the owning-kernel transport")
+    assert.ok(transportScopes.every(scope => scope.session_id === "session" && scope.attachment_id === "attachment" && scope.agent_id === "agent" && scope.provider_run_id === "run"))
   } finally {
     if (previous === undefined) delete process.env.CHARIOX_CODEX_BIN
     else process.env.CHARIOX_CODEX_BIN = previous

@@ -78,6 +78,7 @@ export async function startClaudeAttachedPty(options: {
     if (!stdin.destroyed) stdin.write(chunk)
   }
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  const wasFlowing = process.stdin.readableFlowing === true
   if (process.stdin.isTTY) process.stdin.setRawMode?.(true)
   process.stdin.resume()
   process.stdin.on("data", forwardInput)
@@ -89,6 +90,7 @@ export async function startClaudeAttachedPty(options: {
   }).finally(() => {
     process.stdin.off("data", forwardInput)
     if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
+    if (!wasFlowing) process.stdin.pause()
   })
 
   return {

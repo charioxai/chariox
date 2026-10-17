@@ -12,6 +12,27 @@ struct Fixture {
     attachment: String,
     _worktree: crate::test_support::TestWorktree,
 }
+
+// MP-08 / MP-10 / MP-11: a slow provider adapter must not hold another
+// terminal's already-published state behind the coordinator mutex.
+#[tokio::test]
+async fn relay_activity_projection_does_not_wait_for_the_provider_app_lock() {
+    let f = Fixture::new().await;
+    let app = f.runtime.app.clone();
+    let _hold = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        f.runtime
+            .watch_relay_subscription_state(&f.session, &f.attachment, true, None, 0),
+    )
+    .await;
+    let crate::runtime_transport::WatchResult::Ok { snapshot, .. } =
+        result.expect("published relay activity waited behind unrelated provider work")
+    else {
+        panic!("published session unavailable")
+    };
+    assert_eq!(snapshot.as_ref().as_ref().unwrap().session.id(), f.session);
+}
 impl Fixture {
     async fn new() -> Self {
         let worktree = crate::test_support::TestWorktree::new("approval-lifetime");
@@ -630,3 +651,32 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
 
 #[path = "approval_lifetime_remote.rs"]
 mod remote;
+
+// MP-08 / MP-10 / MP-11: terminal reads cannot run provider adapters or wait
+// behind their app lock; the kernel-owned pump publishes their output.
+#[tokio::test]
+async fn terminal_output_read_does_not_wait_for_the_provider_app_lock() {
+    let f = Fixture::new().await;
+    let executor =
+        crate::runtime::terminal_output_executor::TerminalOutputExecutor::new(f.runtime.clone());
+    f.runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&f.session, &f.attachment);
+    let app = f.runtime.app.clone();
+    let _hold = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        executor.execute(crate::local::PumpTerminalOutputRequest {
+            session_id: f.session.clone(),
+            attachment_id: f.attachment.clone(),
+        }),
+    )
+    .await
+    .expect("MP-08 MP-10 terminal read waited behind unrelated provider work")
+    .unwrap();
+    assert!(matches!(
+        result,
+        crate::local::LocalDaemonResponse::TerminalOutput { .. }
+    ));
+}

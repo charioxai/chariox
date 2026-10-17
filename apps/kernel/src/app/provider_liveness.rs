@@ -195,10 +195,29 @@ impl ProviderRunLivenessSessionEffects {
             .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
             .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()));
         let had_active_prompt = active_prompt_status.is_some();
-        let cancelled_prompt = active_prompt_status == Some(PromptStatus::Cancelling);
-        let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(
-            active_prompt_status,
-        ) {
+        // MP-08 / MP-10 / MP-11: native process exit is not an interruption receipt.
+        let native_cancel_failed = active_prompt_status == Some(PromptStatus::Cancelling)
+            && crate::provider::provider_run_is_claude_native_tui(&outcome.ended_run)
+            && !app
+                .active_turns
+                .get(&outcome.provider_run_id)
+                .is_some_and(|turn| turn.native_interruption_confirmed);
+        let cancelled_prompt =
+            active_prompt_status == Some(PromptStatus::Cancelling) && !native_cancel_failed;
+        let settlement = if native_cancel_failed {
+            ProviderRunExitPromptSettlement::FailActivePrompt
+        } else {
+            ProviderRunExitPromptSettlement::from_active_prompt_status(active_prompt_status)
+        };
+        let termination = if native_cancel_failed {
+            Some(crate::provider::ProviderRunTermination::runtime_failure(
+                super::provider_output_claude_native::CLAUDE_CANCELLATION_EXIT_FAILURE,
+                crate::session::unix_epoch_ms(),
+            ))
+        } else {
+            outcome.provider_termination.clone()
+        };
+        let started_next_prompt = match settlement {
             ProviderRunExitPromptSettlement::FinalizeCancellation => app
                 .finalize_active_prompt_cancellation(
                     &outcome.session_id,
@@ -212,7 +231,7 @@ impl ProviderRunLivenessSessionEffects {
                     &outcome.session_id,
                     &outcome.agent_id,
                     Some(&outcome.provider_run_id),
-                    outcome.provider_termination.clone(),
+                    termination,
                 )?
                 .started_next
                 .is_some(),
@@ -381,15 +400,21 @@ mod tests {
 
     #[test]
     fn app_unexpected_provider_exit_marks_active_agent_error() {
-        assert_app_provider_exit_state(false);
+        assert_app_provider_exit_state(false, None);
     }
 
     #[test]
     fn app_cancelled_provider_exit_does_not_mark_agent_error() {
-        assert_app_provider_exit_state(true);
+        assert_app_provider_exit_state(true, None);
     }
 
-    fn assert_app_provider_exit_state(cancelling: bool) {
+    #[test]
+    fn native_cancel_process_exit_requires_an_official_receipt() {
+        assert_app_provider_exit_state(true, Some(false));
+        assert_app_provider_exit_state(true, Some(true));
+    }
+
+    fn assert_app_provider_exit_state(cancelling: bool, native_receipt: Option<bool>) {
         let worktree = crate::test_support::TestWorktree::new("app-unexpected-exit");
         let mut app =
             crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
@@ -427,6 +452,39 @@ mod tests {
             .mark_run_ended_provider_only(session.id(), run.id())
             .expect("provider should end")
             .into_run();
+        let ended_run = if let Some(confirmed) = native_receipt {
+            if confirmed {
+                let turn = app
+                    .active_turns
+                    .get(run.id())
+                    .expect("admitted turn exists");
+                app.active_turns
+                    .confirm_native_interruption(run.id(), &turn.prompt_id);
+            }
+            let request =
+                LaunchProviderRequest::new(session.id(), "claude", "claude", "default", "haiku")
+                    .with_agent_id(agent.id())
+                    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+            let mut native = RuntimeProviderRun::new(
+                run.id(),
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "native-exit-metadata".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: Default::default(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: None,
+                },
+            );
+            native.mark_ended();
+            native
+        } else {
+            ended_run
+        };
         let outcome = ProviderRunLivenessOutcome {
             ended_run,
             session_id: session.id().to_string(),
@@ -441,7 +499,8 @@ mod tests {
                 .expect("unexpected exit effects should apply");
 
         assert!(session_outcome.had_active_prompt);
-        assert_eq!(session_outcome.cancelled_prompt, cancelling);
+        let cancelled = cancelling && native_receipt != Some(false);
+        assert_eq!(session_outcome.cancelled_prompt, cancelled);
         assert!(app
             .sessions()
             .get_session(session.id())
@@ -453,7 +512,7 @@ mod tests {
             .get_agent(agent.id())
             .expect("agent should remain available")
             .state();
-        if cancelling {
+        if cancelled {
             assert_ne!(state, crate::agent::AgentState::Error);
             let turn = app
                 .completed_git_turn_snapshot_store()
@@ -465,6 +524,21 @@ mod tests {
             );
         } else {
             assert_eq!(state, crate::agent::AgentState::Error);
+            if native_receipt == Some(false) {
+                let turn = app
+                    .completed_git_turn_snapshot_store()
+                    .latest_projection_for_agent(session.id(), agent.id())
+                    .unwrap();
+                assert_eq!(
+                    turn.settlement_status,
+                    crate::git_observer::CompletedTurnSettlementStatus::Failed
+                );
+                assert!(turn
+                    .provider_termination
+                    .unwrap()
+                    .reason
+                    .contains("exited before acknowledging cancellation"));
+            }
         }
     }
 }

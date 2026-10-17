@@ -715,7 +715,7 @@ mod tests {
         );
         assert_eq!(
             overrides.get("mcp_servers.chariox.transport"),
-            Some(&json!("streamable_http"))
+            None
         );
         assert_eq!(
             overrides.get("mcp_servers.chariox.http_headers.Authorization"),
@@ -795,7 +795,7 @@ mod tests {
         );
         assert_eq!(
             overrides.get("mcp_servers.chariox_mcp_browser.transport"),
-            Some(&json!("streamable_http"))
+            None
         );
         assert_eq!(
             overrides.get("mcp_servers.chariox_mcp_browser.http_headers.Authorization"),
@@ -1308,3 +1308,7 @@ mod metadata_discovery_tests {
         assert_eq!(params["config"]["web_search"], "disabled");
     }
 }
+
+#[cfg(test)]
+#[path = "codex_client/thread_history_tests.rs"]
+mod thread_history_tests;

@@ -130,8 +130,13 @@ impl KernelRuntimeState {
             ),
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision: self.owned.session_projection.change_sequence(),
+            terminal_output_watermark: self.terminal_output_watermark(session.id()),
             session,
         })
+    }
+
+    pub(crate) fn terminal_output_watermark(&self, session_id: &str) -> u64 {
+        self.owned.terminal_stream.output_watermark(session_id)
     }
 
     pub(crate) fn list_agents_response(

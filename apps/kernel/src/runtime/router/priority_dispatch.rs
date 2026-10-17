@@ -585,6 +585,17 @@ impl CommandRouter {
                 )
                 .await
             }),
+            LocalDaemonRequest::NativeProviderTransport(request) => Box::pin(async move {
+                if command.external_grant_id().is_some() {
+                    return Err(crate::transport::native_provider_socket::error(
+                        "native provider transport requires a Chariox terminal attachment",
+                    ));
+                }
+                let caller_user_id = command_caller_user_id(&command);
+                self.native_provider_transport(request, &caller_user_id)
+                    .await
+                    .map(|result| LocalDaemonResponse::NativeProviderTransport { result })
+            }),
             LocalDaemonRequest::PumpTerminalOutput(request) => {
                 Box::pin(async move { self.terminal_output_executor.execute(request).await })
             }

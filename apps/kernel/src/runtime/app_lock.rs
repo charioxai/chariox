@@ -83,6 +83,15 @@ fn record(site: &'static str, wait: Duration, hold: Duration) {
     }
     let wait_us = u64::try_from(wait.as_micros()).unwrap_or(u64::MAX);
     let hold_us = u64::try_from(hold.as_micros()).unwrap_or(u64::MAX);
+    // MP-08 / MP-10 / MP-11: body-free timing ties live contention to the
+    // existing opt-in health diagnostics; no prompt, path or account values.
+    if !cfg!(test) && (wait_us >= 20_000 || hold_us >= 20_000) {
+        crate::logging::info_with_fields(
+            "daemon.app_lock_timing",
+            "runtime app lock timing",
+            serde_json::json!({"site":site, "wait_us":wait_us, "hold_us":hold_us}),
+        );
+    }
     let mut sites = registry().lock().unwrap_or_else(PoisonError::into_inner);
     let stats = sites.entry(site).or_default();
     stats.acquisitions = stats.acquisitions.saturating_add(1);

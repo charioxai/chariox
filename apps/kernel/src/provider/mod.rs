@@ -48,8 +48,10 @@ pub(crate) use account_credential::{
     resolve_provider_account_credentials_for_launch, store_provider_account_credential,
     validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude::{
+    claude_provider_catalog_with_environment, prepare_vaulted_claude_native_onboarding,
+};
 pub(crate) use claude::{
     ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
@@ -77,6 +79,7 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
+pub(crate) use codex_runtime::codex_prompt_submission_transport_failed;
 pub use codex_runtime::CodexRuntimeState;
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
@@ -104,7 +107,8 @@ pub(crate) use managed_isolation::{
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
     provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
-    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
+    provider_reported_transcript_result_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
@@ -189,6 +193,20 @@ pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> 
 
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude" && run.provider() == "claude-headless"
+}
+
+pub(crate) fn provider_run_is_claude_native_tui(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && run.provider() == "claude"
+        && run.client_interface() == ProviderClientInterface::NativeTui
+}
+
+pub(crate) fn provider_prompt_abort_input(run: &RuntimeProviderRun) -> &'static [u8] {
+    if provider_run_is_claude_native_tui(run) {
+        b"\x1b"
+    } else {
+        b"\x03"
+    }
 }
 
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {

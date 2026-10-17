@@ -66,6 +66,7 @@ pub(crate) fn projected_session_state_response(
             .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
             .collect(),
         agent_activity_revision: session_projection.change_sequence(),
+        terminal_output_watermark: runtime_state.terminal_output_watermark(redacted_session.id()),
         session: redacted_session,
     }))
 }

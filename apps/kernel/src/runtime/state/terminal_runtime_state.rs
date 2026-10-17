@@ -3,6 +3,25 @@ use base64::Engine;
 use super::*;
 
 impl KernelRuntimeState {
+    // MP-08 / MP-10 / MP-11: preserve native keystroke timing on the already
+    // authenticated home-worker transport. Never replay a possibly sent input.
+    async fn send_terminal_peer_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: ClientTarget,
+        request: RelayPeerRequest,
+        timeout: Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(state) => crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
+                config, &state, target, request, timeout, || self.authorize_current_external_command(),
+            ).await,
+            None => crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                config, target, request, timeout, || self.authorize_current_external_command(),
+            ).await,
+        }
+    }
+
     pub(crate) async fn resize_terminal(
         &self,
         session_id: &str,
@@ -30,8 +49,8 @@ impl KernelRuntimeState {
                 ) {
                     relay_config.apply_remote_relay_override(relay_url, relay_token);
                 }
-                let response =
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                let response = self
+                    .send_terminal_peer_request(
                         &relay_config,
                         ClientTarget {
                             daemon_id: Some(remote_execution.worker_kernel_id),
@@ -44,7 +63,6 @@ impl KernelRuntimeState {
                             rows,
                         },
                         Duration::from_millis(relay_config.relay_request_timeout_ms),
-                        || self.authorize_current_external_command(),
                     )
                     .await?;
                 match response {
@@ -125,8 +143,8 @@ impl KernelRuntimeState {
                         ) {
                             relay_config.apply_remote_relay_override(relay_url, relay_token);
                         }
-                        let response =
-                            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                        let response = self
+                            .send_terminal_peer_request(
                                 &relay_config,
                                 ClientTarget {
                                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -139,7 +157,6 @@ impl KernelRuntimeState {
                                     data_base64: data_base64.to_string(),
                                 },
                                 Duration::from_millis(relay_config.relay_request_timeout_ms),
-                                || self.authorize_current_external_command(),
                             )
                             .await?;
                         return match response {

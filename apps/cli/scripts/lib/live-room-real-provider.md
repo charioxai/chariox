@@ -186,3 +186,212 @@ The paired Web launcher loads this helper from `CHARIOX_OSS_REPO`; select matchi
 OSS and Cloud branches. The OSS wait remains interruptible during a long budget.
 Tests exercise eight-hour and 24-hour configurations without sleeping for those
 durations. They are configuration/cancellation evidence, not completed soak runs.
+
+### MP-08 / MP-10 / MP-11: native Claude cancellation receipt
+
+Run the actual remote-rendered native Claude client against the home kernel and
+its Docker slice, with a product-linked Claude account, hosted WSS, and a real
+public documentation/repository research turn. While that exact turn is active,
+press Escape in the native client. Within 20 seconds the same home prompt must
+be Cancelled and the agent Idle, with no active turn. Its terminal completion
+must reach the attached web and native clients. The official Claude display must
+show interruption and accept a subsequent prompt on the same leased run.
+
+Record the exact source/binary identities, native screen, home/web screenshots,
+input-to-settlement duration and cleanup. Repeat ordinary home-worker and managed
+slice cases over the shaped WAN at DPR 1 and 2, then retain the corrected-source
+two-hour reconnect/attach session. Source fixtures alone do not accept these cells.
+
+Claude user interruption does not emit Stop. The kernel sends native Escape and
+uses the timestamped interruption transcript record, through the existing
+deferred transcript drain, only for the current run's matching Cancelling prompt.
+Verify stale receipts, a superseded run and an uncancelled prompt cannot settle it.
+
+### MP-08 / MP-10 / MP-11: native home MCP launch and reconnect
+
+Grant a real home MCP before starting each official native provider against a
+leased worker and a managed slice. The provider must initialize that granted MCP
+on its first launch, read public MDN and GitHub sources through it, and write a
+cited report. Record its native screen, MCP status and exact home/worker run IDs.
+Completing a turn must retain the same running native worker binding while idle.
+Then submit another prompt through the native composer after reconnect and relay
+authorization renewal; it must remain writable and finish on the same leased run.
+Repeat over hosted WSS with the shaped WAN, DPR 1 and 2, and the two-hour session.
+
+A native MCP bootstrap can precede home's launch receipt. Only its read-only
+bootstrap waits, for at most eight seconds of binding rejection, through the
+existing forwarding request. Every attempt retains home authorization and the
+current worker-run fence. Tool calls, ordinary clients and other admission errors
+are never replayed. Source fixtures establish those bounds, not live acceptance.
+
+Exercise concurrent native and kernel MCP clients, including reconnects that
+restart JSON-RPC request numbering at zero. Each distinct request must retain
+its own forwarding invocation identity; replaying that identity must still be
+rejected. Connection-local MCP request IDs cannot identify provider tool calls.
+
+### MP-08 / MP-10 / MP-11: Claude cancellation during prompt hooks
+
+Cancel both while Claude runs a real public-site tool and while its native
+UserPromptSubmit hook is preparing the next real research turn. In the latter
+case Claude can ignore Esc or terminate the hook before writing a user transcript record.
+When Esc is ignored, the current hook must decline admission using its documented
+blocking response to the exact kernel-owned cancellation request. A flushed
+blocking receipt uses the same bridge and settlement fences as hook termination.
+The existing hook bridge must receipt that exact request; home settles only
+from a fresh receipt for its current cancelled prompt and current worker run.
+Keep stale request, stale timestamp, wrong run and non-cancelling controls.
+The primary hook must remain alive until its context-only helpers finish, so
+Esc during preparation still reaches that same request. Include an empty hidden
+context: it is a completed response, and must not hold helpers for their timeout.
+Repeat with preloaded context: the primary hook must still await the current
+bridge response, and helpers must receive the current approved context. An
+earlier turn's context must not bypass that acknowledgement or pending cancel.
+Generated-hook subprocess checks supplement the real native-provider drill.
+The original Esc must settle the exact home prompt and leave the native composer
+writable for a real public-site continuation. Supplemental terminal/RPC input
+after a failure is diagnostic evidence and cannot count as a passing cell.
+
+MP-11: while a real local provider turn remains active, complete a leased native
+turn whose worker run number matches the local run number. The local turn must
+retain its activity and controls; only the projected leased turn settles. Record
+both actual run identities and client views. Repeat with native cancellation.
+
+### MP-08 / MP-10 / MP-11: exact leased outcomes and native exit
+
+Run an ordinary home kernel and a rented worker with real Claude, the built
+native wrapper, and two hosted web panes at DPR 1 and 2 over the shaped WAN.
+Cancel during the native prompt hook/first-response window and require the exact
+worker and home prompt to settle Cancelled. Let another real source-comparison
+turn complete on the worker before a queued native Esc reaches home; require
+Completed on home, including the no-active-prompt response race. Stop only the
+exact owned provider generation during another real research turn, press Esc,
+and require Failed with runtime_failure, a nonzero wrapper exit, and the next
+actual web composer prompt completing on a fresh worker run.
+
+For normal native user exit, send real Ctrl-C through the PTY and require wrapper
+exit within five seconds plus Ended on the provider. Record PID/start-generation
+process trees before and after, including worker children. Record input, kernel
+admission, encrypted event queue, receiver arrival/decryption and browser paint
+timestamps for cross-client visibility; require P95 at most measured wire RTT
+plus 60 ms. Use a quiet host or a KVM guest with its own virtio disk for timing,
+and record RTT alongside P95. Keep every
+run's source and binary hashes separate. Source checks and successful setup
+never substitute for these live verdicts.
+
+
+MP-08 / MP-10 / MP-11: include a fresh native provider session whose first
+transcript file appears after SessionStart/UserPromptSubmit. The kernel must
+observe the later official interruption receipt without another hook event;
+retained path hints must pass the existing account binding and no-symlink checks
+on every read. For the leased idle Ctrl-C drill, record each keystroke's enqueue,
+send and acknowledgement times. The normal connected home-worker relay path
+must preserve rapid key delivery without opening a connection for every key.
+Record provider-scoped catalogue response bytes during the WAN visibility drill;
+a Claude account model query must keep backend choices and default models while
+omitting complete unrelated OpenCode/Codex model sets. Native-origin state and
+provider exit must publish independently of relay heartbeat cadence.
+
+### MP-08 / MP-10 / MP-11: leased admission and definitive outcomes
+
+Catalog and credential negotiation precede receipt reservation, allowing the
+home's bounded same-prompt retry when that negotiation requests a credential.
+A read-only replay failure durably rejects the exact home prompt receipt,
+without sending or replaying provider input. New admission commits
+the home/backing prompt binding and an Accepted receipt before handing the
+provider dispatch to the ordinary async provider lane. Dispatch failure then
+settles the exact backing turn as Failed through the normal completion
+projection. A worker admission rejection is projected as Error rather than a
+human cancellation.
+
+For the real hosted drill, use the built CLI and web entry, home and worker
+kernels from the recorded OSS head, the recorded Cloud head, and a real official
+provider account. Submit the five public MDN/GitHub conversation prompts from
+alternating DPR 1/2 web clients over hosted WSS. Capture each admitted prompt ID,
+its exact definitive settlement, the rendered result, console/log classes, and
+Enter-to-other-client-paint timings. Require every provider turn to complete;
+an idle counter alone is insufficient. Measure P95 over the complete five
+samples with an 8 Mbit/s WAN client uplink and at least 60 ms RTT; the limit is
+measured wire RTT plus 60 ms, measured on a quiet host or a KVM guest with its
+own virtio disk. Preserve the baseline failure and exact-head screenshots. Kernel
+receipt/lane fixtures are supplementary checks and cannot establish acceptance.
+
+
+MP-08 / MP-10 / MP-11: queue a second ordinary home-origin prompt while the
+first provider result is pending on the same leased Claude run, without a
+terminal subscriber driving provider output. Require exact home IDs and
+Completed status on both projections; both receipt queries must stay Completed
+after the successor replaces the latest replay. The worker persists the accepted backing prompt ID in its
+private admission receipt. The shared dispatcher activates that binding before
+queued provider input; completion lookup must match the leased agent, execution
+lease, provider run and backing prompt. A settled predecessor projection must
+retain its own identity without retiring the active successor. Legacy receipts without that
+private field remain readable. Worker projection pumping uses the normal owned
+provider lane before reading committed records, so it cannot consume a result
+through a second provider-output implementation. Neither mechanism changes the
+public wire shape. Repeat the actual native queued-steer case and the full
+five-prompt WAN cohort on the final source; synthetic two-turn checks establish
+regression coverage only.
+
+MP-08 / MP-10 / MP-11: when deferred message records are lost, the worker
+recovers a completion from the prompt owner's exact settled-turn proof.
+Deduplicate provider, generic and recovered records by the private turn
+binding; order recovered outcomes by settlement time. While the successor's
+provider result is still pending, delivering the predecessor's Completed
+projection must leave the successor active. An idle run or output text cannot
+supply that proof. Validate this ordering on the real native queued-steer path
+before marking the cell accepted.
+
+### MP-08 / MP-10 / MP-11: off-box Codex upstream and reload
+
+Use the real built CLI, home kernel, isolated worker kernel, relay and web entry
+at recorded source and binary hashes. Require local protocol 531 and peer 139.
+Keep the worker's official Codex 0.159.3 endpoint on worker loopback, unreachable
+from the client. Use a Docker container or KVM guest for isolation; a second
+physical machine is needed only for geographic or timing acceptance. Do not
+configure an SSH endpoint bridge. Import the approved account through the normal
+product commands without printing its credential material.
+
+First run the pre-bridge CLI against that topology. Preserve its initialization
+failure before running the candidate. With the candidate, approve folder trust
+through the actual native UI, require the ordinary native composer to appear,
+and verify the resolved model is `gpt-6-luna` with low reasoning effort. The
+normal official plugin catalog must remain intact; do not hide a large catalog
+to make initialization pass.
+
+Join the exact home session through the web waiting-room controls at DPR 1 and
+2. Submit a native prompt that reads the public MDN WebSockets documentation
+and Chariox GitHub repository. Queue a web follow-up, click its visible Steer
+control, then queue another prompt. Require completed work, an exact steering
+binding in the completed parent history, one canonical turn for each ordinary
+prompt, and no duplicated visible native input. Repeat with native Claude using
+`claude-haiku-5-5` to exercise queued promotion across its Stop hook.
+
+Record normal reloads at DPR 1 in 1440×900 and 1920×1080 windows and DPR 2 in a
+1440×900 window. Require visible loading until authoritative conversation,
+account and model return, with no blank frame or false disconnected state.
+Expand and scroll completed turns using normal controls to verify retained
+steering text. Inspect recordings and screenshots, including first paint;
+DOM assertions and sampled screenshots alone cannot establish this gate.
+
+Before the stability run, use the real Chariox TUI on the home kernel to run
+`/relay disable`, leave a short gap, then `/relay cloud connect`. Keep the native
+client open throughout. Require the same provider-run and thread binding, a
+usable native composer, and a fresh normal workspace-tool prompt that completes
+exactly once after recovery. Capture the pre-fix native-unavailable failure and
+the fixed native/Web/TUI screens. A component receipt test is supplementary.
+At the protocol seam, reject predecessor Open without `request_id` and Exchange
+without `sequence`. Simulate a lost Open and Exchange reply: repeated requests
+must reuse one scoped upstream and return the exact retained reply; conflicts,
+sequence gaps and revoked authority must fail. Receipts include final buffered
+output after upstream close and remain subject to byte limits and expiry.
+
+Keep the real off-box session attached through hosted WSS for at least two
+hours with an 8 Mbit/s client uplink and at least 60 ms RTT. Require no unexpected
+socket closure or stuck native/web view. Then submit a normal workspace tool
+request, require its definitive completion and preserved conversation, and exit
+the native client using Ctrl-C. Finally stop the exact owned home kernel and
+reload: require a definitive unavailable state with working Retry session and
+Choose another session controls. Preserve baseline failures, source identities,
+per-step screenshots, redacted logs, resource samples and exact cleanup receipts.
+This functional/stability drill does not establish a latency gate or the full
+ordinary-versus-managed provider matrix.

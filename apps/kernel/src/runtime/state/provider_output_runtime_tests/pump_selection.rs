@@ -1,6 +1,96 @@
 use super::*;
 
 #[tokio::test]
+async fn mp08_mp10_idle_native_hook_is_observed_without_terminal_output_or_client_reads() {
+    let worktree = crate::test_support::TestWorktree::new("idle-native-hook-wakeup");
+    let mailbox = crate::test_support::TestWorktree::new("idle-native-hook-mailbox");
+    let events = mailbox.path().join("events.jsonl");
+    let context = mailbox.path().join("hidden-context.txt");
+    std::fs::write(&events, "").unwrap();
+    std::fs::write(&context, "").unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "native-hook-observer",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-idle-native-hook",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "idle-native-hook".into(),
+            pty_target: Some("provider-run-idle-native-hook".into()),
+            pty_program: Some("/bin/sh".into()),
+            pty_args: Vec::new(),
+            pty_env: [
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                    events.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                    context.display().to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    let app = Arc::new(Mutex::new(app));
+    let _cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().into(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .pump_owned_provider_output(session.id(), run.id(), Vec::new(), false)
+        .await
+        .unwrap();
+    // A hook writes after the last PTY drain, then waits silently for context.
+    std::fs::write(&events, format!("{}\n", serde_json::json!({
+        "hook_event_name":"UserPromptSubmit", "prompt":"late native hook prompt",
+        "hook_context_request_id":"late-native-hook", "timestamp_ms":crate::session::unix_epoch_ms(),
+    }))).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    runtime.pump_transport_runtime().await;
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&snapshot, agent.id())
+            .is_some(),
+        "MP-08 native hook written after quiet PTY must be admitted without a client read"
+    );
+}
+
+#[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
     let worktree = crate::test_support::TestWorktree::new("pump-selection-external-mirror");
     let mut app =

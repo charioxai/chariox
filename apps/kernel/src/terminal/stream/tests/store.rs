@@ -346,3 +346,59 @@ async fn terminal_stream_store_wait_returns_when_sequence_already_changed() {
     .await
     .expect("changed terminal sequence should not block");
 }
+
+// MP-08 / MP-10: output retirement must not move a snapshot boundary backward.
+#[test]
+fn terminal_output_watermark_survives_drain_and_is_session_shard_scoped() {
+    let terminal = TerminalStreamStore::new();
+    let session = "session-watermark";
+    assert_eq!(terminal.output_watermark(session), 0);
+    terminal.fan_out_output(
+        session,
+        "run",
+        Some("agent"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        vec!["client".into()],
+        b"final",
+    );
+    let watermark = terminal.output_watermark(session);
+    assert_eq!(watermark, 1);
+    let drained = terminal.drain_output_records(session, "client");
+    assert_eq!(drained[0].record_id, Some(watermark - 1));
+    assert_eq!(terminal.output_watermark(session), watermark);
+    let other = (0..1000)
+        .map(|i| format!("session-other-{i}"))
+        .find(|candidate| {
+            TerminalStreamStore::shard_index_for_test(candidate)
+                == TerminalStreamStore::shard_index_for_test(session)
+        })
+        .unwrap();
+    assert_eq!(terminal.output_watermark(&other), 0);
+    terminal.fan_out_output(
+        &other,
+        "run-b",
+        Some("agent-b"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        vec!["client-b".into()],
+        b"next",
+    );
+    assert_eq!(
+        terminal.output_watermark(session),
+        watermark,
+        "a shared shard does not leak another session's watermark"
+    );
+    terminal.fan_out_output(
+        session,
+        "run",
+        Some("agent"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        vec!["client".into()],
+        b"continuation",
+    );
+    assert_eq!(terminal.output_watermark(session), 3);
+    terminal.remove_session(session);
+    assert_eq!(terminal.output_watermark(session), 0);
+}

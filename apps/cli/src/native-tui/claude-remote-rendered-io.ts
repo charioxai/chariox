@@ -1,6 +1,7 @@
 import { sendClaudeRemoteRenderedInput as sendRemoteRenderedInput } from "./claude-remote-rendered-control.js"
 import process from "node:process"
 import { StringDecoder } from "node:string_decoder"
+import { stripVTControlCharacters } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { LocalIpcClient } from "../ipc.js"
@@ -28,10 +29,12 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   debug: (label: string, payload: unknown) => void
 }): () => void {
   const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw)
+  const wasFlowing = process.stdin.readableFlowing === true
   const composer = createClaudeRemoteRenderedComposerState()
   let pending = Promise.resolve()
   let inputGeneration = 0
   const onData = (chunk: Buffer) => {
+    if (chunk.includes(3)) options.debug("exit_control_queued", { at: Date.now(), ctrlCCount: [...chunk].filter(byte => byte === 3).length })
     const generation = ++inputGeneration
     pending = pending
       .then(() => forwardRemoteRenderedInputChunk({ ...options, composer, chunk }))
@@ -59,6 +62,9 @@ export function forwardClaudeRemoteRenderedStdin(options: {
   return () => {
     process.stdin.off("data", onData)
     if (process.stdin.isTTY) process.stdin.setRawMode?.(wasRaw)
+    // MP-08 / MP-10 / MP-11: a resumed terminal keeps the wrapper alive after
+    // the official provider exits. Restore input ownership with terminal mode.
+    if (!wasFlowing) process.stdin.pause()
   }
 }
 
@@ -87,31 +93,52 @@ export type RemoteRenderedInputAction =
 export type ClaudeRemoteRenderedReadiness = {
   observe: (records: unknown, providerRunId: string, agentId: string) => void
   wait: (timeoutMs?: number) => Promise<void>
+  fail: (error: Error) => void
 }
 
 export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadiness {
   let output = ""
+  const decoder = new StringDecoder("utf8")
   let ready = false
-  const waiters = new Set<() => void>()
+  let failure: Error | null = null
+  const waiters = new Set<(error?: Error) => void>()
   return {
     observe: (records, providerRunId, agentId) => {
-      if (ready) return
+      if (ready || failure) return
       for (const bytes of claudeRemoteRenderedTerminalBytes(records, providerRunId, agentId)) {
-        output = `${output}${bytes.toString("utf8")}`.slice(-32_768)
+        output = `${output}${decoder.write(bytes)}`.slice(-32_768)
       }
-      if (!output.includes("Claude Code") || !output.includes("\u001b[?2004h")) return
+      // MP-08/MP-11: title updates may be disabled, and cursor positioning
+      // splits the painted name. Paste mode is also enabled during onboarding;
+      // only the provider's composer (empty or showing its hint) accepts a task.
+      const compact = stripVTControlCharacters(output).replace(/\s/g, "")
+      const promptIndex = compact.lastIndexOf("❯")
+      const composer = promptIndex >= 0 ? compact.slice(promptIndex + 1) : ""
+      if (!compact.includes("ClaudeCode") || !output.includes("\u001b[?2004h")
+        || !/^(?:[─━╌]{3,}|Try["“])/.test(composer)) return
       ready = true
       for (const resolve of waiters) resolve()
       waiters.clear()
     },
-    wait: async (timeoutMs = 60_000) => {
+    fail: (error) => {
+      if (ready || failure) return
+      failure = error
+      for (const finish of waiters) finish(error)
+      waiters.clear()
+    },
+    // MP-08/MP-11: onboarding is human-paced. Provider exit or disconnect
+    // fails this wait; an optional explicit deadline remains for bounded callers.
+    wait: async (timeoutMs) => {
+      if (failure) throw failure
       if (ready) return
       await new Promise<void>((resolve, reject) => {
-        const onReady = () => {
+        const onReady = (error?: Error) => {
           clearTimeout(timeout)
-          resolve()
+          waiters.delete(onReady)
+          if (error) reject(error)
+          else resolve()
         }
-        const timeout = setTimeout(() => {
+        const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
           waiters.delete(onReady)
           reject(new Error(`timed out waiting ${timeoutMs}ms for the remote Claude TUI input surface`))
         }, timeoutMs)
@@ -269,6 +296,8 @@ async function forwardRemoteRenderedInputChunk(options: {
       await submitOrForwardRemoteRenderedEnter(options, action.prompt)
       continue
     }
+    const controlAt = Date.now()
+    if (action.data === "\u0003") options.debug("exit_control_send_start", { at: controlAt })
     await sendRemoteRenderedInput(
       options.client,
       options.sessionId,
@@ -277,6 +306,7 @@ async function forwardRemoteRenderedInputChunk(options: {
       action.data,
       options.agentId,
     )
+    if (action.data === "\u0003") options.debug("exit_control_send_end", { at: Date.now(), elapsedMs: Date.now() - controlAt })
   }
 }
 

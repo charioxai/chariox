@@ -30,6 +30,7 @@ mod composition;
 mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod kernel_access;
+mod native_provider_transport;
 mod managed_context_bridge;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
@@ -56,6 +57,7 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 pub(crate) struct CommandRouter {
     _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
     app: Arc<Mutex<DaemonApp>>,
+    native_provider_sockets: crate::transport::native_provider_socket::NativeProviderSockets,
     runtime_state: KernelRuntimeState,
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,

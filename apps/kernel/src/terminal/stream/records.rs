@@ -110,6 +110,9 @@ pub struct AssistantMessageCompletionRecord {
     pub pending_recipient_attachment_ids: Vec<String>,
     pub message_id: String,
     pub completed_at_ms: u64,
+    // MP-08 / MP-10 / MP-11: private producer correlation, never a wire field.
+    #[serde(skip)]
+    pub(crate) prompt_id: Option<String>,
 }
 
 /// Authoritative terminal workflow-run transition fanned out to session

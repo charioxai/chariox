@@ -18,6 +18,10 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 mod attachments;
+#[cfg(test)]
+mod cancellation_tests;
+mod hook_observation;
+mod interruption;
 mod permission;
 #[cfg(test)]
 mod tests;
@@ -56,12 +60,13 @@ use permission::{
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
     drain_claude_transcript_raw_since, known_claude_transcript_paths,
-    load_claude_transcript_cursor, save_claude_transcript_cursor,
+    load_claude_transcript_cursor, remember_claude_transcript_path, save_claude_transcript_cursor,
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
 const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
+pub(super) const CLAUDE_CANCELLATION_EXIT_FAILURE: &str = "Claude exited before acknowledging cancellation; the run was ended. Send another prompt to restart it.";
 const CLAUDE_WORKSPACE_TRUST_DENIED: &str =
     "Claude Code workspace trust was denied before the queued task was dispatched.";
 const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
@@ -290,6 +295,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(outcome);
         };
+        // MP-08 / MP-10 / MP-11: the CLI can publish a hook before its managed
+        // run commits Running. Keep that mailbox pending until admission is ready.
+        if provider_run.state() == crate::provider::ProviderRunState::Starting {
+            return Ok(outcome);
+        }
 
         if let Some(message) = claude_workspace_trust_failure(context_file) {
             outcome.terminal_failure = Some(message.to_string());
@@ -331,6 +341,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 );
             }
         }
+        interruption::request_pending_prompt_hook_cancellation(
+            self.app,
+            session_id,
+            provider_run_id,
+            context_file,
+        )?;
+        interruption::observe_turn_abort_receipt(
+            self.app,
+            session_id,
+            provider_run_id,
+            context_file,
+        )?;
         if let Some(settled) = self.process_pending_claude_stop(
             session_id,
             provider_run_id,
@@ -367,6 +389,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
         if raw.trim().is_empty() {
+            // A closed hook may never publish another event after Esc. Poll the
+            // bounded cancellation resolver even when its mailbox stays quiet.
+            interruption::resolve_pending_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+            )?;
             return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
@@ -381,6 +411,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             let Ok(event) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
+            hook_observation::record("seen", &event, Some(provider_run_id));
             if let Some(transcript_path) = event
                 .get("transcript_path")
                 .and_then(Value::as_str)
@@ -409,12 +440,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .map(str::trim)
                     .filter(|prompt| !prompt.is_empty())
                 else {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 };
-                // Claude emits this synthetic UserPromptSubmit hook when its
-                // process is interrupted. It is provider control state, not a
-                // user prompt, and must never create a zero-duration turn.
+                // Provider control text must not create a user turn. Native
+                // interruption is observed from the timestamped transcript;
+                // this guard also excludes control text reported by a hook.
                 if claude_native_prompt_is_internal_control(prompt) {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 }
                 let active_prompt = self
@@ -451,9 +484,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             &agent_id,
                             context_file,
                         )?;
+                        interruption::bind_prompt_hook_request(
+                            self.app,
+                            session_id,
+                            provider_run_id,
+                            context_file,
+                            dispatch_prompt_id,
+                            &event,
+                        )?;
                         continue;
                     }
                     if active_prompt.is_some() {
+                        interruption::reply_ignored_prompt_hook(context_file, &event);
                         continue;
                     }
                 }
@@ -477,6 +519,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     })?;
                 }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
+                    interruption::reply_ignored_prompt_hook(context_file, &event);
                     continue;
                 };
                 let history_source_attachment_id = claude_native_history_source_attachment_id(
@@ -505,6 +548,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         },
                     )?;
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
+                    interruption::bind_prompt_hook_request(
+                        self.app,
+                        session_id,
+                        provider_run_id,
+                        context_file,
+                        prompt.id(),
+                        &event,
+                    )?;
+                    continue; // Binding already published this request's context response.
                 }
                 if let Some(request_id) =
                     event.get("hook_context_request_id").and_then(Value::as_str)
@@ -512,6 +564,21 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     let context = fs::read_to_string(context_file).unwrap_or_default();
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
+            } else if event_name == "UserPromptSubmitReady" {
+                interruption::observe_prompt_hook_ready(
+                    self.app,
+                    provider_run_id,
+                    context_file,
+                    &event,
+                );
+            } else if event_name == "UserPromptSubmitInterrupted" {
+                interruption::observe_prompt_hook_interruption(
+                    self.app,
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &event,
+                )?;
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
@@ -530,6 +597,31 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
                 {
+                    if event
+                        .get("native_prompt_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id != active_prompt.id())
+                    {
+                        continue;
+                    }
+                    if event_name == "SessionEnd"
+                        && crate::provider::provider_run_is_claude_native_tui(provider_run)
+                        && active_prompt.status() == crate::session::PromptStatus::Cancelling
+                        && !self
+                            .app
+                            .active_turns
+                            .get(provider_run_id)
+                            .is_some_and(|turn| turn.native_interruption_confirmed)
+                    {
+                        interruption::fail_cancellation(
+                            self.app,
+                            session_id,
+                            provider_run_id,
+                            context_file,
+                            CLAUDE_CANCELLATION_EXIT_FAILURE,
+                        )?;
+                        continue;
+                    }
                     write_claude_native_marker(
                         context_file,
                         &format!(
@@ -558,6 +650,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         outcome.terminal_failure =
             self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        if outcome.terminal_failure.is_none() {
+            interruption::resolve_pending_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+            )?;
+        }
         Ok(outcome)
     }
 
@@ -584,8 +684,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
             return Ok(());
         };
+        // MP-08 / MP-10 / MP-11: hosted owner ids can alias a local account.
+        // Use the run's existing admission provenance, including replica
+        // namespaces, so usage cannot abort hook processing or cross owners.
+        let account_owner = crate::account_profile::provider_account_authority_for_run(
+            self.app.config(),
+            &self.app.provider_account_profiles,
+            provider_run,
+        )?;
         self.app.provider_account_profiles.update_usage(
-            provider_run.owner_user_id(),
+            &account_owner,
             provider_run.provider(),
             provider_run.account_profile(),
             snapshot,
@@ -673,21 +781,60 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         mark_next_headless_prompt_ready: bool,
     ) -> Result<(), DaemonError> {
-        if self
+        // MP-08 / MP-10 / MP-11: completion may synchronously promote and
+        // inject the next prompt. Retire the old marker before that dispatch;
+        // never erase the next prompt's context or injection acknowledgement.
+        let stopped_marker = claude_native_marker(context_file);
+        write_claude_native_marker(context_file, "");
+        if let Some(prompt) = self
             .app
             .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-            .is_some()
         {
-            self.app
-                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
-        }
-        let _ = fs::write(context_file, "");
-        write_claude_native_marker(context_file, "");
-        if mark_next_headless_prompt_ready {
-            if let Some(next_prompt) = self
+            let confirmed_native_interruption = self
                 .app
-                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+                .active_turns
+                .get(provider_run_id)
+                .is_some_and(|turn| {
+                    turn.prompt_id == prompt.id() && turn.native_interruption_confirmed
+                });
+            let native_run = self
+                .app
+                .providers
+                .get_run(provider_run_id)
+                .is_ok_and(|run| crate::provider::provider_run_is_claude_native_tui(&run));
+            let completion = if prompt.status() == crate::session::PromptStatus::Cancelling
+                && (!native_run || confirmed_native_interruption)
             {
+                self.app
+                    .finalize_active_prompt_cancellation(
+                        session_id,
+                        agent_id,
+                        Some(provider_run_id),
+                    )
+                    .map(|_| ())
+            } else {
+                self.app
+                    .complete_active_prompt(session_id, agent_id, Some(provider_run_id))
+                    .map(|_| ())
+            };
+            if let Err(error) = completion {
+                if claude_native_marker(context_file).is_none() {
+                    write_claude_native_marker(
+                        context_file,
+                        stopped_marker.as_deref().unwrap_or_default(),
+                    );
+                }
+                return Err(error);
+            }
+        }
+        let next_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        if next_prompt.is_none() {
+            let _ = fs::write(context_file, "");
+            write_claude_native_marker(context_file, "");
+        } else if mark_next_headless_prompt_ready && claude_native_marker(context_file).is_none() {
+            if let Some(next_prompt) = next_prompt {
                 crate::logging::debug_with_fields(
                     "daemon.claude_headless",
                     "marked post-stop queued prompt ready",
@@ -734,18 +881,28 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         transcript_path: &str,
     ) -> Result<Option<String>, DaemonError> {
         let provider_run = self.app.providers.get_run(provider_run_id)?;
-        let Some(transcript_path) =
-            crate::provider::provider_reported_transcript_on_kernel(&provider_run, transcript_path)
-        else {
-            crate::logging::warn_with_fields(
-                "daemon.claude_headless",
-                "provider transcript unavailable or outside managed bindings",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "provider_run_id": provider_run_id,
-                }),
-            );
-            return Ok(None);
+        let newly_reported = remember_claude_transcript_path(context_file, transcript_path);
+        let diagnostic_cancel = std::env::var("CHARIOX_PERF_DIAGNOSTICS").is_ok_and(|v| v == "1")
+            && self
+                .app
+                .active_turns
+                .get(provider_run_id)
+                .is_some_and(|turn| turn.interruption_requested_at_ms.is_some());
+        let transcript_path = match crate::provider::provider_reported_transcript_result_on_kernel(
+            &provider_run,
+            transcript_path,
+        ) {
+            Ok(path) => path,
+            Err(class) => {
+                if newly_reported || diagnostic_cancel {
+                    crate::logging::warn_with_fields(
+                        "daemon.claude_headless",
+                        "provider transcript unavailable or outside managed bindings",
+                        serde_json::json!({"session_id":session_id, "provider_run_id":provider_run_id, "failure_class":class}),
+                    );
+                }
+                return Ok(None);
+            }
         };
         let path = transcript_path.path.to_string_lossy().into_owned();
         let Ok(raw) = transcript_path.read() else {
@@ -775,7 +932,27 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let drain =
             drain_claude_transcript_raw_since(&path, &raw, &mut cursor, minimum_timestamp_ms);
         save_claude_transcript_cursor(context_file, &cursor);
+        if diagnostic_cancel {
+            crate::logging::info_with_fields(
+                "daemon.native_transcript_timing",
+                "native cancellation transcript observed",
+                serde_json::json!({
+                    "provider_run_id":provider_run_id, "line_count":raw.lines().count(),
+                    "minimum_timestamp_ms":minimum_timestamp_ms, "interrupted_at_ms":drain.interrupted_at_ms,
+                    "response_started_at_ms":drain.response_started_at_ms, "chunk_count":drain.chunks.len(),
+                }),
+            );
+        }
         let terminal_failure = drain.terminal_failure.clone();
+        if let Some(observed_at_ms) = drain.interrupted_at_ms {
+            interruption::mark_native_interruption_for_cancellation(
+                self.app,
+                session_id,
+                provider_run_id,
+                context_file,
+                observed_at_ms,
+            )?;
+        }
         let active_prompt_id = self
             .app
             .providers
@@ -789,6 +966,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .flatten()
             })
             .map(|prompt| prompt.id().to_string());
+        if let Some(prompt_id) = active_prompt_id.as_deref() {
+            if minimum_timestamp_ms
+                .is_some_and(|minimum| drain.response_started_at_ms.is_some_and(|at| at >= minimum))
+            {
+                self.app
+                    .active_turns
+                    .note_native_response_started(provider_run_id, prompt_id);
+            }
+        }
         acknowledge_claude_headless_steering_enqueue(
             context_file,
             active_prompt_id.as_deref(),
@@ -894,6 +1080,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     self.app,
                     provider_run_id,
                 );
+                // MP-08 / MP-10 / MP-11: a protected, fresh official terminal
+                // transcript can win the cancellation race even without Stop.
+                // Preserve its final output and settle Completed after draining.
+                if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                    if let Some(prompt) = self.app.prompt_owner_active_prompt_for_agent(
+                        session_id,
+                        provider_run.agent_instance_id().unwrap_or_default(),
+                    )? {
+                        if prompt.status() == crate::session::PromptStatus::Cancelling
+                            && self
+                                .app
+                                .active_turns
+                                .get(provider_run_id)
+                                .is_some_and(|turn| {
+                                    turn.prompt_id == prompt.id()
+                                        && !turn.native_interruption_confirmed
+                                })
+                        {
+                            write_claude_native_marker(
+                                context_file,
+                                &format!(
+                                    "{CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX}{}:{}",
+                                    prompt.id(),
+                                    unix_epoch_ms()
+                                ),
+                            );
+                        }
+                    }
+                }
             }
         }
         if let Some(failure) = terminal_failure.as_deref() {
@@ -1375,6 +1590,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
+        if prompt.status() == crate::session::PromptStatus::Cancelling {
+            return Ok(());
+        }
         if claude_native_marker(context_file)
             .as_deref()
             .and_then(claude_native_dispatch_prompt_id)

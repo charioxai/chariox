@@ -338,15 +338,9 @@ pub(super) fn compose_command_router(
         session_projection.clone(),
         agent_runtime_projection.clone(),
     );
-    let terminal_output_executor = TerminalOutputExecutor::new(
-        runtime_state.clone(),
-        provider_runtime_lanes.clone(),
-        session_projection.clone(),
-        agent_runtime_projection.clone(),
-        provider_run_projection.clone(),
-        terminal_stream.clone(),
-    );
+    let terminal_output_executor = TerminalOutputExecutor::new(runtime_state.clone());
     CommandRouter {
+        native_provider_sockets: Default::default(),
         _native_interaction_bridge: native_interaction_bridge,
         app,
         runtime_state,

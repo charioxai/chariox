@@ -68,7 +68,7 @@ impl KernelRuntimeState {
                         "authority": if remote_home_proxy { "home" } else { "worker" },
                         "definition_origin": active_definition_origin,
                         "execution_location": active_execution_location,
-                        "effective_when_requested": "after_provider_reload",
+                        "effective_when_requested": self.runtime_catalog_grant_effect(agent, granted).0,
                         "ready_state": if granted { "granted" } else { "available" }
                     })
                 })
@@ -261,6 +261,98 @@ fn app_readiness(active: bool, granted: bool, listed: bool) -> (&'static str, &'
 
 #[cfg(test)]
 mod app_readiness_tests {
+    // MP-08/MP-10/MP-11: listing a pregranted MCP must not instruct a native
+    // provider to request a redundant reload. A pending catalog change still
+    // carries its real reload obligation. This fixture launches no provider.
+    #[tokio::test]
+    async fn mcp_listing_pregranted_effect_tracks_pending_catalog_reload() {
+        use crate::runtime::state::{
+            PendingMcpContinuationStore, PendingProviderReload, PendingProviderReloadStore,
+            ProviderReloadReason,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "chariox-mcp-list-effect-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let name = "pregranted_list_effect";
+        crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
+            &root,
+        )])
+        .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+            name,
+            "/usr/bin/false",
+            Vec::new(),
+        ))
+        .unwrap();
+        let mut app =
+            crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                )
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex")),
+            )
+            .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let mut runtime = router.runtime_state();
+        runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+        runtime.owned.pending_provider_reloads = PendingProviderReloadStore::default();
+        let listed_effect = |agent: &crate::agent::AgentInstance| {
+            let (result, _) = runtime
+                .handle_list_extensions_runtime_tool(
+                    &session,
+                    agent,
+                    serde_json::json!({"kind":"mcp"}),
+                )
+                .unwrap();
+            result.payload["extensions"]["mcps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|mcp| mcp["name"] == name)
+                .unwrap()["effective_when_requested"]
+                .clone()
+        };
+        let ungranted = listed_effect(&agent);
+        let agent = runtime
+            .owned
+            .agent_store
+            .grant_extension(
+                agent.id(),
+                crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, name),
+            )
+            .unwrap();
+        let pregranted = listed_effect(&agent);
+        runtime.owned.pending_provider_reloads.write().insert(
+            agent.id().into(),
+            PendingProviderReload {
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+                reason: ProviderReloadReason::RuntimeToolCatalog,
+                provisional_meta_activation: false,
+            },
+        );
+        let pending = listed_effect(&agent);
+        runtime
+            .owned
+            .pending_provider_reloads
+            .write()
+            .remove(agent.id());
+        let refreshed = listed_effect(&agent);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(ungranted, "after_provider_reload");
+        assert_eq!(pregranted, "now");
+        assert_eq!(pending, "after_provider_reload");
+        assert_eq!(refreshed, "now");
+    }
+
     #[test]
     fn app_readiness_matches_what_a_request_answers() {
         use super::app_readiness;

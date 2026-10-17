@@ -9,6 +9,7 @@ use crate::provider::{
 };
 use crate::transport::relay_peer::RequiredRemoteMcp;
 
+use super::mcp_availability::leased_provider_mcp_servers;
 use super::RemoteLeaseRuntime;
 
 fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str) -> String {
@@ -16,6 +17,39 @@ fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn native_transport_binding(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(String, String), DaemonError> {
+        let agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&agent.lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: agent.lease_id.clone(),
+            })?;
+        // Ordinary worker kernels keep the normal session lifetime. The
+        // existing absolute ceiling belongs only to dedicated lease workers.
+        if self.app.config.kernel_runtime_role
+            == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && crate::session::unix_epoch_ms().saturating_sub(lease.created_at_ms)
+                >= super::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS
+        {
+            return Err(crate::transport::native_provider_socket::error(
+                "native execution lease expired",
+            ));
+        }
+        Ok((
+            agent.backing_session_id.clone(),
+            agent.backing_agent_id.clone(),
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_leased_native_provider_launch(
         &mut self,
@@ -72,24 +106,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         .with_owner_user_id(lease.owner_user_id)
         .with_working_directory(PathBuf::from(backing_session.worktree_id()))
         .with_client_interface(ProviderClientInterface::NativeTui)
-        .with_mcp_servers(
-            required_mcps
-                .iter()
-                .map(|required| required.config.clone())
-                .collect(),
-        )
+        .with_mcp_servers(leased_provider_mcp_servers(
+            &required_mcps,
+            &remote_extension_manifest,
+        ))
         .with_remote_extension_manifest(remote_extension_manifest.clone())
         .with_variant(variant);
-        let mut mcp_servers = request.mcp_servers.clone();
-        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
-            if !mcp_servers.iter().any(|server| server.name == name) {
-                mcp_servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
-                    name,
-                    "http://127.0.0.1/mcp",
-                ));
-            }
-        }
-        request = request.with_mcp_servers(mcp_servers);
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
         }

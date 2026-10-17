@@ -582,4 +582,5 @@ pub(crate) async fn project_relay_remote_runtime_projection(
     runtime_state
         .project_relay_remote_runtime_projection(authority, event)
         .await
+        .map(|_| ())
 }

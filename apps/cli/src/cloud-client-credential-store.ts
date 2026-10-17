@@ -5,7 +5,7 @@ import { constants } from "node:fs"
 import { mkdir, open, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import { preferencesPath, publicRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"
-import { cloudClientRequest, CloudClientAuthError } from "./cloud-client-http.js"
+import { cloudClientRequest, CloudClientAuthError, endsCloudLogin } from "./cloud-client-http.js"
 export { CloudClientAuthError } from "./cloud-client-http.js"
 
 export type CloudClientCredential = {
@@ -60,7 +60,15 @@ export class CloudClientCredentialStore {
       await this.write(current)
     })
   }
-  async clear(): Promise<void> { await this.lock(() => rm(this.filePath, { force: true })) }
+  /** Unconditional, or (with `only`) just the login that made the failed request: a newer login of this profile stays. Returns whether the stored login is gone. */
+  async clear(only?: { loginId: string | undefined }): Promise<boolean> {
+    return this.lock(async () => {
+      const current = await this.load()
+      if (only && current && current.loginId !== only.loginId) return false
+      await rm(this.filePath, { force: true })
+      return true
+    })
+  }
   async session(publicKeyThumbprint: string, force = false, rejectedAccessToken?: string): Promise<CloudClientCredential> {
     return this.lock(async () => {
       let value = await this.load()
@@ -77,7 +85,7 @@ export class CloudClientCredentialStore {
         try {
           next = await cloudClientRequest(value.profile.apiUrl, "/auth/client/refresh", { body: { accountId: value.profile.accountId, clientId: value.clientId, publicKeyThumbprint, refreshCredential: value.refreshCredential, rotationId: value.pendingRotationId } })
         } catch (error) {
-          if (error instanceof CloudClientAuthError && ["client_revoked", "refresh_reuse_detected"].includes(error.code)) await rm(this.filePath, { force: true })
+          if (error instanceof CloudClientAuthError && endsCloudLogin(error.code)) await rm(this.filePath, { force: true })
           throw error
         }
         const expiresAtMs = Date.parse(next.cloudSessionExpiresAt)

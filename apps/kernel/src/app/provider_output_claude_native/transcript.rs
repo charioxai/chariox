@@ -37,6 +37,8 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) assistant_message_ids: Vec<String>,
     pub(super) terminal_assistant_message_ids: Vec<String>,
     pub(super) terminal_failure: Option<String>,
+    pub(super) interrupted_at_ms: Option<u64>,
+    pub(super) response_started_at_ms: Option<u64>,
     pub(super) enqueued_prompts: Vec<String>,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
@@ -68,6 +70,31 @@ pub(super) fn save_claude_transcript_cursor(context_file: &str, cursor: &ClaudeT
     if let Ok(raw) = serde_json::to_string(cursor) {
         let _ = fs::write(path, raw);
     }
+}
+
+// MP-08 / MP-10 / MP-11: hooks can precede the first transcript flush.
+// A bounded hint grants no read authority: every retry still passes through
+// provider_reported_transcript_on_kernel and its managed no-symlink checks.
+pub(super) fn remember_claude_transcript_path(context_file: &str, reported_path: &str) -> bool {
+    let path = std::path::Path::new(reported_path);
+    if reported_path.len() > 4096
+        || !path.is_absolute()
+        || path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+    {
+        return false;
+    }
+    let mut cursor = load_claude_transcript_cursor(context_file);
+    if cursor.files.contains_key(reported_path) || cursor.files.len() >= 16 {
+        return false;
+    }
+    cursor.files.insert(
+        reported_path.to_string(),
+        ClaudeTranscriptFileCursor::default(),
+    );
+    save_claude_transcript_cursor(context_file, &cursor);
+    true
 }
 
 pub(super) fn known_claude_transcript_paths(context_file: &str) -> Vec<String> {
@@ -140,6 +167,12 @@ pub(super) fn drain_claude_transcript_raw_since(
         if drain.session_id.is_none() {
             drain.session_id = claude_string_field(&value, &["sessionId", "session_id"]);
         }
+        if claude_transcript_is_interruption(&value) {
+            if let Some(at) = claude_transcript_timestamp_ms(&value) {
+                drain.interrupted_at_ms = Some(drain.interrupted_at_ms.unwrap_or(0).max(at));
+            }
+            continue;
+        }
         if claude_transcript_is_internal_resume_entry(&value) {
             continue;
         }
@@ -160,6 +193,18 @@ pub(super) fn drain_claude_transcript_raw_since(
         }
         drain.chunks.extend(chunks);
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
+            if value
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(Value::as_str)
+                != Some("<synthetic>")
+            {
+                if let Some(at) = claude_transcript_timestamp_ms(&value) {
+                    drain.response_started_at_ms =
+                        Some(drain.response_started_at_ms.unwrap_or(0).max(at));
+                }
+            }
+
             if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
                 drain.assistant_message_ids.push(message_id.clone());
                 if claude_transcript_assistant_turn_is_terminal(&value) {
@@ -211,6 +256,33 @@ fn claude_transcript_enqueued_prompt(value: &Value) -> Option<String> {
         && value.get("operation").and_then(Value::as_str) == Some("enqueue"))
     .then(|| claude_string_field(value, &["content"]))
     .flatten()
+}
+
+fn claude_transcript_is_interruption(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    let Some(content) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+    else {
+        return false;
+    };
+    let interrupted = |text: &str| {
+        matches!(
+            text.trim(),
+            "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+        )
+    };
+    content.as_str().is_some_and(interrupted)
+        || content.as_array().is_some_and(|parts| {
+            parts.len() == 1
+                && parts[0].get("type").and_then(Value::as_str) == Some("text")
+                && parts[0]
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(interrupted)
+        })
 }
 
 fn claude_transcript_timestamp_ms(value: &Value) -> Option<u64> {

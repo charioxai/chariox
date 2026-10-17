@@ -352,7 +352,7 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.chariox.url")));
-        assert!(launch
+        assert!(!launch
             .pty_args
             .iter()
             .any(|arg| arg == "mcp_servers.chariox.transport=\"streamable_http\""));
@@ -418,7 +418,7 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.chariox.url")));
-        assert!(launch
+        assert!(!launch
             .pty_args
             .iter()
             .any(|arg| arg == "mcp_servers.chariox.transport=\"streamable_http\""));
@@ -513,7 +513,7 @@ mod tests {
             .iter()
             .find(|arg| arg.starts_with("mcp_servers.chariox_mcp_browser={"))
             .expect("browser MCP should be rendered as one streamable HTTP table");
-        assert!(browser_config.contains("transport=\"streamable_http\""));
+        assert!(!browser_config.contains("transport="));
         assert!(browser_config.contains("url=\"http://127.0.0.1:43120/mcp/proxy/browser\""));
         assert!(browser_config.contains("bearer_token_env_var=\"CHARIOX_MCP_TOKEN\""));
         assert!(!browser_config.contains("http_headers"));

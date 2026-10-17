@@ -135,25 +135,11 @@ function formatProvider(provider: string) {
 
 function formatModel(model: string) {
   const normalized = model.trim()
-  if (!normalized || normalized === "default") {
-    return "Default"
+  if (!normalized || normalized === "default") return "Default"
+  for (const prefix of ["codex/", "claude/", "claude-p/", "claude-headless/"]) {
+    if (normalized.startsWith(prefix)) return normalized.slice(prefix.length)
   }
-  if (!normalized.includes("/")) {
-    return formatKnownLabel(normalized)
-  }
-  const parts = normalized.split("/").filter(Boolean)
-  const modelId = parts.at(-1)
-  const providerId = parts.length > 1 ? parts.at(-2) : undefined
-  if (!modelId) {
-    return formatKnownLabel(normalized)
-  }
-  if (!providerId) {
-    return formatKnownLabel(modelId)
-  }
-  if (/^codex$/i.test(providerId)) {
-    return formatKnownLabel(modelId)
-  }
-  return `${formatKnownLabel(providerId)} ${formatKnownLabel(modelId)}`
+  return normalized
 }
 
 function formatEffort(effort: string) {

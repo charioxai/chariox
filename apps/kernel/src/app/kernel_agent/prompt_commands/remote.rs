@@ -121,7 +121,9 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
-                return self.finalize_active_prompt_cancellation(session_id, agent_id, None);
+                // The ordinary runtime drain owns definitive completion. A
+                // worker with no active prompt may have completed before Esc.
+                return Err(error);
             }
             Err(error) => return Err(error),
         };
@@ -582,6 +584,63 @@ impl<'a> KernelAgentService<'a> {
             return Ok(None);
         };
         let active = self.prepare_promoted_remote_prompt_start(session_id, agent_id, &active)?;
+        let intent = self.remote_prompt_dispatch_for_active(session_id, agent_id, &active)?;
+        Ok(Some((active, intent)))
+    }
+
+    pub(crate) fn recover_admitted_remote_prompt_intent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected: &PromptQueueItem,
+    ) -> Result<
+        Option<(
+            PromptQueueItem,
+            crate::app::KernelRemotePromptDispatchIntent,
+        )>,
+        DaemonError,
+    > {
+        let Some(active) = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+        else {
+            return Ok(None);
+        };
+        // Accepted is the durable pre-send boundary. Dispatching/Delivered or a
+        // different active prompt belong to normal worker receipt recovery.
+        if active.id() != expected.id()
+            || active.durable_delivery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+            || !matches!(
+                active.status(),
+                crate::session::PromptStatus::Dispatching | crate::session::PromptStatus::Running
+            )
+            || crate::app::workflow_runtime::is_workflow_prompt_source(
+                active.source_attachment_id(),
+            )
+        {
+            return Ok(None);
+        }
+        let intent = self.remote_prompt_dispatch_for_active(session_id, agent_id, &active)?;
+        Ok(Some((active, intent)))
+    }
+
+    fn remote_prompt_dispatch_for_active(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        active: &PromptQueueItem,
+    ) -> Result<crate::app::KernelRemotePromptDispatchIntent, DaemonError> {
+        let agent = self.app.agents.get_agent(agent_id)?;
+        let remote =
+            agent
+                .remote_execution()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "recover admitted remote prompt",
+                    message: "agent lost its remote binding".into(),
+                })?;
+        self.app.ensure_remote_agent_binding_protocol(&remote)?;
         let workflow_context = if crate::app::workflow_runtime::is_workflow_prompt_source(
             active.source_attachment_id(),
         ) {
@@ -613,10 +672,7 @@ impl<'a> KernelAgentService<'a> {
             external_provider_turn_id: active.external_provider_turn_id().map(str::to_string),
             workflow_context,
         };
-        Ok(Some((
-            active,
-            crate::app::KernelRemotePromptDispatchIntent { dispatch },
-        )))
+        Ok(crate::app::KernelRemotePromptDispatchIntent { dispatch })
     }
 
     fn prepare_promoted_remote_prompt_start(

@@ -17,6 +17,19 @@ pub(super) enum RemotePromptRunBindingRecovery {
     Rejected,
 }
 
+fn projection_drain_should_retry(error: &DaemonError) -> bool {
+    remote_prompt_error_should_retry_transport(error)
+        || matches!(error, DaemonError::SessionHistoryFailed { operation, .. }
+            if matches!(*operation,
+                "begin home projection"
+                    | "save home projection result"
+                    | "finish home projection"
+                    | "lock applied projection receipt"
+                    | "begin applied projection receipt"
+                    | "save projection receipt"
+                    | "commit applied projection receipt"))
+}
+
 impl KernelRuntimeState {
     pub(super) async fn drain_completed_remote_prompt_receipt_projection(
         &self,
@@ -42,68 +55,123 @@ impl KernelRuntimeState {
             provider_run_id: worker_provider_run_id.to_string(),
             pump_output: true,
         };
-        // Relay I/O runs after relay configuration was copied and the app lock was released.
-        let relay_state = self.connected_relay_state_for_config(&relay_config).await;
-        let response = match relay_state {
-            Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
-                    &relay_config,
-                    &relay_state,
-                    target,
-                    request,
-                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
-                )
-                .await
-            }
-            None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
-                    &relay_config,
-                    target,
-                    request,
-                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
-                )
-                .await
-            }
-        }
-        .map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
-        let (response, peer) = response;
-        let authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
-            peer,
-            expected_binding: Some(binding),
-            expected_prompt_id: Some(dispatch.prompt_id.clone()),
-        };
-        let event = match response {
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
+        // MP-08 / MP-10 / MP-11: a Completed receipt may precede several
+        // retained output-only pages. Apply and ACK each scoped delivery using
+        // the normal projector before asking for its successor. Never resubmit.
+        let mut previous_sequence = None;
+        loop {
+            if !self
+                .remote_prompt_receipt_prompt_is_current(dispatch)
+                .map_err(|error| error.to_string())?
+            {
                 return Err(
-                    "worker returned no replayable projection for its completed receipt"
-                        .to_string(),
+                    "home prompt changed before the completed worker projection was applied".into(),
                 );
             }
-            other => {
-                return Err(format!(
-                    "unexpected completed receipt drain response: {other:?}"
-                ));
+            // Relay I/O runs after configuration was copied and the app lock released.
+            let response = match self.connected_relay_state_for_config(&relay_config).await {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
+                        &relay_config, &relay_state, target.clone(), request.clone(),
+                        REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                    ).await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
+                        &relay_config, target.clone(), request.clone(),
+                        REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                    ).await
+                }
+            }.map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
+            let (response, peer) = response;
+            let authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+                peer,
+                expected_binding: Some(binding.clone()),
+                expected_prompt_id: Some(dispatch.prompt_id.clone()),
+            };
+            let event = match response {
+                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
+                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
+                    return Err(
+                        "worker returned no replayable projection for its completed receipt".into(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "unexpected completed receipt drain response: {other:?}"
+                    ))
+                }
+            };
+            let completed =
+                completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event);
+            let RelayPeerEvent::LeasedRuntimeProjection { delivery, .. } = &event;
+            let sequence = delivery.as_ref().map(|delivery| delivery.sequence);
+            if !projection_reply_matches(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                worker_provider_run_id,
+                &event,
+            ) || (!completed && delivery.is_none())
+            {
+                return Err(
+                    "worker projection did not prove the exact home resources and provider run"
+                        .into(),
+                );
             }
-        };
-        if !completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event) {
-            return Err(
-                "worker projection did not prove completion of the exact home prompt and provider run"
-                    .to_string(),
-            );
+            if !self
+                .remote_prompt_receipt_prompt_is_current(dispatch)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(
+                    "home prompt changed before the completed worker projection was applied".into(),
+                );
+            }
+            let accepted = self
+                .project_relay_remote_runtime_projection(authority, event)
+                .await
+                .map_err(|error| {
+                    format!("completed worker projection could not be applied: {error}")
+                })?;
+            if !accepted {
+                return Err(
+                    "completed worker projection was not admitted for the current home binding"
+                        .into(),
+                );
+            }
+            if completed {
+                let projected_run = crate::provider::projected_leased_provider_run_id(
+                    &binding.leased_agent_id,
+                    worker_provider_run_id,
+                );
+                let settled = self
+                    .owned
+                    .completed_git_turn_snapshots
+                    .projection_for_prompt(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                    )
+                    .is_some_and(|turn| turn.provider_run_id == projected_run);
+                return if settled {
+                    Ok(())
+                } else {
+                    Err("completed worker projection did not settle the exact home prompt and provider run".into())
+                };
+            }
+            if sequence
+                .zip(previous_sequence)
+                .is_some_and(|(current, previous)| current <= previous)
+            {
+                // The shared projector re-ACKed this duplicate without replaying
+                // output. Yield to receipt reconciliation if the ACK was lost;
+                // an unavailable ACK must not spin forever on the same head.
+                return Err(
+                    "completed worker projection delivery did not advance after acknowledgement"
+                        .into(),
+                );
+            }
+            previous_sequence = sequence;
         }
-        if !self
-            .remote_prompt_receipt_prompt_is_current(dispatch)
-            .map_err(|error| error.to_string())?
-        {
-            return Err(
-                "home prompt changed before the completed worker projection was applied"
-                    .to_string(),
-            );
-        }
-        self.project_remote_runtime_projection_event(authority, event)
-            .await
-            .map_err(|error| format!("completed worker projection could not be applied: {error}"))
     }
 
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
@@ -146,12 +214,16 @@ impl KernelRuntimeState {
                         }
                         return;
                     }
-                    Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                    // MP-08 / MP-10 / MP-11: the admitted page is repeatable,
+                    // including after restart. A temporarily failed local write
+                    // must not abandon its drain when the storage fault clears.
+                    // Do not retry identity, digest or authorization errors.
+                    Err(error) if projection_drain_should_retry(&error) => {
                         transport_retry_attempt = transport_retry_attempt.saturating_add(1);
                         if transport_retry_attempt == 1 || transport_retry_attempt % 12 == 0 {
                             crate::logging::warn_with_fields(
                                 "daemon.remote_prompt_dispatch",
-                                "remote projection transport unavailable; retrying active prompt",
+                                "remote projection temporarily unavailable; retrying active prompt",
                                 serde_json::json!({
                                     "session_id": session_id,
                                     "agent_id": agent_id,
@@ -466,6 +538,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.project_relay_remote_runtime_projection(authority, event)
             .await
+            .map(|_| ())
     }
 }
 
@@ -540,6 +613,7 @@ mod mp11_drain_tests {
     #[test]
     fn mp11_drain_reply_binds_requested_resource_identities() {
         let event = RelayPeerEvent::LeasedRuntimeProjection {
+            delivery: None,
             home_session_id: "home".into(),
             home_agent_id: "agent".into(),
             provider_run_id: "run".into(),

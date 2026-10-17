@@ -19,8 +19,11 @@ export * from "./ipc-disposable-worker-requests.js"
 export * from "./ipc-managed-context-requests.js"
 export * from "./ipc-project-environment-setup-requests.js"
 export * from "./ipc-config-requests.js"
+export * from "./ipc-ssh-machine-requests.js"
 
 export { controlRoomWorkflowRunsRequest } from "./room-workflows.js"
 export { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "./project-environment-aggregate.js"
 
 export * from "./project-environment-aggregate-requests.js"
+
+export * from "./ipc-native-provider-transport-requests.js"

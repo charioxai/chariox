@@ -5,6 +5,7 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let request = self.resolve_agent_account_request(request)?;
         let mut sessions = self.session_store.write();
         let agent = self.agent_store.create_agent(request, &mut sessions)?;
         drop(sessions);
@@ -22,6 +23,10 @@ impl KernelRuntimeOwnedState {
         &self,
         requests: Vec<crate::agent::CreateAgentRequest>,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        let requests = requests
+            .into_iter()
+            .map(|request| self.resolve_agent_account_request(request))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut sessions = self.session_store.write();
         let agents = self.agent_store.create_agents(requests, &mut sessions)?;
         drop(sessions);

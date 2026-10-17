@@ -158,14 +158,26 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        self.terminal_stream.record_assistant_message_completion(
-            session_id,
-            provider_run_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-            message_id,
-            completed_at_ms,
-        );
+        let prompt_id = agent_id.as_deref().and_then(|agent| {
+            self.session_store
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, agent)
+                        .map(|prompt| prompt.id().to_string())
+                })
+        });
+        self.terminal_stream
+            .record_assistant_message_completion_for_prompt(
+                session_id,
+                provider_run_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+                message_id,
+                completed_at_ms,
+                prompt_id.as_deref(),
+            );
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 

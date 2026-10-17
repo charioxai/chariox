@@ -344,6 +344,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ResizeTerminal(request) => {
             LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::NativeProviderTransport(request) => {
+            LocalRequestMetadata::new("native_provider.transport", Background)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.agent_id)
+                .provider_run(&request.provider_run_id)
+        }
         LocalDaemonRequest::SendTerminalInput(request) => {
             LocalRequestMetadata::new("terminal.input.send", Interactive)
                 .session(&request.session_id)
@@ -573,6 +580,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
+        LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
@@ -903,6 +912,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
         LocalDaemonRequest::PumpTerminalOutput(_) => "terminal.output.poll",
+        LocalDaemonRequest::NativeProviderTransport(_) => {
+            unreachable!("handled by metadata matcher")
+        }
         LocalDaemonRequest::AppendNativeProviderOutput(_) => "terminal.output.append_native",
         LocalDaemonRequest::AppendNativeProviderOutputBatch(_) => {
             "terminal.output.append_native_batch"

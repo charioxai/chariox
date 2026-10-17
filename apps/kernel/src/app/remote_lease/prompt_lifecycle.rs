@@ -116,6 +116,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             receipt: WorkerPromptReceipt {
                 home_prompt_id: home_prompt_id.to_string(),
                 worker_provider_run_id: None,
+                backing_prompt_id: None,
                 execution_lease_id: leased_agent.lease_id,
                 phase: WorkerPromptReceiptPhase::Dispatching,
             },
@@ -123,6 +124,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
         };
         self.app.worker_prompt_receipts.persist(record)?;
         Ok(None)
+    }
+
+    // MP-08 / MP-10 / MP-11: bind the exact backing prompt before provider I/O.
+    pub(crate) fn accept_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        provider_run_id: &str,
+        backing_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut record = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "accept leased prompt receipt",
+                message: "worker admission receipt is missing".into(),
+            })?;
+        record.receipt.phase = WorkerPromptReceiptPhase::Accepted;
+        record.receipt.worker_provider_run_id = Some(provider_run_id.into());
+        record.receipt.backing_prompt_id = Some(backing_prompt_id.into());
+        self.app.worker_prompt_receipts.persist(record)?;
+        Ok(())
     }
 
     pub(crate) fn update_leased_prompt_receipt(
@@ -284,6 +309,37 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mut projection = leased_prompt_admission_receipt_projection(record);
             if record.receipt.phase == WorkerPromptReceiptPhase::Accepted {
                 if let Some(leased_agent) = self.app.leased_agents.get(leased_agent_id) {
+                    // MP-08 / MP-10 / MP-11: a successor may replace the latest
+                    // replay, but this exact persisted turn remains definitive.
+                    if record
+                        .receipt
+                        .backing_prompt_id
+                        .as_deref()
+                        .is_some_and(|backing| {
+                            self.app
+                                .completed_git_turn_snapshot_store()
+                                .projection_for_prompt(
+                                    &leased_agent.backing_session_id,
+                                    &leased_agent.backing_agent_id,
+                                    backing,
+                                )
+                                .is_some_and(|turn| {
+                                    turn.provider_run_id == projection.worker_provider_run_id
+                                })
+                        })
+                        && self
+                            .app
+                            .providers
+                            .get_run(&projection.worker_provider_run_id)
+                            .is_ok_and(|run| {
+                                run.session_id() == leased_agent.backing_session_id
+                                    && run.agent_instance_id()
+                                        == Some(leased_agent.backing_agent_id.as_str())
+                            })
+                    {
+                        projection.phase = LeasedPromptReceiptPhase::Completed;
+                        return Ok(Some(projection));
+                    }
                     if let Some(completed) =
                         leased_agent
                             .replayable_completion
@@ -719,11 +775,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_prepared_leased_prompt_submission(
         &mut self,
         prepared: PreparedLeasedPromptSubmission,
         provider_run_id: String,
     ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
+        let (provider_run_id, outcome, dispatch) =
+            self.admit_prepared_leased_prompt_submission(prepared, provider_run_id)?;
+        crate::app::KernelAgentService::new(self.app).finish_compat_prompt_dispatch(dispatch)?;
+        Ok((provider_run_id, outcome))
+    }
+
+    // MP-08 / MP-10 / MP-11: commit worker ownership before provider I/O.
+    // The runtime dispatches this intent through the ordinary async provider lane.
+    pub(crate) fn admit_prepared_leased_prompt_submission(
+        &mut self,
+        prepared: PreparedLeasedPromptSubmission,
+        provider_run_id: String,
+    ) -> Result<
+        (
+            String,
+            PromptSubmissionOutcome,
+            Option<crate::app::KernelPromptDispatch>,
+        ),
+        DaemonError,
+    > {
         let PreparedLeasedPromptSubmission {
             leased_agent,
             prompt,
@@ -747,20 +824,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 materialized_attachments,
             )?;
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
-        match dispatch {
-            Some(dispatch) if held_for_capacity => {
-                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
-            }
-            dispatch => {
-                if let Some(git_context) = git_context {
-                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
-                }
-                crate::app::KernelAgentService::new(self.app)
-                    .finish_compat_prompt_dispatch(dispatch)?
-            }
-        }
-        crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(&leased_agent.backing_session_id)?;
         let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
         let accepted_prompt = match &outcome {
             PromptSubmissionOutcome::Started { prompt }
@@ -770,12 +833,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
         )?;
-        let current_submission_was_promoted = backing_active.as_ref().is_some_and(|active| {
-            active.created_at_ms() == accepted_prompt.created_at_ms()
-                && active.prompt() == accepted_prompt.prompt()
-                && active.hidden_system_context() == accepted_prompt.hidden_system_context()
-                && active.attachments() == accepted_prompt.attachments()
-        });
+        let current_submission_was_promoted = backing_active
+            .as_ref()
+            .is_some_and(|active| active.id() == accepted_prompt.id());
         if started && !held_for_capacity {
             crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
         }
@@ -821,7 +881,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 },
             );
         }
-        Ok((provider_run_id, outcome))
+        crate::app::KernelSessionReadService::new(self.app)
+            .session_snapshot(&leased_agent.backing_session_id)?;
+        let dispatch = match dispatch {
+            Some(dispatch) if held_for_capacity => {
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context);
+                None
+            }
+            dispatch => {
+                if let Some(git_context) = git_context {
+                    self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+                }
+                dispatch
+            }
+        };
+        Ok((provider_run_id, outcome, dispatch))
     }
 
     pub(crate) fn prepare_leased_prompt_steer(
@@ -842,15 +916,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "steer leased prompt",
-                message: format!(
-                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
-                    leased_agent.active_home_prompt_id
-                ),
-            });
-        }
         let provider_run = self
             .app
             .providers
@@ -861,6 +926,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActiveProviderRun {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id)
+            && !self.leased_native_prompt_is_current(
+                &leased_agent,
+                target_home_prompt_id,
+                provider_run.id(),
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer leased prompt",
+                message: format!(
+                    "leased agent `{leased_agent_id}` is running home prompt {:?}, not `{target_home_prompt_id}`",
+                    leased_agent.active_home_prompt_id
+                ),
+            });
+        }
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: provider_run.id().to_string(),
@@ -981,7 +1061,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id) {
+        if leased_agent.active_home_prompt_id.as_deref() != Some(target_home_prompt_id)
+            && !self.leased_native_prompt_is_current(
+                &leased_agent,
+                target_home_prompt_id,
+                worker_provider_run_id,
+            )
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "steer leased prompt",
                 message: format!(
@@ -1295,12 +1381,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "cancel leased prompt",
-                message: "active home prompt did not match the cancellation identity".to_string(),
-            });
-        }
         let active_prompt = self
             .app
             .prompt_owner_active_prompt_for_agent(
@@ -1310,7 +1390,23 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: leased_agent.backing_session_id.clone(),
             })?;
-        if leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms())
+        // MP-08 / MP-10 / MP-11: a native-origin turn has the exact worker
+        // prompt ID projected to home, rather than a managed submit receipt.
+        let native_origin = self.leased_native_prompt_is_current(
+            &leased_agent,
+            expected_home_prompt_id,
+            expected_worker_provider_run_id,
+        );
+        if !native_origin
+            && leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "cancel leased prompt",
+                message: "active home prompt did not match the cancellation identity".to_string(),
+            });
+        }
+        if (!native_origin
+            && leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms()))
             || !matches!(
                 active_prompt.status(),
                 crate::session::PromptStatus::Dispatching
@@ -1496,6 +1592,104 @@ mod receipt_tests {
             home_prompt_id,
             provider_run_id,
         )
+    }
+
+    #[test]
+    fn native_queued_steer_uses_the_exact_projected_worker_prompt_identity() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (leased, session, agent, _, run_id) =
+            submit_cancellable_prompt(&mut app, "native-steer");
+        let active = app
+            .prompt_owner_active_prompt_for_agent(&session, &agent)
+            .unwrap()
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session,
+            "managed-dev-stub",
+            "managed-dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(&agent)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "native-steer-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run);
+        app.leased_agents
+            .get_mut(&leased)
+            .unwrap()
+            .active_home_prompt_id = None;
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "unprojected",
+                active.id(),
+                "steer",
+                "",
+                vec![],
+                None
+            )
+            .is_err());
+        app.leased_agents
+            .get_mut(&leased)
+            .unwrap()
+            .projected_prompt_ids
+            .push(active.id().to_string());
+        let (_, dispatch) = RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "native-steer",
+                active.id(),
+                "steer",
+                "",
+                vec![],
+                None,
+            )
+            .expect("a native turn already projected to home must accept its exact steer");
+        assert_eq!(
+            dispatch.unwrap().target_active_prompt_id.as_deref(),
+            Some(active.id())
+        );
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .reserve_leased_prompt_steer(&leased, "native-steer", active.id(), &run_id)
+            .unwrap());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_prompt_steer(
+                &leased,
+                "stale",
+                "foreign-prompt",
+                "steer",
+                "",
+                vec![],
+                None
+            )
+            .is_err());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .reserve_leased_prompt_steer(&leased, "foreign-run", active.id(), "foreign-run")
+            .is_err());
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(&session, &agent)
+                .unwrap()
+                .unwrap()
+                .id(),
+            active.id()
+        );
     }
 
     #[test]

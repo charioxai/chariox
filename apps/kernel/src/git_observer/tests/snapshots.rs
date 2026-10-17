@@ -172,6 +172,54 @@ fn cancelled_settlement_survives_late_provider_completion_projection() {
     );
 }
 
+// MP-08 / MP-10 / MP-11: a leased completion must resolve its own turn after
+// another turn has settled, without growing an unbounded outcome registry.
+#[test]
+fn exact_prompt_settlement_is_retained_and_bounded() {
+    let store = CompletedGitTurnSnapshotStore::default();
+    for index in 0..22 {
+        let prompt = crate::session::PromptQueueItem::new(
+            format!("prompt-{index}"),
+            "attachment",
+            "agent",
+            "research",
+            crate::session::PromptStatus::Running,
+        );
+        store.record_prompt_settlement(
+            "session",
+            "agent",
+            "run",
+            &prompt,
+            100 + index,
+            Some(90),
+            CompletedTurnSettlementStatus::Cancelled,
+        );
+    }
+    assert!(store
+        .projection_for_prompt("session", "agent", "prompt-0")
+        .is_none());
+    assert!(store
+        .projection_for_prompt("session", "agent", "prompt-1")
+        .is_none());
+    assert_eq!(
+        store
+            .projection_for_prompt("session", "agent", "prompt-2")
+            .unwrap()
+            .settlement_status,
+        CompletedTurnSettlementStatus::Cancelled
+    );
+    assert_eq!(
+        store
+            .latest_projection_for_agent("session", "agent")
+            .unwrap()
+            .prompt_id,
+        "prompt-21"
+    );
+    assert!(store
+        .projection_for_prompt("session", "agent", "prompt-2-extra")
+        .is_none());
+}
+
 #[test]
 fn failed_settlement_enriches_matching_git_observation_by_prompt_identity() {
     let completed = CompletedGitTurnSnapshotStore::default();

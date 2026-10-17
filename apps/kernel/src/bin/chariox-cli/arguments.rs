@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|app|logs|codex|claude|opencode|publication|deployments|deployed [args]
+       chariox-cli access|sudo|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -38,6 +38,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
             "access"
                 | "sudo"
                 | "app"
+                | "context"
                 | "logs"
                 | "codex"
                 | "claude"
@@ -45,6 +46,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "publication"
                 | "deployments"
                 | "deployed"
+                | "cloud"
                 | "serve"
         )
     }) {
@@ -91,4 +93,23 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
         index += 1;
     }
     Ok(help)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::help_requested;
+
+    // MP-08 / MP-11: Cloud commands use the ordinary TypeScript parser.
+    #[test]
+    fn cloud_commands_reach_their_own_parser() {
+        for args in [
+            vec!["cloud", "login", "--api-url", "https://cloud.example.test"],
+            vec!["cloud", "status"],
+            vec!["cloud", "kernels"],
+            vec!["cloud", "logout"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(help_requested(&args), Ok(false));
+        }
+    }
 }

@@ -20,6 +20,9 @@ pub(crate) struct WorkerPromptReceipt {
     pub(crate) home_prompt_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) worker_provider_run_id: Option<String>,
+    // MP-08 / MP-10 / MP-11: private durable home/worker identity binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) backing_prompt_id: Option<String>,
     pub(crate) execution_lease_id: String,
     pub(crate) phase: WorkerPromptReceiptPhase,
 }
@@ -82,6 +85,56 @@ impl WorkerPromptReceiptStore {
     ) -> Option<&WorkerPromptReceiptRecord> {
         self.records
             .get(&(leased_agent_id.to_string(), home_prompt_id.to_string()))
+    }
+
+    // MP-08 / MP-10 / MP-11: late worker completions retain their home identity.
+    pub(crate) fn home_prompt_for_backing(
+        &self,
+        leased_agent_id: &str,
+        execution_lease_id: &str,
+        provider_run_id: &str,
+        backing_prompt_id: &str,
+    ) -> Option<&str> {
+        let mut matches = self.records.values().filter(|record| {
+            record.leased_agent_id == leased_agent_id
+                && record.receipt.execution_lease_id == execution_lease_id
+                && record.receipt.phase == WorkerPromptReceiptPhase::Accepted
+                && record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
+                && record.receipt.backing_prompt_id.as_deref() == Some(backing_prompt_id)
+        });
+        let record = matches.next()?;
+        // Ambiguous records never choose an arbitrary home turn.
+        matches
+            .next()
+            .is_none()
+            .then_some(record.receipt.home_prompt_id.as_str())
+    }
+
+    pub(crate) fn backing_bindings_for_run(
+        &self,
+        leased_agent_id: &str,
+        execution_lease_id: &str,
+        provider_run_id: &str,
+    ) -> Vec<(String, String)> {
+        let mut bindings: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+        for record in self.records.values().filter(|record| {
+            record.leased_agent_id == leased_agent_id
+                && record.receipt.execution_lease_id == execution_lease_id
+                && record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
+                && record.receipt.phase == WorkerPromptReceiptPhase::Accepted
+        }) {
+            let Some(backing) = record.receipt.backing_prompt_id.as_deref() else {
+                continue;
+            };
+            bindings
+                .entry(backing)
+                .and_modify(|home| *home = None)
+                .or_insert(Some(&record.receipt.home_prompt_id));
+        }
+        bindings
+            .into_iter()
+            .filter_map(|(backing, home)| home.map(|home| (home.to_string(), backing.to_string())))
+            .collect()
     }
 
     pub(crate) fn caller_for_leased_agent(
@@ -153,6 +206,10 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
             .worker_provider_run_id
             .as_deref()
             .is_none_or(|run_id| !run_id.trim().is_empty())
+        && receipt
+            .backing_prompt_id
+            .as_deref()
+            .is_none_or(|id| !id.trim().is_empty())
         && (receipt.phase != WorkerPromptReceiptPhase::Accepted
             || receipt.worker_provider_run_id.is_some())
 }
@@ -197,7 +254,12 @@ fn validate_receipt_transition(
         (Some(_), None) => false,
         (None, _) => true,
     };
-    if !allowed_phase || !run_identity_is_monotonic {
+    let backing_identity_is_monotonic = previous
+        .receipt
+        .backing_prompt_id
+        .as_deref()
+        .is_none_or(|old| next.receipt.backing_prompt_id.as_deref() == Some(old));
+    if !allowed_phase || !run_identity_is_monotonic || !backing_identity_is_monotonic {
         return Err(receipt_transition_error(
             "worker prompt receipt cannot change a settled outcome or provider-run identity",
         ));
@@ -221,6 +283,7 @@ mod tests {
             leased_agent_id: "leased-agent-1".to_string(),
             receipt: WorkerPromptReceipt {
                 home_prompt_id: "home-prompt-1".to_string(),
+                backing_prompt_id: None,
                 worker_provider_run_id: None,
                 execution_lease_id: "lease-1".to_string(),
                 phase,
@@ -246,12 +309,56 @@ mod tests {
             .expect("dispatching receipt should persist");
         let mut accepted = receipt(WorkerPromptReceiptPhase::Accepted);
         accepted.receipt.worker_provider_run_id = Some("worker-run-1".to_string());
+        accepted.receipt.backing_prompt_id = Some("backing-prompt-1".into());
         store
             .persist(accepted.clone())
             .expect("acceptance should persist");
         assert!(store
             .persist(receipt(WorkerPromptReceiptPhase::Rejected))
             .is_err());
+        let mut changed_backing = accepted.clone();
+        changed_backing.receipt.backing_prompt_id = Some("backing-prompt-2".into());
+        assert!(store.persist(changed_backing).is_err());
+        assert_eq!(
+            store.home_prompt_for_backing(
+                "leased-agent-1",
+                "lease-1",
+                "worker-run-1",
+                "backing-prompt-1"
+            ),
+            Some("home-prompt-1")
+        );
+        assert!(store
+            .home_prompt_for_backing(
+                "leased-agent-other",
+                "lease-1",
+                "worker-run-1",
+                "backing-prompt-1"
+            )
+            .is_none());
+        assert!(store
+            .home_prompt_for_backing(
+                "leased-agent-1",
+                "lease-other",
+                "worker-run-1",
+                "backing-prompt-1"
+            )
+            .is_none());
+        assert!(store
+            .home_prompt_for_backing(
+                "leased-agent-1",
+                "lease-1",
+                "worker-run-other",
+                "backing-prompt-1"
+            )
+            .is_none());
+        assert_eq!(
+            store.backing_bindings_for_run("leased-agent-1", "lease-1", "worker-run-1"),
+            vec![("home-prompt-1".into(), "backing-prompt-1".into())]
+        );
+        assert!(store
+            .backing_bindings_for_run("leased-agent-1", "lease-other", "worker-run-1")
+            .is_empty());
         let mut changed_lease = accepted.clone();
         changed_lease.receipt.execution_lease_id = "lease-2".to_string();
         assert!(store.persist(changed_lease).is_err());

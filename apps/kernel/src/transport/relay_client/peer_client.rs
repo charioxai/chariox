@@ -265,9 +265,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         // No await separates this check from inserting and enqueuing the request.
         authorize()?;
         let Some(outgoing_tx) = guard.outgoing_tx.clone() else {
-            return Err(DaemonError::LocalTransport {
+            return Err(DaemonError::RelayTransport {
                 operation: "send relay peer request",
+                code: "relay_disconnected".into(),
                 message: "relay is not connected".to_string(),
+                retryable: true,
             });
         };
         guard.next_peer_request_id += 1;
@@ -297,9 +299,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         let mut guard = state.write().await;
         guard.pending_peer_requests.remove(&request_id);
         trace.log_completed("send_failed", Some("relay is not connected"), None);
-        return Err(DaemonError::LocalTransport {
+        return Err(DaemonError::RelayTransport {
             operation: "send relay peer request",
+            code: "write_failed".into(),
             message: "relay is not connected".to_string(),
+            retryable: true,
         });
     }
     let response_deadline = tokio::time::Instant::now() + response_timeout;
@@ -315,9 +319,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             Ok(Ok(envelope)) => envelope,
             Ok(Err(_)) => {
                 trace.log_completed("cancelled", Some("relay peer request was cancelled"), None);
-                return Err(DaemonError::LocalTransport {
+                return Err(DaemonError::RelayTransport {
                     operation: "read relay peer response",
+                    code: "connection_closed".into(),
                     message: "relay peer request was cancelled".to_string(),
+                    retryable: true,
                 });
             }
             Err(_) => {
@@ -328,9 +334,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                     response_timeout.as_millis()
                 );
                 trace.log_completed("timeout", Some(&message), None);
-                return Err(DaemonError::LocalTransport {
+                return Err(DaemonError::RelayTransport {
                     operation: "read relay peer response",
+                    code: "request_timeout".into(),
                     message,
+                    retryable: true,
                 });
             }
         };
@@ -852,7 +860,11 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         connect_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        tokio_tungstenite::connect_async_with_config(
+            chariox_relay::frame_transport::transport_url(&relay_url),
+            None,
+            true, // MP-08 / MP-10 / MP-11: interactive home-worker delivery.
+        ),
     )
     .await
     .map_err(|_| DaemonError::LocalTransport {

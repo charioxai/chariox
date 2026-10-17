@@ -102,6 +102,7 @@ impl KernelRuntimeState {
                 .take_due_provider_run_ids(now_ms),
         );
         self.reap_structured_prompt_jobs_and_dispatch();
+        self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
         for provider_run_id in ready_provider_run_ids {
             let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
@@ -112,7 +113,7 @@ impl KernelRuntimeState {
                 .owned
                 .attachment_store
                 .list_session_attachment_ids(&session_id);
-            // Browser/CLI terminal-output requests use this same provider lane. Keep the
+            // Provider controls use this same provider lane. Keep the
             // background pump in it too: otherwise both paths can apply one completion
             // concurrently, allowing a queued prompt promoted by the first path to be
             // settled immediately by the second path's stale turn state.
