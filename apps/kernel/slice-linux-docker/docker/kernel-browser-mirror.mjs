@@ -74,6 +74,7 @@ export class MirrorService {
       try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,navigationPreview:command.navigation_preview===true&&process.env.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'}));}
 
       catch(error){await releaseRender().catch(()=>{});throw error;}
+      this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{})};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};

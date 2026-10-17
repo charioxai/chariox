@@ -135,6 +135,32 @@ test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet,
   assert.deepEqual([first, replay, other.sequence, runs], [first, first, 2, 2]);
 });
 
+test('BROWSER-UX-05: the first packet is built at registration; the first credit takes it without a second build', async () => {
+  const mirror = new Mirror2({ host: {} }), stream = { id: 's1', chain: Promise.resolve(), issued: 0 }, built = [];
+  mirror.packet = async (s, command) => { built.push(command.after_sequence); await new Promise(resolve => setTimeout(resolve, 20)); return { sequence: ++stream.issued }; };
+  mirror.begin(stream, 'scope', 7);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(built, [0], 'building started at registration, before any credit');
+  const first = await mirror.next(stream, { command_id: 'c1', after_sequence: 0, wait_ms: 0 }, 'scope');
+  assert.equal(first.sequence, 1);
+  assert.deepEqual(built, [0], 'the credit reused the early packet');
+  const second = await mirror.next(stream, { command_id: 'c2', after_sequence: 1, wait_ms: 0 }, 'scope');
+  assert.deepEqual([second.sequence, built], [2, [0, 1]]);
+});
+
+test('BROWSER-UX-05: a failed early packet leaves the first credit to build its own; a resend is never answered by it', async () => {
+  const mirror = new Mirror2({ host: {} }), stream = { id: 's1', chain: Promise.resolve(), issued: 0 };
+  let runs = 0; mirror.packet = async () => { if (++runs === 1) throw new Error('early failed'); return { sequence: ++stream.issued, run: runs }; };
+  mirror.begin(stream, 'scope', 7);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal((await mirror.next(stream, { command_id: 'c1', after_sequence: 0, wait_ms: 0 }, 'scope')).run, 2);
+  const early = new Mirror2({ host: {} }), other = { id: 's2', chain: Promise.resolve(), issued: 0 };
+  early.packet = async (s, command) => ({ sequence: ++other.issued, after: command.after_sequence, resend: command.resend });
+  early.begin(other, 'scope', 7);
+  const resent = await early.next(other, { command_id: 'r1', after_sequence: 2, resend: true, wait_ms: 0 }, 'scope');
+  assert.equal(resent.resend, true)
+});
+
 test('MP-10: queued credits wait one period each after their predecessor (one heartbeat per wait, capped from arrival)', async () => {
   const mirror = new Mirror2({ host: {} }), stream = { chain: Promise.resolve(), issued: 0 }, waits = [];
   mirror.packet = async (s, command, scope, signal, deadline) => { const start = Date.now(); waits.push(deadline - start); await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()))); return { sequence: ++stream.issued }; };

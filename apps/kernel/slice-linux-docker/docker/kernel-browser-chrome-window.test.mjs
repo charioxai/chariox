@@ -364,6 +364,29 @@ test("MP-08/MP-11 popups follow a live band when an earlier band's reader has di
   } finally { await real.close(); }
 });
 
+// r17 quiet host: a menu stayed listed after a long sequence with every band reader gone. Fixed-label marks
+// (no data) name that state: all watched bands unreadable (once per streak) and each popup count change.
+test("MP-08/MP-11 popup tracking marks when no band can be read and when the popup count changes", async t => {
+  const { host, windows } = fake();
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    const marks = []; host.timing = label => marks.push(label);
+    await windows.resolve();
+    const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+    const menu = { id: 0x600070, x: 2000, y: 140, width: 497, height: 801, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+    let rows = [tabbed, menu], dead = false;
+    const stop = windows.watch(async () => { if (dead) throw Error("MP-11: native window inventory lease"); return rows; }, 5);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      rows = [tabbed]; await new Promise(resolve => setTimeout(resolve, 40));
+      dead = true; await new Promise(resolve => setTimeout(resolve, 60));
+      assert.deepEqual(marks.filter(label => label.startsWith("aux_")), ["aux_count 1", "aux_count 0", "aux_poll_unreadable"], "one mark per streak");
+    } finally { stop(); }
+  } finally { await real.close(); }
+});
+
 // MP-08/MP-10/MP-11: Caps Lock/automation can report upper-case key labels
 // without Shift. Native X11 must receive the caller's explicit modifier chord.
 test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite upper-case labels', async () => {
