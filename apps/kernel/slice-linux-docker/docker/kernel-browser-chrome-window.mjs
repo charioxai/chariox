@@ -7,6 +7,7 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
 // the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
@@ -58,6 +59,7 @@ export class ChromeWindows {
   onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   retire(reason) {
     if (!this.bound) return;
+    retireNativeStates();
     const {window_generation} = this.bound.tabbed; this.bound = null;
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});

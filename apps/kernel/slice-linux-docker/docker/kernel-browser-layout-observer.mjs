@@ -6,6 +6,7 @@
 // longer than MAX_AGE_MS (a bound for changes without any signal, not the proof). Any loss of the
 // observer (navigation, detach, context loss, install failure) means every publication reads.
 import {randomUUID} from 'node:crypto';
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 export const MAX_AGE_MS=250;
 // Everything that can change the layout viewport size, zoom or pinch scale: window and visual
 // viewport resize (also browser zoom and DPR), root/body box changes (scrollbar appearance),
@@ -30,7 +31,7 @@ export async function observeLayout(connection,sessionId,now=()=>performance.now
   if(typeof connection?.subscribe!=='function')return null;
   const world=`chariox-layout-${randomUUID()}`,binding=`charioxLayout${randomUUID().replaceAll('-','')}`;
   let generation=0,confirmed=-1,confirmedAt=0,dead=false,contextId=null,installing=true;
-  const retire=()=>{generation++;};
+  const retire=()=>{generation++;retireNativeStates();};
   const kill=()=>{dead=true;retire();off();};
   // Best effort: stop the page-side observers while their context lives, then drop the binding.
   const teardown=()=>{

@@ -239,7 +239,12 @@ impl DirectFrames {
             return false;
         };
         let mut state = link.lock();
-        if state.closed || generation <= state.retired {
+        if state.closed || generation <= state.retired || state.lease.is_some() {
+            // The worker took Node's grant too: refuse it there as well.
+            state.retired = state.retired.max(generation);
+            Self::end_retired(self, &mut state);
+            drop(state);
+            link.send(json!({ "retire": generation }));
             return false;
         }
         state.lease = Some(Lease {

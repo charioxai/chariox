@@ -148,7 +148,7 @@ export class LinuxCapture {
     if(raw.captured_ms>=this.regions.beforeAt)regions=await this.regions.regions(raw);
    }catch(error){
     if(!this.valid())break;
-    if(error.code==='fill_capture_retry'){this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
+    if(error.code==='fill_capture_retry'){this.nativeWorker?.retireState();this.regions.retire();this.wake(true);raw.release?.();this.publishingRaw=null;continue;}
     if(revision===this.regionRevision)throw error;
    }
    this.timing('native_region_fence',at);

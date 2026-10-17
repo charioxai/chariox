@@ -7,6 +7,7 @@ import {PortableEncoder} from './kernel-browser-display.mjs';
 import {decodePng,displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {protectionDeclared,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 export function jpegDimensions(bytes) {
   if(bytes[0]!==255||bytes[1]!==216)return null;
   for(let offset=2;offset+4<bytes.length;){
@@ -88,7 +89,7 @@ export class CompositorSource {
         if(revision!==this.regionRevision)continue;
         if(this.sampling||this.now()<this.ignoreUntil)continue;
         if(fingerprint.width!==this.width||fingerprint.height!==this.height)throw Error('source geometry');
-        const masks=JSON.stringify(protectedRegions);if(this.masks!==undefined&&masks!==this.masks)this.regionRevision++;this.masks=masks;
+        const masks=JSON.stringify(protectedRegions);if(this.masks!==undefined&&masks!==this.masks){retireNativeStates();this.regionRevision++;}this.masks=masks;
         if(this.latest?.signature!==fingerprint.signature){this.motionStreak=this.now()-this.changedAt<90?this.motionStreak+1:1;this.serial++;this.changedAt=this.now();}
         this.latest={data_base64:data,[displayMaskRegions]:protectedRegions,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
         if(this.attested)for(const listener of this.listeners)listener(this.latest);

@@ -18,7 +18,7 @@ export function startNativeReadback(capture,config){
   throw Error('MP-08: cropped native worker unavailable');
  config=Object.freeze({...config,...(config.window_region?{window_region:Object.freeze({...config.window_region})}:{})});
    capture.phase='readback';const executable=nativeWorkerResource()?.executable;
-   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...capture.display.environment},stdio:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
+   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...capture.display.environment},stdio:executable?['pipe','pipe','pipe','pipe']:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
    const fail=()=>{if(!capture.closed)capture.timing?.(`native_readback_ended ${capture.surface??'page'}`,performance.timeOrigin+performance.now());capture.fence()};child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
    let stderr='';child.stderr.on('data',b=>{stderr+=b.toString();const lines=stderr.split('\n');stderr=lines.pop();if(stderr.length>8192)stderr='';for(const line of lines){
@@ -33,6 +33,7 @@ export function startNativeReadback(capture,config){
    const pipe=new NativePipe(header=>{
     if(header.windows_changed!==undefined){if(!Number.isFinite(header.windows_changed)||Object.keys(header).length!==2)throw Error('MD-DISPLAY: native windows header');return;}
     if(header.reply!==undefined){capture.nativeWorker?.validate(header);if(!capture.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
+    if(header.ended!==undefined){if(!capture.nativeWorker||Object.keys(header).length!==2||!Number.isSafeInteger(header.ended)||header.length!==1)throw Error('MP-11: native lease end');return;}
     if(header.generation!==undefined){if(!capture.nativeWorker||Object.keys(header).length!==3||!Number.isSafeInteger(header.auto)||!Number.isSafeInteger(header.generation)||!Number.isSafeInteger(header.length)||header.length<1||header.length>8*1024*1024)throw Error('MP-11: native auto reply');return;}
     if(header.auto!=null&&(!capture.nativeWorker||!Number.isSafeInteger(header.auto)))throw Error('MP-11: native auto frame');
     if(header.width!==config.width||header.height!==config.height||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
@@ -40,6 +41,7 @@ export function startNativeReadback(capture,config){
     if(header.windows_changed!==undefined){capture.windowsChanged?.();return;}
     if(header.reply!==undefined){capture.nativeWorker.receive(header,pixels);return;}
     if(header.generation!==undefined){capture.nativeWorker.autoReceive(header,pixels);return;}
+    if(header.ended!==undefined){capture.nativeWorker.ended(header.ended);return;}
     const received=performance.timeOrigin+performance.now();
     if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)capture.timing(stage,header.captured_ms,header.captured_ms+cpu);}
     if(Number.isFinite(header.native_read_ms))capture.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
@@ -61,9 +63,12 @@ export function startNativeReadback(capture,config){
      raw.nativeArm=record=>capture.nativeWorker.arm(record);
      raw.nativeAutoCurrent=()=>capture.nativeWorker.auto;
      raw.nativeRetireState=encoder=>capture.nativeWorker.retireState(encoder);
+     raw.nativeGrant=lease=>capture.nativeWorker.grant(lease);
+     // MP-11: a lease needs no protected target anywhere (none can scroll into view).
+     raw.nativeUntargeted=()=>capture.regions?.tracker?.().targets===false;
     }
     if(capture.valid()){raw.format='bgr0';if(capture.pending)capture.rejected('serial_skipped');capture.pending?.release?.();capture.pending=raw;void capture.publish()}else raw.release?.()
    });
    child.stdout.on('data',b=>{try{pipe.push(b)}catch{capture.fence()}});
-   child.stdin.write(JSON.stringify({...config,pid:capture.pid,pool:capture.poolRoot})+'\n');
+   child.stdin.write(JSON.stringify({...config,pid:capture.pid,pool:capture.poolRoot,...(capture.nativeWorker?{retires:true,...(capture.nativeWorker.token?{frames:capture.nativeWorker.token}:{})}:{})})+'\n');
 }

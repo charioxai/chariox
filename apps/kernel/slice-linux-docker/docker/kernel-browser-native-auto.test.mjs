@@ -16,7 +16,7 @@ const gone=p=>!existsSync(path.join(root,p.name));
 const reply=(sequence,key=false)=>({backend:'native-openh264',whole:true,revision:sequence,stripes:[{row:0,y:0,height:32,codec:'avc1.420033',key,sequence,reference_sequence:key?null:sequence-1,length:1}],packet:packet()});
 function rig(){
  const writes=[],requests=[],manual=[];
- const bridge=new NativeWorkerControl({stdin:{write(bytes){for(const line of bytes.trim().split('\n'))writes.push(JSON.parse(line))}}},()=>{});
+ const bridge=new NativeWorkerControl({stdin:{write(bytes){for(const line of bytes.trim().split('\n'))writes.push(JSON.parse(line))}},stdio:[,,,{write(bytes){writes.push({state_retire:Number(bytes)})},writableLength:0}]},()=>{});
  const raw=(serial,{auto,regions}={})=>{
   const r={width:64,height:32,serial,nativeEncode:async q=>{requests.push(q);return manual.shift()},nativeArm:record=>bridge.arm(record),nativeAutoCurrent:()=>bridge.auto,nativeRetireState:encoder=>bridge.retireState(encoder),nativeRetire:()=>{},nativeDelivered:()=>{}};
   if(regions)r[displayMaskRegions]=regions;else r[displayUnprotected]=true;
@@ -77,7 +77,7 @@ test('L3 protected frames never use an auto packet',async()=>{
 });
 
 test('L3 a protection change retires the record before any other work',()=>{
- const writes=[],bridge=new NativeWorkerControl({stdin:{write(bytes){for(const line of bytes.trim().split('\n'))writes.push(JSON.parse(line))}}},()=>{});
+ const writes=[],bridge=new NativeWorkerControl({stdin:{write(bytes){for(const line of bytes.trim().split('\n'))writes.push(JSON.parse(line))}},stdio:[,,,{write(bytes){writes.push({state_retire:Number(bytes)})},writableLength:0}]},()=>{});
  bridge.arm({encoder:'motion',bitrate:8e6,reduced:false,until_ms:1});
  const capture=new LinuxCapture({allowed:()=>true});capture.nativeWorker=bridge;capture.regions={retire(){}};
  capture.latest={raw:{release(){}}};

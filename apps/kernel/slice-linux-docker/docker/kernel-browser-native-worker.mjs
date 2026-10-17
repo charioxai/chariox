@@ -2,6 +2,7 @@
 // Frame pixels and compressed packets never pass through the motion bridge.
 import path from 'node:path';
 import {unlinkSync} from 'node:fs';
+import {randomBytes} from 'node:crypto';
 // MP-08/MP-10/MP-11: browser and desktop workers share the kernel reader's
 // private packet directory; the worker derives it from its raster pool parent.
 export function nativeWorkerResource(environment=process.env){
@@ -13,13 +14,19 @@ export function discardPacket(packet,root=process.env.CHARIOX_BROWSER_DISPLAY_PA
  if(!root||!/^[a-f0-9]{32}\.json$/.test(packet?.name??''))return;
  try{unlinkSync(path.join(root,packet.name))}catch(error){if(error.code!=='ENOENT')throw error}
 }
+// L3: live workers; an event that can change any leased frame's verdict
+// retires every record at once (a record only feeds auto encodes and leases).
+const live=new Set();
+export function retireNativeStates(){for(const worker of live)worker.retireState();}
 const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error(message),{dispatched:false});
 // MP-08/MP-10/MP-11: two full native RGB rasters (PNG + WebP repair),
 // base64 and metadata at the admitted 2560x1600 geometry fit within32 MiB.
 // Only an outstanding exact request may use this private IPC ceiling.
 export const nativeExactReplyLimit=32*1024*1024;
 export class NativeWorkerControl {
- constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;this.autos=new Map();this.generation=0;this.auto=null;}
+ constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;this.autos=new Map();this.generation=0;this.auto=null;
+  // L3 stage 2b: fd 3 is the synchronous retire pipe; the token names this worker's frame channel.
+  live.add(this);this.retires=child.stdio?.[3]??null;this.token=this.retires&&process.env.CHARIOX_BROWSER_DISPLAY_FRAMES?randomBytes(16).toString('hex'):null;this.lease=null;}
  request(operation,values){
   if(this.pending.size>=16||this.closed)throw notSent();
   const id=++this.sequence;
@@ -59,9 +66,26 @@ export class NativeWorkerControl {
   this.notify({state:{...this.auto}},true);return this.auto;
  }
  // Synchronous from every retiring event, before any other work on it.
+ // MP-11: the retire pipe is read by the codec thread before every leased
+ // send, so no frame read back after this write can leave the worker.
  retireState(encoder){
   if(!this.auto||encoder!==undefined&&this.auto.encoder!==encoder)return;
-  this.notify({state_retire:this.auto.generation},true);this.auto=null;
+  const generation=this.auto.generation;this.auto=null;this.lease=null;
+  const pipe=this.retires;
+  try{if(!pipe||pipe.destroyed)throw Error();pipe.write(`${generation}\n`);if(pipe.writableLength)throw Error();}
+  catch{this.close();this.child.kill('SIGKILL');}
+ }
+ // L3: grant the worker the frames after the one Node is publishing now;
+ // the kernel binds the same lease from this frame's reply.
+ grant(lease){
+  if(this.closed||!this.token||this.lease||this.auto?.generation!==lease.generation)return null;
+  this.lease={generation:lease.generation};this.notify({lease},true);
+  return {token:this.token,generation:lease.generation};
+ }
+ // The worker ended a lease (or refused a grant): that generation is spent.
+ ended(generation){
+  if(this.auto?.generation===generation)this.auto=null;
+  if(this.lease?.generation===generation)this.lease=null;
  }
  // The frame header or its auto reply may arrive first; each entry is
  // taken by its encoder or dropped with its raster, never both.
@@ -112,5 +136,5 @@ export class NativeWorkerControl {
  }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
- close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();for(const entry of this.autos.values())entry.reject(Error('MP-11: native worker closed'));this.autos.clear();this.auto=null;}
+ close(){if(this.closed)return;this.closed=true;live.delete(this);if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();for(const entry of this.autos.values())entry.reject(Error('MP-11: native worker closed'));this.autos.clear();this.auto=null;}
 }

@@ -27,6 +27,8 @@ const egressBytes = (packet, binary = false) => {
 };
 const packetName = packet => process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT && /^[a-f0-9]{32}\.json$/.test(packet?.name) &&
   Number.isSafeInteger(packet.length) && packet.length >= 1 && packet.length <= 1024 * 1024;
+// L3 stage 2b: a returned frame's private lease offer; the credit reply carries the grant.
+export const directLease=Symbol('directLease');
 export function safeChildPid(child) {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) throw new Error('MD-DISPLAY: unsafe child PID');
   return child.pid;
@@ -54,9 +56,9 @@ export class PortableEncoder {
       // frame's fence proved it unprotected, under the current generation,
       // when no key is needed; otherwise retire the record and encode a key.
       const record=raw.nativeAutoCurrent?.(),mine=raw.auto&&record?.encoder===this.nativeSession&&record.generation===raw.auto.generation;
-      const auto=mine?raw.auto.take():null;let reply;
+      const auto=mine?raw.auto.take():null;let reply,fromAuto=false;
       if(auto){
-        if(!stripes&&reset===false&&unprotected){const {generation,value}=await auto;if(generation===raw.auto.generation&&value.busy!==true){reply=value;this.timing?.('native_auto_encode',performance.timeOrigin+performance.now());}}
+        if(!stripes&&reset===false&&unprotected){const {generation,value}=await auto;if(generation===raw.auto.generation&&value.busy!==true){reply=value;fromAuto=true;this.timing?.('native_auto_encode',performance.timeOrigin+performance.now());}}
         else{raw.nativeRetireState(this.nativeSession);auto.then(({value})=>discardPacket(value.packet),()=>{});reset=true;this.timing?.('native_auto_retired',performance.timeOrigin+performance.now());}
       }
       reply??=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[],...(unprotected?{unprotected:true}:{})});
@@ -75,7 +77,7 @@ export class PortableEncoder {
         const row=reply.stripes[0];
         if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());throw Object.assign(Error('MD-DISPLAY: native chain gap'),{busy:true});}
         this.chainSequence=row.sequence;
-        if(unprotected&&raw.nativeArm){const now=performance.timeOrigin+performance.now();if(!record||record.encoder!==this.nativeSession||record.bitrate!==bitrate||record.reduced!==reduced||record.until_ms-now<125)raw.nativeArm({encoder:this.nativeSession,bitrate,reduced,until_ms:now+250});}this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
+        if(unprotected&&raw.nativeArm){const now=performance.timeOrigin+performance.now();if(!record||record.encoder!==this.nativeSession||record.bitrate!==bitrate||record.reduced!==reduced||record.until_ms-now<125)raw.nativeArm({encoder:this.nativeSession,bitrate,reduced,until_ms:now+250});}this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,...(fromAuto&&unprotected&&raw.nativeGrant?{lease:this.leaseOffer(raw,row.sequence,bitrate,reduced)}:{}),native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
@@ -169,6 +171,14 @@ export class PortableEncoder {
     if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
   }
   // MP-11: forget the native reference chain and its delivery certificates.
+  // L3: the worker may send the frames after this one itself, under the same
+  // record; renewals keep that record alive only while it stays current.
+  leaseOffer(raw,chain,bitrate,reduced){
+    const generation=raw.auto.generation,encoder=this.nativeSession;
+    return {generation,chain,grant:lease=>raw.nativeGrant(lease),
+      current:()=>raw.nativeAutoCurrent?.()?.generation===generation&&raw.nativeUntargeted?.()===true,
+      renew:()=>raw.nativeArm({encoder,bitrate,reduced,until_ms:performance.timeOrigin+performance.now()+250})};
+  }
   retire(){this.nativeRetireState?.(this.nativeSession);this.chainSequence=undefined;this.nativeRetire?.(this.nativeSession);this.nativeRevision=undefined;this.nativeDeliveredRevision=undefined;}
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
   async close() {
@@ -260,7 +270,21 @@ export class DisplayStream {
     const prepared=this.resumed&&this.producer?.independentFrameReady;
     this.resumed=false;if(!prepared)this.invalidate();
   }
-  invalidate() { this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
+  // MP-11: every per-frame check of a leased frame becomes this retire; the
+  // record is renewed only while the frame's synchronous binding still holds.
+  renewLease(offer,currentBinding){
+    clearInterval(this.leaseTimer);
+    this.leaseTimer=setInterval(()=>{if(!offer.current()||!currentBinding())this.endLease();else offer.renew();},100);
+    this.leaseTimer.unref?.();
+  }
+  // L3: a credit reaching Node ends any lease; the kernel sent up to afterSequence.
+  adoptLease(afterSequence){
+    if(!this.leased)return;
+    this.endLease();this.leased=false;
+    if(Number.isSafeInteger(afterSequence)&&afterSequence>this.sequence){this.sequence=afterSequence;this.invalidate();}
+  }
+  endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
+  invalidate() { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     const codec={};
     const epoch=this.deliveryEpoch??0;
@@ -272,6 +296,7 @@ export class DisplayStream {
   }
   async buildFrame(source, documentId, afterSequence, validate, currentBinding, codec) {
     let at = timestamp();
+    this.adoptLease(afterSequence);
     const current = source.motion || source.native_tiles || source.native_exact ? {width:source.width,height:source.height,signature:source.data_base64,pixels:null}
       : source.pixels ?? await this.pixels.run('decode',{data:source.data_base64,scale:this.device_scale_factor});
     this.timing('png_decode', at); at = timestamp();
@@ -309,7 +334,7 @@ export class DisplayStream {
     // MP-11: a safe codec fallback can exceed the wire PNG budget. Repair
     // only an admitted base in credited tiles; never bootstrap from a patch.
     const safeFallback = source.force_lossless && bound && this.previous;
-    let payload, repair = null, bootstrap = false;
+    let payload, repair = null, bootstrap = false, offer = null;
     if (source.native_tiles) payload = {kind:'tiles', base_sequence:this.sequence, tiles:source.native_tiles,
       ...(source.moves?{moves:source.moves}:{}),...(source.native_packet?{native_packet:source.native_packet}:{})};
     else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback) && !source.motion) {
@@ -334,6 +359,7 @@ export class DisplayStream {
     else {
       codec.used = true;
       const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[]);
+      offer=encoded.lease??null;
       if(encoded.dropped)payload=full();
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
       else {
@@ -418,7 +444,18 @@ export class DisplayStream {
     this.exact = source.native_tiles ? wasExact : !['video','stripes'].includes(payload.kind) && !this.repair; this.sequence++;
     if(this.exact&&!wasExact)this.shiftHold=false;
     if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
+    // L3 stage 2b: only a push-delivered whole video frame from the worker's
+    // unprotected auto packet, with references on and no repair owed.
+    if(offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
+      const {key,sequence,native_packet,...template}=packet;
+      packet[directLease]=()=>{
+        if(!offer.current()||!currentBinding())return null;
+        const lease=offer.grant({generation:offer.generation,sequence,chain:offer.chain,template});
+        if(lease){this.leased=true;this.renewLease(offer,currentBinding);}
+        return lease;
+      };
+    }
     return packet;
   }
-  async close() { clearTimeout(this.timer); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
+  async close() { clearTimeout(this.timer);this.endLease(); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
 }
