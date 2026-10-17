@@ -109,12 +109,14 @@ impl Transfer {
 // receipt cannot forge credit for earlier chunks or binary envelopes.
 #[derive(Default)]
 struct WireCredit {
-    pending: VecDeque<(u32, u32, usize)>,
+    pending: VecDeque<(u32, u32, usize, bool)>,
     bytes: usize,
+    // Bytes of `bytes` held by single-chunk messages.
+    small: usize,
 }
 impl WireCredit {
     fn receipt(&mut self, id: u32, offset: u32, active: &mut VecDeque<Transfer>) -> bool {
-        let Some(&(expected_id, expected_offset, bytes)) = self.pending.front() else {
+        let Some(&(expected_id, expected_offset, bytes, small)) = self.pending.front() else {
             return false;
         };
         if (id, offset) != (expected_id, expected_offset) {
@@ -130,6 +132,9 @@ impl WireCredit {
         }
         self.pending.pop_front();
         self.bytes -= bytes;
+        if small {
+            self.small -= bytes;
+        }
         true
     }
 }
@@ -204,6 +209,17 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
             .take(index)
             .any(|m| matches!(m.lane, Lane::Ordered) || same(m.lane, &m.key))
 }
+// Bulk transfers leave the last slot of each idle control lane (requests,
+// correlated replies) free, so display bulk can never hold every receiver slot.
+fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
+    let idle = [Lane::Reply, Lane::Request]
+        .into_iter()
+        .filter(|&l| l != lane && !active.iter().any(|t| t.lane == l))
+        .count();
+    MAX_TRANSFERS - active.len() > idle
+}
+// Consecutive small sends allowed while a bulk transfer waits for its turn.
+const SMALL_STREAK: usize = 4;
 pub(super) async fn run_writer<S, F>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
@@ -222,6 +238,7 @@ where
     let mut active = VecDeque::<Transfer>::new();
     let mut credit = WireCredit::default();
     let mut next_id = 0u32;
+    let mut small_streak = 0;
     let mut open = true;
     let mut receipts_open = true;
     let mut controls_open = true;
@@ -278,6 +295,7 @@ where
             // reorder members of their FIFO. A barrier ends the small-first scan.
             let startable = |i: usize| {
                 eligible(&pending, i, &active)
+                    && (pending[i].small() || leaves_control_slots(pending[i].lane, &active))
                     && pending[i].message.len() <= MAX_ASSEMBLY_BYTES - reserved
             };
             let barrier = pending
@@ -327,44 +345,68 @@ where
         }
         let mut sent = false;
         // Round robin prevents continuous display traffic starving snapshots.
-        for _ in 0..active.len() {
-            let mut transfer = active.pop_front().unwrap();
-            let starting = transfer.id == 0;
-            if starting {
-                let Some(id) = next_id.checked_add(1) else {
-                    return "transfer_id_exhausted";
-                };
-                transfer.id = id;
-            }
-            if let Some((message, end)) = transfer.next_chunk() {
-                let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
-                let window = WINDOW_BYTES + if transfer.small { SMALL_RESERVE_BYTES } else { 0 };
-                if credit.bytes + bytes <= window {
-                    if starting {
-                        next_id = transfer.id;
-                    }
-                    credit.bytes += bytes;
-                    credit.pending.push_back((transfer.id, end as u32, bytes));
-                    transfer.offset = end;
-                    transfer.waiting += 1;
-                    let binary = transfer.binary.take();
+        // Small messages go first, but after SMALL_STREAK of them a waiting bulk
+        // transfer gets the next chunk.
+        let bulk_turn = small_streak >= SMALL_STREAK && active.iter().any(|t| !t.small);
+        'passes: for pass in 0..2 {
+            for _ in 0..active.len() {
+                let mut transfer = active.pop_front().unwrap();
+                if pass == 0 && bulk_turn && transfer.small {
                     active.push_back(transfer);
-                    if let Some(binary) = binary {
-                        if !write(&mut writer, binary).await {
+                    continue;
+                }
+                let starting = transfer.id == 0;
+                if starting {
+                    let Some(id) = next_id.checked_add(1) else {
+                        return "transfer_id_exhausted";
+                    };
+                    transfer.id = id;
+                }
+                if let Some((message, end)) = transfer.next_chunk() {
+                    let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
+                    // While bulk is active, small traffic may hold only its reserve,
+                    // so it can never keep the window above what a bulk chunk needs.
+                    let fits = if transfer.small {
+                        credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
+                            && (active.iter().all(|t| t.small)
+                                || credit.small + bytes <= SMALL_RESERVE_BYTES)
+                    } else {
+                        credit.bytes + bytes <= WINDOW_BYTES
+                    };
+                    if fits {
+                        if starting {
+                            next_id = transfer.id;
+                        }
+                        credit.bytes += bytes;
+                        if transfer.small {
+                            credit.small += bytes;
+                        }
+                        credit.pending.push_back((transfer.id, end as u32, bytes, transfer.small));
+                        small_streak = if transfer.small { small_streak + 1 } else { 0 };
+                        transfer.offset = end;
+                        transfer.waiting += 1;
+                        let binary = transfer.binary.take();
+                        active.push_back(transfer);
+                        if let Some(binary) = binary {
+                            if !write(&mut writer, binary).await {
+                                return "write_failed";
+                            }
+                        }
+                        if !write(&mut writer, message).await {
                             return "write_failed";
                         }
+                        sent = true;
+                        break 'passes;
                     }
-                    if !write(&mut writer, message).await {
-                        return "write_failed";
-                    }
-                    sent = true;
-                    break;
                 }
+                if starting {
+                    transfer.id = 0;
+                }
+                active.push_back(transfer);
             }
-            if starting {
-                transfer.id = 0;
+            if !bulk_turn {
+                break;
             }
-            active.push_back(transfer);
         }
         if sent {
             tokio::task::yield_now().await;
@@ -524,8 +566,9 @@ mod tests {
             },
         ]);
         let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 1, 100), (2, 1, 200)]),
+            pending: VecDeque::from([(1, 1, 100, false), (2, 1, 200, false)]),
             bytes: 300,
+            small: 0,
         };
         assert!(!credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 300);
@@ -590,8 +633,9 @@ mod tests {
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();
         let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 10, 100), (2, 0, 200)]),
+            pending: VecDeque::from([(1, 10, 100, false), (2, 0, 200, false)]),
             bytes: 300,
+            small: 0,
         };
         assert!(!credit.receipt(2, 0, &mut active));
         assert_eq!(credit.bytes, 300);
@@ -843,6 +887,109 @@ mod tests {
             }
         };
         assert!(band.contains("band"));
+        task.abort();
+        let _ = task.await;
+    }
+    // MP-08/MP-10/MP-11: a continuously replenished small producer must not
+    // starve an already-started bulk reply, with prompt or round-trip-delayed receipts.
+    async fn bulk_reply_under_small_producer(ack_delay: Duration) {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(16);
+        let (at, ar) = mpsc::channel(256);
+        let (_ct, cr) = mpsc::channel(8);
+        let reply = serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(400_000)});
+        tx.send(Message::Text(reply.to_string().into())).await.unwrap();
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let producer = tokio::spawn(async move {
+            for id in 1..200_000u64 {
+                if flag.load(std::sync::atomic::Ordering::Relaxed)
+                    || tx.send(display_event("band", id, "b".repeat(300))).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (due_tx, mut due_rx) = mpsc::unbounded_channel::<(tokio::time::Instant, (u32, u32))>();
+        let pacer = tokio::spawn(async move {
+            while let Some((due, ack)) = due_rx.recv().await {
+                tokio::time::sleep_until(due).await;
+                if at.send(ack).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let outcome = tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let Message::Text(text) = client.next().await.unwrap().unwrap() else {
+                    panic!()
+                };
+                let (complete, ack) = receiver.receive(&text).unwrap();
+                let TransportFrame::TransportAck { transfer_id, offset } =
+                    serde_json::from_str(&ack.unwrap()).unwrap()
+                else {
+                    panic!()
+                };
+                let _ = due_tx.send((tokio::time::Instant::now() + ack_delay, (transfer_id, offset)));
+                if complete.is_some_and(|t| t.contains("catalog")) {
+                    break;
+                }
+            }
+        })
+        .await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        task.abort();
+        pacer.abort();
+        producer.abort();
+        outcome.expect("the started bulk reply starved behind small events");
+    }
+    #[tokio::test]
+    async fn bulk_reply_advances_under_continuous_small_events() {
+        bulk_reply_under_small_producer(Duration::ZERO).await;
+    }
+    #[tokio::test]
+    async fn bulk_reply_advances_under_small_events_with_delayed_receipts() {
+        bulk_reply_under_small_producer(Duration::from_millis(30)).await;
+    }
+    // MP-08/MP-10/MP-11: bulk display events from distinct subscriptions must
+    // leave receiver capacity for a later request and correlated reply.
+    #[tokio::test]
+    async fn requests_and_replies_start_while_bulk_events_hold_the_transfers() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(16);
+        let (_at, ar) = mpsc::channel(256);
+        let (_ct, cr) = mpsc::channel(8);
+        for sub in ["s1", "s2", "s3", "s4"] {
+            tx.send(display_event(sub, 1, "p".repeat(300_000))).await.unwrap();
+        }
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        while let Ok(Some(Ok(_))) =
+            tokio::time::timeout(Duration::from_millis(200), client.next()).await
+        {}
+        tx.send(Message::Text(r#"{"kind":"client_response","request_id":"reply","payload":"ok"}"#.into()))
+            .await
+            .unwrap();
+        tx.send(Message::Text(r#"{"kind":"daemon_request","relay_request_id":"R"}"#.into()))
+            .await
+            .unwrap();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut seen = Vec::new();
+        while seen.len() < 2 {
+            let Message::Text(text) = tokio::time::timeout(Duration::from_millis(500), client.next())
+                .await
+                .expect("a request or reply waited for a whole bulk event")
+                .unwrap()
+                .unwrap()
+            else {
+                panic!()
+            };
+            if let Some(done) = receiver.receive(&text).unwrap().0 {
+                assert!(!done.contains("subscription_id"), "a bulk event finished first");
+                seen.push(done);
+            }
+        }
         task.abort();
         let _ = task.await;
     }
