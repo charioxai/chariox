@@ -84,8 +84,13 @@ for directory, subdirectories, names in os.walk(root):
         entry = listed.pop(relative, None)
         if entry is None:
             fail(f"{relative} is not in the signed manifest")
-        data = open(os.path.join(root, relative), "rb").read()
-        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+        # In chunks: the slice image is over a gigabyte.
+        digest, size = hashlib.sha256(), 0
+        with open(os.path.join(root, relative), "rb") as listed_file:
+            while chunk := listed_file.read(1 << 20):
+                digest.update(chunk)
+                size += len(chunk)
+        if size != entry["size"] or digest.hexdigest() != entry["sha256"]:
             fail(f"{relative} does not match the signed manifest")
 if listed:
     fail("the bundle is missing " + ", ".join(sorted(listed)))

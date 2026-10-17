@@ -317,6 +317,22 @@ test('install.sh --check accepts only the bundle and runtime signed by their key
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
 });
 
+test('install.sh --check verifies a large slice image in bounded memory', { skip: !opensslEd25519 && 'needs Linux with OpenSSL 3' }, async (context) => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  // Larger than the address space the check below may use: reading the archive whole cannot succeed.
+  const size = 192 * 1024 * 1024, archive = Buffer.alloc(size, 7);
+  await writeFile(join(options.sliceImage, ARCHIVE), archive);
+  const descriptorPath = join(options.sliceImage, DESCRIPTOR);
+  const descriptor = JSON.parse(await readFile(descriptorPath, 'utf8'));
+  descriptor.archive = { name: ARCHIVE, size, sha256: sha256(archive) };
+  await writeFile(descriptorPath, JSON.stringify(descriptor));
+  await assemble(options);
+  await signBundle(options.output, releaseKeyPath);
+  const checked = spawnSync('sh', ['-c', 'ulimit -v 150000 && exec "$0" --check --release-key "$1"', join(options.output, 'install.sh'), releasePublic], { encoding: 'utf8' });
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.match(checked.stdout, /signed by the release key/);
+});
+
 // MP-07 / MP-08 / MP-10 / MP-11: resolve inputs from the exported artifact,
 // rather than trusting the exporter's source-root allowlist.
 test('the committed slice Dockerfile resolves every COPY and ADD source in the exported distribution context', async (context) => {
