@@ -36,6 +36,8 @@ impl Default for RowResult {
 }
 extern "C" {
     #[cfg(test)]
+    pub(super) fn cx_openh264_slice_threads(width: i32, height: i32, limit: i32) -> i32;
+    #[cfg(test)]
     pub(super) fn cx_openh264_activity(
         y: *const u8,
         stride: i32,

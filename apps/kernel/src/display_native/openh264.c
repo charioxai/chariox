@@ -96,8 +96,16 @@ static double scale(int qp) {return exp2((45-qp)/8.);}
  * directly into input latency; rate control is ours either way. model
  * holds two bits-per-activity estimates (intra, inter) that outlive the
  * encoder, so a reset's IDR starts from what earlier IDRs cost. */
+/* Sliced threads spin: on a quiet 16-vCPU host four threads cost 10 ms of CPU per 1264x708 frame (17 ms at
+ * 1920x1080) against 3.3 ms (5.8 ms) for one, with the same or a longer wall time; two threads win only
+ * from about 3 MP (2528x1416: 10.8 ms wall, 18 ms CPU against 16.7 ms for one). `limit` is the caller's cap. */
+int cx_openh264_slice_threads(int width,int height,int limit) {
+    int want=(long)width*height>2500000?2:1;
+    return limit<1?1:want<limit?want:limit;
+}
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model) {
     ISVCEncoder *e=NULL;struct Encoder *h;
+    threads=cx_openh264_slice_threads(width,height,threads);
     if (!cx_openh264_available()||create_encoder(&e)||!e) return NULL;
     if (!(h=calloc(1,sizeof(*h)))) {destroy_encoder(e);return NULL;}
     h->e=e;h->model=model;h->qp=h->max_qp=max_qp>0?max_qp:CX_QP_MAX;

@@ -1061,3 +1061,17 @@ fn mp08_openh264_activity_pass_matches_the_scalar_definition_and_keeps_the_previ
         }
     }
 }
+
+#[test]
+fn mp08_openh264_slice_threads_follow_frame_size_not_core_count() {
+    let threads = |w, h, limit| unsafe { ffi::cx_openh264_slice_threads(w, h, limit) };
+    // Quiet-host measurement: sliced threads only add CPU below ~3 MP and never shorten these frames.
+    for (w, h) in [(1264, 708), (1280, 720), (1280, 800), (1920, 1080)] {
+        assert_eq!(threads(w, h, 4), 1, "{w}x{h}");
+    }
+    for (w, h) in [(2528, 1416), (2560, 1600)] {
+        assert_eq!(threads(w, h, 4), 2, "{w}x{h}");
+    }
+    assert_eq!(threads(2560, 1600, 1), 1, "a single core never slices");
+    assert_eq!(threads(2560, 1600, 0), 1);
+}
