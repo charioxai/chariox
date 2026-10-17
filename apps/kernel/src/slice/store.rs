@@ -81,9 +81,6 @@ struct SliceEnvironmentUseQueue {
 }
 
 enum SliceEnvironmentQueueGuard {
-    Read {
-        _guard: tokio::sync::OwnedRwLockReadGuard<()>,
-    },
     Write {
         _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
     },

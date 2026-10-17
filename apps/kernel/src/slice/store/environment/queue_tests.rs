@@ -16,36 +16,46 @@ fn store() -> (SliceStore, String) {
 }
 
 #[tokio::test]
-async fn mp08_mp11_display_readers_share_admission_without_overtaking_routes() {
+async fn mp08_mp11_display_readers_share_admission_and_exclude_lifecycle() {
+    let (store, id) = store();
+    let first = store
+        .queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION)
+        .await
+        .unwrap();
+    let second = tokio::time::timeout(
+        Duration::from_millis(100),
+        store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION),
+    )
+    .await
+    .expect("MP-08: another viewer must not wait for a network-bound frame read")
+    .unwrap();
+    assert!(store.try_begin_operation(&id, "slice.stop").is_err());
+    drop((first, second));
+    store.try_begin_operation(&id, "slice.stop").unwrap();
+}
+
+#[tokio::test]
+async fn mp10_display_resume_does_not_wait_behind_controller_routes() {
     for exclusive in ["browser_controller.route", "environment.display.open"] {
         let (store, id) = store();
-        let first = store
-            .queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION)
+        let route = store
+            .queue_environment_use(&id, None, exclusive)
             .await
             .unwrap();
-        let second = tokio::time::timeout(
+        let queued = store.queue_environment_use(&id, None, "browser_controller.route");
+        tokio::pin!(queued);
+        assert!(poll!(&mut queued).is_pending());
+        let resume = tokio::time::timeout(
             Duration::from_millis(100),
             store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION),
         )
         .await
-        .expect("MP-08: another viewer must not wait for a network-bound frame read")
+        .expect("MP-10: recovery must not wait for a controller route backlog")
         .unwrap();
         assert!(store.try_begin_operation(&id, "slice.stop").is_err());
-        let route = store.queue_environment_use(&id, None, exclusive);
-        let later = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
-        tokio::pin!(route, later);
-        assert!(poll!(&mut route).is_pending());
-        assert!(
-            poll!(&mut later).is_pending(),
-            "MP-11: viewer cannot overtake queued input"
-        );
-        drop(first);
-        assert!(poll!(&mut route).is_pending());
-        drop(second);
-        let route = route.await.unwrap();
-        assert!(poll!(&mut later).is_pending());
+        drop(resume);
         drop(route);
-        drop(later.await.unwrap());
+        drop(queued.await.unwrap());
         store.try_begin_operation(&id, "slice.stop").unwrap();
     }
 }
@@ -196,7 +206,7 @@ async fn mp10_environment_marker_release_wakes_without_advancing_a_poll_timer() 
     let route = store
         .guard_environment_use(&id, None, "browser_controller.route")
         .unwrap();
-    let waiting = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
+    let waiting = store.queue_environment_use(&id, None, "environment.computer.observe");
     tokio::pin!(waiting);
     assert!(poll!(&mut waiting).is_pending());
     drop(route);
@@ -221,7 +231,7 @@ async fn mp11_queue_release_retains_route_ordering_and_lifecycle_exclusion() {
             .try_read()
             .expect("MP-10: peer I/O must not retain the slice write lock"),
     );
-    let read = store.queue_environment_use(&id, None, SHARED_DISPLAY_READ_OPERATION);
+    let read = store.queue_environment_use(&id, None, "environment.computer.observe");
     tokio::pin!(read);
     assert!(
         poll!(&mut read).is_pending(),

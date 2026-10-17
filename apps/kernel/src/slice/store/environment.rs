@@ -15,10 +15,9 @@ fn trace_admission(operation: &str, lock_ms: u128, total_ms: u128, route_waits: 
 }
 
 impl SliceStore {
-    /// Fair admission for controller routes and viewer reads. Frame reads share
-    /// admission so one viewer's network wait cannot stall every other viewer.
-    /// Queued controller routes and opens exclude new frame reads during
-    /// admission. Resumes share read admission; the worker serializes each lease.
+    /// Fair admission for controller routes and viewer reads. A display resume
+    /// restores an admitted delivery, so it keeps lifecycle exclusion but never
+    /// waits behind queued controller routes; the worker serializes each lease.
     /// Only controller contention is retryable; lifecycle,
     /// quarantine and scope errors remain refusals. Waiting never dispatches
     /// or retries the caller's command.
@@ -60,21 +59,24 @@ impl SliceStore {
             operation,
             message: ENVIRONMENT_USE_ADMISSION_EXPIRED.to_string(),
         };
-        let acquire = async {
-            if operation == SHARED_DISPLAY_READ_OPERATION {
-                SliceEnvironmentQueueGuard::Read {
-                    _guard: queue.admission.clone().read_owned().await,
-                }
-            } else {
+        // MP-10: a display resume restores an already admitted delivery. It keeps
+        // lifecycle exclusion but never waits behind queued controller routes.
+        let resume = operation == SHARED_DISPLAY_READ_OPERATION;
+        let queued = std::time::Instant::now();
+        let admission = if resume {
+            None
+        } else {
+            let acquire = async {
                 SliceEnvironmentQueueGuard::Write {
                     _guard: queue.admission.clone().write_owned().await,
                 }
-            }
+            };
+            Some(
+                tokio::time::timeout_at(deadline, acquire)
+                    .await
+                    .map_err(|_| timed_out())?,
+            )
         };
-        let queued = std::time::Instant::now();
-        let admission = tokio::time::timeout_at(deadline, acquire)
-            .await
-            .map_err(|_| timed_out())?;
         let lock_ms = queued.elapsed().as_millis();
         let mut route_waits = 0u32;
         loop {
@@ -94,15 +96,20 @@ impl SliceStore {
             )?;
             // MP-11: check the route marker and reserve this use under one
             // store lock; a synchronous route cannot enter between them.
-            match self
-                .guard_environment_use_with_route_admission(&slice.id, session_id, operation, true)
-            {
+            match self.guard_environment_use_with_route_admission(
+                &slice.id, session_id, operation, !resume,
+            ) {
                 Ok(guard) => {
-                    trace_admission(operation, lock_ms, queued.elapsed().as_millis(), route_waits);
+                    trace_admission(
+                        operation,
+                        lock_ms,
+                        queued.elapsed().as_millis(),
+                        route_waits,
+                    );
                     return Ok(SliceEnvironmentUseGuard {
                         _operation: guard,
-                        _queue: Some(admission),
-                    })
+                        _queue: admission,
+                    });
                 }
                 Err(DaemonError::LocalTransport {
                     operation: "slice.operation",

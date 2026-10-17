@@ -652,8 +652,11 @@ The 525/133 hash fixture is `room-shared-display-525.json` beside the protocol
 shape tests. Source regressions are supplementary. Acceptance requires the
 actual Room View on the integrated shared producer: four window/density network
 changes to a painted frame within 1 s, takeover/release, protected desktop and
-a 2-hour hosted soak on a quiet host or KVM guest. No result from the legacy
-Room/Selkies comparator establishes acceptance of this carry.
+a 2-hour hosted soak on a quiet host or KVM guest. Run timing cells without a
+per-View screen recorder (a 3840x2160 recorder delayed the paint boundary by
+58-430 ms on a CPU-only client) and review recordings in separate cells. No
+result from the legacy Room/Selkies comparator establishes acceptance of this
+carry.
 
 Run the focused network drill with
 `node apps/cli/scripts/live-room-shared-display-drill.mjs`. It requires an
@@ -688,9 +691,11 @@ local timing fields carry no lease identity or authority. Source collector tests
 timing acceptance nor a completed live drill.
 
 MP-08/MP-10/MP-11 home admission does not hold a per-slice write lock across
-the worker round trip. Exact-lease resume shares display-read admission, then
-releases the queue guard after caller, attachment, key, Room, slice and Running
-checks. Open/control routes also release their queue guard after admission.
+the worker round trip. Exact-lease resume restores an already admitted
+delivery: it keeps the lifecycle use marker and the caller, attachment, key,
+Room, slice and Running checks, but neither queues behind controller routes nor
+waits for their route markers (a Notes/Reconcile backlog held it 0.25-1.3 s on a
+quiet host). Open/control routes release their queue guard after admission.
 Their use markers remain until I/O finishes, excluding lifecycle changes;
 controller route markers still order later observation/input. Marker admission
 is atomic under the slice store lock, and registered `Notify` waiters replace
