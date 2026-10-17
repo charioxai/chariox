@@ -1013,6 +1013,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   let remoteClosed: Promise<void> | null = null
   const closeRemote = (): Promise<void> => remoteClosed ??= request({ op: 'mirror_close', subscription_id, generation: binding.generation }).then(() => {}, () => {})
   const terminal = (error: unknown): boolean => error instanceof Error && /stale or foreign mirror|MD-2: (?:browser operation failed: |host browser operation failed; refresh state or check host browser readiness \()[A-Za-z0-9_ .:-]*\bmirror_subscription_retired\b/.test(error.message)
+  const retired = (error: unknown): boolean => error instanceof Error && /MD-2: (?:browser operation failed: |host browser operation failed; refresh state or check host browser readiness \()Error stale_document_reference\b/.test(error.message)
   const fatal = (error: unknown): boolean => error instanceof Error && /MP-11: (invalid|unsafe|foreign|executable|active|protected|mirror resource digest|mirror packet bounds)/.test(error.message)
   const credit = (): void => {
     const reset = wantReset && !resetOutstanding, resend = !reset && wantResend && !resendOutstanding && applied > 0, generation = failGeneration
@@ -1041,6 +1042,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
         // (no full snapshot). A reply that could not be applied asks for a reset.
         // Credits sent before a failure that fail too (the same socket) count as that one failure for the backoff.
         if (reset) resetOutstanding = false
+        // A credit refused because a navigation retired its document was answered, not lost: the next credit
+        // takes the new document's reset. A resend would fetch that reset again behind the one in flight.
+        if (retired(error)) return
         if (generation === failGeneration) { failures++; failGeneration++; if(!closed) handlers.diagnostic?.(answered ? "mirror_apply_retry" : "mirror_credit_retry",error,applied) }
         if (answered) wantReset = true; else wantResend = true
         failingSince ||= performance.now()

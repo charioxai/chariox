@@ -1134,6 +1134,28 @@ test('MP-10 completed empty paint notifies the attached consumer without another
  }finally{await page.evaluate(()=>window.attached?.close());await page.close()}
 });
 
+// BROWSER-UX-09 (r45 probe, typed github.com repo at 8 Mbit/s): navigation refuses the long-polling credit;
+// treating that refusal as a lost reply asked for a resend, which returned the new 538 KB reset a second time.
+test('MP-10 a credit refused for a retired document is not resent', async()=>{
+ const page=await viewer();try{
+  const credits=await page.evaluate(async packet=>{
+   window.r.close();const credits=[];let refused=false;
+   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+    const command=request.KernelBrowser.command;
+    if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
+    if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
+    credits.push({after:command.after_sequence,resend:command.resend===true});
+    if(command.after_sequence===0)return{KernelBrowser:{result:packet}};
+    if(!refused){refused=true;throw Error('MD-2: host browser operation failed; refresh state or check host browser readiness (Error stale_document_reference kernel-browser-mirror2.mjs:351:15)')}
+    return new Promise(()=>{});
+   }},document.getElementById('c'),{tab_id:'t',generation:1,device_scale_factor:1},{failure:e=>{throw e}});
+   await new Promise(r=>setTimeout(r,1500));await mirror.close();return credits;
+  },{...snapshot(page2([])),nodes:[[1,0,1],[1,1,'html'],[1,1,'body'],[1,1,0,'Old document']]});
+  assert(credits.length>=3,'credits continue after the refusal');
+  assert.deepEqual(credits.filter(c=>c.resend),[],'no resend for a refused (answered) credit');
+ }finally{await page.close()}
+});
+
 for(const preserveFrame of [false,true])test(`MP-11 closed empty attachment never emits a deferred presentation preserve=${preserveFrame}`,async()=>{
  const page=await viewer();try{
   await page.evaluate(async({packet,preserveFrame})=>{
