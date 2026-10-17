@@ -56,7 +56,7 @@ export class BusyInputQueue {
         queue.active = null;
         if (entry.abort.signal.aborted) continue;
         if (busy(error)) { await new Promise(resolve => setTimeout(resolve, this.retryMs)); continue; }
-        queue.entries.shift(); this.event('input_dropped');
+        queue.entries.shift(); this.event(`input_dropped ${/^[a-z_]{1,48}$/.test(error?.code) ? error.code : 'error'}`); // the cause, as a fixed code, for the display timing
         // Typing that lost a key is dropped whole: the rest would arrive as a mangled word (a URL typed without its first letter).
         if (typed(entry.command)) while (queue.entries.length && typed(queue.entries[0].command)) { queue.entries.shift(); this.event('input_dropped'); }
       }
