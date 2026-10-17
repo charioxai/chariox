@@ -389,11 +389,12 @@ export class Mirror2 {
         const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${source.pressed})`, true));
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); } else { this.register(stream, more); source = this.merge(source, more); }
       }
-      // The first packet carries DOM, CSS and fonts; images follow it. Resource
-      // bytes travel only in packets without DOM changes (and in bounded
-      // slices), so an echo never queues behind image bytes on the socket.
+      // An opted-in viewer can prepare DOM/CSS before the font bytes arrive;
+      // its positive native-font requirements still fence the paint handover.
+      // Legacy viewers retain first-packet fonts. Resource bytes otherwise
+      // travel only without DOM changes, so an echo never queues behind them.
       const fontsAt = timestamp();
-      resources = reset ? await this.materialize(world, stream, 'font') : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -443,6 +444,7 @@ export class Mirror2 {
       sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
     if (resources.length) packet.resources = resources;
+    this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
     if (tiles.length) packet.tiles = tiles;
     if (fallback) packet.fallback = fallback;
     else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
@@ -538,9 +540,13 @@ export class Mirror2 {
     let counts = 0; for (const [slot, world] of worlds) counts += !slot && Number.isSafeInteger(drained) ? drained : await this.evaluate(world, `${world.ref}.loadedCount()`).catch(() => 0);
     const recheck = counts !== stream.loadedCount; stream.loadedCount = counts;
     const out = [];
-    for (const [slot, world] of worlds) {
-      const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (!kind || entry.kind === kind) && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
-      if (due.length) out.push(...await this.materializeWorld(world, due, slot, this.packetBytes(stream) - out.reduce((n, r) => n + r.data_base64.length, 0), stream));
+    // All document fonts precede images, including a child document's fonts
+    // when main-document images alone would consume the whole packet budget.
+    for (const pass of kind ? [kind] : ['font', null]) for (const [slot, world] of worlds) {
+      const remaining = this.packetBytes(stream) - out.reduce((n, r) => n + r.data_base64.length, 0);
+      if (remaining <= 0) return out;
+      const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (pass ? entry.kind === pass : entry.kind !== 'font') && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
+      if (due.length) out.push(...await this.materializeWorld(world, due, slot, remaining, stream));
     }
     return out;
   }
@@ -549,19 +555,24 @@ export class Mirror2 {
   }
   async materializeWorld(world, due, slot, budget, stream) {
     // Top-document element images: near the view first; the rest wait.
+    const fontsFirst = (a, b) => Number(b.kind === 'font') - Number(a.kind === 'font');
+    due = [...due].sort(fontsFirst);
     let near = null, moving = false, stamp = null;
-    if (!slot && stream) {
+    if (!slot && stream && due.some(entry => entry.kind !== 'font')) {
       // The view is re-measured only after a scroll, a packet or a page load:
       // an idle long poll does not walk the page's images twice a second.
       stamp = `${stream.pageScroll}|${stream.issued}|${stream.loadedCount}|${stream.resources.size}|${Date.now() - stream.movedAt < SETTLE_MS}`;
       if (stamp === stream.nearStamp) return [];
       const view = await this.evaluate(world, `${world.ref}.nearImages(${NEAR_PX})`);
       near = new Map(view.near.map(([key, width, height]) => [key, [width, height]])); const elements = new Set(view.all);
-      due = due.filter(entry => !elements.has(entry.key) || near.has(entry.key)).sort((a, b) => near.has(b.key) - near.has(a.key));
+      due = due.filter(entry => !elements.has(entry.key) || near.has(entry.key)).sort((a, b) => fontsFirst(a, b) || near.has(b.key) - near.has(a.key));
       moving = Date.now() - stream.movedAt < SETTLE_MS;
     }
     if (!due.length) { if (stamp) stream.nearStamp = stamp; return []; }
-    const loaded = new Set((await this.evaluate(world, `${world.ref}.loaded()`)).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
+    // A completed response already proves the exact frame/document fetched
+    // its bytes. Ask the renderer only on the existing fallback cache miss.
+    let loaded;
+    const loadedByPage = async () => loaded ??= new Set((await this.evaluate(world, `${world.ref}.loaded()`)).map(key => slot ? `r${slot * 1e6 + Number(key.slice(1))}` : key));
     let tree = null;
     const frames = async () => {
       if (tree) return tree;
@@ -580,7 +591,7 @@ export class Mirror2 {
           // The response index itself proves this exact frame/document fetched
           // the URL. A cache miss retains the existing Resource Timing/tree gate.
           if (!body) {
-            if (!loaded.has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
+            if (!(await loadedByPage()).has(entry.key) && !(await frames()).has(entry.url)) { entry.state = 'waiting'; continue; }
             const frameId = (await frames()).get(entry.url);
             if (frameId) try { const reply = await world.connection.send('Page.getResourceContent', { frameId, url: entry.url }, world.sessionId); body = reply.base64Encoded ? Buffer.from(reply.content, 'base64') : Buffer.from(reply.content, 'utf8'); } catch { body = null; }
             body ??= await this.cached(world, entry.url).catch(() => null);

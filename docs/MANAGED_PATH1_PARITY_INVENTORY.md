@@ -1836,3 +1836,9 @@ or MP-10 fresh-machine acceptance. Runtime review and deployment comparison
 remain open. Exact commands, source identities, resource samples, intermediate
 RED diagnostics and cleanup are retained under
 `/root/.codex/evidence/browser-resume-20260930/implD2/`.
+
+### MP-08 / MP-10 / MP-11: DOM before font bytes
+
+Opted-in mirror-v2 viewers receive the reset DOM/CSS and its positive native-font requirements before font resource bytes. The existing handover readiness check remains required; the native view stays in place while fonts hydrate. Legacy viewers retain first-packet fonts. The next resource credits prioritize fonts across all document slots before images, and a completed frame-bound font response avoids unrelated renderer image/load queries. Packet budgets, credential-free fallback gates, document/policy checks and input authority stay in the shared kernel path. No serialized protocol shape changes.
+
+Supplementary regressions cover a blocked font response, legacy behavior, main/child font ordering, and response ownership. Real built-client new-tab first-packet, typography/handover, public-site, quiet timing and soak acceptance remain required; source checks alone do not close these items.
