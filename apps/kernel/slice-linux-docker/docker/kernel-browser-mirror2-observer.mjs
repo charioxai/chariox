@@ -184,7 +184,36 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // (state pseudo-classes and pseudo-elements ignored; an unparseable selector is kept); every other rule
     // (@font-face, @keyframes, ...) stays. The kernel asks for the full text once the page is quiet.
     const DYNAMIC = /::?(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|-webkit-[\w-]+|-moz-[\w-]+)|:(?:hover|active|focus-visible|focus-within|focus|visited|target)(?![\w-])/g;
-    const usedBy = root => selector => { const plain = selector.replace(DYNAMIC, ''); if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true; try { return root.querySelector(plain) !== null; } catch { return true; } };
+    // Top-level pieces of a selector, split where `at` says (commas, or combinators for the rightmost compound).
+    const split = (text, at) => { const out = []; let depth = 0, start = 0; for (let i = 0; i < text.length; i++) { const c = text[i]; if (c === '\\') i++; else if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && at(c)) { out.push(text.slice(start, i)); start = i + 1; } } out.push(text.slice(start)); return out; };
+    // The document's classes, ids and tags (per root, until the next mutation) reject most unused selectors
+    // without a query: a member whose rightmost compound names one the document lacks cannot match.
+    let usedIndex = null;
+    const usedBy = root => {
+      if (usedIndex?.root !== root || usedIndex.revision !== revision) {
+        const classes = new Set(), ids = new Set(), tags = new Set();
+        for (const element of root.querySelectorAll('*')) { tags.add(element.localName.toLowerCase()); if (element.id) ids.add(element.id); for (const name of element.classList) classes.add(name); }
+        usedIndex = { root, revision, classes, ids, tags, cache: new Map() };
+      }
+      const { classes, ids, tags, cache } = usedIndex;
+      const possible = member => {
+        const last = split(member.trim(), c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
+        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return true;
+        let flat = '', depth = 0; for (const c of last) { if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') { depth--; continue; } if (!depth) flat += c; }
+        const name = token => token.replace(/\\(.)/g, '$1'), tag = /^[a-zA-Z][\w-]*/.exec(flat)?.[0];
+        if (tag && !tags.has(tag.toLowerCase())) return false;
+        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!classes.has(name(token))) return false;
+        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!ids.has(name(token))) return false;
+        return true;
+      };
+      const matches = selector => {
+        const plain = selector.replace(DYNAMIC, '');
+        if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
+        if (!split(plain, c => c === ',').some(possible)) return false;
+        try { return root.querySelector(plain) !== null; } catch { return true; }
+      };
+      return selector => { let used = cache.get(selector); if (used === undefined) cache.set(selector, used = matches(selector)); return used; };
+    };
     const pruned = (rule, keep) => {
       if (rule instanceof CSSStyleRule) return keep(rule.selectorText) ? rule.cssText + '\n' : '';
       if (!(rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule || rule instanceof CSSContainerRule || rule instanceof CSSLayerBlockRule)) return rule.cssText + '\n';
@@ -192,11 +221,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // A layer block keeps its place in the layer order.
       return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
     };
-    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(), prunedRecords = new Map();
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map();
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
-      // Only the top document: the kernel asks the top world for full sheets.
-      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || typeof root?.querySelector !== 'function') return text;
+      // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
+      // root's :host rules cannot be checked by a query.
+      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
       const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
       return used.length < text.length ? used : text;
     };
@@ -382,7 +412,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
-      if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); prunedRecords.set(record.id, { record, node, sheet }); record.css = used; } }
+      if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }
     };
     // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
     // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
@@ -559,9 +589,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
     const take = () => {
-      // The walk ran while the page could still change: prune again against the document this reply describes.
-      for (const [id, { record, node, sheet }] of prunedRecords) { const full = fullSheets.get(id); if (full === undefined) continue; record.css = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, full); if (record.css === full) fullSheets.delete(id); }
-      prunedRecords.clear();
       const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets };
     };
     const resetTargets = () => { targets = new Set(); return true; };
@@ -573,7 +600,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // local id range without walking the previous (possibly huge) document.
       ids = new WeakMap(); serial = 0;
       reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
-      pendingSheets = []; fullSheets.clear(); prunedRecords.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
+      pendingSheets = []; fullSheets.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
       progressive = document.getElementsByTagName('*').length > 10000;
@@ -1047,7 +1074,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();
-      if (window !== window.top || document.readyState === 'loading' || typeof root?.querySelector !== 'function') return null;
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
       const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
       return out;
