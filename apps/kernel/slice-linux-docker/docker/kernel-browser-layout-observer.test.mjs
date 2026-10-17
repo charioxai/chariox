@@ -77,6 +77,18 @@ test('MP-11 close removes the listener and the binding',async()=>{
   assert.equal(c.listeners.size,0);assert.equal(o.valid(),false);
   assert.ok(c.sent.some(s=>s.method==='Runtime.removeBinding'&&s.params.name===bindingOf(c)));
 });
+test('MP-11 close tears the page-side observers down in the private world before removing the binding',async()=>{
+  const [o,c]=await ready();const before=c.sent.length;o.close();
+  const after=c.sent.slice(before).map(s=>s.method);
+  assert.deepEqual(after,['Runtime.evaluate','Runtime.removeBinding']);
+  const stop=c.sent[before];assert.equal(stop.params.contextId,7);assert.ok(stop.params.expression.includes(bindingOf(c)+'Stop'));
+  assert.equal(c.sent.slice(0,before).filter(s=>s.method==='Runtime.evaluate').length,1,'one install only');
+});
+test('MP-11 a dead observer (navigation) has no context left to tear down',async()=>{
+  const [o,c]=await ready();c.emit({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f'}}});
+  const before=c.sent.length;o.close();
+  assert.deepEqual(c.sent.slice(before).map(s=>s.method),['Runtime.removeBinding']);
+});
 
 // --- real Chrome: each page-side trigger reaches Node as a report ---
 const chrome=process.env.CHARIOX_TEST_CHROMIUM||(existsSync('/usr/bin/google-chrome')?'/usr/bin/google-chrome':null);
@@ -141,6 +153,23 @@ real('MP-11 real Chrome: every layout-changing signal reaches the observer, scro
     for(let i=0;i<40&&observer.valid();i++)await settle(25);
     assert.equal(observer.valid(),false,'navigation retires the observer');
     observer.close();
+  }finally{await browser.close();}
+});
+real('MP-11 real Chrome: close disconnects every page-side observer and listener',async()=>{
+  const browser=await launch();
+  try{
+    const {connection,sessionId,page}=browser;
+    await page(`document.body.innerHTML='<p>x</p>'`);
+    // The binding stays installed, so any observer that survives close() would still reach Node.
+    const keepBinding={...connection,send:(method,...rest)=>method==='Runtime.removeBinding'?Promise.resolve({}):connection.send(method,...rest)};
+    const reports=[];connection.subscribe(m=>{if(m.method==='Runtime.bindingCalled')reports.push(m);});
+    const observer=await observeLayout(keepBinding,sessionId,()=>0);
+    await page(`document.body.append(document.createElement('b'))`);await settle(200);
+    assert.ok(reports.length>0,'the live observer reports');
+    observer.close();await settle(200);reports.length=0;
+    await page(`document.body.append(document.createElement('i'));document.body.style.width='500px';dispatchEvent(new Event('resize'));document.fonts.dispatchEvent(new Event('loadingdone'))`);
+    await settle(300);
+    assert.equal(reports.length,0,'no page-side observer fired after close');
   }finally{await browser.close();}
 });
 real('MP-11 real Chrome: the observer world is invisible to page scripts',async()=>{

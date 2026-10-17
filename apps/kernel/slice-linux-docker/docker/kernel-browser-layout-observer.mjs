@@ -14,13 +14,14 @@ export const MAX_AGE_MS=250;
 export const observerSource=binding=>`(()=>{
  const call=globalThis[${JSON.stringify(binding)}];let queued=false;
  const fire=()=>{if(queued)return;queued=true;queueMicrotask(()=>{queued=false;call('1');});};
- const root=document.documentElement,opts={capture:true,passive:true};
+ const root=document.documentElement,abort=new AbortController(),opts={capture:true,passive:true,signal:abort.signal};
  for(const type of ['resize','pageshow','load','transitionrun','transitionend','animationstart','animationiteration','animationend'])addEventListener(type,fire,opts);
  visualViewport?.addEventListener('resize',fire,opts);
  const resize=new ResizeObserver(fire);resize.observe(root);if(document.body)resize.observe(document.body);
- new MutationObserver(fire).observe(root,{subtree:true,childList:true,attributes:true,characterData:true});
- document.fonts?.addEventListener('loadingdone',fire);
- document.addEventListener('readystatechange',fire);
+ const mutation=new MutationObserver(fire);mutation.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});
+ document.fonts?.addEventListener('loadingdone',fire,{signal:abort.signal});
+ document.addEventListener('readystatechange',fire,{signal:abort.signal});
+ globalThis[${JSON.stringify(binding+'Stop')}]=()=>{abort.abort();resize.disconnect();mutation.disconnect();queued=true;delete globalThis[${JSON.stringify(binding+'Stop')}];};
 })()`;
 export async function observeLayout(connection,sessionId,now=()=>performance.now()){
   if(typeof connection?.subscribe!=='function')return null;
@@ -55,6 +56,11 @@ export async function observeLayout(connection,sessionId,now=()=>performance.now
       if(same&&!dead&&generation===started){confirmed=started;confirmedAt=at;}
       return same;
     },
-    close(){off();dead=true;connection.send('Runtime.removeBinding',{name:binding},sessionId).catch(()=>{});},
+    /** Disconnect the page-side observers (while their context lives), then drop the binding. */
+    close(){
+      const live=!dead;off();dead=true;
+      if(live)connection.send('Runtime.evaluate',{expression:`globalThis[${JSON.stringify(binding+'Stop')}]?.()`,contextId},sessionId).catch(()=>{});
+      connection.send('Runtime.removeBinding',{name:binding},sessionId).catch(()=>{});
+    },
   };
 }
