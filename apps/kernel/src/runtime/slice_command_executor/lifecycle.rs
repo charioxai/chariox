@@ -29,7 +29,7 @@ const HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL: Duration = Duration::from_mill
 const HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SliceStartMode {
+enum SliceStartMode {
     RestoreSavedState,
     RecoverExistingContainer,
 }
@@ -653,13 +653,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     };
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     ensure_cloud_relay_connection(runtime_state, config_projection).await?;
-    let relay = image_ready_slice_relay(
-        runtime_state,
-        config_projection,
-        &initial_record,
-        start_mode,
-    )
-    .await?;
+    let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
         crate::slice::SliceRelayEndpoint {
@@ -1139,40 +1133,6 @@ fn relay_presence_from_started_slice<'a>(
         });
     }
     Ok(discovered)
-}
-
-// A cold image build can outlast the hosted relay token; build before the token is issued
-// so the worker never starts with an expired one.
-pub(super) async fn image_ready_slice_relay(
-    runtime_state: &KernelRuntimeState,
-    config_projection: &DaemonConfigProjectionStore,
-    slice: &crate::slice::SliceRecord,
-    start_mode: SliceStartMode,
-) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError> {
-    if start_mode == SliceStartMode::RestoreSavedState {
-        let record = slice.clone();
-        let mut options =
-            crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
-        if let Some(state) = runtime_state.active_saved_state_for_slice(&slice.id)? {
-            options = options.with_saved_state(&state);
-        }
-        tokio::task::spawn_blocking(move || {
-            crate::slice::run_local_docker_slice_action(
-                &record,
-                crate::slice::LocalDockerSliceAction::BuildImage,
-                None,
-                None,
-                None,
-                &options,
-            )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.start",
-            message: format!("slice image build task failed: {error}"),
-        })??;
-    }
-    local_docker_slice_relay(config_projection, slice).await
 }
 
 async fn local_docker_slice_relay(

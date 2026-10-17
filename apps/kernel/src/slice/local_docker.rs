@@ -251,14 +251,9 @@ pub fn run_local_docker_slice_action(
     } else {
         None
     };
-    if action == LocalDockerSliceAction::BuildImage && broker::configured() {
-        // The managed broker provisions from its installed image and admits no build action.
-        return Ok(());
-    }
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
     let action_name = match action {
-        LocalDockerSliceAction::BuildImage => "build-image",
         LocalDockerSliceAction::Provision => "provision",
         LocalDockerSliceAction::RestoreState => "restore-state",
         LocalDockerSliceAction::Recover => "recover",
@@ -275,8 +270,7 @@ pub fn run_local_docker_slice_action(
         options,
         matches!(
             action,
-            LocalDockerSliceAction::BuildImage
-                | LocalDockerSliceAction::Provision
+            LocalDockerSliceAction::Provision
                 | LocalDockerSliceAction::RestoreState
                 | LocalDockerSliceAction::Recover
         ),
@@ -1440,7 +1434,6 @@ pub(super) fn relay_url_for_container(relay_url: &str) -> String {
 impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
-            Self::BuildImage => "build-image",
             Self::Provision => "provision",
             Self::RestoreState => "restore-state",
             Self::Recover => "recover",
