@@ -1263,6 +1263,27 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_with(config, agent, operation, false)
+    }
+
+    /// Worker-side admission of a leased prompt: a Claude replica carries no credentials, so an
+    /// unobserved one is admitted and the home's per-launch credential is checked at launch.
+    pub(crate) fn require_leased_agent_authenticated(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_with(config, agent, operation, true)
+    }
+
+    fn require_agent_authenticated_with(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+        launch_credential_may_follow: bool,
+    ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
@@ -1273,6 +1294,15 @@ impl ProviderAccountProfileRegistry {
             provider,
             agent.provider_account_profile(),
         )?;
+        if launch_credential_may_follow && provider == "claude" {
+            let profile = self.get(&owner_user_id, provider, agent.provider_account_profile())?;
+            if matches!(
+                profile.auth_state,
+                ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured
+            ) {
+                return Ok(());
+            }
+        }
         self.require_authenticated(
             &owner_user_id,
             provider,

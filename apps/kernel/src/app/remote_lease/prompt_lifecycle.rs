@@ -663,7 +663,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
         self.app
             .provider_account_profile_registry()
-            .require_agent_authenticated(&self.app.config, &agent, "submit prompt")
+            .require_leased_agent_authenticated(&self.app.config, &agent, "submit prompt")
     }
 
     pub(crate) fn prepare_leased_prompt_submission(
