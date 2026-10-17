@@ -127,6 +127,31 @@ test('MP-08/MP-10/MP-11 visible-page startup shares the mirror document owner wh
  proof={...proof};assert.equal(await stream.regionCurrent(),false,'a replaced navigation proof cannot re-admit the same loader');await stream.close();
 });
 
+// r47 quiet-host WHATWG (15.8 MB typed URL): the parsing renderer answered no Page.getLayoutMetrics within the 5 s CDP
+// timeout, so each preview attach failed and the viewer kept the previous page for 40+ s.
+test('MP-08/MP-10/MP-11 a navigation preview starts while the new document\'s renderer is too busy to report layout',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ let busy=false;const layout={cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};
+ const connection={send:async()=>busy?new Promise((_,reject)=>setTimeout(()=>reject(Error('browser_cdp_timeout')),1500)):layout};
+ let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>proof,resolvePageTarget:async()=>{throw Error('cold target query is busy')}},timing:()=>{},armDisplayExpiry:()=>{}};
+ const captures=[];class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);captures.push(this)}async start(){return this}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+ await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+ // The typed URL commits; its renderer parses the document and answers nothing.
+ busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+ const started=Date.now(),result=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ assert(Date.now()-started<1000,`the preview waited ${Date.now()-started} ms for the busy renderer`);
+ assert.equal(result.document_id,'new');const stream=host.displays.get(result.subscription_id);
+ assert.equal(captures.at(-1).options.viewport.clientWidth,1265,'the crop is the last layout this target reported');
+ assert.equal(await stream.regionCurrent(),true);await stream.close();
+ // A changed window binding (resize, zoom, DPR) has no earlier read to stand in.
+ window.window_generation=3;await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture}),/browser_cdp_timeout/);
+});
+
 // MP-08/MP-10/MP-11: full-page navigation previews share the page-region publication fence.
 test('MP-08/MP-10/MP-11 visible-page preview holds its last page frame while Chrome UI overlaps it',async()=>{
  const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');

@@ -19,6 +19,11 @@ export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
  const source=nativeDisplay?.regionSource??host.compositors.get(command.tab_id)?.source;
  return source?.native===true&&source.attested===true&&source.valid?.()===true;
 }
+// MP-08/MP-10/MP-11: a renderer parsing a huge document answers CDP late (r47 WHATWG: every preview attach hit the
+// 5 s timeout). The layout read only narrows the crop inside the native page rect, so this target's last read under
+// the same emulated metrics and window binding stands in while the renderer is busy; a later read that differs
+// fails the current check and retires the display.
+const LAYOUT_WAIT_MS=400,layouts=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);
@@ -34,8 +39,16 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const documentCurrent=()=>host.tabs.get(tab.tab_id)?.target_id===tab.target_id&&(frameProof
    ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
    :host.tabs.get(tab.tab_id)?.document_id===document);
-  const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
   const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
+  const reads=layouts.get(browser)??new Map(),key=JSON.stringify([metrics??null,window.window_generation,window.page_rect]);layouts.set(browser,reads);
+  const measure=async()=>{
+   const last=reads.get(tab.target_id),cached=last?.key===key?last:null;
+   if(cached?.pending)return cached.viewport;
+   const fresh=connection.send('Page.getLayoutMetrics',{},sessionId).then(m=>{const viewport={clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};reads.set(tab.target_id,{key,viewport,pending:null});return viewport;});
+   if(!cached)return fresh;
+   cached.pending=fresh;fresh.catch(()=>{if(cached.pending===fresh)cached.pending=null;});let timer;
+   try{return await Promise.race([fresh,new Promise(resolve=>{timer=setTimeout(resolve,LAYOUT_WAIT_MS,cached.viewport);})]);}finally{clearTimeout(timer);}
+  };
   // The existing native observer retires this measurement on resize, zoom,
   // tab/window changes or detach. A cold binding retains fresh measurement.
   const viewportGuard=frameProof&&typeof metrics==='string'?host.tabGroups?.nativeStateGuard?.():null;
