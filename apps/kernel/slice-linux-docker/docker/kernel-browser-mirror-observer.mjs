@@ -8,7 +8,7 @@ function installMirrorObserver(initialStyles = {}) {
   // MP-10: what changed between two reads. A node whose style inputs did not change keeps its previous
   // style instead of enumerating ~360 computed properties again (that was most of a read).
   const touchedAttributes = new Set(), touchedContent = new Set(), styleCache = new WeakMap(), epochs = new WeakMap();
-  let touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set()], controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
+  let touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set()], wasAnimated = new Set(), controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
   const touch = records => {
     for(const record of records) {
       if(touchedAttributes.size+touchedContent.size>4096){touchedAll=true;return;}
@@ -19,28 +19,64 @@ function installMirrorObserver(initialStyles = {}) {
     }
   };
   // Stylesheets are read once per shape: a sheet added, removed, disabled or given a rule, or a new viewport.
-  // `plain` = cached styles can be trusted (every sheet readable, no :has()/@container/@scope);
-  // `structural` = some selector reaches siblings, so a change also restyles the siblings after it;
-  // `pseudo` = [hover, active, focus] some author selector depends on, so such a change reaches the subtree
-  // (the user-agent rules for those states only ever restyle the element itself).
+  // `plain` = cached styles can be trusted (every sheet readable, no @scope/@starting-style); `structural` = some selector reaches siblings, so a change also restyles the siblings after
+  // it; `has` = compounds that host a :has() (a change below them restyles them; `hasSibling`: or beside them); `reach[hover, active, focus]` =
+  // compounds that carry that state in front of a descendant or sibling (the user-agent rules for those states,
+  // and selectors ending in the state, only ever restyle the element itself).
   const sheetShape = () => {
     let key=`${innerWidth}x${innerHeight}@${devicePixelRatio}`;
     for(const root of roots){key+='|';try{for(const sheet of [...root.styleSheets,...root.adoptedStyleSheets])key+=`${sheet.disabled?'-':''}${sheet.cssRules.length},`;}catch{key+='?';}}
     return key;
   };
+  const states=[/:hover/g,/:active/g,/:(?:focus(?:-within|-visible)?|target)\b/g], hasGroup=/:has\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g;
+  // The compounds of every selector in a list (top-level combinators only).
+  const compoundsOf = text => {
+    const selectors=[[]];let current='',depth=0,bracket=0,quote='';
+    const flush=()=>{if(current)selectors.at(-1).push(current);current='';};
+    for(const c of text) {
+      if(quote){current+=c;if(c===quote)quote='';continue;}
+      if(c==='"'||c==="'"){quote=c;current+=c;continue;}
+      if(c==='(')depth++;else if(c===')')depth--;else if(c==='[')bracket++;else if(c===']')bracket--;
+      if(!depth&&!bracket&&c===','){flush();selectors.push([]);}
+      else if(!depth&&!bracket&&/[\s>+~]/.test(c))flush();
+      else current+=c;
+    }
+    flush();
+    return selectors;
+  };
   const scanSheets = () => {
-    const found={plain:true,structural:false,pseudo:[false,false,false],selectors:null,fonts:[]};
+    const found={plain:true,structural:false,hasSibling:false,has:[],reach:[[],[],[]],selectors:null,fonts:[]};
     let count=0;
+    const analyze=text=>{
+      if(/:has\(\s*[+~]/.test(text))found.hasSibling=true;
+      for(const compounds of compoundsOf(text))compounds.forEach((compound,index)=>{
+        // Whatever is inside parentheses (:not(:hover), :is(...)) cannot be told apart from the compound: all of it.
+        const top=compound.replaceAll(/\([^()]*\)/g,'').replaceAll(/\([^()]*\)/g,'');
+        const base=compound.replaceAll(hasGroup,'').replace(/:(?:hover|active|focus(?:-within|-visible)?|target)\b/g,'')||'*';
+        if(/:has\(/.test(compound))found.has.push(/:has\b/.test(top)?base:'*');
+        states.forEach((state,kind)=>{
+          const nested=compound.match(state)?.length!==top.match(state)?.length;
+          if(compound.match(state)&&(nested||index<compounds.length-1))found.reach[kind].push(nested?'*':base);
+        });
+      });
+    };
     const walk=rules=>{
       for(const rule of rules){
         if(++count>100000){found.plain=false;return;}
-        if(rule.selectorText!==undefined){if(/:has\(/.test(rule.selectorText))found.plain=false;else {if(/[+~]|:(?:first|last|only|nth)-|:empty/.test(rule.selectorText))found.structural=true;[/:hover/,/:active/,/:focus|:target/].forEach((state,kind)=>{if(state.test(rule.selectorText))found.pseudo[kind]=true;});}}
-        else if(['CSSContainerRule','CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
+        if(rule.selectorText!==undefined){
+          if(/[+~]|:(?:first|last|only|nth)-|:empty/.test(rule.selectorText.replaceAll(hasGroup,'')))found.structural=true;
+          if(/:(?:has|hover|active|focus|target)/.test(rule.selectorText))analyze(rule.selectorText);
+        } else if(['CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
         if(rule.cssRules)walk(rule.cssRules);
         if(rule.styleSheet)walk(rule.styleSheet.cssRules);
       }
     };
     for(const root of roots)try{for(const sheet of [...root.styleSheets,...root.adoptedStyleSheets])walk(sheet.cssRules);}catch{found.plain=false;}
+    // A base the engine cannot parse is widened by dropping its functional pseudo-classes, else it stands for everything.
+    const parses=base=>{try{document.createDocumentFragment().querySelector(base);return true;}catch{return false;}};
+    const valid=base=>{if(parses(base))return base;const wide=base.replaceAll(/:[\w-]+\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g,'').replaceAll(/:[\w-]+\(\)/g,'')||'*';return parses(wide)?wide:'*';};
+    const list=bases=>bases.length?[...new Set(bases.map(valid))].join(','):null;
+    found.has=list(found.has);found.reach=found.reach.map(list);
     // MP-08/MP-10/MP-11: exact same-read CSS sharing for plain leaf paragraphs.
     // Same parent, tag, raw attributes, box size and complete selector match set
     // imply the same author cascade + inheritance. Uninspectable/grouped/nested/
@@ -111,27 +147,40 @@ function installMirrorObserver(initialStyles = {}) {
     }
     const hotNow=[hovered,pressed,focusing];
     for(const tile of tiles)if([...touchedAttributes,...touchedContent].some(node=>tile.contains(node)))epochs.set(tile,(epochs.get(tile)??0)+1);
-    const animating=roots.some(root=>root.getAnimations().length);
-    let quick=!reset&&!touchedAll&&shaped&&sheets.plain&&now-lastFull<=1500&&!animating;
+    // Whatever animates is restyled every read (and once more when it stops); an animation without an element target is unknowable.
+    const animations=roots.flatMap(root=>root.getAnimations()).filter(animation=>!animation.effect||animation.effect.getKeyframes().some(frame=>Object.keys(frame).some(key=>!['offset','easing','composite','computedOffset'].includes(key)))),animated=new Set(animations.map(animation=>animation.effect?.target));
+    const lastAnimated=wasAnimated;wasAnimated=animated;
+    let quick=!reset&&!touchedAll&&shaped&&sheets.plain&&now-lastFull<=1500&&!animated.has(undefined)&&!animated.has(null);
     if(quick) {
       // A change restyles its node, the subtree below it and (when selectors reach siblings) the siblings after it,
       // up through the hosts of any shadow trees it sits in.
-      const mark=(node,deep)=>{
+      const restyle=(node,deep,siblings=sheets.structural)=>{
         while(node) {
           const host=node.getRootNode().host;
-          if(deep||host){for(let sibling=node;sibling;sibling=sheets.structural?sibling.nextElementSibling:null)dirtyDeep.add(sibling);}
+          if(deep||host){for(let sibling=node;sibling;sibling=siblings?sibling.nextElementSibling:null)dirtyDeep.add(sibling);}
           else dirtySelf.add(node);
           node=host;deep=true;
         }
       };
+      // Whatever hosts a :has() above the change is restyled with its subtree.
+      let scanned=0;
+      const mark=(node,deep)=>{
+        restyle(node,deep);
+        if(sheets.has)for(let host=node.parentElement?.closest(sheets.has);host;host=host.parentElement?.closest(sheets.has))restyle(host,true);
+        // :has(+ x) / :has(~ x): the hosts are preceding siblings of the changed node or of one of its ancestors.
+        if(sheets.hasSibling)for(let ancestor=node;ancestor;ancestor=ancestor.parentElement)for(let before=ancestor.previousElementSibling;before;before=before.previousElementSibling)if(++scanned<=2000&&before.matches(sheets.has))restyle(before,true);
+      };
+      // Reached = something below or after the node can depend on its state.
+      const reaches=(kind,node)=>{try{return Boolean(sheets.reach[kind])&&node.matches(sheets.reach[kind]);}catch{return true;}};
       for(const node of touchedAttributes)if(node.isConnected)mark(node,true);
       for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural);
       hotNow.forEach((now,kind)=>{
-        for(const node of now)if(!hot[kind].has(node))mark(node,sheets.pseudo[kind]);
-        for(const node of hot[kind])if(!now.has(node)&&node.isConnected)mark(node,sheets.pseudo[kind]);
+        for(const node of now)if(!hot[kind].has(node))mark(node,reaches(kind,node));
+        for(const node of hot[kind])if(!now.has(node)&&node.isConnected)mark(node,reaches(kind,node));
       });
+      for(const node of [...animated,...lastAnimated])if(node?.isConnected)restyle(node,true,false);
       for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true);
-      quick=dirtyDeep.size+dirtySelf.size<=4096;
+      quick=dirtyDeep.size+dirtySelf.size<=4096&&scanned<=2000;
     }
     touchedAttributes.clear();touchedContent.clear();touchedAll=false;hot=hotNow;
     // Private to the kernel (never in a packet): what a native control's pixels depend on beyond its record.
@@ -151,7 +200,7 @@ function installMirrorObserver(initialStyles = {}) {
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
     let textSize = 0;
-    const selectors=animating?null:sheets.selectors;
+    const selectors=animations.length?null:sheets.selectors;
     const sharedStyles=new Map();
     const safeStyle = (element,pseudo=null,resourcesAllowed=true,bounds=null) => {
       const computed=getComputedStyle(element,pseudo), out={all:'initial'};
@@ -177,9 +226,13 @@ function installMirrorObserver(initialStyles = {}) {
     // The style of an element is reused while nothing that feeds it changed (see the plan above) and its box,
     // which carries the layout-dependent used values, is the same. Styles holding resource references are
     // numbered per read and never reused.
+    let evaluated=false;
     const elementStyle = (node,box,forced) => {
       const hit=forced?null:styleCache.get(node);
-      if(hit&&hit.x===box.x&&hit.y===box.y&&hit.width===box.width&&hit.height===box.height)return hit.style;
+      evaluated=false;
+      // Only a positioned element's used offsets follow where it is; scrolling moves everything else without restyling it.
+      if(hit&&hit.width===box.width&&hit.height===box.height&&(!hit.style.position||hit.x===box.x&&hit.y===box.y))return hit.style;
+      evaluated=true;
       const before=resources.length,style=safeStyle(node,null,true,box);
       if(resources.length===before)styleCache.set(node,{x:box.x,y:box.y,width:box.width,height:box.height,style});else styleCache.delete(node);
       return style;
@@ -188,7 +241,7 @@ function installMirrorObserver(initialStyles = {}) {
       if(depth>128 || records.length>=12000) throw new Error('mirror node bounds');
       if(![1,3,9,11].includes(node.nodeType)) return null;
       if(node.nodeType===1 && active.has(node.localName)) return null;
-      const record={id:id(node),parent,children:[],kind:'element'},forced=inherited||!quick||dirtyDeep.has(node);
+      let forced=inherited||!quick||dirtyDeep.has(node);const record={id:id(node),parent,children:[],kind:'element'};
       nextLive.set(record.id,node); records.push(record);
       if(node.nodeType===3) {
         record.kind='text';record.text=node.data;record.box=box(node);
@@ -206,6 +259,8 @@ function installMirrorObserver(initialStyles = {}) {
           return done(record);
         }
         record.style=elementStyle(node,record.box,forced||dirtySelf.has(node));
+        // A size container whose box changed restyles what it contains (@container); `forced` flows to the children below.
+        if(evaluated&&record.style['container-type'])forced=true;
         // MP-08/MP-11: show password dots through pixels, never form metadata.
         if(tag==='input'&&node.type==='password')return nativeTile(record,node);
         // MP-08/MP-10: viewport first. Offscreen simple flow blocks retain their
