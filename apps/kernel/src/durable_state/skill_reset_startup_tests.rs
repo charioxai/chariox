@@ -167,6 +167,24 @@ fn skills_v2_second_journal_retires_own_state_without_rewriting_the_home_owners_
 }
 
 #[test]
+fn skills_v2_isolated_startup_leaves_the_process_home_installation_untouched() {
+    let _env = crate::env_lock::lock();
+    let f = Fixture::new();
+    let real = f.0.join("real-home");
+    let package = real.join(".chariox/skills/review");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("SKILL.md"), "---\nname: review\n---\nReal.\n").unwrap();
+    std::env::set_var("HOME", &real);
+    let config = f.config("isolated");
+    f.old_package();
+    f.seed_old(&config);
+    let store = DurableKernelStateStore::open_kernel_owned(&config).unwrap();
+    assert!(store.owns_skill_catalog());
+    assert!(!f.home().join("skills/review").exists());
+    assert!(package.join("SKILL.md").exists());
+}
+
+#[test]
 fn skills_v2_publication_startup_allows_an_unmaterialized_private_context_root() {
     let f = Fixture::new();
     let mut config = f.config("publication");

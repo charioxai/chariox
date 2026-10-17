@@ -140,6 +140,16 @@ fn initialize_with_names(
                 } else {
                     retire_with_names(&mut value, &names);
                 }
+                if table == "durable_workflow_hot_entities"
+                    && kind == "queued_prompt"
+                    && queued_selection(&before, &names)
+                {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE rowid=?1"),
+                        params![id],
+                    )?;
+                    continue;
+                }
                 if before != value {
                     if table == "durable_workflow_hot_entities" && kind == "publication_snapshot" {
                         publications::retire_hot(&tx, id)?;
@@ -254,7 +264,11 @@ fn queued_selection(value: &Value, names: &std::collections::BTreeSet<String>) -
     // Before v2 there is no source identity with which to safely replay these.
     // Cancel explicit selections, including old invocation spelling. Do not
     // reinterpret an unknown $name as a provider-native selection after reset.
-    let prompt = value.get("prompt").and_then(Value::as_str).unwrap_or("");
+    let prompt = value
+        .get("prompt")
+        .or_else(|| value.get("task_markdown"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     crate::skill::selection::explicit_skill_tokens(prompt)
         .iter()
         .any(|token| names.contains(&token.name.to_ascii_lowercase()))
@@ -297,7 +311,7 @@ fn retire_with_names(value: &mut Value, names: &std::collections::BTreeSet<Strin
                     "skill_grants" | "required_skills" | "skill_selections" => {
                         *field = Value::Array(vec![])
                     }
-                    "queued_prompts" | "workflow_queued_prompts" => {
+                    "queued_prompts" | "workflow_queued_prompts" | "queued_metaagent_tasks" => {
                         if let Some(prompts) = field.as_array_mut() {
                             prompts.retain(|prompt| !queued_selection(prompt, names));
                             prompts
@@ -615,6 +629,40 @@ mod tests {
             let kept:String=db.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND entity_id=?2 AND entity_kind='publication_snapshot'",rusqlite::params![owner,id],|r|r.get(0)).unwrap();
             assert_eq!(kept, ordinary);
         }
+    }
+    // MP-08 / MP-10 / MP-11: unstarted selected work has no dispatch intent to retire.
+    #[test]
+    fn skill_reset_cancels_selected_standalone_hot_queued_prompts_and_meta_tasks() {
+        let mut db = database();
+        db.execute(
+            "INSERT INTO durable_state_events VALUES (1,'e','agent.extension_granted','a',1,?1)",
+            [json!({"agent":{"extension_grants":[{"kind":"skill","name":"review"}]}}).to_string()],
+        )
+        .unwrap();
+        for (id, prompt) in [("old", "Use $review"), ("keep", "Explain $total")] {
+            db.execute(
+                "INSERT INTO durable_workflow_hot_entities VALUES ('owner','session','queued_prompt',?1,1,?2)",
+                rusqlite::params![id, json!({"id":id,"prompt":prompt}).to_string()],
+            )
+            .unwrap();
+        }
+        initialize(&mut db).unwrap();
+        let ids: Vec<String> = db
+            .prepare("SELECT entity_id FROM durable_workflow_hot_entities WHERE entity_kind='queued_prompt'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ids, ["keep"]);
+        let mut session = json!({"agents":[{"extension_grants":[{"kind":"skill","name":"review"}]}],
+            "queued_metaagent_tasks":[{"id":"m-old","task_markdown":"Use $review here"},
+                {"id":"m-keep","task_markdown":"Explain $total"}]});
+        retire(&mut session);
+        assert_eq!(
+            session["queued_metaagent_tasks"],
+            json!([{"id":"m-keep","task_markdown":"Explain $total"}])
+        );
     }
     #[test]
     fn skill_reset_retires_session_publication_pairs_and_their_pending_invocations() {

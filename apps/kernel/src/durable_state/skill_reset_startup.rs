@@ -26,26 +26,18 @@ fn roots(
 ) -> Result<(Vec<LegacySkillRoot>, Vec<PathBuf>), DaemonError> {
     let mut legacy = Vec::new();
     if global_owner {
-        let mut homes = vec![home.to_path_buf()];
-        if let Some(previous) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-            let previous = absolute(&PathBuf::from(previous))?;
-            let previous = std::fs::canonicalize(previous).map_err(|_| failure())?;
-            homes.push(previous.join(".chariox"));
-        }
-        for home in homes {
-            legacy.push(LegacySkillRoot {
-                path: home.join("skills"),
-                kind: LegacySkillRootKind::Installed,
-            });
-            legacy.push(LegacySkillRoot {
-                path: home.join("state/skill-materializations"),
-                kind: LegacySkillRootKind::Materialized,
-            });
-            legacy.push(LegacySkillRoot {
-                path: home.join("managed-context/kernel-context/user/skills"),
-                kind: LegacySkillRootKind::Installed,
-            });
-        }
+        legacy.push(LegacySkillRoot {
+            path: home.join("skills"),
+            kind: LegacySkillRootKind::Installed,
+        });
+        legacy.push(LegacySkillRoot {
+            path: home.join("state/skill-materializations"),
+            kind: LegacySkillRootKind::Materialized,
+        });
+        legacy.push(LegacySkillRoot {
+            path: home.join("managed-context/kernel-context/user/skills"),
+            kind: LegacySkillRootKind::Installed,
+        });
     }
     let private = absolute(&config.private_runtime_state_root())?;
     let private = match std::fs::canonicalize(&private) {
