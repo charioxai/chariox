@@ -24,6 +24,11 @@ const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error
 // Only an outstanding exact request may use this private IPC ceiling.
 export const nativeExactReplyLimit=32*1024*1024;
 export class NativeWorkerControl {
+ // A record armed right after a retire is retired again by the same storm
+ // (a page that mutates every frame): auto-encodes and grants would only be
+ // wasted, so the next arm waits until retires have been quiet this long.
+ static retireQuietMs=250;
+ retiredAt=-Infinity;
  constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;this.autos=new Map();this.generation=0;this.auto=null;
   // L3 stage 2b: fd 3 is the synchronous retire pipe; the token names this worker's frame channel.
   live.add(this);this.retires=child.stdio?.[3]??null;this.token=this.retires&&process.env.CHARIOX_BROWSER_DISPLAY_FRAMES?randomBytes(16).toString('hex'):null;this.lease=null;}
@@ -60,7 +65,7 @@ export class NativeWorkerControl {
  // L3 (AUDIT2 §4): one state record per encoder session. Its generation
  // changes only on retire, so renewals and rate changes keep the chain.
  arm(record){
-  if(this.closed)return null;
+  if(this.closed||performance.now()-this.retiredAt<NativeWorkerControl.retireQuietMs)return null;
   if(this.auto?.encoder!==record.encoder)this.auto={generation:++this.generation};
   Object.assign(this.auto,record);
   this.notify({state:{...this.auto}},true);return this.auto;
@@ -69,7 +74,9 @@ export class NativeWorkerControl {
  // MP-11: the retire pipe is read by the codec thread before every leased
  // send, so no frame read back after this write can leave the worker.
  retireState(encoder){
-  if(!this.auto||encoder!==undefined&&this.auto.encoder!==encoder)return;
+  if(this.auto&&encoder!==undefined&&this.auto.encoder!==encoder)return;
+  this.retiredAt=performance.now();
+  if(!this.auto)return;
   const generation=this.auto.generation;this.auto=null;this.lease=null;
   const pipe=this.retires;
   try{if(!pipe||pipe.destroyed)throw Error();pipe.write(`${generation}\n`);if(pipe.writableLength)throw Error();}
@@ -84,6 +91,7 @@ export class NativeWorkerControl {
  }
  // The worker ended a lease (or refused a grant): that generation is spent.
  ended(generation){
+  this.retiredAt=performance.now();
   if(this.auto?.generation===generation)this.auto=null;
   if(this.lease?.generation===generation)this.lease=null;
  }

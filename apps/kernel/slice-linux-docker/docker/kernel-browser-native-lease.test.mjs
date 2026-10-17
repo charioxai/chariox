@@ -56,6 +56,7 @@ test('MP-11 every retire event writes the retire pipe synchronously and spends t
  assert.equal(offer.grant({generation:1,sequence:2,chain:2,template:{kind:'video'}}),null);
  // A worker-side end spends that generation: the next record is a new one.
  const c=rig();await autoFrame(c);c.bridge.ended(1);assert.equal(c.bridge.auto,null);
+ c.bridge.retiredAt=-Infinity;
  assert.equal(c.bridge.arm({encoder:'x',bitrate:8e6,reduced:false,until_ms:1}).generation,2);
  // A pipe that cannot take the write synchronously fails closed.
  const killed=[];const d=new NativeWorkerControl({stdin:{write(){}},stdio:[,,,{write(){},writableLength:3}],kill:s=>killed.push(s)},()=>{});
@@ -106,4 +107,17 @@ test('MP-11 the lease renews only while the frame binding still holds',async()=>
   bound=true;const stale=await s.frame(source(offer([],()=>false)),'d',1,async()=>true,()=>bound);
   assert.equal(stale[directLease](),null,'a retired record is never granted');
  }finally{await s.close()}
+});
+
+test('L3 a retire storm neither re-arms nor grants until the retires have been quiet',()=>{
+ const r=rig(),record={encoder:'e',bitrate:8e6,reduced:false,until_ms:Date.now()+1e6};
+ assert.ok(r.bridge.arm(record),'the first record arms at once');
+ r.bridge.retireState();
+ assert.equal(r.bridge.arm(record),null,'a record right after a retire would be retired again');
+ r.bridge.retireState();
+ assert.equal(r.bridge.arm(record),null,'a retire with no record still extends the quiet window');
+ r.bridge.retiredAt-=NativeWorkerControl.retireQuietMs;
+ assert.ok(r.bridge.arm(record),'quiet long enough: the next frame arms again');
+ r.bridge.ended(r.bridge.auto.generation);
+ assert.equal(r.bridge.arm(record),null,'a refused grant counts as a retire');
 });

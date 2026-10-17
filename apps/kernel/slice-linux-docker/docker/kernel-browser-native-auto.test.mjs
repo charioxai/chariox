@@ -54,8 +54,8 @@ test('L3 frames of a retired generation are refused and the chain gap takes a ke
  await assert.rejects(encoder.encode(stale,8e6,false,'avc1.420033'),e=>e.busy===true&&/chain gap/.test(e.message));
  assert.equal(requests.length,2);
  bridge.dropAuto(2);assert.ok(gone(staleReply.packet),'the unpublished auto packet is deleted');
- // The next key re-arms under a new generation; generation 1 stays refused.
- manual.push(reply(1,true));await encoder.encode(raw(4),8e6,true,'avc1.420033');
+ // The next key (after the retire quiet window) re-arms under a new generation; generation 1 stays refused.
+ bridge.retiredAt=-Infinity;manual.push(reply(1,true));await encoder.encode(raw(4),8e6,true,'avc1.420033');
  assert.equal(writes.filter(w=>w.state).at(-1).state.generation,2);
  const old=raw(5,{auto:1});autoReply(5,1,reply(2));manual.push(reply(2));
  await encoder.encode(old,8e6,false,'avc1.420033');
@@ -84,7 +84,7 @@ test('L3 a protection change retires the record before any other work',()=>{
  capture.retireFrames();
  assert.deepEqual(writes.slice(1),[{state_retire:1},{reject:'region_revision'}]);
  assert.equal(bridge.auto,null);
- bridge.arm({encoder:'motion',bitrate:8e6,reduced:false,until_ms:1});
+ bridge.retiredAt=-Infinity;bridge.arm({encoder:'motion',bitrate:8e6,reduced:false,until_ms:1});
  capture.fence();
  assert.deepEqual(writes.at(-1),{state_retire:2});
 });
