@@ -12,6 +12,7 @@ import {buildTranscriptEntryRenderable} from "./transcript-render.js"
 import {recordPaneFirstFrame} from "./pane-first-frame-timing.js"
 import {paintCachedTranscriptFrame} from "./client-view-frame.js"
 import {createTranscriptSyntaxStyle,theme} from "./theme.js"
+import {TUI_MOUSE_ENABLED} from "./terminal-mouse-policy.js"
 
 export function createCliCachedStartup(){
  const [cached,setCached]=createSignal<CliCachedView|null>(null)
@@ -69,7 +70,7 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
-   <Show when={props.view.cached()} fallback={<Show when={preview()} fallback={<text content={failure()??'Connecting…'} />}>{value=><CachedTranscript view={value()} title="Opening session" requests={value().requests}/>}</Show>}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>
+   <Show when={props.view.cached()} fallback={<Show when={preview()} fallback={<text content={failure()??'Connecting…'} />}>{value=><CachedTranscript view={value()} requests={value().requests}/>}</Show>}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>
   </box></Show>
  </box>
 }
@@ -83,7 +84,7 @@ function nextFrame(renderer:ReturnType<typeof useRenderer>):Promise<void>{
   renderer.requestRender()
  })
 }
-function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'frame'>;title:string;requests?:Preview['requests']}){
+function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'frame'>;title?:string;requests?:Preview['requests']}){
  const renderer=useRenderer(),syntax=createTranscriptSyntaxStyle()
  let box:BoxRenderable|undefined,scrollbox:ScrollBoxRenderable|undefined,timer:ReturnType<typeof setTimeout>|undefined
  const removeTiming=recordPaneFirstFrame(renderer,()=>Boolean((props.view.frame || box?.getChildren().length) && box && box.width > 0 && box.height > 0),()=>props.view.entries,props.requests?"preview":true,undefined,undefined,props.requests)
@@ -98,7 +99,8 @@ function CachedTranscript(props:{view:Pick<CliCachedView,'alias'|'entries'|'fram
  })
  onCleanup(()=>{removeTiming();if(timer)clearTimeout(timer);syntax.destroy()})
  return <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.background}>
-  <text height={1} flexShrink={0} content={`${props.view.alias} · ${props.title}`} fg={theme.textMuted}/>
-  <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} stickyScroll={true} stickyStart="bottom" ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
+  {/* The live preview has no header, so the rows do not shift when the app replaces it. */}
+  <Show when={props.title}><text height={1} flexShrink={0} content={`${props.view.alias} · ${props.title}`} fg={theme.textMuted}/></Show>
+  <Show when={props.view.frame} fallback={<scrollbox flexGrow={1} stickyScroll={true} stickyStart="bottom" viewportOptions={{paddingRight:0}} verticalScrollbarOptions={{visible:TUI_MOUSE_ENABLED,paddingLeft:0}} ref={value=>{scrollbox=value}}><box width="100%" flexDirection="column" ref={value=>{box=value}}/></scrollbox>}>{frame=><box flexGrow={1} width="100%" ref={value=>{box=value}} renderAfter={buffer=>{if(box)paintCachedTranscriptFrame(buffer,frame(),box)}}/>}</Show>
  </box>
 }
