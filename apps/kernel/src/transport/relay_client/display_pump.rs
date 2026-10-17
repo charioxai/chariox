@@ -185,6 +185,7 @@ impl PumpState {
 pub(super) struct DisplayPump {
     state: std::sync::Mutex<PumpState>,
     wake: tokio::sync::Notify,
+    delivery: super::display_delivery::DisplayTask,
 }
 
 impl DisplayPump {
@@ -198,6 +199,7 @@ impl DisplayPump {
                 ..Default::default()
             }),
             wake: tokio::sync::Notify::new(),
+            delivery: Default::default(),
         })
     }
     fn with<T>(&self, f: impl FnOnce(&mut PumpState) -> T) -> T {
@@ -230,6 +232,16 @@ impl DisplayPump {
     pub(super) fn stop(&self) {
         self.with(|state| state.stopped = true);
         self.wake.notify_one();
+        self.delivery.stop();
+    }
+    pub(super) fn start_delivery(
+        &self,
+        delivery: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.delivery.start(delivery);
+        if self.with(|state| state.stopped) {
+            self.delivery.stop();
+        }
     }
 }
 

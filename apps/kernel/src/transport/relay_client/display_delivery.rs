@@ -1,6 +1,8 @@
 //! MP-08/MP-10/MP-11: delivery cancellation owns the actual in-flight frame pump.
 use super::subscriptions::RelaySubscriptionTasks;
 use std::future::Future;
+mod task;
+pub(super) use task::DisplayTask;
 
 pub(super) async fn start(
     tasks: &RelaySubscriptionTasks,
@@ -16,8 +18,9 @@ pub(super) async fn start(
         // Unsubscribe or a newer admission already retired this delivery.
         return;
     };
-    task.handle.abort();
-    task.handle = tokio::spawn(delivery);
+    if let Some(pump) = &task.display_pump {
+        pump.start_delivery(delivery);
+    }
 }
 
 #[cfg(test)]
@@ -51,7 +54,7 @@ mod tests {
                 relay_subscription_id: relay.into(),
                 client_public_key: "viewer".into(),
                 display_id: Some("lease".into()),
-                display_pump: None,
+                display_pump: Some(super::super::display_pump::DisplayPump::new(1)),
                 handle: tokio::spawn(std::future::pending()),
             },
         );
@@ -81,6 +84,7 @@ mod tests {
             .await
             .unwrap();
         task.handle.abort();
+        task.display_pump.as_ref().unwrap().stop();
         timeout(Duration::from_millis(100), dropped)
             .await
             .expect("unsubscribe must cancel the frame read holding the home lease")
@@ -112,5 +116,51 @@ mod tests {
             .await
             .unwrap();
         task.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn acknowledgements_renew_ttl_without_aborting_capture() {
+        let tasks = registry();
+        register(&tasks, "relay").await;
+        let (began, started) = oneshot::channel();
+        let (released, mut dropped) = oneshot::channel();
+        let capture = Capturing(Some(released));
+        start(
+            &tasks,
+            "display:lease:viewer",
+            "relay",
+            "viewer",
+            async move {
+                let _capture = capture;
+                let _ = began.send(());
+                std::future::pending::<()>().await;
+            },
+        )
+        .await;
+        started.await.unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                super::super::browser_display::browser_display_delivery_id(
+                    &tasks, "lease", "viewer"
+                )
+                .await
+                .as_deref(),
+                Some("relay")
+            );
+            tokio::task::yield_now().await;
+            assert!(matches!(
+                dropped.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+        }
+        let task = remove_relay_subscription_task_by_relay_id(&tasks, "relay")
+            .await
+            .unwrap();
+        task.handle.abort();
+        task.display_pump.as_ref().unwrap().stop();
+        timeout(Duration::from_secs(1), dropped)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
