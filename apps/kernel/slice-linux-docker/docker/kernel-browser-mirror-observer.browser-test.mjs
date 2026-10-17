@@ -253,3 +253,30 @@ test('hover reaches a subtree only where an author selector puts :hover in front
   const elsewhere = await matchesFreshRead(menu, w => w.hover('#btn'));
   assert(elsewhere.reads < first.reads / 4, `${elsewhere.reads} of ${first.reads} property reads`);
 });
+
+// Review #1001 @4cc953395: paint changes under an opaque control that leave its record, geometry and sheet shape alone.
+test('native control tile state changes when an existing rule is edited through the CSSOM', options, async () => {
+  const s = await open(`${page}<style>#cs{color:#f30}</style><button id=cb style="width:120px;height:30px"><span id=cs>x</span></button>`);
+  await s.read(); await delay(50); await s.read();
+  const before = (await s.read()).states;
+  await s.evaluate("[...document.styleSheets].at(-1).cssRules[0].style.color='#07c'");
+  assert.notEqual((await s.read()).states, before);
+});
+
+test('native control tile state changes when the pointer moves between its descendants', options, async () => {
+  const s = await open(`${page}<style>#hb span:hover{background:#0c0}</style><button id=hb style="width:200px;height:40px"><span id=h1 style="display:inline-block;width:80px">a</span><span id=h2 style="display:inline-block;width:80px">b</span></button>`);
+  await s.evaluate("hb.scrollIntoView({block:'center'})");
+  await s.read(); await s.hover('#h1'); await s.read();
+  const before = (await s.read()).states;
+  assert(before.includes('"1'), 'the button is hovered');
+  await s.hover('#h2');
+  const after = (await s.read()).states; assert.notEqual(after, before);
+});
+
+test('a :has() over a state restyles its host on enter and leave even when no element has a rule for the state itself', options, async () => {
+  const held = `${page}<style>.holder2:has(.trigger2:hover) .tip2{color:#c00}.holder2:has(.trigger2:active) .tip2{color:#0a0}</style><div class=holder2 id=holder2 style="padding:20px"><span class=trigger2 id=trigger2>t</span><span class=tip2 id=tip2>tip</span></div>`;
+  const view = w => w.evaluate("holder2.scrollIntoView({block:'center'})");
+  await matchesFreshRead(held, async w => { await view(w); await w.hover('#trigger2'); });
+  await matchesFreshRead(held, async (w, settle) => { await view(w); await w.hover('#trigger2'); await settle(); await w.move(700, 500); });
+  await matchesFreshRead(held, async w => { await view(w); await w.hover('#trigger2'); await w.press('#trigger2', 'mousePressed'); });
+});

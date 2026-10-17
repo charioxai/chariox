@@ -192,6 +192,9 @@ function installMirrorObserver(initialStyles = {}) {
       let scanned=0;
       const mark=(node,deep,siblings)=>{
         restyle(node,deep,siblings);
+        markHosts(node);
+      };
+      const markHosts=node=>{
         if(sheets.has)for(let host=node.parentElement?.closest(sheets.has);host;host=host.parentElement?.closest(sheets.has))restyle(host,true,sheets.adjacent);
         // :has(+ x) / :has(~ x): the hosts are preceding siblings of the changed node or of one of its ancestors.
         if(sheets.hasSibling)for(let ancestor=node;ancestor;ancestor=ancestor.parentElement)for(let before=ancestor.previousElementSibling;before;before=before.previousElementSibling)if(++scanned<=2000&&before.matches(sheets.has))restyle(before,true,sheets.adjacent);
@@ -214,6 +217,7 @@ function installMirrorObserver(initialStyles = {}) {
         for(const node of [...now].filter(node=>!hot[kind].has(node)).concat([...hot[kind]].filter(node=>!now.has(node)&&node.isConnected))) {
           const reach=effect(kind,node);
           if(reach)mark(node,reach===2,sheets.adjacent);
+          else markHosts(node);
         }
       });
       for(const node of [...animated,...lastAnimated])if(node?.isConnected)restyle(node,true,false);
@@ -229,7 +233,7 @@ function installMirrorObserver(initialStyles = {}) {
     const nativeTile = (record,node) => {
       const secret=node.localName==='input'&&node.type==='password',text=node.textContent;
       nextTiles.add(node);
-      tileStates[record.id]=(animatedInside(node)?'~':'')+`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}|${tileDamage(node)}|${['::before','::after'].map(pseudo=>getComputedStyle(node,pseudo).content).join('|')}`;
+      tileStates[record.id]=(animatedInside(node)?'~':'')+`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}|${tileDamage(node)}|${[...node.querySelectorAll('*')].slice(0,32).map(child=>{const c=getComputedStyle(child);return [c.color,c.backgroundColor,c.opacity,c.visibility,c.display,c.borderTopColor,c.textDecorationColor].join()}).join(';')}|${['::before','::after'].map(pseudo=>getComputedStyle(node,pseudo).content).join('|')}`;
       record.kind='tile';record.reason='native_control';return done(record);
     };
     // Private to the kernel: what an opaque tile's pixels depend on that the isolated world can observe.
