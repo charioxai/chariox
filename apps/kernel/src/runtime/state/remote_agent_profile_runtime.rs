@@ -100,7 +100,8 @@ impl KernelRuntimeState {
                     "remote lease lost before a profile change; refreshing binding",
                     serde_json::json!({ "agent_id": agent_id, "worker_kernel_id": remote.worker_kernel_id }),
                 );
-                self.refresh_remote_agent_binding_authorized(agent_id).await?;
+                self.refresh_remote_agent_binding_authorized(agent_id)
+                    .await?;
                 // The runs of the lost lease can never end on their own: retire
                 // their home projection and session pointer so the agent does
                 // not keep advertising a run the worker no longer has.
@@ -117,8 +118,10 @@ impl KernelRuntimeState {
                     )
                     .is_some()
                     {
-                        self.owned
-                            .clear_active_provider_run_session_pointer(agent.session_id(), run_id)?;
+                        self.owned.clear_active_provider_run_session_pointer(
+                            agent.session_id(),
+                            run_id,
+                        )?;
                     }
                 }
                 Ok(())
@@ -217,17 +220,18 @@ impl KernelRuntimeState {
 }
 
 fn remote_binding_lost(error: &DaemonError) -> bool {
-    super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(error)
-        || matches!(
-            error,
-            DaemonError::RelayTransport {
-                code,
-                message,
-                retryable: false,
-                ..
-            } if code == "unauthorized"
-                && message == "authenticated home kernel does not own the leased resource"
-        )
+    super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(
+        error,
+    ) || matches!(
+        error,
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable: false,
+            ..
+        } if code == "unauthorized"
+            && message == "authenticated home kernel does not own the leased resource"
+    )
 }
 
 // A worker may spend the full native session-command deadline preparing a

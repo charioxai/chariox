@@ -72,10 +72,12 @@ async fn remote_profile_preparation_is_visible_to_every_home_attachment() {
             "each home attachment must observe the worker profile reservation"
         );
         assert!(
-            notices.iter().any(|notice| notice.agent_id.as_deref() == Some(agent.as_str())
-                && notice
-                    .message
-                    .starts_with("The worker's profile change failed; the agent keeps ")),
+            notices
+                .iter()
+                .any(|notice| notice.agent_id.as_deref() == Some(agent.as_str())
+                    && notice
+                        .message
+                        .starts_with("The worker's profile change failed; the agent keeps ")),
             "a failed worker profile change must not leave the reservation notice as the last word"
         );
     }

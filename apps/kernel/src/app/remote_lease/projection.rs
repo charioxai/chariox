@@ -19,6 +19,8 @@ mod history_tests;
 mod test_pause;
 
 #[cfg(test)]
+mod test_profile_revert;
+#[cfg(test)]
 mod test_provider_runs;
 #[cfg(test)]
 mod test_run_identity;
@@ -1055,13 +1057,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             agent_id,
                             Some(provider_run_id.to_string()),
                         );
-                    let _ = self.app.agents.set_agent_runtime_profile(
-                        agent_id,
-                        projected_run.provider(),
-                        Some(projected_run.model().to_string()),
-                        projected_run.variant().map(str::to_string),
-                        projected_run.resume_state().clone(),
-                    );
+                    // Only the home commits a provider switch; a lagging event
+                    // of the previous provider's run must not revert it.
+                    if agent.provider() == projected_run.provider() {
+                        let _ = self.app.agents.set_agent_runtime_profile(
+                            agent_id,
+                            projected_run.provider(),
+                            Some(projected_run.model().to_string()),
+                            projected_run.variant().map(str::to_string),
+                            projected_run.resume_state().clone(),
+                        );
+                    }
                 }
             }
         }

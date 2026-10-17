@@ -1392,21 +1392,43 @@ mod tests {
     fn recreated_lease_keeps_every_record_a_provider_switch_keeps() {
         // A worker restart must not shorten what the next provider reads: the
         // records past an early turn's excerpt survive as in a provider switch.
-        let seed = format!("{}blocked: Mac executor unavailable", "Audit seed line. ".repeat(80));
+        let seed = format!(
+            "{}blocked: Mac executor unavailable",
+            "Audit seed line. ".repeat(80)
+        );
         let answer = format!("{}proposal: one binding refresh", "Reviewed. ".repeat(90));
         let mut events = vec![
             user_event(1, "session", "agent", &seed),
             output_event(2, "session", "agent", "old-run", &answer),
         ];
         for index in 0..6 {
-            events.push(user_event(3 + index * 2, "session", "agent", &format!("Step {index}")));
-            events.push(output_event(4 + index * 2, "session", "agent", "old-run", "Done."));
+            events.push(user_event(
+                3 + index * 2,
+                "session",
+                "agent",
+                &format!("Step {index}"),
+            ));
+            events.push(output_event(
+                4 + index * 2,
+                "session",
+                "agent",
+                "old-run",
+                "Done.",
+            ));
         }
         let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
-        let switch = AgentConversation::from_events(&events).render(24_000).unwrap();
-        for record in ["blocked: Mac executor unavailable", "proposal: one binding refresh"] {
+        let switch = AgentConversation::from_events(&events)
+            .render(24_000)
+            .unwrap();
+        for record in [
+            "blocked: Mac executor unavailable",
+            "proposal: one binding refresh",
+        ] {
             assert!(switch.contains(record));
-            assert!(packet.contains(record), "{record} lost after lease recreation");
+            assert!(
+                packet.contains(record),
+                "{record} lost after lease recreation"
+            );
         }
         assert!(packet.starts_with(crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN));
         assert!(packet.ends_with(crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE));

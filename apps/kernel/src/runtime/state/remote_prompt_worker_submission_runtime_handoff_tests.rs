@@ -747,7 +747,10 @@ async fn a_profile_change_on_a_recreated_lease_replays_home_history_again() {
     // which on a recreated lease starts at the refresh. The home replays.
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("rearm-workspace", "rearm-worktree"))
+        .create_session(CreateSessionRequest::new(
+            "rearm-workspace",
+            "rearm-worktree",
+        ))
         .unwrap();
     let binding = crate::agent::RemoteAgentBinding {
         worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
@@ -757,9 +760,13 @@ async fn a_profile_change_on_a_recreated_lease_replays_home_history_again() {
         active_worker_provider_run_id: None,
         relay_url: None,
         relay_token: None,
-        relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
     };
-    app.agents.bind_remote_execution(agent.id(), binding.clone()).unwrap();
+    app.agents
+        .bind_remote_execution(agent.id(), binding.clone())
+        .unwrap();
     app.append_history_entry(
         session.id(),
         crate::history::SessionHistoryEntry::user_prompt(
