@@ -133,6 +133,8 @@ export function testEventConnectionRequest(connectionId: string, eventType?: str
   }
 }
 
+export const integrationReceivedEventsMinimumProtocolVersion = 551
+
 export function listEventConnectionEventsRequest(connectionId: string, limit = 50) {
   return { ListEventConnectionEvents: { connection_id: connectionId, limit } }
 }
