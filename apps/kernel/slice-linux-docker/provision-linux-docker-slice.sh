@@ -751,6 +751,28 @@ docker_target_arch() {
   esac
 }
 
+# A source build compiles the kernel and relay inside Docker. Give cargo the CPUs the
+# engine has, at about 3 GiB per job beside the kernel crate's peak, up to the
+# Dockerfile's limit; a release install loads a prebuilt image instead.
+cargo_build_jobs() {
+  if [[ -n "${CHARIOX_SLICE_CARGO_BUILD_JOBS:-}" ]]; then
+    [[ "$CHARIOX_SLICE_CARGO_BUILD_JOBS" =~ ^[1-4]$ ]] || fail "CHARIOX_SLICE_CARGO_BUILD_JOBS must be 1 to 4"
+    printf '%s\n' "$CHARIOX_SLICE_CARGO_BUILD_JOBS"
+    return
+  fi
+  local cpus="" memory_bytes="" jobs
+  read -r cpus memory_bytes < <(run_with_timeout 20 docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null || true)
+  if [[ ! "$cpus" =~ ^[0-9]+$ || ! "$memory_bytes" =~ ^[0-9]+$ ]]; then
+    printf '1\n'
+    return
+  fi
+  jobs=$(( (memory_bytes / 1073741824 - 2) / 3 ))
+  (( jobs <= cpus )) || jobs=$cpus
+  (( jobs <= 4 )) || jobs=4
+  (( jobs >= 1 )) || jobs=1
+  printf '%s\n' "$jobs"
+}
+
 run_build_command() {
   # MP-08/MP-10/MP-11: common owned wait; silence is not a build failure.
   run_guarded_command unbounded -- "$@"
@@ -768,10 +790,62 @@ docker_build() {
   fail "Docker Buildx is required to build the slice runtime image"
 }
 
+# First-start progress for clients: the kernel serves this log, and clients show the
+# latest "progress:" line while a slice starts (apps/cli/src/slice-start-progress.ts).
+emit_progress() {
+  log "progress: $1"
+}
+
+# A signed release ships the slice image it was built with, beside its slice build
+# context. Its presence means a release install: the image is verified and loaded,
+# never rebuilt. Source and development checkouts have no such directory.
+released_image_directory() {
+  [[ "$(basename "$REPO_ROOT")" == slice-build-context && -d "$REPO_ROOT/../slice-image" ]] || return 1
+  (cd "$REPO_ROOT/../slice-image" && pwd)
+}
+
+released_image_loaded() {
+  local tag="$1" layers="$2" loaded
+  loaded="$(docker image inspect -f '{{range .RootFS.Layers}}{{.}},{{end}}' "$tag" 2>/dev/null)" || return 1
+  [[ "$loaded" == "$layers," ]] && image_runtime_compatible "$tag" && image_selkies_capable "$tag"
+}
+
+load_released_image() {
+  local image="$1" directory description tag archive size sha256 layers
+  directory="$(released_image_directory)" || return 1
+  description="$(python3 "$SCRIPT_DIR/released-slice-image.py" describe "$directory" \
+    "$SLICE_RUNTIME_SOURCE_REVISION" "$SLICE_RELAY_PEER_PROTOCOL_VERSION" "$(docker_target_arch)")" || exit 1
+  IFS=$'\t' read -r tag archive size sha256 layers <<<"$description"
+  if released_image_loaded "$tag" "$layers"; then
+    log "release runtime image $tag is already loaded"
+  else
+    log "loading the signed release's runtime image ($size bytes); no build is needed"
+    python3 "$SCRIPT_DIR/released-slice-image.py" verify "$archive" "$size" "$sha256" \
+      || exit 1
+    if ! { python3 "$SCRIPT_DIR/released-slice-image.py" stream "$archive" \
+      | run_guarded_command unbounded -- docker load -q; }; then
+      fail "docker load of the release runtime image failed. Free disk space for Docker (about $((size * 3 / 1000000000 + 1)) GB) and start the slice again."
+    fi
+    if ! released_image_loaded "$tag" "$layers"; then
+      docker rmi "$tag" >/dev/null 2>&1 || true
+      fail "the loaded release runtime image does not match the signed release; it was removed. Reinstall the Chariox release bundle."
+    fi
+  fi
+  docker tag "$tag" "$image"
+  log "release runtime image ready as $image (protocol $SLICE_RELAY_PEER_PROTOCOL_VERSION, runtime $SLICE_RUNTIME_SOURCE_REVISION)"
+}
+
 build_standard_runtime_image() {
   local image="$1"
+  if load_released_image "$image"; then
+    if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
+      node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+    fi
+    return
+  fi
   local target_arch
   target_arch="$(docker_target_arch)"
+  emit_progress "Building the runtime image from source (several minutes)"
   log "building $image"
   local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
   if [[ -f "$prebuilt_marker" ]]; then
@@ -790,8 +864,12 @@ build_standard_runtime_image() {
     fi
     return
   fi
+  local cargo_jobs
+  cargo_jobs="$(cargo_build_jobs)"
+  log "source build with $cargo_jobs cargo job(s)"
   docker_build \
     --build-arg "TARGETARCH=$target_arch" \
+    --build-arg "CHARIOX_CARGO_BUILD_JOBS=$cargo_jobs" \
     --build-arg "CHARIOX_RUNTIME_BUILD_PROFILE=$SLICE_RUNTIME_BUILD_PROFILE" \
     --build-arg "CARGO_PROFILE_RELEASE_OPT_LEVEL=$SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL" \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
@@ -1852,7 +1930,9 @@ main() {
     provision)
       require_docker
       build_image
+      emit_progress "Starting the slice container"
       ensure_container
+      emit_progress "Starting the slice services"
       start_slice_services
       log "provision completed; use status or logs actions for diagnostics"
       ;;
