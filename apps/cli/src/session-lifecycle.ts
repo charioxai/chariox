@@ -252,12 +252,11 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   // The previous attachment survived a failed selection: show it again.
-  const restorePendingAttachment = async () => {
+  const restorePendingAttachment = async (generation: number) => {
     const attachment = pendingAttachment
     if (!attachment) return
     // The attachment stays pending until restored, so a newer selection still
     // detaches it; this restore then only has to stop applying state.
-    const generation = selectionGeneration
     const superseded = () => generation !== selectionGeneration
     try {
       const session = await deps.getSessionState(attachment.session_id)
@@ -290,6 +289,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           error: formatError(detachError),
         })
       }
+      if (superseded()) return
       await transitionToNoSession(`Could not restore the previous session: ${formatError(error)}`)
     }
     if (superseded()) return
@@ -302,7 +302,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   const prepareSessionSelection = (session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) => {
     const previous = currentAttachment()
     if (previous?.session_id === session.id) return
-    selectionGeneration += 1
+    const generation = ++selectionGeneration
     // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
     // Move display ownership now, with no attachment or launch authority.
     if (previous) {
@@ -338,9 +338,9 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.requestRender()
     }
     return async () => {
-      if (deps.attachmentState()) return
+      if (generation !== selectionGeneration || deps.attachmentState()) return
       if (pendingAttachment) {
-        await restorePendingAttachment()
+        await restorePendingAttachment(generation)
       } else if (previous) {
         await transitionToNoSession("Could not open the selected session.")
       } else {

@@ -140,3 +140,98 @@ test("MP-08 / MP-10 OWNER-24 a stale rollback cannot restore the previous sessio
   assert.equal(h.attachment()?.session_id, "session-b", "the superseded rollback must not reapply the previous session")
   assert.deepEqual(h.detached, ["att-a"], "the previous attachment is disposed exactly once")
 })
+
+// BOUNDED RULE: every async outcome of a selection or restore applies only while
+// its generation is current. One row per outcome kind.
+type Gate = { promise: Promise<void>; release: () => void }
+const gate = (): Gate => {
+  let release!: () => void
+  const promise = new Promise<void>(resolve => { release = resolve })
+  return { promise, release }
+}
+const tick = () => new Promise(resolve => setImmediate(resolve))
+
+const generationOutcomes: Array<{
+  name: string
+  run: () => Promise<void>
+}> = [
+  {
+    name: "a lookup failing after a newer selection started leaves the newer selection in charge",
+    run: async () => {
+      const first = gate()
+      const second = gate()
+      const sessionB = makeSession({ id: "session-b", agents: [] })
+      let lookups = 0
+      const h = selectionHarness({}, {
+        resolveSession: async () => {
+          if (lookups++ === 0) { await first.promise; throw new Error("unknown session") }
+          await second.promise
+          return sessionB
+        },
+      })
+      const failed = h.attach("missing")
+      failed.catch(() => {})
+      await tick()
+      const next = h.attach("b")
+      await tick()
+      first.release()
+      await assert.rejects(failed, /unknown session/)
+      assert.equal(h.attachment(), null, "the stale failure must not restore the previous session")
+      assert.equal(await h.bootstrap.bootstrap(), "handled", "the newer selection still blocks bootstrap")
+      second.release()
+      await next
+      assert.equal(h.attachment()?.session_id, "session-b")
+    },
+  },
+  {
+    name: "a failed restore cleanup finishing after a newer attach keeps the newer attachment",
+    run: async () => {
+      const cleanup = gate()
+      const sessionB = makeSession({ id: "session-b", agents: [] })
+      let lookups = 0
+      const h = selectionHarness(
+        {
+          getSessionState: async (sessionId: string) => {
+            if (sessionId === "session-a") throw new Error("session gone")
+            return sessionB
+          },
+          detachAttachment: async (id: string) => { if (id === "att-a") await cleanup.promise },
+        },
+        { resolveSession: async () => { if (lookups++ === 0) throw new Error("unknown session"); return sessionB } },
+      )
+      const failed = h.attach("missing")
+      failed.catch(() => {})
+      await tick()
+      await tick()
+      await h.attach("session-b")
+      assert.equal(h.attachment()?.session_id, "session-b")
+      cleanup.release()
+      await assert.rejects(failed, /unknown session/)
+      assert.equal(h.attachment()?.session_id, "session-b", "the stale cleanup must not clear the newer view")
+    },
+  },
+  {
+    name: "a current failed restore still detaches and shows the waiting room",
+    run: async () => {
+      const h = selectionHarness(
+        { getSessionState: async () => { throw new Error("session gone") } },
+        { resolveSession: async () => { throw new Error("unknown session") } },
+      )
+      await assert.rejects(h.attach("missing"), /unknown session/)
+      assert.equal(h.attachment(), null)
+      assert.deepEqual(h.detached, ["att-a"])
+    },
+  },
+  {
+    name: "a current failed lookup restores the previous session",
+    run: async () => {
+      const h = selectionHarness({}, { resolveSession: async () => { throw new Error("unknown session") } })
+      await assert.rejects(h.attach("missing"), /unknown session/)
+      assert.equal(h.attachment()?.id, "att-a")
+    },
+  },
+]
+
+for (const outcome of generationOutcomes) {
+  test(`MP-08 / MP-10 OWNER-24 generation rule: ${outcome.name}`, outcome.run)
+}
