@@ -380,3 +380,85 @@ async fn owned_runtime_state(
         workspace_coordinator,
     )
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_fresh_slice_builds_its_image_before_the_relay_token_is_issued() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment_lock = SLICE_DOCKER_ENV_LOCK
+        .lock()
+        .expect("Docker provisioner test lock should not be poisoned");
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "chariox-slice-image-first-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    )));
+    std::fs::create_dir(&scratch.0).expect("private test root should be created");
+    let action_log = scratch.0.join("docker-actions.log");
+    let provisioner = scratch.0.join("slice-provisioner.sh");
+    std::fs::write(
+        &provisioner,
+        format!(
+            "#!/bin/sh\nprintf '%s token=%s\\n' \"$1\" \"${{CHARIOX_SLICE_RELAY_TOKEN:-none}}\" >> '{}'\n",
+            action_log.display()
+        ),
+    )
+    .expect("isolated provisioner should be written");
+    std::fs::set_permissions(&provisioner, std::fs::Permissions::from_mode(0o700))
+        .expect("isolated provisioner should be executable");
+    let _provisioner_env = SliceDockerEnv::use_isolated_provisioner(&provisioner);
+    let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("test daemon should boot");
+    let projection = app.config_projection_store();
+    let slice = app
+        .slices()
+        .create(
+            "owner-kernel-1",
+            "owner-machine-1",
+            crate::slice::CreateSliceInput {
+                source_slice_ref: None,
+                name: "slice-1".to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: Default::default(),
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: Some("worker-kernel-1".to_string()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 1,
+            },
+        )
+        .expect("slice should be created");
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        1,
+    );
+
+    super::lifecycle::image_ready_slice_relay(
+        &router.runtime_state(),
+        &projection,
+        &slice,
+        super::lifecycle::SliceStartMode::RestoreSavedState,
+    )
+    .await
+    .expect("relay should be prepared after the image build");
+
+    assert_eq!(
+        std::fs::read_to_string(&action_log).unwrap_or_default(),
+        "build-image token=none\n",
+        "the image must be built, without a relay token, before the token is issued",
+    );
+}
