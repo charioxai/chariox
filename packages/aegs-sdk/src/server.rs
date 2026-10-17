@@ -1262,7 +1262,10 @@ impl AegsServer {
                 ) {
                     return error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message);
                 }
-                match self.attempt_inbox_delivery(&delivery_id, now_ms()).await {
+                match self
+                    .attempt_inbox_delivery(&delivery_id, None, now_ms())
+                    .await
+                {
                     Ok(InboxAttempt::Published(responses)) => json(
                         StatusCode::ACCEPTED,
                         serde_json::json!({
@@ -2297,7 +2300,7 @@ mod mp11_delivery_http_tests {
             .unwrap();
         assert_eq!(
             store
-                .requeue_inbox_event("delivery-3", &selected, at)
+                .requeue_inbox_event("delivery-3", "owner", &selected, at)
                 .unwrap(),
             crate::Requeue::Queued
         );
@@ -2555,11 +2558,21 @@ mod mp11_delivery_http_tests {
         store
             .record_inbox_event("in-flight", None, &event(), now_ms())
             .unwrap();
+        let selected = store
+            .matching_for_delivery("dev.chariox.github", "event", "scope")
+            .await
+            .unwrap();
+        store
+            .select_inbox_interests("in-flight", &selected, now_ms())
+            .unwrap();
         // An inline or worker attempt that has been claimed and is awaiting AEDS.
-        assert!(store
-            .claim_inbox_attempt("in-flight", now_ms())
-            .unwrap()
-            .is_some());
+        assert_eq!(
+            store
+                .claim_inbox_deliveries("in-flight", None, now_ms())
+                .unwrap()
+                .len(),
+            1
+        );
         let replay = serde_json::json!({
             "generator_id": "dev.chariox.github", "owner_id": "owner", "delivery_id": "in-flight"
         });
@@ -2571,6 +2584,211 @@ mod mp11_delivery_http_tests {
             store.inbox_event("in-flight").unwrap().unwrap().attempts,
             1,
             "the running attempt keeps its budget"
+        );
+    }
+
+    fn claim_b() -> crate::SubscriptionClaim {
+        crate::SubscriptionClaim {
+            binding_id: "binding-b".into(),
+            connection_id: "connection-b".into(),
+            event_interest_key: "interest-b".into(),
+            ..subscription_claim()
+        }
+    }
+
+    /// Owners A (`owner`, interest `interest`) and B (`owner-b`, interest `interest-b`) both
+    /// watch the same scope, reconciled by the kernel in one call.
+    fn two_owner_server(publisher: &PublisherFixture) -> (Arc<AegsServer>, AegsStore) {
+        let (server, store) = subscribed_server(publisher);
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        reconcile_both(&store);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        (server, store)
+    }
+
+    fn reconcile_both(store: &AegsStore) {
+        store
+            .reconcile(
+                "kernel",
+                "dev.chariox.github",
+                &[subscription_claim(), claim_b()],
+            )
+            .unwrap();
+    }
+
+    async fn replay_as(
+        server: &Arc<AegsServer>,
+        owner: &'static str,
+        delivery_id: &str,
+    ) -> (u16, serde_json::Value) {
+        let replay = serde_json::json!({
+            "generator_id": "dev.chariox.github", "owner_id": owner, "delivery_id": delivery_id
+        });
+        management_post(server, "/v1/events/replay", owner, replay).await
+    }
+
+    fn accepted_interests(publisher: &PublisherFixture) -> Vec<String> {
+        let mut interests = publisher.interests.lock().unwrap().clone();
+        interests.sort();
+        interests
+    }
+
+    /// Both owners match, publication fails for both, and the webhook is stored pending.
+    async fn failed_two_owner_webhook(
+        publisher: &PublisherFixture,
+        server: &Arc<AegsServer>,
+        delivery_id: &'static str,
+    ) {
+        publisher.refusals.store(2, Ordering::SeqCst);
+        let (status, body) =
+            post_signed_webhook_at(server.clone(), "/webhooks/github", Some(delivery_id)).await;
+        assert_eq!((status, body["status"].as_str()), (202, Some("pending")));
+        publisher.refusals.store(0, Ordering::SeqCst);
+        assert!(accepted_interests(publisher).is_empty());
+    }
+
+    #[tokio::test]
+    async fn owner_replay_during_backoff_leaves_the_other_owners_retry_alone() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        failed_two_owner_webhook(&publisher, &server, "matrix-1").await;
+        let before = store.inbox_deliveries("matrix-1").unwrap();
+
+        let (status, replayed) = replay_as(&server, "owner", "matrix-1").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(accepted_interests(&publisher), vec!["interest"]);
+        assert_eq!(replayed["event"]["status"], "pending", "B is still owed");
+        let after = store.inbox_deliveries("matrix-1").unwrap();
+        assert_eq!(after[1], before[1], "B keeps its attempts, timer and error");
+
+        // B's own retry still delivers, once, and replaying A again adds nothing for B.
+        server
+            .deliver_due_inbox(now_ms() + 60 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted_interests(&publisher),
+            vec!["interest", "interest-b"]
+        );
+        assert_eq!(
+            store.inbox_event("matrix-1").unwrap().unwrap().status,
+            crate::InboxStatus::Published
+        );
+        server
+            .deliver_due_inbox(now_ms() + 2 * 60 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted_interests(&publisher),
+            vec!["interest", "interest-b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn revoked_owner_is_fenced_while_the_replaying_owner_is_delivered_once() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        failed_two_owner_webhook(&publisher, &server, "matrix-2").await;
+
+        assert!(store
+            .revoke_connection("connection-b", "owner-b", now_ms())
+            .unwrap());
+        let (status, replayed) = replay_as(&server, "owner", "matrix-2").await;
+        assert_eq!(status, 200, "{replayed}");
+        server
+            .deliver_due_inbox(now_ms() + 60 * 60_000)
+            .await
+            .unwrap();
+
+        assert_eq!(accepted_interests(&publisher), vec!["interest"]);
+        let rows = store.inbox_deliveries("matrix-2").unwrap();
+        assert_eq!(rows[0].status, crate::DeliveryStatus::Published);
+        assert_eq!(rows[1].status, crate::DeliveryStatus::Fenced);
+        assert_eq!(
+            store.inbox_event("matrix-2").unwrap().unwrap().status,
+            crate::InboxStatus::Published
+        );
+        assert!(store
+            .inbox_event_for_owner("owner-b", "matrix-2")
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn reauthorized_owner_is_fenced_and_the_replaying_owner_is_delivered_once() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        failed_two_owner_webhook(&publisher, &server, "matrix-3").await;
+
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                2,
+            )
+            .unwrap();
+        reconcile_both(&store);
+        let (status, replayed) = replay_as(&server, "owner", "matrix-3").await;
+        assert_eq!(status, 200, "{replayed}");
+        server
+            .deliver_due_inbox(now_ms() + 60 * 60_000)
+            .await
+            .unwrap();
+
+        assert_eq!(accepted_interests(&publisher), vec!["interest"]);
+        let rows = store.inbox_deliveries("matrix-3").unwrap();
+        assert_eq!(rows[0].status, crate::DeliveryStatus::Published);
+        assert_eq!(rows[1].status, crate::DeliveryStatus::Fenced);
+
+        // B asking for its own replay now publishes under the new authorization.
+        let (status, replayed) = replay_as(&server, "owner-b", "matrix-3").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(
+            accepted_interests(&publisher),
+            vec!["interest", "interest-b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_replay_does_not_interrupt_the_other_owners_attempt_in_flight() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        failed_two_owner_webhook(&publisher, &server, "matrix-4").await;
+
+        // B's retry has been claimed and is awaiting AEDS when A asks for a replay.
+        let due = now_ms() + 60_000;
+        let in_flight = store
+            .claim_inbox_deliveries("matrix-4", Some("owner-b"), due)
+            .unwrap();
+        assert_eq!(in_flight.len(), 1);
+        let (status, replayed) = replay_as(&server, "owner", "matrix-4").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(accepted_interests(&publisher), vec!["interest"]);
+
+        // B's attempt was not superseded: it still finishes the row it claimed.
+        assert!(store.finish_inbox_delivery(&in_flight[0], due).unwrap());
+        let rows = store.inbox_deliveries("matrix-4").unwrap();
+        assert_eq!(rows[0].status, crate::DeliveryStatus::Published);
+        assert_eq!(rows[1].status, crate::DeliveryStatus::Published);
+        // And B's own replay is refused only while its attempt is running.
+        let (status, _) = replay_as(&server, "owner-b", "matrix-4").await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            accepted_interests(&publisher),
+            vec!["interest", "interest-b"]
         );
     }
 

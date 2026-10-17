@@ -15,7 +15,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
 use super::{enforce_management_owner, error, json, read_body, AegsServer};
-use crate::store::{ClaimedInboxAttempt, Requeue, SelectedInterest};
+use crate::store::{Requeue, SelectedInterest};
 use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
 const RETRY_WORKER_INTERVAL: Duration = Duration::from_secs(2);
@@ -92,8 +92,8 @@ impl AegsServer {
         Ok(selected)
     }
 
-    /// AEDS dedupes on the occurrence id, so repeating a partly published event is safe. An
-    /// interest whose authorization changed since it was selected is skipped.
+    /// Publishes `selected` once per interest key; an interest whose authorization changed since
+    /// it was selected is skipped.
     async fn publish_selected(
         &self,
         normalized: &NormalizedEvent,
@@ -101,114 +101,144 @@ impl AegsServer {
     ) -> Result<Vec<PublishEventResponse>, String> {
         let mut interest_keys = HashSet::new();
         let mut responses = Vec::new();
-        for (subscription, generation) in selected {
-            if !interest_keys.insert(subscription.event_interest_key.clone()) {
+        for interest in selected {
+            let key = interest.0.event_interest_key.clone();
+            if !interest_keys.insert(key.clone()) {
                 continue;
             }
-            let _delivery_guard = match self.store.delivery_guard(&subscription, generation).await {
-                Ok(guard) => guard,
-                Err(_) => {
-                    interest_keys.remove(&subscription.event_interest_key);
-                    continue;
+            match self.publish_interest(normalized, interest).await? {
+                Some(response) => responses.push(response),
+                None => {
+                    interest_keys.remove(&key);
                 }
-            };
-            let accepted_connection_id = subscription.connection_id.clone();
-            let response = self
-                .publisher
-                .publish(PublishEventRequest {
-                    producer_id: self.producer_id.clone(),
-                    event_interest_key: subscription.event_interest_key,
-                    occurrence_id: normalized.occurrence_id.clone(),
-                    event_type: normalized.event_type.clone(),
-                    event_type_version: subscription.event_type_version,
-                    occurred_at: normalized.occurred_at.clone(),
-                    prompt: normalized.prompt.clone(),
-                    artifacts: Vec::new(),
-                    metadata: normalized.metadata.clone(),
-                    reply_context: normalized.reply_context.clone(),
-                    ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
-                })
-                .await?;
-            self.store
-                .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
-            responses.push(response);
+            }
         }
         Ok(responses)
     }
 
-    /// One publication attempt for a stored event. `Err` means the store failed; an AEDS
-    /// failure is recorded on the entry and reported as `Retrying`.
+    /// Publishes one selected interest. `None` means its authorization changed since it was
+    /// selected, so the event must not reach it. AEDS dedupes on the occurrence id, so
+    /// repeating a published interest is safe.
+    async fn publish_interest(
+        &self,
+        normalized: &NormalizedEvent,
+        (subscription, generation): SelectedInterest,
+    ) -> Result<Option<PublishEventResponse>, String> {
+        let Ok(_delivery_guard) = self.store.delivery_guard(&subscription, generation).await else {
+            return Ok(None);
+        };
+        let accepted_connection_id = subscription.connection_id.clone();
+        let response = self
+            .publisher
+            .publish(PublishEventRequest {
+                producer_id: self.producer_id.clone(),
+                event_interest_key: subscription.event_interest_key,
+                occurrence_id: normalized.occurrence_id.clone(),
+                event_type: normalized.event_type.clone(),
+                event_type_version: subscription.event_type_version,
+                occurred_at: normalized.occurred_at.clone(),
+                prompt: normalized.prompt.clone(),
+                artifacts: Vec::new(),
+                metadata: normalized.metadata.clone(),
+                reply_context: normalized.reply_context.clone(),
+                ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+            })
+            .await?;
+        self.store
+            .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
+        Ok(Some(response))
+    }
+
+    /// One publication attempt for every due interest of a stored event (`owner_id` limits it to
+    /// that owner's). Each interest succeeds, fails or is fenced on its own row, so a failure
+    /// for one never holds back or erases another. `Err` means the store failed; an AEDS failure
+    /// is recorded on its row and reported as `Retrying`.
     pub(super) async fn attempt_inbox_delivery(
         &self,
         delivery_id: &str,
+        owner_id: Option<&str>,
         claimed_at_ms: u64,
     ) -> Result<InboxAttempt, String> {
-        let Some(ClaimedInboxAttempt { entry, token }) =
-            self.store.claim_inbox_attempt(delivery_id, claimed_at_ms)?
-        else {
+        let Some(entry) = self.store.inbox_event(delivery_id)? else {
             return Ok(InboxAttempt::NotRun);
         };
-        let published = async {
-            let selected = match entry.selected {
-                Some(selected) => selected,
-                None => {
-                    let selected = self
-                        .select_interests(&entry.event, entry.route_connection_id.as_deref(), None)
-                        .await?;
-                    if !self
-                        .store
-                        .select_inbox_interests(delivery_id, &token, &selected)?
-                    {
-                        return Ok(None);
-                    }
-                    selected
-                }
-            };
-            self.publish_selected(&entry.event, selected)
+        if !self.store.inbox_event_selected(delivery_id)? {
+            let selected = self
+                .select_interests(&entry.event, entry.route_connection_id.as_deref(), None)
+                .await?;
+            if self
+                .store
+                .select_inbox_interests(delivery_id, &selected, claimed_at_ms)?
+                && selected.is_empty()
+            {
+                return Ok(InboxAttempt::Published(Vec::new()));
+            }
+        }
+        let claimed = self
+            .store
+            .claim_inbox_deliveries(delivery_id, owner_id, claimed_at_ms)?;
+        if claimed.is_empty() {
+            return Ok(InboxAttempt::NotRun);
+        }
+        let mut responses = Vec::new();
+        let mut retrying = false;
+        // Bindings that share an interest key publish once; a later one takes over only if the
+        // earlier lost its authority.
+        let mut published_keys = HashSet::new();
+        for delivery in claimed {
+            let key = delivery.interest.0.event_interest_key.clone();
+            if published_keys.contains(&(delivery.interest.0.connection_id.clone(), key.clone())) {
+                self.store.finish_inbox_delivery(&delivery, now_ms())?;
+                continue;
+            }
+            match self
+                .publish_interest(&entry.event, delivery.interest.clone())
                 .await
-                .map(Some)
-        }
-        .await;
-        match published {
-            Ok(Some(responses)) => {
-                if !self.store.finish_inbox_publication(
-                    delivery_id,
-                    &token,
-                    responses.len(),
-                    now_ms(),
-                )? {
-                    return Ok(InboxAttempt::NotRun);
+            {
+                Ok(Some(response)) => {
+                    if self.store.finish_inbox_delivery(&delivery, now_ms())? {
+                        published_keys.insert((delivery.interest.0.connection_id.clone(), key));
+                        responses.push(response);
+                    }
                 }
-                Ok(InboxAttempt::Published(responses))
-            }
-            Ok(None) => Ok(InboxAttempt::NotRun),
-            Err(message) => {
-                let Some(status) =
-                    self.store
-                        .fail_inbox_publication(delivery_id, &token, &message, now_ms())?
-                else {
-                    return Ok(InboxAttempt::NotRun);
-                };
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "component": "chariox-aegs",
-                        "event": "inbox_publication_failed",
-                        "delivery_id": delivery_id,
-                        "attempt": entry.attempts,
-                        "status": status,
-                        "error": message,
-                    })
-                );
-                Ok(InboxAttempt::Retrying)
+                Ok(None) => {
+                    self.store.fence_inbox_delivery(&delivery, now_ms())?;
+                }
+                Err(message) => {
+                    let Some(status) =
+                        self.store
+                            .fail_inbox_delivery(&delivery, &message, now_ms())?
+                    else {
+                        continue;
+                    };
+                    retrying = true;
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "component": "chariox-aegs",
+                            "event": "inbox_publication_failed",
+                            "delivery_id": delivery_id,
+                            "interest_key": key,
+                            "attempt": delivery.attempts,
+                            "status": status.as_str(),
+                            "error": message,
+                        })
+                    );
+                }
             }
         }
+        Ok(if retrying {
+            InboxAttempt::Retrying
+        } else {
+            InboxAttempt::Published(responses)
+        })
     }
 
     /// Runs every stored event whose next attempt is due.
     pub(super) async fn deliver_due_inbox(&self, due_at_ms: u64) -> Result<(), String> {
         for delivery_id in self.store.due_inbox_deliveries(due_at_ms, RETRY_BATCH)? {
-            self.attempt_inbox_delivery(&delivery_id, due_at_ms).await?;
+            self.attempt_inbox_delivery(&delivery_id, None, due_at_ms)
+                .await?;
         }
         Ok(())
     }
@@ -333,15 +363,17 @@ impl AegsServer {
                     Some(&replay.owner_id),
                 )
                 .await?;
-            match self
-                .store
-                .requeue_inbox_event(&replay.delivery_id, &selected, now_ms())?
-            {
+            match self.store.requeue_inbox_event(
+                &replay.delivery_id,
+                &replay.owner_id,
+                &selected,
+                now_ms(),
+            )? {
                 Requeue::Queued => {}
                 Requeue::Busy => return Ok(Replayed::Busy),
                 Requeue::NotFound => return Ok(Replayed::NotFound),
             }
-            self.attempt_inbox_delivery(&replay.delivery_id, now_ms())
+            self.attempt_inbox_delivery(&replay.delivery_id, Some(&replay.owner_id), now_ms())
                 .await?;
             Ok(match self.store.inbox_event(&replay.delivery_id)? {
                 Some(entry) => Replayed::Entry(Box::new(entry)),

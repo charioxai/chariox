@@ -9,7 +9,10 @@ use sha2::{Digest, Sha256};
 use chariox_event_protocol::AegsProviderActionResponse;
 
 mod inbox;
-pub use inbox::{ClaimedInboxAttempt, InboxEntry, InboxStatus, Requeue, SelectedInterest};
+pub use inbox::{
+    ClaimedInboxDelivery, DeliveryStatus, InboxDelivery, InboxEntry, InboxStatus, Requeue,
+    SelectedInterest,
+};
 
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
@@ -177,20 +180,29 @@ impl AegsStore {
                 event_type TEXT NOT NULL,
                 occurrence_id TEXT NOT NULL,
                 event_json TEXT NOT NULL,
-                selected_json TEXT,
-                attempt_token TEXT,
                 received_at_ms INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                next_attempt_at_ms INTEGER NOT NULL,
-                published_at_ms INTEGER,
-                publication_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
+                selected INTEGER NOT NULL DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS webhook_inbox_due
-                ON webhook_inbox(status, next_attempt_at_ms);
             CREATE INDEX IF NOT EXISTS webhook_inbox_received
                 ON webhook_inbox(received_at_ms);
+            CREATE TABLE IF NOT EXISTS webhook_inbox_delivery (
+                delivery_id TEXT NOT NULL,
+                binding_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                event_interest_key TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                interest_json TEXT NOT NULL,
+                authority_generation INTEGER,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_due_at_ms INTEGER NOT NULL,
+                attempt_token TEXT,
+                published_at_ms INTEGER,
+                last_error TEXT,
+                PRIMARY KEY(delivery_id, binding_id)
+            );
+            CREATE INDEX IF NOT EXISTS webhook_inbox_delivery_due
+                ON webhook_inbox_delivery(status, next_due_at_ms);
             ",
         )?;
         migrate_subscription_owner(&connection)?;

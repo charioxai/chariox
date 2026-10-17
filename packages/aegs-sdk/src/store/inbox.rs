@@ -1,6 +1,8 @@
 //! Durable webhook inbox: every verified webhook is stored here before the provider is told it
-//! was received, then published to AEDS from the stored copy until it succeeds or the attempt
-//! budget runs out.
+//! was received. Its trigger interests are chosen once, at the first attempt, and each one then
+//! has its own delivery row that is published, retried, replayed and fenced on its own. The
+//! status of the stored event is only a summary of those rows, so one owner's replay or
+//! revocation can never change what another owner's interest still has to receive.
 
 use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,7 @@ use crate::{NormalizedEvent, SubscriptionClaim};
 /// authorized it.
 pub type SelectedInterest = (SubscriptionClaim, Option<i64>);
 
-/// Publication attempts one stored event gets before it needs an explicit replay.
+/// Publication attempts one interest gets before it needs an explicit replay.
 const MAX_PUBLICATION_ATTEMPTS: u32 = 8;
 const FIRST_RETRY_DELAY_MS: u64 = 5_000;
 const MAX_RETRY_DELAY_MS: u64 = 10 * 60_000;
@@ -28,19 +30,31 @@ pub enum InboxStatus {
     Pending,
     /// Published to AEDS for every matching trigger.
     Published,
-    /// Stored, but no active trigger matched when it was last processed.
+    /// Stored, but no active trigger was left to receive it.
     Unmatched,
-    /// Attempts ran out; a replay is needed.
+    /// Attempts ran out for at least one trigger; a replay is needed.
     Failed,
 }
 
-impl InboxStatus {
-    fn as_str(self) -> &'static str {
+/// Where one interest stands for one stored event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryStatus {
+    Pending,
+    Published,
+    /// Attempts ran out; only a replay by the interest's owner revives it.
+    Failed,
+    /// The interest lost its authority (revoked, reauthorized or changed) before it was
+    /// published, so the event is never published for it.
+    Fenced,
+}
+
+impl DeliveryStatus {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Published => "published",
-            Self::Unmatched => "unmatched",
             Self::Failed => "failed",
+            Self::Fenced => "fenced",
         }
     }
 
@@ -48,11 +62,25 @@ impl InboxStatus {
         match value {
             "pending" => Ok(Self::Pending),
             "published" => Ok(Self::Published),
-            "unmatched" => Ok(Self::Unmatched),
             "failed" => Ok(Self::Failed),
-            other => Err(format!("unknown inbox status `{other}`")),
+            "fenced" => Ok(Self::Fenced),
+            other => Err(format!("unknown inbox delivery status `{other}`")),
         }
     }
+}
+
+/// The delivery of one stored event to one trigger interest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboxDelivery {
+    pub connection_id: String,
+    pub owner_id: String,
+    /// The interest and authorization generation chosen when the event was selected.
+    pub interest: SelectedInterest,
+    pub status: DeliveryStatus,
+    pub attempts: u32,
+    pub next_due_at_ms: u64,
+    pub published_at_ms: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,30 +89,33 @@ pub struct InboxEntry {
     /// The connection named by the webhook URL, when the provider routes per connection.
     pub route_connection_id: Option<String>,
     pub event: NormalizedEvent,
-    /// The interests chosen on the first publication attempt. Automatic retries publish to
-    /// these only, so a connection reauthorized in between cannot revive the old event.
-    pub selected: Option<Vec<SelectedInterest>>,
     pub received_at_ms: u64,
+    /// Derived from the delivery rows: published only when none is pending or failed.
     pub status: InboxStatus,
+    /// The most attempts any interest has used.
     pub attempts: u32,
-    pub next_attempt_at_ms: u64,
+    /// When the earliest pending interest is due.
+    pub next_attempt_at_ms: Option<u64>,
     pub published_at_ms: Option<u64>,
     pub publication_count: u32,
     pub last_error: Option<String>,
 }
 
-/// A publication attempt that owns an entry until it finishes, fails or its lease ends. Its
-/// token is what lets only the current attempt change the entry afterwards.
+/// A publication attempt that owns one delivery row until it finishes, fails or its lease ends.
+/// Its token is what lets only the current attempt change that row afterwards.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClaimedInboxAttempt {
-    pub entry: InboxEntry,
-    pub token: String,
+pub struct ClaimedInboxDelivery {
+    pub delivery_id: String,
+    pub interest: SelectedInterest,
+    pub attempts: u32,
+    token: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requeue {
     NotFound,
-    /// An attempt is awaiting AEDS right now; replaying would race it.
+    /// An attempt for one of the owner's interests is awaiting AEDS right now; replaying would
+    /// race it.
     Busy,
     Queued,
 }
@@ -105,8 +136,8 @@ impl AegsStore {
             .execute(
                 "INSERT OR IGNORE INTO webhook_inbox
                  (delivery_id, route_connection_id, connection_scope, event_type, occurrence_id,
-                  event_json, received_at_ms, status, next_attempt_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?7)",
+                  event_json, received_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     delivery_id,
                     route_connection_id,
@@ -119,25 +150,6 @@ impl AegsStore {
             )
             .map_err(|error| error.to_string())?;
         Ok(inserted == 1)
-    }
-
-    /// Saves the interests chosen by `attempt`. Returns `false` when the attempt was superseded.
-    pub fn select_inbox_interests(
-        &self,
-        delivery_id: &str,
-        attempt_token: &str,
-        selected: &[SelectedInterest],
-    ) -> Result<bool, String> {
-        let selected_json = serde_json::to_string(selected).map_err(|error| error.to_string())?;
-        let changed = self
-            .lock()?
-            .execute(
-                "UPDATE webhook_inbox SET selected_json = ?3
-                 WHERE delivery_id = ?1 AND attempt_token = ?2",
-                params![delivery_id, attempt_token, selected_json],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(changed == 1)
     }
 
     pub fn has_inbox_event(&self, delivery_id: &str) -> Result<bool, String> {
@@ -153,44 +165,106 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
-    /// Takes the next publication attempt of a pending entry. Only one caller gets the entry
-    /// until its lease expires, so the inline attempt and the retry worker never overlap.
-    pub fn claim_inbox_attempt(
+    /// Whether the interests of `delivery_id` were chosen already.
+    pub fn inbox_event_selected(&self, delivery_id: &str) -> Result<bool, String> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT selected FROM webhook_inbox WHERE delivery_id = ?1",
+                params![delivery_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()
+            .map(|selected| selected.unwrap_or(false))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Chooses the interests of a stored event, once. Returns `false` when another caller chose
+    /// them first or the event is gone; the stored choice then stands.
+    pub fn select_inbox_interests(
         &self,
         delivery_id: &str,
+        selected: &[SelectedInterest],
         now_ms: u64,
-    ) -> Result<Option<ClaimedInboxAttempt>, String> {
+    ) -> Result<bool, String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let marked = transaction
+            .execute(
+                "UPDATE webhook_inbox SET selected = 1 WHERE delivery_id = ?1 AND selected = 0",
+                params![delivery_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if marked == 0 {
+            return Ok(false);
+        }
+        insert_deliveries(&transaction, delivery_id, selected, now_ms)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    /// Takes the next publication attempt of every due, pending interest of `delivery_id`
+    /// (limited to `owner_id`'s when given). Only one caller gets a row until its lease expires,
+    /// so the inline attempt and the retry worker never overlap on it.
+    pub fn claim_inbox_deliveries(
+        &self,
+        delivery_id: &str,
+        owner_id: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Vec<ClaimedInboxDelivery>, String> {
         let token = crate::random_opaque("attempt");
         let connection = self.lock()?;
-        let claimed = connection
+        connection
             .execute(
-                "UPDATE webhook_inbox
-                 SET attempts = attempts + 1, next_attempt_at_ms = ?2, attempt_token = ?4
-                 WHERE delivery_id = ?1 AND status = 'pending' AND next_attempt_at_ms <= ?3",
+                "UPDATE webhook_inbox_delivery
+                 SET attempts = attempts + 1, next_due_at_ms = ?3, attempt_token = ?4
+                 WHERE delivery_id = ?1 AND status = 'pending' AND next_due_at_ms <= ?2
+                   AND (?5 IS NULL OR owner_id = ?5)",
                 params![
                     delivery_id,
-                    (now_ms + ATTEMPT_LEASE_MS) as i64,
                     now_ms as i64,
-                    token
+                    (now_ms + ATTEMPT_LEASE_MS) as i64,
+                    token,
+                    owner_id
                 ],
             )
             .map_err(|error| error.to_string())?;
-        if claimed == 0 {
-            return Ok(None);
-        }
-        Ok(
-            inbox_entry(&connection, delivery_id)?
-                .map(|entry| ClaimedInboxAttempt { entry, token }),
-        )
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {DELIVERY_COLUMNS} FROM webhook_inbox_delivery
+                 WHERE delivery_id = ?1 AND attempt_token = ?2
+                 ORDER BY connection_id, event_interest_key, binding_id"
+            ))
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![delivery_id, token], read_delivery)
+            .map_err(|error| error.to_string())?;
+        rows.map(|row| {
+            let delivery = row.map_err(|error| error.to_string())??;
+            Ok(ClaimedInboxDelivery {
+                delivery_id: delivery_id.to_string(),
+                attempts: delivery.attempts,
+                interest: delivery.interest,
+                token: token.clone(),
+            })
+        })
+        .collect()
     }
 
+    /// Stored events that need an attempt: those whose interests were never chosen and those
+    /// with a pending interest that is due.
     pub fn due_inbox_deliveries(&self, now_ms: u64, limit: usize) -> Result<Vec<String>, String> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT delivery_id FROM webhook_inbox
-                 WHERE status = 'pending' AND next_attempt_at_ms <= ?1
-                 ORDER BY next_attempt_at_ms LIMIT ?2",
+                "SELECT delivery_id FROM (
+                     SELECT delivery_id, received_at_ms AS due FROM webhook_inbox WHERE selected = 0
+                     UNION
+                     SELECT delivery_id, MIN(next_due_at_ms) FROM webhook_inbox_delivery
+                     WHERE status = 'pending' AND next_due_at_ms <= ?1 GROUP BY delivery_id)
+                 ORDER BY due LIMIT ?2",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -200,116 +274,143 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
-    /// Records the outcome of `attempt_token`'s publication. Returns `false` when the attempt was
-    /// superseded by a replay or a later claim, in which case the entry is left untouched.
-    pub fn finish_inbox_publication(
+    /// Records that `claimed` was published. Returns `false` when the attempt was superseded by
+    /// a replay or a later claim, in which case the row is left untouched.
+    pub fn finish_inbox_delivery(
         &self,
-        delivery_id: &str,
-        attempt_token: &str,
-        publication_count: usize,
+        claimed: &ClaimedInboxDelivery,
         now_ms: u64,
     ) -> Result<bool, String> {
-        let status = if publication_count == 0 {
-            InboxStatus::Unmatched
-        } else {
-            InboxStatus::Published
-        };
-        let connection = self.lock()?;
-        let changed = connection
+        self.close_inbox_delivery(claimed, DeliveryStatus::Published, now_ms)
+    }
+
+    /// Records that `claimed` lost its authority and must never be published. Returns `false`
+    /// when the attempt was superseded.
+    pub fn fence_inbox_delivery(
+        &self,
+        claimed: &ClaimedInboxDelivery,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        self.close_inbox_delivery(claimed, DeliveryStatus::Fenced, now_ms)
+    }
+
+    fn close_inbox_delivery(
+        &self,
+        claimed: &ClaimedInboxDelivery,
+        status: DeliveryStatus,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let changed = self
+            .lock()?
             .execute(
-                "UPDATE webhook_inbox
-                 SET status = ?2, published_at_ms = ?3, publication_count = ?4, last_error = NULL,
-                     attempt_token = NULL
-                 WHERE delivery_id = ?1 AND attempt_token = ?5",
+                "UPDATE webhook_inbox_delivery
+                 SET status = ?4, published_at_ms = ?5, last_error = NULL, attempt_token = NULL
+                 WHERE delivery_id = ?1 AND binding_id = ?2 AND attempt_token = ?3",
                 params![
-                    delivery_id,
+                    claimed.delivery_id,
+                    claimed.interest.0.binding_id,
+                    claimed.token,
                     status.as_str(),
-                    now_ms as i64,
-                    publication_count as i64,
-                    attempt_token
+                    (status == DeliveryStatus::Published).then_some(now_ms as i64),
                 ],
             )
             .map_err(|error| error.to_string())?;
         Ok(changed == 1)
     }
 
-    /// Records a failed attempt and schedules the next one, or marks the entry `failed` once the
-    /// attempt budget is spent. `None` means the attempt was superseded and nothing changed.
-    pub fn fail_inbox_publication(
+    /// Records a failed attempt and schedules the next one, or marks the interest `failed` once
+    /// its attempt budget is spent. `None` means the attempt was superseded and nothing changed.
+    pub fn fail_inbox_delivery(
         &self,
-        delivery_id: &str,
-        attempt_token: &str,
+        claimed: &ClaimedInboxDelivery,
         error: &str,
         now_ms: u64,
-    ) -> Result<Option<InboxStatus>, String> {
-        let connection = self.lock()?;
-        let Some(attempts) = connection
+    ) -> Result<Option<DeliveryStatus>, String> {
+        let status = if claimed.attempts >= MAX_PUBLICATION_ATTEMPTS {
+            DeliveryStatus::Failed
+        } else {
+            DeliveryStatus::Pending
+        };
+        let changed = self
+            .lock()?
+            .execute(
+                "UPDATE webhook_inbox_delivery
+                 SET status = ?4, next_due_at_ms = ?5, last_error = ?6, attempt_token = NULL
+                 WHERE delivery_id = ?1 AND binding_id = ?2 AND attempt_token = ?3",
+                params![
+                    claimed.delivery_id,
+                    claimed.interest.0.binding_id,
+                    claimed.token,
+                    status.as_str(),
+                    (now_ms + retry_delay_ms(claimed.attempts)) as i64,
+                    error,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok((changed == 1).then_some(status))
+    }
+
+    /// Makes a stored event publishable again for one owner, with a fresh attempt budget and no
+    /// backoff. `selected` holds that owner's interests chosen again under the current
+    /// authorization; they replace the owner's delivery rows and nobody else's. An attempt of
+    /// the owner whose lease is still running is never reset; a crashed one is, and its token
+    /// stops being valid. An event whose interests were never chosen needs no reset: its first
+    /// attempt chooses them for every owner.
+    pub fn requeue_inbox_event(
+        &self,
+        delivery_id: &str,
+        owner_id: &str,
+        selected: &[SelectedInterest],
+        now_ms: u64,
+    ) -> Result<Requeue, String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let Some(already_selected) = transaction
             .query_row(
-                "SELECT attempts FROM webhook_inbox WHERE delivery_id = ?1 AND attempt_token = ?2",
-                params![delivery_id, attempt_token],
-                |row| row.get::<_, u32>(0),
+                "SELECT selected FROM webhook_inbox WHERE delivery_id = ?1",
+                params![delivery_id],
+                |row| row.get::<_, bool>(0),
             )
             .optional()
             .map_err(|error| error.to_string())?
         else {
-            return Ok(None);
+            return Ok(Requeue::NotFound);
         };
-        let status = if attempts >= MAX_PUBLICATION_ATTEMPTS {
-            InboxStatus::Failed
-        } else {
-            InboxStatus::Pending
-        };
-        connection
-            .execute(
-                "UPDATE webhook_inbox
-                 SET status = ?2, next_attempt_at_ms = ?3, last_error = ?4, attempt_token = NULL
-                 WHERE delivery_id = ?1 AND attempt_token = ?5",
-                params![
-                    delivery_id,
-                    status.as_str(),
-                    (now_ms + retry_delay_ms(attempts)) as i64,
-                    error,
-                    attempt_token
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(Some(status))
-    }
-
-    /// Makes a stored event publishable again with a fresh attempt budget and no backoff. The
-    /// owner asked for it, so `selected` holds interests chosen again under the current
-    /// authorization and that owner's connections. An attempt whose lease is still running is never reset; a crashed one is, and its token
-    /// stops being valid.
-    pub fn requeue_inbox_event(
-        &self,
-        delivery_id: &str,
-        selected: &[SelectedInterest],
-        now_ms: u64,
-    ) -> Result<Requeue, String> {
-        let selected_json = serde_json::to_string(selected).map_err(|error| error.to_string())?;
-        let connection = self.lock()?;
-        let changed = connection
-            .execute(
-                "UPDATE webhook_inbox
-                 SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL,
-                     selected_json = ?3, attempt_token = NULL
-                 WHERE delivery_id = ?1
-                   AND (attempt_token IS NULL OR next_attempt_at_ms <= ?2)",
-                params![delivery_id, now_ms as i64, selected_json],
-            )
-            .map_err(|error| error.to_string())?;
-        if changed == 1 {
+        if !already_selected {
             return Ok(Requeue::Queued);
         }
-        Ok(if inbox_entry(&connection, delivery_id)?.is_some() {
-            Requeue::Busy
-        } else {
-            Requeue::NotFound
-        })
+        let in_flight: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM webhook_inbox_delivery
+                 WHERE delivery_id = ?1 AND owner_id = ?2
+                   AND attempt_token IS NOT NULL AND next_due_at_ms > ?3)",
+                params![delivery_id, owner_id, now_ms as i64],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if in_flight {
+            return Ok(Requeue::Busy);
+        }
+        transaction
+            .execute(
+                "DELETE FROM webhook_inbox_delivery WHERE delivery_id = ?1 AND owner_id = ?2",
+                params![delivery_id, owner_id],
+            )
+            .map_err(|error| error.to_string())?;
+        insert_deliveries(&transaction, delivery_id, selected, now_ms)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(Requeue::Queued)
     }
 
     pub fn inbox_event(&self, delivery_id: &str) -> Result<Option<InboxEntry>, String> {
         inbox_entry(&*self.lock()?, delivery_id)
+    }
+
+    /// The per-interest delivery rows of one stored event.
+    pub fn inbox_deliveries(&self, delivery_id: &str) -> Result<Vec<InboxDelivery>, String> {
+        delivery_rows(&*self.lock()?, delivery_id)
     }
 
     /// The newest stored events of one owner, newest first.
@@ -329,6 +430,7 @@ impl AegsStore {
             .query_map(params![owner_id, limit as i64], read_entry)
             .map_err(|error| error.to_string())?;
         rows.map(|row| row.map_err(|error| error.to_string())?)
+            .map(|entry| summarize(&connection, entry?))
             .collect()
     }
 
@@ -339,7 +441,7 @@ impl AegsStore {
         delivery_id: &str,
     ) -> Result<Option<InboxEntry>, String> {
         let connection = self.lock()?;
-        connection
+        let entry = connection
             .query_row(
                 &format!(
                     "SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE {OWNED_BY} AND delivery_id = ?2"
@@ -349,19 +451,66 @@ impl AegsStore {
             )
             .optional()
             .map_err(|error| error.to_string())?
-            .transpose()
+            .transpose()?;
+        entry.map(|entry| summarize(&connection, entry)).transpose()
     }
 
-    /// Drops events older than the retention window. Pending events are never dropped.
+    /// Drops events older than the retention window. Events with a pending interest, or whose
+    /// interests were never chosen, are never dropped.
     pub fn prune_inbox(&self, now_ms: u64) -> Result<usize, String> {
-        let connection = self.lock()?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let expired = "FROM webhook_inbox WHERE selected = 1 AND received_at_ms < ?1
+             AND NOT EXISTS (SELECT 1 FROM webhook_inbox_delivery d
+                 WHERE d.delivery_id = webhook_inbox.delivery_id AND d.status = 'pending')";
+        let cutoff = now_ms.saturating_sub(RETENTION_MS) as i64;
+        transaction
+            .execute(
+                &format!(
+                    "DELETE FROM webhook_inbox_delivery WHERE delivery_id IN (SELECT delivery_id {expired})"
+                ),
+                params![cutoff],
+            )
+            .map_err(|error| error.to_string())?;
+        let removed = transaction
+            .execute(&format!("DELETE {expired}"), params![cutoff])
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(removed)
+    }
+}
+
+/// Adds one pending row per selected binding, owned by the connection's owner.
+fn insert_deliveries(
+    connection: &rusqlite::Connection,
+    delivery_id: &str,
+    selected: &[SelectedInterest],
+    now_ms: u64,
+) -> Result<(), String> {
+    for (claim, generation) in selected {
+        let interest_json = serde_json::to_string(claim).map_err(|error| error.to_string())?;
         connection
             .execute(
-                "DELETE FROM webhook_inbox WHERE status != 'pending' AND received_at_ms < ?1",
-                params![now_ms.saturating_sub(RETENTION_MS) as i64],
+                "INSERT OR IGNORE INTO webhook_inbox_delivery
+                 (delivery_id, binding_id, connection_id, event_interest_key, owner_id,
+                  interest_json, authority_generation, status, next_due_at_ms)
+                 SELECT ?1, ?7, ?2, ?3, owner_id, ?4, ?5, 'pending', ?6
+                 FROM connections WHERE connection_id = ?2",
+                params![
+                    delivery_id,
+                    claim.connection_id,
+                    claim.event_interest_key,
+                    interest_json,
+                    generation,
+                    now_ms as i64,
+                    claim.binding_id,
+                ],
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
     }
+    Ok(())
 }
 
 fn retry_delay_ms(attempts: u32) -> u64 {
@@ -388,14 +537,22 @@ const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
      END)";
 
 const INBOX_COLUMNS: &str =
-    "delivery_id, route_connection_id, event_json, selected_json, received_at_ms, status, \
-     attempts, next_attempt_at_ms, published_at_ms, publication_count, last_error";
+    "delivery_id, route_connection_id, event_json, received_at_ms, selected";
+
+const DELIVERY_COLUMNS: &str = "connection_id, owner_id, interest_json, authority_generation, \
+     status, attempts, next_due_at_ms, published_at_ms, last_error";
+
+/// A stored event before its delivery rows are folded into the summary fields.
+struct StoredEvent {
+    entry: InboxEntry,
+    selected: bool,
+}
 
 fn inbox_entry(
     connection: &rusqlite::Connection,
     delivery_id: &str,
 ) -> Result<Option<InboxEntry>, String> {
-    connection
+    let stored = connection
         .query_row(
             &format!("SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE delivery_id = ?1"),
             params![delivery_id],
@@ -403,44 +560,120 @@ fn inbox_entry(
         )
         .optional()
         .map_err(|error| error.to_string())?
+        .transpose()?;
+    stored
+        .map(|stored| summarize(connection, stored))
         .transpose()
 }
 
-fn read_entry(row: &Row<'_>) -> rusqlite::Result<Result<InboxEntry, String>> {
-    let event_json: String = row.get(2)?;
-    let selected_json: Option<String> = row.get(3)?;
-    let status: String = row.get(5)?;
-    let entry = InboxEntry {
-        delivery_id: row.get(0)?,
-        route_connection_id: row.get(1)?,
-        event: match serde_json::from_str(&event_json) {
-            Ok(event) => event,
-            Err(error) => return Ok(Err(format!("stored webhook event is unreadable: {error}"))),
-        },
-        selected: match selected_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-        {
-            Ok(selected) => selected,
-            Err(error) => {
-                return Ok(Err(format!(
-                    "stored webhook selection is unreadable: {error}"
-                )))
-            }
-        },
-        received_at_ms: row.get::<_, i64>(4)? as u64,
-        status: match InboxStatus::parse(&status) {
-            Ok(status) => status,
-            Err(error) => return Ok(Err(error)),
-        },
-        attempts: row.get(6)?,
-        next_attempt_at_ms: row.get::<_, i64>(7)? as u64,
-        published_at_ms: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
-        publication_count: row.get(9)?,
-        last_error: row.get(10)?,
+fn delivery_rows(
+    connection: &rusqlite::Connection,
+    delivery_id: &str,
+) -> Result<Vec<InboxDelivery>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {DELIVERY_COLUMNS} FROM webhook_inbox_delivery WHERE delivery_id = ?1
+             ORDER BY connection_id, event_interest_key, binding_id"
+        ))
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![delivery_id], read_delivery)
+        .map_err(|error| error.to_string())?;
+    rows.map(|row| row.map_err(|error| error.to_string())?)
+        .collect()
+}
+
+/// Folds the delivery rows into the entry's status: pending while any interest still has
+/// attempts to make, failed if one ran out, published once every interest is settled.
+fn summarize(connection: &rusqlite::Connection, stored: StoredEvent) -> Result<InboxEntry, String> {
+    let StoredEvent {
+        mut entry,
+        selected,
+    } = stored;
+    let rows = delivery_rows(connection, &entry.delivery_id)?;
+    let any = |status| rows.iter().any(|row| row.status == status);
+    entry.status = if !selected || any(DeliveryStatus::Pending) {
+        InboxStatus::Pending
+    } else if any(DeliveryStatus::Failed) {
+        InboxStatus::Failed
+    } else if any(DeliveryStatus::Published) {
+        InboxStatus::Published
+    } else {
+        InboxStatus::Unmatched
     };
-    Ok(Ok(entry))
+    entry.attempts = rows.iter().map(|row| row.attempts).max().unwrap_or(0);
+    entry.next_attempt_at_ms = if selected {
+        rows.iter()
+            .filter(|row| row.status == DeliveryStatus::Pending)
+            .map(|row| row.next_due_at_ms)
+            .min()
+    } else {
+        Some(entry.received_at_ms)
+    };
+    entry.publication_count = rows
+        .iter()
+        .filter(|row| row.status == DeliveryStatus::Published)
+        .count() as u32;
+    entry.published_at_ms = if entry.status == InboxStatus::Published {
+        rows.iter().filter_map(|row| row.published_at_ms).max()
+    } else {
+        None
+    };
+    entry.last_error = rows
+        .iter()
+        .filter(|row| matches!(row.status, DeliveryStatus::Pending | DeliveryStatus::Failed))
+        .find_map(|row| row.last_error.clone());
+    Ok(entry)
+}
+
+fn read_entry(row: &Row<'_>) -> rusqlite::Result<Result<StoredEvent, String>> {
+    let event_json: String = row.get(2)?;
+    let event = match serde_json::from_str(&event_json) {
+        Ok(event) => event,
+        Err(error) => return Ok(Err(format!("stored webhook event is unreadable: {error}"))),
+    };
+    Ok(Ok(StoredEvent {
+        entry: InboxEntry {
+            delivery_id: row.get(0)?,
+            route_connection_id: row.get(1)?,
+            event,
+            received_at_ms: row.get::<_, i64>(3)? as u64,
+            status: InboxStatus::Pending,
+            attempts: 0,
+            next_attempt_at_ms: None,
+            published_at_ms: None,
+            publication_count: 0,
+            last_error: None,
+        },
+        selected: row.get(4)?,
+    }))
+}
+
+fn read_delivery(row: &Row<'_>) -> rusqlite::Result<Result<InboxDelivery, String>> {
+    let interest_json: String = row.get(2)?;
+    let claim = match serde_json::from_str(&interest_json) {
+        Ok(claim) => claim,
+        Err(error) => {
+            return Ok(Err(format!(
+                "stored webhook selection is unreadable: {error}"
+            )))
+        }
+    };
+    let status: String = row.get(4)?;
+    let status = match DeliveryStatus::parse(&status) {
+        Ok(status) => status,
+        Err(error) => return Ok(Err(error)),
+    };
+    Ok(Ok(InboxDelivery {
+        connection_id: row.get(0)?,
+        owner_id: row.get(1)?,
+        interest: (claim, row.get(3)?),
+        status,
+        attempts: row.get(5)?,
+        next_due_at_ms: row.get::<_, i64>(6)? as u64,
+        published_at_ms: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
+        last_error: row.get(8)?,
+    }))
 }
 
 #[cfg(test)]
@@ -484,112 +717,194 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claimed_attempt_is_leased_and_retries_back_off_up_to_the_budget() {
+    fn claim(connection: &str) -> SubscriptionClaim {
+        SubscriptionClaim {
+            binding_id: format!("binding-{connection}"),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: connection.into(),
+            connection_scope: "scope".into(),
+            event_interest_key: format!("interest-{connection}"),
+            event_type: "pull_request.synchronize".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        }
+    }
+
+    /// One ready connection per `(connection, owner)` and a stored, selected event for all.
+    fn selected_store(owners: &[(&str, &str)]) -> (AegsStore, Vec<SelectedInterest>) {
         let store = AegsStore::open(":memory:").unwrap();
+        let mut interests = Vec::new();
+        for (connection, owner) in owners {
+            store
+                .upsert_ready_connection(connection, owner, "github", &serde_json::Value::Null, 1)
+                .unwrap();
+            interests.push((claim(connection), Some(1)));
+        }
         store.record_inbox_event("d1", None, &event(), 0).unwrap();
-        assert!(store.claim_inbox_attempt("d1", 0).unwrap().is_some());
-        assert!(store.claim_inbox_attempt("d1", 1).unwrap().is_none());
+        assert!(store.select_inbox_interests("d1", &interests, 0).unwrap());
+        (store, interests)
+    }
+
+    #[test]
+    fn claimed_delivery_is_leased_and_retries_back_off_up_to_the_budget() {
+        let (store, _) = selected_store(&[("c1", "owner")]);
+        assert_eq!(
+            store.claim_inbox_deliveries("d1", None, 0).unwrap().len(),
+            1
+        );
+        assert!(store
+            .claim_inbox_deliveries("d1", None, 1)
+            .unwrap()
+            .is_empty());
         // A crashed attempt becomes claimable again once its lease ends.
-        let mut token = store
-            .claim_inbox_attempt("d1", ATTEMPT_LEASE_MS)
-            .unwrap()
-            .unwrap()
-            .token;
         let mut now = ATTEMPT_LEASE_MS;
+        let mut claimed = store.claim_inbox_deliveries("d1", None, now).unwrap();
         let mut delays = Vec::new();
         loop {
             let status = store
-                .fail_inbox_publication("d1", &token, "refused", now)
+                .fail_inbox_delivery(&claimed[0], "refused", now)
                 .unwrap()
                 .unwrap();
-            let entry = store.inbox_event("d1").unwrap().unwrap();
-            delays.push(entry.next_attempt_at_ms - now);
-            if status == InboxStatus::Failed {
+            let row = store.inbox_deliveries("d1").unwrap().remove(0);
+            delays.push(row.next_due_at_ms - now);
+            if status == DeliveryStatus::Failed {
                 break;
             }
-            now = entry.next_attempt_at_ms;
-            token = store.claim_inbox_attempt("d1", now).unwrap().unwrap().token;
+            now = row.next_due_at_ms;
+            claimed = store.claim_inbox_deliveries("d1", None, now).unwrap();
         }
         assert_eq!(delays[..3], [10_000, 20_000, 40_000]);
         assert!(delays.iter().all(|delay| *delay <= MAX_RETRY_DELAY_MS));
         assert_eq!(delays.len() as u32, MAX_PUBLICATION_ATTEMPTS - 1);
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Failed
+        );
     }
 
     #[test]
-    fn superseded_attempt_cannot_change_the_entry() {
-        let store = AegsStore::open(":memory:").unwrap();
-        store.record_inbox_event("d1", None, &event(), 0).unwrap();
-        let first = store.claim_inbox_attempt("d1", 0).unwrap().unwrap().token;
+    fn superseded_attempt_cannot_change_the_delivery() {
+        let (store, interests) = selected_store(&[("c1", "owner")]);
+        let first = store
+            .claim_inbox_deliveries("d1", None, 0)
+            .unwrap()
+            .remove(0);
         assert_eq!(
-            store.requeue_inbox_event("d1", &[], 1).unwrap(),
+            store
+                .requeue_inbox_event("d1", "owner", &interests, 1)
+                .unwrap(),
             Requeue::Busy
         );
         // The first attempt crashed or stalled past its lease; a replay takes over.
         assert_eq!(
             store
-                .requeue_inbox_event("d1", &[], ATTEMPT_LEASE_MS)
+                .requeue_inbox_event("d1", "owner", &interests, ATTEMPT_LEASE_MS)
                 .unwrap(),
             Requeue::Queued
         );
         let second = store
-            .claim_inbox_attempt("d1", ATTEMPT_LEASE_MS)
+            .claim_inbox_deliveries("d1", None, ATTEMPT_LEASE_MS)
             .unwrap()
-            .unwrap()
-            .token;
-        assert!(!store.finish_inbox_publication("d1", &first, 1, 5).unwrap());
+            .remove(0);
+        assert!(!store.finish_inbox_delivery(&first, 5).unwrap());
+        assert!(!store.fence_inbox_delivery(&first, 5).unwrap());
         assert_eq!(
             store
-                .fail_inbox_publication("d1", &first, "late failure", 5)
+                .fail_inbox_delivery(&first, "late failure", 5)
                 .unwrap(),
             None
         );
-        assert!(!store.select_inbox_interests("d1", &first, &[]).unwrap());
         let entry = store.inbox_event("d1").unwrap().unwrap();
         assert_eq!(entry.status, InboxStatus::Pending);
         assert_eq!(entry.last_error, None);
-        assert!(store.finish_inbox_publication("d1", &second, 1, 6).unwrap());
+        assert!(store.finish_inbox_delivery(&second, 6).unwrap());
         assert_eq!(
             store.inbox_event("d1").unwrap().unwrap().status,
             InboxStatus::Published
         );
-        // A failure that arrives after success does not reopen the entry.
+        // A failure that arrives after success does not reopen the delivery.
+        assert_eq!(store.fail_inbox_delivery(&second, "late", 7).unwrap(), None);
         assert_eq!(
             store
-                .fail_inbox_publication("d1", &second, "late", 7)
+                .requeue_inbox_event("missing", "owner", &[], 8)
                 .unwrap(),
-            None
-        );
-        assert_eq!(
-            store.requeue_inbox_event("missing", &[], 8).unwrap(),
             Requeue::NotFound
         );
+    }
+
+    #[test]
+    fn entry_is_published_only_when_every_interest_is_settled() {
+        let (store, _) = selected_store(&[("c-a", "owner-a"), ("c-b", "owner-b")]);
+        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
+        let entry = store.inbox_event("d1").unwrap().unwrap();
+        assert_eq!(entry.status, InboxStatus::Pending);
+        assert_eq!(entry.publication_count, 1);
+        assert_eq!(entry.published_at_ms, None);
+        assert!(store.fence_inbox_delivery(&claimed[1], 2).unwrap());
+        let entry = store.inbox_event("d1").unwrap().unwrap();
+        assert_eq!(entry.status, InboxStatus::Published);
+        assert_eq!(entry.published_at_ms, Some(1));
     }
 
     #[test]
     fn pruning_keeps_pending_events_and_recent_ones() {
         let store = AegsStore::open(":memory:").unwrap();
         store
-            .record_inbox_event("pending", None, &event(), 0)
+            .upsert_ready_connection("c1", "owner", "github", &serde_json::Value::Null, 1)
             .unwrap();
-        store.record_inbox_event("old", None, &event(), 0).unwrap();
-        let token = store.claim_inbox_attempt("old", 0).unwrap().unwrap().token;
-        store.finish_inbox_publication("old", &token, 1, 1).unwrap();
-        store
-            .record_inbox_event("recent", None, &event(), RETENTION_MS)
-            .unwrap();
-        let token = store
-            .claim_inbox_attempt("recent", RETENTION_MS)
-            .unwrap()
-            .unwrap()
-            .token;
-        store
-            .finish_inbox_publication("recent", &token, 1, RETENTION_MS)
-            .unwrap();
+        let interests = [(claim("c1"), Some(1))];
+        for (id, at) in [("pending", 0), ("old", 0), ("recent", RETENTION_MS)] {
+            store.record_inbox_event(id, None, &event(), at).unwrap();
+            store.select_inbox_interests(id, &interests, at).unwrap();
+        }
+        for (id, at) in [("old", 0), ("recent", RETENTION_MS)] {
+            let claimed = store.claim_inbox_deliveries(id, None, at).unwrap();
+            store.finish_inbox_delivery(&claimed[0], at + 1).unwrap();
+        }
         assert_eq!(store.prune_inbox(RETENTION_MS + 1).unwrap(), 1);
         assert!(store.has_inbox_event("pending").unwrap());
         assert!(store.has_inbox_event("recent").unwrap());
         assert!(!store.has_inbox_event("old").unwrap());
+        assert!(store.inbox_deliveries("old").unwrap().is_empty());
+    }
+
+    #[test]
+    fn replay_replaces_only_the_requesting_owners_rows() {
+        let (store, interests) = selected_store(&[("c-a", "owner-a"), ("c-b", "owner-b")]);
+        // B's attempt failed and waits in backoff; A's published.
+        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
+        store
+            .fail_inbox_delivery(&claimed[1], "refused", 1)
+            .unwrap();
+        let before = store.inbox_deliveries("d1").unwrap();
+
+        assert_eq!(
+            store
+                .requeue_inbox_event("d1", "owner-a", &interests[..1], 2)
+                .unwrap(),
+            Requeue::Queued
+        );
+        let after = store.inbox_deliveries("d1").unwrap();
+        assert_eq!(after[1], before[1], "B keeps its attempts, timer and error");
+        assert_eq!(after[0].status, DeliveryStatus::Pending);
+        assert_eq!(after[0].attempts, 0);
+        // A's replay claims A's row only; B's backoff still holds.
+        assert_eq!(
+            store
+                .claim_inbox_deliveries("d1", Some("owner-a"), 2)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(store.inbox_deliveries("d1").unwrap()[1], before[1]);
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Pending
+        );
     }
 
     #[test]
