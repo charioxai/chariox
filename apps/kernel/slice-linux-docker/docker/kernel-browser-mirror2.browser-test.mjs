@@ -1287,6 +1287,16 @@ test('MP-10 M2: more than 100000 records on nodes the continuation has not reach
     assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
   }));
 
+test('MP-10 M2: children appended to a parent the continuation is walking arrive in bounded continuation packets', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
+    const first=await next();assert(!first.fallback);
+    // A parser still appending: the walk must reach them, not one synchronous diff of the whole parent.
+    await evaluate(`const m=document.querySelector('main');for(let i=0;i<20000;i++)m.append(Object.assign(document.createElement('p'),{textContent:'late'}));m.append(Object.assign(document.createElement('p'),{textContent:'Last appended'}));true`);
+    let tail=false;
+    for(let n=0;n<300&&!tail;n++){const packet=await next(200);assert.notEqual(packet.reset,true);assert(!packet.fallback);let count=0;for(const op of packet.ops){if(op.op!=='children')continue;count+=op.nodes.length;tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last appended');}assert(count<8192,`bounded packet: ${count} nodes`);}
+    assert(tail,'appended children arrive');
+  }));
+
 
 test('MP-08/MP-10 M2: native form and text echoes take priority over continuing the document', () => mirrored(
   '<input id="q"><h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {

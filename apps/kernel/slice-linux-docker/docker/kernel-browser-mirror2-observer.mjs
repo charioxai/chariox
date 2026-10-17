@@ -363,6 +363,21 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
     };
+    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
+    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
+    const childrenOf = function* (node, id, kind, depth) {
+      const seen = new Set();
+      for (let more = true; more;) {
+        more = false;
+        for (const child of [...node.childNodes]) {
+          if (nodes.get(id) !== node || kindOf.get(id) !== kind) return;
+          if (seen.has(child)) continue;
+          seen.add(child); more = true;
+          if (child.parentNode !== node || mirrored(child) || node.nodeType === 9 && child.nodeType !== 1) continue;
+          yield* serializeTree(child, id, depth + 1);
+        }
+      }
+    };
     // Pre-order records; a record's children are the following records naming it.
     const serializeTree = function* (node, parent, depth = 0) {
       yield null; // even dropped nodes consume a bounded amount of this task
@@ -384,8 +399,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (nodes.get(id) !== node) return null;
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
         open.add(id);
-        try { for (const child of [...node.childNodes]) { if (nodes.get(id) !== node) break; if (type === 9 && child.nodeType !== 1 || child.parentNode !== node || mirrored(child)) continue; yield* serializeTree(child, id, depth + 1); } }
-        finally { open.delete(id); }
+        try { yield* childrenOf(node, id, record.kind, depth); } finally { open.delete(id); }
         return id;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
@@ -423,11 +437,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       yield record;
       if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      // A snapshot of the children: mutations meanwhile are diffed after this node closes (drain), so a
-      // child removed, moved or already serialized by such a diff is skipped, never introduced twice.
+      // Mutations meanwhile are diffed after this node closes (drain).
       open.add(id);
       try {
-        for (const child of [...node.childNodes]) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; if (child.parentNode !== node || mirrored(child)) continue; yield* serializeTree(child, id, depth + 1); }
+        yield* childrenOf(node, id, record.kind, depth);
         if (node.shadowRoot && nodes.get(id) === node && !mirrored(node.shadowRoot)) yield* serializeTree(node.shadowRoot, id, depth + 1);
       } finally { open.delete(id); }
       return id;
@@ -595,7 +608,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (childId) list.push(childId);
       }
       if (node.nodeType === 1 && node.shadowRoot) { const shadow = mirrored(node.shadowRoot) ?? serialize(node.shadowRoot, id, out, 1); if (shadow) list.push(shadow); pendingHosts.delete(id); }
-      for (const old of previous) if (!list.includes(old) && parentOf.get(old) === id) forget(old);
+      const kept = new Set(list); for (const old of previous) if (!kept.has(old) && parentOf.get(old) === id) forget(old);
       kids.set(id, list);
       // A child list that ends as it was (a node added and removed) sends nothing.
       if (!out.length && list.length === previous.length && list.every((child, i) => child === previous[i])) return;
