@@ -2002,6 +2002,8 @@ mod mp11_delivery_http_tests {
         url: String,
         calls: Arc<AtomicUsize>,
         accepted: Arc<AtomicUsize>,
+        /// Interest keys of the accepted publications, in order.
+        interests: Arc<std::sync::Mutex<Vec<String>>>,
         refusals: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
@@ -2018,6 +2020,8 @@ mod mp11_delivery_http_tests {
             let calls = Arc::new(AtomicUsize::new(0));
             let accepted = Arc::new(AtomicUsize::new(0));
             let refusals = Arc::new(AtomicUsize::new(0));
+            let interests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = interests.clone();
             let (accepts, refuse) = (accepted.clone(), refusals.clone());
             let stop = Arc::new(AtomicBool::new(false));
             let count = calls.clone();
@@ -2050,7 +2054,8 @@ mod mp11_delivery_http_tests {
                                 })
                                 .unwrap();
                             assert!(length < 8192);
-                            stream.read_exact(&mut vec![0; length]).unwrap();
+                            let mut request_body = vec![0; length];
+                            stream.read_exact(&mut request_body).unwrap();
                             count.fetch_add(1, Ordering::SeqCst);
                             while held.load(Ordering::SeqCst) && !done.load(Ordering::SeqCst) {
                                 std::thread::sleep(Duration::from_millis(2));
@@ -2068,6 +2073,12 @@ mod mp11_delivery_http_tests {
                                 continue;
                             }
                             accepts.fetch_add(1, Ordering::SeqCst);
+                            let request: serde_json::Value =
+                                serde_json::from_slice(&request_body).unwrap();
+                            recorded
+                                .lock()
+                                .unwrap()
+                                .push(request["event_interest_key"].as_str().unwrap().into());
                             let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                         }
@@ -2082,6 +2093,7 @@ mod mp11_delivery_http_tests {
                 url,
                 calls,
                 accepted,
+                interests,
                 refusals,
                 stop,
                 hold,
@@ -2279,8 +2291,14 @@ mod mp11_delivery_http_tests {
         assert_eq!(publisher.calls.load(Ordering::SeqCst), calls);
 
         publisher.refusals.store(0, Ordering::SeqCst);
+        let selected = store
+            .matching_for_delivery("dev.chariox.github", "event", "scope")
+            .await
+            .unwrap();
         assert_eq!(
-            store.requeue_inbox_event("delivery-3", at).unwrap(),
+            store
+                .requeue_inbox_event("delivery-3", &selected, at)
+                .unwrap(),
             crate::Requeue::Queued
         );
         server.deliver_due_inbox(at).await.unwrap();
@@ -2477,6 +2495,53 @@ mod mp11_delivery_http_tests {
         assert_eq!(status, 200);
         assert_eq!(replayed["event"]["status"], "published");
         assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn replay_publishes_only_to_the_requesting_owners_subscriptions() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        post_signed_webhook_at(server.clone(), "/webhooks/github", Some("delivery-7")).await;
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+
+        // Owner B reauthorizes and subscribes to the same scope after the webhook failed.
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        let claim_a = subscription_claim();
+        let claim_b = crate::SubscriptionClaim {
+            binding_id: "binding-b".into(),
+            connection_id: "connection-b".into(),
+            event_interest_key: "interest-b".into(),
+            ..subscription_claim()
+        };
+        store
+            .reconcile("kernel", "dev.chariox.github", &[claim_a, claim_b])
+            .unwrap();
+
+        let replay = serde_json::json!({
+            "generator_id": "dev.chariox.github", "owner_id": "owner", "delivery_id": "delivery-7"
+        });
+        let (status, replayed) =
+            management_post(&server, "/v1/events/replay", "owner", replay).await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(replayed["event"]["status"], "published");
+        assert_eq!(
+            *publisher.interests.lock().unwrap(),
+            vec!["interest"],
+            "owner's replay must not reach another owner's interest"
+        );
     }
 
     #[tokio::test]

@@ -277,19 +277,25 @@ impl AegsStore {
     }
 
     /// Makes a stored event publishable again with a fresh attempt budget and no backoff. The
-    /// owner asked for it, so the interests are selected again under the current authorization.
-    /// An attempt whose lease is still running is never reset; a crashed one is, and its token
+    /// owner asked for it, so `selected` holds interests chosen again under the current
+    /// authorization and that owner's connections. An attempt whose lease is still running is never reset; a crashed one is, and its token
     /// stops being valid.
-    pub fn requeue_inbox_event(&self, delivery_id: &str, now_ms: u64) -> Result<Requeue, String> {
+    pub fn requeue_inbox_event(
+        &self,
+        delivery_id: &str,
+        selected: &[SelectedInterest],
+        now_ms: u64,
+    ) -> Result<Requeue, String> {
+        let selected_json = serde_json::to_string(selected).map_err(|error| error.to_string())?;
         let connection = self.lock()?;
         let changed = connection
             .execute(
                 "UPDATE webhook_inbox
                  SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL,
-                     selected_json = NULL, attempt_token = NULL
+                     selected_json = ?3, attempt_token = NULL
                  WHERE delivery_id = ?1
                    AND (attempt_token IS NULL OR next_attempt_at_ms <= ?2)",
-                params![delivery_id, now_ms as i64],
+                params![delivery_id, now_ms as i64, selected_json],
             )
             .map_err(|error| error.to_string())?;
         if changed == 1 {
@@ -515,10 +521,15 @@ mod tests {
         let store = AegsStore::open(":memory:").unwrap();
         store.record_inbox_event("d1", None, &event(), 0).unwrap();
         let first = store.claim_inbox_attempt("d1", 0).unwrap().unwrap().token;
-        assert_eq!(store.requeue_inbox_event("d1", 1).unwrap(), Requeue::Busy);
+        assert_eq!(
+            store.requeue_inbox_event("d1", &[], 1).unwrap(),
+            Requeue::Busy
+        );
         // The first attempt crashed or stalled past its lease; a replay takes over.
         assert_eq!(
-            store.requeue_inbox_event("d1", ATTEMPT_LEASE_MS).unwrap(),
+            store
+                .requeue_inbox_event("d1", &[], ATTEMPT_LEASE_MS)
+                .unwrap(),
             Requeue::Queued
         );
         let second = store
@@ -550,7 +561,7 @@ mod tests {
             None
         );
         assert_eq!(
-            store.requeue_inbox_event("missing", 8).unwrap(),
+            store.requeue_inbox_event("missing", &[], 8).unwrap(),
             Requeue::NotFound
         );
     }

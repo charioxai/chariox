@@ -50,16 +50,21 @@ impl AegsServer {
         normalized: &NormalizedEvent,
         connection_id: Option<&str>,
     ) -> Result<Vec<PublishEventResponse>, String> {
-        let selected = self.select_interests(normalized, connection_id).await?;
+        let selected = self
+            .select_interests(normalized, connection_id, None)
+            .await?;
         self.publish_selected(normalized, selected).await
     }
 
+    /// `owner_id` limits the selection to that owner's connections, for a replay on their behalf.
     async fn select_interests(
         &self,
         normalized: &NormalizedEvent,
         connection_id: Option<&str>,
+        owner_id: Option<&str>,
     ) -> Result<Vec<SelectedInterest>, String> {
-        Ok(self
+        let mut selected = Vec::new();
+        for (subscription, generation) in self
             .store
             .matching_for_delivery(
                 &self.producer_id,
@@ -67,12 +72,24 @@ impl AegsServer {
                 &normalized.connection_scope,
             )
             .await?
-            .into_iter()
-            .filter(|(subscription, _)| {
-                connection_id.is_none_or(|value| subscription.connection_id == value)
-                    && metadata_matches_filter(&normalized.metadata, &subscription.filter)
-            })
-            .collect())
+        {
+            if connection_id.is_some_and(|value| subscription.connection_id != value)
+                || !metadata_matches_filter(&normalized.metadata, &subscription.filter)
+            {
+                continue;
+            }
+            if let Some(owner_id) = owner_id {
+                let owned = self
+                    .store
+                    .connection(&subscription.connection_id)?
+                    .is_some_and(|connection| connection.owner_id == owner_id);
+                if !owned {
+                    continue;
+                }
+            }
+            selected.push((subscription, generation));
+        }
+        Ok(selected)
     }
 
     /// AEDS dedupes on the occurrence id, so repeating a partly published event is safe. An
@@ -136,7 +153,7 @@ impl AegsServer {
                 Some(selected) => selected,
                 None => {
                     let selected = self
-                        .select_interests(&entry.event, entry.route_connection_id.as_deref())
+                        .select_interests(&entry.event, entry.route_connection_id.as_deref(), None)
                         .await?;
                     if !self
                         .store
@@ -301,16 +318,24 @@ impl AegsServer {
             return *response;
         }
         let replayed: Result<Replayed, String> = async {
-            if self
+            let Some(stored) = self
                 .store
                 .inbox_event_for_owner(&replay.owner_id, &replay.delivery_id)?
-                .is_none()
-            {
+            else {
                 return Ok(Replayed::NotFound);
-            }
+            };
+            // Chosen here, not by the attempt, so no attempt can publish to another owner's
+            // subscriptions in this owner's name.
+            let selected = self
+                .select_interests(
+                    &stored.event,
+                    stored.route_connection_id.as_deref(),
+                    Some(&replay.owner_id),
+                )
+                .await?;
             match self
                 .store
-                .requeue_inbox_event(&replay.delivery_id, now_ms())?
+                .requeue_inbox_event(&replay.delivery_id, &selected, now_ms())?
             {
                 Requeue::Queued => {}
                 Requeue::Busy => return Ok(Replayed::Busy),
