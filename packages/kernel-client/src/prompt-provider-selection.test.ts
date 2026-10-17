@@ -270,3 +270,19 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     ...overrides,
   }
 }
+
+test("a lagging run of the previous provider cannot revert a committed provider switch", () => {
+  const committed = session({
+    active_provider_run_id: "run-claude",
+    agents: [agent("agent-1", { provider: "codex", model: "gpt-5.6-luna", effort: "high" })],
+  })
+  const projected = applyProviderRunProfileToSession(committed, providerRun({
+    id: "run-claude",
+    agent_instance_id: "agent-1",
+    provider: "claude-p",
+    model: "claude-haiku-5-5",
+    variant: "low",
+  }))
+
+  assert.equal(projected, committed)
+})

@@ -87,12 +87,13 @@ export function applyProviderRunProfileToSession(
 
   let changed = false
   const agents = session.agents.map((agent) => {
-    if (agent.id !== agentId) {
+    // Only the kernel commits a provider switch; a lagging run of the
+    // previous provider must not revert it.
+    if (agent.id !== agentId || agent.provider !== providerRun.provider) {
       return agent
     }
     if (
-      agent.provider === providerRun.provider
-      && agent.model === providerRun.model
+      agent.model === providerRun.model
       && agent.effort === providerRun.variant
     ) {
       return agent
