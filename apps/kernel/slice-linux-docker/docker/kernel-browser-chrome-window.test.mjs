@@ -244,6 +244,28 @@ test("MP-08/MP-11 the arbiter tells the windows when the address bar has the key
   await step({ kind: "key", key: "t", modifiers: 2 }, false, "another browser shortcut");
 });
 
+// r24 (cold first list): before a window's first list its address-bar span is unknown. A toolbar click may
+// be the address bar, so the keys after it wait for the list they open; the click itself does not wait.
+test("MP-08/MP-11 a toolbar click before the window's first list arms the list wait for the keys, not for the click", async () => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: true } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { inputCapture: { physicalFocus: async () => false }, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const focus = [];
+  const arbiter = new InputArbiter(host, { focusOmnibox: (on, ago = 0) => focus.push([on, ago]), onOmnibox: () => null });
+  const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => true, chord: async () => true };
+  const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
+  await send({ kind: "click", x: 520, y: 63 });
+  assert.equal(focus.length, 1);
+  assert.equal(focus[0][0], true, "the toolbar click may be the address bar");
+  assert.ok(focus[0][1] < -250, "backdated past the list wait: the click's own reply does not wait for a list");
+  focus.length = 0;
+  await send({ kind: "text", text: "w" });
+  assert.deepEqual(focus, [[true, 0]], "a key in the toolbar waits for the list it opens");
+  const { windows } = fake();
+  assert.equal(windows.onOmnibox(520), null, "no list seen in this window: the span is unknown, not 'not the address bar'");
+});
+
 // MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
 // A native omnibox check must observe physical focus, not that logical wake-up.
 test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
