@@ -2,7 +2,7 @@
 // renderer-bound fences (document, focus, sensitive-field reads). A fence that timed out before anything was
 // dispatched reached no page, so the input waits here in order and is admitted through the same fences once the
 // renderer answers. Input that may have been dispatched is never parked, so nothing is typed twice.
-const LIMIT = 32, TTL_MS = 60_000;
+const LIMIT = 32, TTL_MS = 60_000, STALE_MS = 10_000;
 
 export const markDispatched = error => { if (error && typeof error === 'object') error.afterDispatch = true; return error; };
 // Any CDP read the fences make; an Input.* call that timed out may have reached the page.
@@ -10,13 +10,17 @@ export const markDispatched = error => { if (error && typeof error === 'object')
 export const lateInputAck = error => error?.code === 'browser_cdp_timeout' && /^browser CDP method Input\./.test(error.message);
 const busy = error => error?.code === 'browser_cdp_timeout' && error.afterDispatch !== true && !lateInputAck(error);
 
+// A reference refused as stale while the person's tab and document are unchanged is a binding that moved under a
+// busy renderer (a first paint that changed the page geometry): the same fences admit it again once the window rebinds.
+const stale = error => error?.code === 'user_domain_stale_reference';
+
 const typed = command => command.input?.kind === 'text' || command.input?.kind === 'key';
 const sameScroll = (a, b) => a.input?.kind === 'scroll' && b.input?.kind === 'scroll' && a.tab_id === b.tab_id && a.document_id === b.document_id
   && a.binding_id === b.binding_id && a.input.x === b.input.x && a.input.y === b.input.y;
 
 export class BusyInputQueue {
-  constructor(run, reply, { retryMs = 500, limit = LIMIT, ttlMs = TTL_MS, event = () => {} } = {}) {
-    Object.assign(this, { run, reply, retryMs, limit, ttlMs, event }); this.queues = new Map(); this.stopped = false;
+  constructor(run, reply, { retryMs = 500, limit = LIMIT, ttlMs = TTL_MS, staleMs = STALE_MS, sameDocument = () => false, event = () => {} } = {}) {
+    Object.assign(this, { run, reply, retryMs, limit, ttlMs, staleMs, sameDocument, event }); this.queues = new Map(); this.stopped = false;
   }
 
   async submit(key, command, options) {
@@ -55,7 +59,7 @@ export class BusyInputQueue {
       catch (error) {
         queue.active = null;
         if (entry.abort.signal.aborted) continue;
-        if (busy(error)) { await new Promise(resolve => setTimeout(resolve, this.retryMs)); continue; }
+        if (busy(error) || stale(error) && this.sameDocument(entry.command) && Date.now() < (entry.staleUntil ??= Date.now() + this.staleMs)) { await new Promise(resolve => setTimeout(resolve, this.retryMs)); continue; }
         queue.entries.shift(); this.event(`input_dropped ${/^[a-z_]{1,48}$/.test(error?.code) ? error.code : 'error'}`); // the cause, as a fixed code, for the display timing
         // Typing that lost a key is dropped whole: the rest would arrive as a mangled word (a URL typed without its first letter).
         if (typed(entry.command)) while (queue.entries.length && typed(queue.entries[0].command)) { queue.entries.shift(); this.event('input_dropped'); }

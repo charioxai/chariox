@@ -1,7 +1,7 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
 use super::browser_controller_process::{
     BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessState,
-    BrowserControllerProcessStdioBackend,
+    BrowserControllerProcessStdioBackend, RetireLane,
 };
 use super::kernel_browser_actors::KernelBrowserActors;
 pub(crate) use super::kernel_browser_actors::KernelBrowserDocumentBinding;
@@ -28,6 +28,7 @@ pub(crate) struct KernelBrowserHost {
 #[derive(Default)]
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
+    retire_lanes: BTreeMap<String, RetireLane>,
     stopped: bool,
     mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
     display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
@@ -245,6 +246,7 @@ impl KernelBrowserHost {
                 Duration::from_secs(20),
             )
             .for_host();
+            state.retire_lanes.insert(user.into(), backend.retire_lane());
             state
                 .browsers
                 .insert(user.into(), Arc::new(Mutex::new(backend)));
@@ -264,9 +266,9 @@ impl KernelBrowserHost {
             Duration::from_secs(2),
         )
         .for_host();
-        self.inner
-            .lock()
-            .unwrap()
+        let mut state = self.inner.lock().unwrap();
+        state.retire_lanes.insert(user.into(), backend.retire_lane());
+        state
             .browsers
             .insert(user.into(), Arc::new(Mutex::new(backend)));
     }
@@ -988,14 +990,12 @@ impl KernelBrowserHost {
         }
         // Retire only this terminal's persistent native input/targets. Cleanup
         // is serialized behind any cancelled request and never starts a desktop.
-        let backend = self
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .browsers
-            .get(user)
-            .cloned();
+        let (backend, lane) = {
+            let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            (state.browsers.get(user).cloned(), state.retire_lanes.get(user).cloned())
+        };
         let actor = actor.to_string();
+        let observer = actor.clone();
         if let Some(backend) = backend {
             let retire = move |backend: &mut BrowserControllerProcessStdioBackend| {
                 let _ = backend.host_request(
@@ -1016,6 +1016,10 @@ impl KernelBrowserHost {
                 Err(std::sync::TryLockError::WouldBlock) => true,
             };
             if busy {
+                // Input this terminal parked in the host must not outlive it while the occupied request runs on.
+                if let Some(lane) = lane {
+                    lane.retire_observer(&observer);
+                }
                 std::thread::spawn(move || {
                     if let Ok(mut backend) = backend.lock() {
                         retire(&mut backend);
@@ -1045,6 +1049,7 @@ impl KernelBrowserHost {
                 state.access.revoke(&owner, None);
             }
             state.loaded.clear();
+            state.retire_lanes.clear();
             std::mem::take(&mut state.browsers)
         };
         let mut first = None;

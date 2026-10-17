@@ -34,6 +34,8 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+mod retire_lane;
+pub(crate) use retire_lane::RetireLane;
 mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
@@ -252,6 +254,7 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     next_request_id: u64,
     host: bool,
     action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
+    retire_lane: RetireLane,
     protected_values: BTreeMap<String, Vec<zeroize::Zeroizing<String>>>,
 }
 
@@ -265,8 +268,13 @@ impl BrowserControllerProcessStdioBackend {
             next_request_id: 1,
             host: false,
             action_cancellation: None,
+            retire_lane: RetireLane::default(),
             protected_values: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn retire_lane(&self) -> RetireLane {
+        self.retire_lane.clone()
     }
 
     pub(crate) fn for_host(mut self) -> Self {
@@ -414,10 +422,12 @@ impl BrowserControllerProcessStdioBackend {
                     }
                 }
             });
+        let stdin = Arc::new(Mutex::new(stdin));
+        self.retire_lane.attach(&stdin);
         self.process = Some(BrowserControllerChild {
             owned_group,
             child: Arc::new(Mutex::new(child)),
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin,
             responses,
             pending_responses,
             host_policy: None,

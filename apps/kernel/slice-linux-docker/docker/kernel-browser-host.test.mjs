@@ -2018,6 +2018,46 @@ test('MP-08/MP-10/MP-11 a retirement from an older ownership change cannot retir
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
 }));
 
+test('MP-08/MP-10/MP-11 a retirement for one tab is not suppressed by a newer ownership change of another tab',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const other=await host.request({op:'open',url:'about:blank'});
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:other.tab_id,except:'terminal:c',epoch:2}});
+ await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b',epoch:1}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText'),[],'the older takeover of tab X still retires the previous owner\'s input');
+}));
+
+test('MP-08/MP-10/MP-11 a parked input refused as stale on an unchanged document is admitted again; a changed document drops it',()=>using(async({host,connection,sent})=>{
+ const {UserDomainRefusal}=await import('./kernel-browser-refusal.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,refusals=2;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const inputGuard=async()=>{if(refusals-->0)throw new UserDomainRefusal('stale_reference')};
+ const type=text=>host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}},{inputGuard});
+ await type('a');busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a'],'the geometry moved under the busy renderer, the document did not');
+ busy=true;refusals=1000;await type('b');host.tabs.get(tab.tab_id).document_id='another';busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a'],'a changed document drops the input');
+}));
+
+test('MP-08/MP-10/MP-11 a disconnected terminal\'s observer retirement drops its parked input and keeps the others\'',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ await type('terminal:a','a');await type('terminal:b','b');
+ await host.handle({id:1,method:'host.browser.retire_observer',params:{observer:'terminal:a'}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['b']);
+}));
+
 test('MP-08/MP-10/MP-11 a parked retry retired inside its final input guard dispatches nothing',()=>using(async({host,connection,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;let busy=true,reached,release;

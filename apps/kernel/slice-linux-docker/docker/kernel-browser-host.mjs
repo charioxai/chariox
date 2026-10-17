@@ -52,7 +52,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // applies viewport geometry and must retain the barrier.
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
-  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+  // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
+  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
@@ -81,7 +82,8 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
-    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.parkedState(command.observed_by ?? "adapter"), { event: name => this.timing(`busy_${name}`, timestamp()) });
+    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.parkedState(command.observed_by ?? "adapter"), { sameDocument: command => command.generation === this.generation && typeof command.document_id === 'string' && this.tabs.get(command.tab_id)?.document_id === command.document_id, event: name => this.timing(`busy_${name}`, timestamp()) });
+    this.retiredEpochs = new Map();
     this.chromium = chromium;
     // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
     this.chromeWindows = new ChromeWindows(this,{inventory:(display,pid,isCurrent)=>nativeWindowInventory({display,pid,isCurrent})});
@@ -925,9 +927,13 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result };
       }
       if (request.method === 'host.browser.retire_input') {
-        // Retirements arrive from concurrent takeovers: an older ownership change must not retire the newer owner's input.
+        // Retirements arrive from concurrent takeovers: an older ownership change of a tab must not retire that tab's newer owner's input.
         const {tab_id,except,epoch}=request.params;
-        if(!(epoch<(this.retiredEpoch??0))){this.retiredEpoch=epoch;this.busyInputs.retire((key, command) => command.tab_id === tab_id && key !== except)}
+        if(!(epoch<(this.retiredEpochs.get(tab_id)??0))){this.retiredEpochs.set(tab_id,epoch);this.busyInputs.retire((key, command) => command.tab_id === tab_id && key !== except)}
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
+      if (request.method === 'host.browser.retire_observer') {
+        this.busyInputs.retire(key => key === request.params.observer);
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {

@@ -361,6 +361,46 @@ done
 }
 
 #[test]
+fn disconnect_retires_parked_input_while_the_backend_is_occupied() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-md3-disconnect-busy-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.browser.retire_observer"'*) printf '%s' "$request" > "$root/retired"; printf '{"id":%s,"ok":true,"result":{"retired":true}}\n' "$id" ;;
+  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[]}}\n' "$id" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    let backend = host.backend("alice").unwrap();
+    backend.lock().unwrap().start().unwrap();
+    let held = backend.lock().unwrap();
+    host.disconnect_terminal("alice", "terminal:departed");
+    let started = Instant::now();
+    while !root.join("retired").exists() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        root.join("retired").exists(),
+        "MD-3: disconnect left the departed terminal's parked input alive behind the occupied backend"
+    );
+    drop(held);
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mdaccess_revoke_releases_grant_lock_before_waiting_for_actor() {
     let host = KernelBrowserHost::new(std::env::temp_dir().join("mdaccess-lock-order"));
     host.set_focus("alice", Some("agent"));
