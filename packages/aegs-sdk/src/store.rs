@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use chariox_event_protocol::AegsProviderActionResponse;
 
 mod inbox;
-pub use inbox::{InboxEntry, InboxStatus, SelectedInterest};
+pub use inbox::{ClaimedInboxAttempt, InboxEntry, InboxStatus, Requeue, SelectedInterest};
 
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
@@ -178,6 +178,7 @@ impl AegsStore {
                 occurrence_id TEXT NOT NULL,
                 event_json TEXT NOT NULL,
                 selected_json TEXT,
+                attempt_token TEXT,
                 received_at_ms INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,

@@ -73,6 +73,22 @@ pub struct InboxEntry {
     pub last_error: Option<String>,
 }
 
+/// A publication attempt that owns an entry until it finishes, fails or its lease ends. Its
+/// token is what lets only the current attempt change the entry afterwards.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimedInboxAttempt {
+    pub entry: InboxEntry,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requeue {
+    NotFound,
+    /// An attempt is awaiting AEDS right now; replaying would race it.
+    Busy,
+    Queued,
+}
+
 impl AegsStore {
     /// Stores a verified webhook. Returns `false` when `delivery_id` was already stored, in which
     /// case the existing entry is left untouched.
@@ -105,19 +121,23 @@ impl AegsStore {
         Ok(inserted == 1)
     }
 
+    /// Saves the interests chosen by `attempt`. Returns `false` when the attempt was superseded.
     pub fn select_inbox_interests(
         &self,
         delivery_id: &str,
+        attempt_token: &str,
         selected: &[SelectedInterest],
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let selected_json = serde_json::to_string(selected).map_err(|error| error.to_string())?;
-        self.lock()?
+        let changed = self
+            .lock()?
             .execute(
-                "UPDATE webhook_inbox SET selected_json = ?2 WHERE delivery_id = ?1",
-                params![delivery_id, selected_json],
+                "UPDATE webhook_inbox SET selected_json = ?3
+                 WHERE delivery_id = ?1 AND attempt_token = ?2",
+                params![delivery_id, attempt_token, selected_json],
             )
             .map_err(|error| error.to_string())?;
-        Ok(())
+        Ok(changed == 1)
     }
 
     pub fn has_inbox_event(&self, delivery_id: &str) -> Result<bool, String> {
@@ -139,24 +159,29 @@ impl AegsStore {
         &self,
         delivery_id: &str,
         now_ms: u64,
-    ) -> Result<Option<InboxEntry>, String> {
+    ) -> Result<Option<ClaimedInboxAttempt>, String> {
+        let token = crate::random_opaque("attempt");
         let connection = self.lock()?;
         let claimed = connection
             .execute(
                 "UPDATE webhook_inbox
-                 SET attempts = attempts + 1, next_attempt_at_ms = ?2
+                 SET attempts = attempts + 1, next_attempt_at_ms = ?2, attempt_token = ?4
                  WHERE delivery_id = ?1 AND status = 'pending' AND next_attempt_at_ms <= ?3",
                 params![
                     delivery_id,
                     (now_ms + ATTEMPT_LEASE_MS) as i64,
-                    now_ms as i64
+                    now_ms as i64,
+                    token
                 ],
             )
             .map_err(|error| error.to_string())?;
         if claimed == 0 {
             return Ok(None);
         }
-        inbox_entry(&connection, delivery_id)
+        Ok(
+            inbox_entry(&connection, delivery_id)?
+                .map(|entry| ClaimedInboxAttempt { entry, token }),
+        )
     }
 
     pub fn due_inbox_deliveries(&self, now_ms: u64, limit: usize) -> Result<Vec<String>, String> {
@@ -175,50 +200,60 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
+    /// Records the outcome of `attempt_token`'s publication. Returns `false` when the attempt was
+    /// superseded by a replay or a later claim, in which case the entry is left untouched.
     pub fn finish_inbox_publication(
         &self,
         delivery_id: &str,
+        attempt_token: &str,
         publication_count: usize,
         now_ms: u64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let status = if publication_count == 0 {
             InboxStatus::Unmatched
         } else {
             InboxStatus::Published
         };
         let connection = self.lock()?;
-        connection
+        let changed = connection
             .execute(
                 "UPDATE webhook_inbox
-                 SET status = ?2, published_at_ms = ?3, publication_count = ?4, last_error = NULL
-                 WHERE delivery_id = ?1",
+                 SET status = ?2, published_at_ms = ?3, publication_count = ?4, last_error = NULL,
+                     attempt_token = NULL
+                 WHERE delivery_id = ?1 AND attempt_token = ?5",
                 params![
                     delivery_id,
                     status.as_str(),
                     now_ms as i64,
-                    publication_count as i64
+                    publication_count as i64,
+                    attempt_token
                 ],
             )
             .map_err(|error| error.to_string())?;
-        Ok(())
+        Ok(changed == 1)
     }
 
     /// Records a failed attempt and schedules the next one, or marks the entry `failed` once the
-    /// attempt budget is spent.
+    /// attempt budget is spent. `None` means the attempt was superseded and nothing changed.
     pub fn fail_inbox_publication(
         &self,
         delivery_id: &str,
+        attempt_token: &str,
         error: &str,
         now_ms: u64,
-    ) -> Result<InboxStatus, String> {
+    ) -> Result<Option<InboxStatus>, String> {
         let connection = self.lock()?;
-        let attempts: u32 = connection
+        let Some(attempts) = connection
             .query_row(
-                "SELECT attempts FROM webhook_inbox WHERE delivery_id = ?1",
-                params![delivery_id],
-                |row| row.get(0),
+                "SELECT attempts FROM webhook_inbox WHERE delivery_id = ?1 AND attempt_token = ?2",
+                params![delivery_id, attempt_token],
+                |row| row.get::<_, u32>(0),
             )
-            .map_err(|error| error.to_string())?;
+            .optional()
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
         let status = if attempts >= MAX_PUBLICATION_ATTEMPTS {
             InboxStatus::Failed
         } else {
@@ -227,34 +262,44 @@ impl AegsStore {
         connection
             .execute(
                 "UPDATE webhook_inbox
-                 SET status = ?2, next_attempt_at_ms = ?3, last_error = ?4
-                 WHERE delivery_id = ?1",
+                 SET status = ?2, next_attempt_at_ms = ?3, last_error = ?4, attempt_token = NULL
+                 WHERE delivery_id = ?1 AND attempt_token = ?5",
                 params![
                     delivery_id,
                     status.as_str(),
                     (now_ms + retry_delay_ms(attempts)) as i64,
-                    error
+                    error,
+                    attempt_token
                 ],
             )
             .map_err(|error| error.to_string())?;
-        Ok(status)
+        Ok(Some(status))
     }
 
     /// Makes a stored event publishable again with a fresh attempt budget and no backoff. The
     /// owner asked for it, so the interests are selected again under the current authorization.
-    /// Returns `false` when no such entry exists.
-    pub fn requeue_inbox_event(&self, delivery_id: &str, now_ms: u64) -> Result<bool, String> {
+    /// An attempt whose lease is still running is never reset; a crashed one is, and its token
+    /// stops being valid.
+    pub fn requeue_inbox_event(&self, delivery_id: &str, now_ms: u64) -> Result<Requeue, String> {
         let connection = self.lock()?;
         let changed = connection
             .execute(
                 "UPDATE webhook_inbox
                  SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL,
-                     selected_json = NULL
-                 WHERE delivery_id = ?1",
+                     selected_json = NULL, attempt_token = NULL
+                 WHERE delivery_id = ?1
+                   AND (attempt_token IS NULL OR next_attempt_at_ms <= ?2)",
                 params![delivery_id, now_ms as i64],
             )
             .map_err(|error| error.to_string())?;
-        Ok(changed == 1)
+        if changed == 1 {
+            return Ok(Requeue::Queued);
+        }
+        Ok(if inbox_entry(&connection, delivery_id)?.is_some() {
+            Requeue::Busy
+        } else {
+            Requeue::NotFound
+        })
     }
 
     pub fn inbox_event(&self, delivery_id: &str) -> Result<Option<InboxEntry>, String> {
@@ -320,15 +365,20 @@ fn retry_delay_ms(attempts: u32) -> u64 {
 }
 
 /// An event belongs to the owner of the connection that received it: the connection named by
-/// the webhook URL, or else the connections whose trigger subscriptions watch the event's scope
-/// (`?1` is the owner id). Subscriptions are reconciled under the kernel's id, so their own
-/// `owner_id` says nothing about who owns the event.
+/// the webhook URL, or else the connections whose live trigger subscriptions watch the event's
+/// scope (`?1` is the owner id). Subscriptions are reconciled under the kernel's id, so their
+/// own `owner_id` says nothing about who owns the event. A revoked connection, an inactive
+/// subscription or one from an older authorization generation grants nothing.
 const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
      THEN route_connection_id IN (SELECT connection_id FROM connections WHERE owner_id = ?1)
      ELSE connection_scope IN
          (SELECT s.connection_scope FROM subscriptions s
           JOIN connections c ON c.connection_id = s.connection_id
-          WHERE c.owner_id = ?1)
+          JOIN connection_generations g ON g.connection_id = c.connection_id
+          JOIN subscription_authorities a ON a.binding_id = s.binding_id
+          WHERE c.owner_id = ?1 AND c.status = 'ready' AND s.active = 1
+            AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
+            AND a.generation = g.generation)
      END)";
 
 const INBOX_COLUMNS: &str =
@@ -435,25 +485,74 @@ mod tests {
         assert!(store.claim_inbox_attempt("d1", 0).unwrap().is_some());
         assert!(store.claim_inbox_attempt("d1", 1).unwrap().is_none());
         // A crashed attempt becomes claimable again once its lease ends.
-        assert!(store
+        let mut token = store
             .claim_inbox_attempt("d1", ATTEMPT_LEASE_MS)
             .unwrap()
-            .is_some());
+            .unwrap()
+            .token;
         let mut now = ATTEMPT_LEASE_MS;
         let mut delays = Vec::new();
         loop {
-            let status = store.fail_inbox_publication("d1", "refused", now).unwrap();
+            let status = store
+                .fail_inbox_publication("d1", &token, "refused", now)
+                .unwrap()
+                .unwrap();
             let entry = store.inbox_event("d1").unwrap().unwrap();
             delays.push(entry.next_attempt_at_ms - now);
             if status == InboxStatus::Failed {
                 break;
             }
             now = entry.next_attempt_at_ms;
-            store.claim_inbox_attempt("d1", now).unwrap().unwrap();
+            token = store.claim_inbox_attempt("d1", now).unwrap().unwrap().token;
         }
         assert_eq!(delays[..3], [10_000, 20_000, 40_000]);
         assert!(delays.iter().all(|delay| *delay <= MAX_RETRY_DELAY_MS));
         assert_eq!(delays.len() as u32, MAX_PUBLICATION_ATTEMPTS - 1);
+    }
+
+    #[test]
+    fn superseded_attempt_cannot_change_the_entry() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store.record_inbox_event("d1", None, &event(), 0).unwrap();
+        let first = store.claim_inbox_attempt("d1", 0).unwrap().unwrap().token;
+        assert_eq!(store.requeue_inbox_event("d1", 1).unwrap(), Requeue::Busy);
+        // The first attempt crashed or stalled past its lease; a replay takes over.
+        assert_eq!(
+            store.requeue_inbox_event("d1", ATTEMPT_LEASE_MS).unwrap(),
+            Requeue::Queued
+        );
+        let second = store
+            .claim_inbox_attempt("d1", ATTEMPT_LEASE_MS)
+            .unwrap()
+            .unwrap()
+            .token;
+        assert!(!store.finish_inbox_publication("d1", &first, 1, 5).unwrap());
+        assert_eq!(
+            store
+                .fail_inbox_publication("d1", &first, "late failure", 5)
+                .unwrap(),
+            None
+        );
+        assert!(!store.select_inbox_interests("d1", &first, &[]).unwrap());
+        let entry = store.inbox_event("d1").unwrap().unwrap();
+        assert_eq!(entry.status, InboxStatus::Pending);
+        assert_eq!(entry.last_error, None);
+        assert!(store.finish_inbox_publication("d1", &second, 1, 6).unwrap());
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Published
+        );
+        // A failure that arrives after success does not reopen the entry.
+        assert_eq!(
+            store
+                .fail_inbox_publication("d1", &second, "late", 7)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store.requeue_inbox_event("missing", 8).unwrap(),
+            Requeue::NotFound
+        );
     }
 
     #[test]
@@ -463,12 +562,18 @@ mod tests {
             .record_inbox_event("pending", None, &event(), 0)
             .unwrap();
         store.record_inbox_event("old", None, &event(), 0).unwrap();
-        store.finish_inbox_publication("old", 1, 1).unwrap();
+        let token = store.claim_inbox_attempt("old", 0).unwrap().unwrap().token;
+        store.finish_inbox_publication("old", &token, 1, 1).unwrap();
         store
             .record_inbox_event("recent", None, &event(), RETENTION_MS)
             .unwrap();
+        let token = store
+            .claim_inbox_attempt("recent", RETENTION_MS)
+            .unwrap()
+            .unwrap()
+            .token;
         store
-            .finish_inbox_publication("recent", 1, RETENTION_MS)
+            .finish_inbox_publication("recent", &token, 1, RETENTION_MS)
             .unwrap();
         assert_eq!(store.prune_inbox(RETENTION_MS + 1).unwrap(), 1);
         assert!(store.has_inbox_event("pending").unwrap());
@@ -479,11 +584,12 @@ mod tests {
     #[test]
     fn routed_event_belongs_to_the_routed_connections_owner_even_when_scopes_are_shared() {
         let store = AegsStore::open(":memory:").unwrap();
+        let mut claims = Vec::new();
         for (connection, owner) in [("c-a", "owner-a"), ("c-b", "owner-b")] {
             store
                 .upsert_ready_connection(connection, owner, "github", &serde_json::Value::Null, 1)
                 .unwrap();
-            let claim = SubscriptionClaim {
+            claims.push(SubscriptionClaim {
                 binding_id: format!("binding-{connection}"),
                 generator_id: "dev.chariox.github".into(),
                 connection_id: connection.into(),
@@ -494,11 +600,12 @@ mod tests {
                 filter: serde_json::Value::Null,
                 revision: 1,
                 active: true,
-            };
-            store
-                .reconcile("kernel", &claim.generator_id, std::slice::from_ref(&claim))
-                .unwrap();
+            });
         }
+        // One reconciliation carries both owners' triggers, as the kernel sends them.
+        store
+            .reconcile("kernel", "dev.chariox.github", &claims)
+            .unwrap();
         store
             .record_inbox_event("routed", Some("c-a"), &event(), 1)
             .unwrap();
@@ -516,5 +623,51 @@ mod tests {
         assert_eq!(ids("owner-a"), vec!["unrouted", "routed"]);
         assert_eq!(ids("owner-b"), vec!["unrouted"]);
         assert!(ids("kernel").is_empty());
+    }
+
+    #[test]
+    fn revoked_connection_no_longer_grants_access_to_events_in_its_scope() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let mut claims = Vec::new();
+        for (connection, owner) in [("c-a", "owner-a"), ("c-b", "owner-b")] {
+            store
+                .upsert_ready_connection(connection, owner, "github", &serde_json::Value::Null, 1)
+                .unwrap();
+            claims.push(SubscriptionClaim {
+                binding_id: format!("binding-{connection}"),
+                generator_id: "dev.chariox.github".into(),
+                connection_id: connection.into(),
+                connection_scope: "scope".into(),
+                event_interest_key: format!("interest-{connection}"),
+                event_type: "pull_request.synchronize".into(),
+                event_type_version: 1,
+                filter: serde_json::Value::Null,
+                revision: 1,
+                active: true,
+            });
+        }
+        // One reconciliation carries both owners' triggers, as the kernel sends them.
+        store
+            .reconcile("kernel", "dev.chariox.github", &claims)
+            .unwrap();
+        store.record_inbox_event("late", None, &event(), 5).unwrap();
+        assert!(store
+            .inbox_event_for_owner("owner-a", "late")
+            .unwrap()
+            .is_some());
+
+        assert!(store.revoke_connection("c-a", "owner-a", 3).unwrap());
+        assert!(store
+            .inbox_events_for_owner("owner-a", 10)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .inbox_event_for_owner("owner-a", "late")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .inbox_event_for_owner("owner-b", "late")
+            .unwrap()
+            .is_some());
     }
 }

@@ -15,7 +15,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
 use super::{enforce_management_owner, error, json, read_body, AegsServer};
-use crate::store::SelectedInterest;
+use crate::store::{ClaimedInboxAttempt, Requeue, SelectedInterest};
 use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
 const RETRY_WORKER_INTERVAL: Duration = Duration::from_secs(2);
@@ -27,6 +27,12 @@ const SWEEP_WINDOW_MS: u64 = 6 * 60 * 60_000;
 const SWEEP_GRACE_MS: u64 = 2 * 60_000;
 const SWEEP_REDELIVERIES_PER_RUN: usize = 50;
 const REDELIVERY_REQUESTS_PER_DELIVERY: u32 = 3;
+
+enum Replayed {
+    Entry(Box<InboxEntry>),
+    NotFound,
+    Busy,
+}
 
 pub(super) enum InboxAttempt {
     Published(Vec<PublishEventResponse>),
@@ -120,7 +126,9 @@ impl AegsServer {
         delivery_id: &str,
         claimed_at_ms: u64,
     ) -> Result<InboxAttempt, String> {
-        let Some(entry) = self.store.claim_inbox_attempt(delivery_id, claimed_at_ms)? else {
+        let Some(ClaimedInboxAttempt { entry, token }) =
+            self.store.claim_inbox_attempt(delivery_id, claimed_at_ms)?
+        else {
             return Ok(InboxAttempt::NotRun);
         };
         let published = async {
@@ -130,23 +138,40 @@ impl AegsServer {
                     let selected = self
                         .select_interests(&entry.event, entry.route_connection_id.as_deref())
                         .await?;
-                    self.store.select_inbox_interests(delivery_id, &selected)?;
+                    if !self
+                        .store
+                        .select_inbox_interests(delivery_id, &token, &selected)?
+                    {
+                        return Ok(None);
+                    }
                     selected
                 }
             };
-            self.publish_selected(&entry.event, selected).await
+            self.publish_selected(&entry.event, selected)
+                .await
+                .map(Some)
         }
         .await;
         match published {
-            Ok(responses) => {
-                self.store
-                    .finish_inbox_publication(delivery_id, responses.len(), now_ms())?;
+            Ok(Some(responses)) => {
+                if !self.store.finish_inbox_publication(
+                    delivery_id,
+                    &token,
+                    responses.len(),
+                    now_ms(),
+                )? {
+                    return Ok(InboxAttempt::NotRun);
+                }
                 Ok(InboxAttempt::Published(responses))
             }
+            Ok(None) => Ok(InboxAttempt::NotRun),
             Err(message) => {
-                let status = self
-                    .store
-                    .fail_inbox_publication(delivery_id, &message, now_ms())?;
+                let Some(status) =
+                    self.store
+                        .fail_inbox_publication(delivery_id, &token, &message, now_ms())?
+                else {
+                    return Ok(InboxAttempt::NotRun);
+                };
                 eprintln!(
                     "{}",
                     serde_json::json!({
@@ -275,32 +300,46 @@ impl AegsServer {
         ) {
             return *response;
         }
-        let replayed = async {
+        let replayed: Result<Replayed, String> = async {
             if self
                 .store
                 .inbox_event_for_owner(&replay.owner_id, &replay.delivery_id)?
                 .is_none()
             {
-                return Ok(None);
+                return Ok(Replayed::NotFound);
             }
-            self.store
-                .requeue_inbox_event(&replay.delivery_id, now_ms())?;
+            match self
+                .store
+                .requeue_inbox_event(&replay.delivery_id, now_ms())?
+            {
+                Requeue::Queued => {}
+                Requeue::Busy => return Ok(Replayed::Busy),
+                Requeue::NotFound => return Ok(Replayed::NotFound),
+            }
             self.attempt_inbox_delivery(&replay.delivery_id, now_ms())
                 .await?;
-            self.store.inbox_event(&replay.delivery_id)
+            Ok(match self.store.inbox_event(&replay.delivery_id)? {
+                Some(entry) => Replayed::Entry(Box::new(entry)),
+                None => Replayed::NotFound,
+            })
         }
         .await;
         match replayed {
-            Ok(Some(entry)) => json(
+            Ok(Replayed::Entry(entry)) => json(
                 StatusCode::OK,
                 AegsReceivedEventReplayResponse {
-                    event: self.received_event(entry),
+                    event: self.received_event(*entry),
                 },
             ),
-            Ok(None) => error(
+            Ok(Replayed::NotFound) => error(
                 StatusCode::NOT_FOUND,
                 "received_event_not_found",
                 "no stored webhook with that delivery id belongs to this owner",
+            ),
+            Ok(Replayed::Busy) => error(
+                StatusCode::CONFLICT,
+                "received_event_publishing",
+                "this event is being published right now; replay it again once the attempt ends",
             ),
             Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
         }

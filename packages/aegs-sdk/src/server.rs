@@ -2279,7 +2279,10 @@ mod mp11_delivery_http_tests {
         assert_eq!(publisher.calls.load(Ordering::SeqCst), calls);
 
         publisher.refusals.store(0, Ordering::SeqCst);
-        assert!(store.requeue_inbox_event("delivery-3", at).unwrap());
+        assert_eq!(
+            store.requeue_inbox_event("delivery-3", at).unwrap(),
+            crate::Requeue::Queued
+        );
         server.deliver_due_inbox(at).await.unwrap();
         assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
         assert_eq!(
@@ -2474,6 +2477,36 @@ mod mp11_delivery_http_tests {
         assert_eq!(status, 200);
         assert_eq!(replayed["event"]["status"], "published");
         assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn replay_waits_for_an_attempt_that_is_still_in_flight() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        store
+            .record_inbox_event("in-flight", None, &event(), now_ms())
+            .unwrap();
+        // An inline or worker attempt that has been claimed and is awaiting AEDS.
+        assert!(store
+            .claim_inbox_attempt("in-flight", now_ms())
+            .unwrap()
+            .is_some());
+        let replay = serde_json::json!({
+            "generator_id": "dev.chariox.github", "owner_id": "owner", "delivery_id": "in-flight"
+        });
+        let (status, body) = management_post(&server, "/v1/events/replay", "owner", replay).await;
+        assert_eq!(status, 409, "{body}");
+        assert_eq!(body["error"]["code"], "received_event_publishing");
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.inbox_event("in-flight").unwrap().unwrap().attempts,
+            1,
+            "the running attempt keeps its budget"
+        );
     }
 
     #[tokio::test]
