@@ -192,6 +192,21 @@ impl LocalDockerSliceOptions {
     }
 }
 
+/// The broker runs the provisioner out of the kernel's sight; its progress lines reach the action
+/// log while the start runs, so `GetSliceLogs` shows them to every client.
+fn record_broker_progress(log: &mut File, line: &str) {
+    const PREFIX: &str = "[slice-linux] progress: ";
+    if line.len() <= 300
+        && line.starts_with(PREFIX)
+        && line
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+    {
+        // A log that cannot be written is reported when the start ends; progress is best effort.
+        let _ = writeln!(log, "{line}");
+    }
+}
+
 pub fn run_local_docker_slice_action(
     record: &SliceRecord,
     action: LocalDockerSliceAction,
@@ -394,45 +409,56 @@ pub fn run_local_docker_slice_action(
         &stderr_log,
     )?;
     let mut disk_quota_evidence = None;
-    let status =
-        if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
-            let response = output.map_err(|error| DaemonError::LocalTransport {
+    let mut progress_log = log_file
+        .try_clone()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner progress log {}: {error}",
+                log_path.display()
+            ),
+        })?;
+    let status = if let Some(output) =
+        broker::run_provisioner(&command, action_name, &broker_inputs, &mut |line| {
+            record_broker_progress(&mut progress_log, line)
+        }) {
+        let response = output.map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to use the managed slice Docker broker (log: {}): {error}",
+                log_path.display()
+            ),
+        })?;
+        disk_quota_evidence = response.disk_quota_evidence;
+        let output = response.output;
+        let mut stdout_log = log_file;
+        let mut stderr_log = stderr_log;
+        stdout_log
+            .write_all(&output.stdout)
+            .and_then(|()| stderr_log.write_all(&output.stderr))
+            .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker",
                 message: format!(
-                    "failed to use the managed slice Docker broker (log: {}): {error}",
+                    "failed to write broker output {}: {error}",
                     log_path.display()
                 ),
             })?;
-            disk_quota_evidence = response.disk_quota_evidence;
-            let output = response.output;
-            let mut stdout_log = log_file;
-            let mut stderr_log = stderr_log;
-            stdout_log
-                .write_all(&output.stdout)
-                .and_then(|()| stderr_log.write_all(&output.stderr))
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "slice.local_docker",
-                    message: format!(
-                        "failed to write broker output {}: {error}",
-                        log_path.display()
-                    ),
-                })?;
-            output.status
-        } else {
-            command
-                .stdout(Stdio::from(log_file))
-                .stderr(Stdio::from(stderr_log))
-                .status()
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "slice.local_docker",
-                    message: format!(
-                        "failed to run {} {} (log: {}): {error}",
-                        script.display(),
-                        action.as_str(),
-                        log_path.display()
-                    ),
-                })?
-        };
+        output.status
+    } else {
+        command
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(stderr_log))
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.local_docker",
+                message: format!(
+                    "failed to run {} {} (log: {}): {error}",
+                    script.display(),
+                    action.as_str(),
+                    log_path.display()
+                ),
+            })?
+    };
     if status.success() {
         if let Some(limits) = disk_quota_limits.as_ref() {
             super::disk_quota_policy::require_verified_quotas(
@@ -688,7 +714,7 @@ pub fn start_local_docker_slice_provider_login(
             &provider_account.profile_id,
         );
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
-    let output = broker::run_provisioner(&command, "start-provider-login", &[])
+    let output = broker::run_provisioner(&command, "start-provider-login", &[], &mut |_| {})
         .map(|response| response.map(|response| response.output))
         .unwrap_or_else(|| command.output())
         .map_err(|error| DaemonError::LocalTransport {

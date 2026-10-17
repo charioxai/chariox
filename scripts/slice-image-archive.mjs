@@ -67,8 +67,8 @@ export async function exportSliceImage(image, output) {
   return { output: target, tag, architecture, size, sha256: descriptor.archive.sha256 };
 }
 
-/** The descriptor and archive of one directory agree: exactly the two files, the archive's size and SHA-256 as listed. */
-export async function validateSliceImage(directory) {
+/** The descriptor and archive of one directory agree, for the given architecture: exactly the two files, the archive's size and SHA-256 as listed. */
+export async function validateSliceImage(directory, architecture) {
   const descriptorBytes = await readFile(join(directory, DESCRIPTOR)).catch(() => fail(`slice image: ${DESCRIPTOR} is missing in ${directory}`));
   const descriptor = JSON.parse(descriptorBytes.toString('utf8'));
   const { archive, rootfsLayers } = descriptor;
@@ -77,6 +77,7 @@ export async function validateSliceImage(directory) {
     && Array.isArray(rootfsLayers) && rootfsLayers.length > 0 && rootfsLayers.every(layer => /^sha256:[a-f0-9]{64}$/.test(layer))
     && archive?.name === ARCHIVE && Number.isSafeInteger(archive.size) && archive.size > 0 && /^[a-f0-9]{64}$/.test(archive.sha256 ?? '');
   if (!valid) fail(`slice image: ${DESCRIPTOR} is not a ${SCHEMA} descriptor`);
+  if (descriptor.architecture !== architecture) fail(`slice image: ${directory} is a ${descriptor.architecture} image, this bundle needs ${architecture}`);
   const metadata = await lstat(join(directory, ARCHIVE)).catch(() => fail(`slice image: ${ARCHIVE} is missing in ${directory}`));
   if (!metadata.isFile() || metadata.size !== archive.size) fail(`slice image: ${ARCHIVE} is not the ${archive.size} byte file the descriptor lists`);
   const hash = createHash('sha256');

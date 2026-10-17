@@ -38,15 +38,15 @@ test('export writes a gzip docker archive and a descriptor the verifier accepts'
   assert.deepEqual(descriptor, { schema: SCHEMA, architecture: 'amd64', tag: `chariox-slice-release:${'e'.repeat(64)}`, runtimeSourceRevision: revision,
     relayPeerProtocolVersion: '128', rootfsLayers: layers, archive: { name: ARCHIVE, size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') } });
   assert.equal(result.sha256, descriptor.archive.sha256);
-  assert.equal((await validateSliceImage(output)).tag, descriptor.tag);
+  assert.equal((await validateSliceImage(output, "amd64")).tag, descriptor.tag);
 
   await writeFile(join(output, ARCHIVE), Buffer.concat([archive.subarray(0, -1), Buffer.from('X')]));
-  await assert.rejects(validateSliceImage(output), /does not match the SHA-256/);
+  await assert.rejects(validateSliceImage(output, 'amd64'), /does not match the SHA-256/);
   await writeFile(join(output, ARCHIVE), archive.subarray(0, -1));
-  await assert.rejects(validateSliceImage(output), /is not the \d+ byte file/);
+  await assert.rejects(validateSliceImage(output, 'amd64'), /is not the \d+ byte file/);
   await writeFile(join(output, ARCHIVE), archive);
   await writeFile(join(output, 'notes.txt'), 'x');
-  await assert.rejects(validateSliceImage(output), /unexpected files/);
+  await assert.rejects(validateSliceImage(output, 'amd64'), /unexpected files/);
 });
 
 test('export refuses an image the provisioner did not build', async (context) => {

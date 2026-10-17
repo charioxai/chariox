@@ -58,13 +58,14 @@ export const PLATFORMS = {
     // The App storage helper is Linux only.
     libexec: ['chariox-app-storage', 'chariox-app-runtime-install'],
     linuxInstaller: true,
-    sliceImage: true,
+    sliceImage: 'amd64',
   },
   'darwin-arm64': {
     bin: ['chariox', ...rustBinaries],
     libexec: ['chariox-app-runtime-install'],
     linuxInstaller: false,
-    sliceImage: false,
+    // Docker Desktop on Apple Silicon runs linux/arm64 containers.
+    sliceImage: 'arm64',
   },
 };
 
@@ -271,7 +272,7 @@ export async function assemble(options) {
     for (const path of await files(sliceContext)) await place(join(sliceContext, path), output, `${SLICE_CONTEXT}/${path}`);
     await validateSliceBuildContext(join(output, SLICE_CONTEXT));
     if (platform.sliceImage) {
-      await validateSliceImage(sliceImage);
+      await validateSliceImage(sliceImage, platform.sliceImage);
       for (const path of await files(sliceImage)) await place(join(sliceImage, path), output, `${SLICE_IMAGE}/${path}`);
     }
     const manifest = await writeManifest(output, {
@@ -312,7 +313,7 @@ async function checkContents(directory, manifestBytes, signed) {
   if (manifest.runtime.inventorySha256 !== sha256(await readFile(join(directory, 'runtime/runtime-inventory.json'))))
     fail('the runtime inventory digest does not match the manifest');
   await validateSliceBuildContext(join(directory, SLICE_CONTEXT));
-  if (PLATFORMS[manifest.platform]?.sliceImage) await validateSliceImage(join(directory, SLICE_IMAGE));
+  if (PLATFORMS[manifest.platform]?.sliceImage) await validateSliceImage(join(directory, SLICE_IMAGE), PLATFORMS[manifest.platform].sliceImage);
   return { version: manifest.version, platform: manifest.platform, sourceCommit: manifest.sourceCommit,
     files: manifest.files.length, manifestSha256: sha256(manifestBytes), runtime: manifest.runtime };
 }

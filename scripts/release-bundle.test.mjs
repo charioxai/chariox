@@ -47,7 +47,7 @@ async function bundleInputs(root, target) {
   const sliceImage = join(root, 'slice-image');
   const archive = Buffer.from('docker save bytes, gzip compressed in a real release');
   await put(join(sliceImage, ARCHIVE), archive);
-  await put(join(sliceImage, DESCRIPTOR), JSON.stringify({ schema: SLICE_IMAGE_SCHEMA, architecture: 'amd64', tag: `chariox-slice-release:${'c'.repeat(64)}`,
+  await put(join(sliceImage, DESCRIPTOR), JSON.stringify({ schema: SLICE_IMAGE_SCHEMA, architecture: target === 'darwin-arm64' ? 'arm64' : 'amd64', tag: `chariox-slice-release:${'c'.repeat(64)}`,
     runtimeSourceRevision: `sha256:${'c'.repeat(64)}`, relayPeerProtocolVersion: '128', rootfsLayers: [`sha256:${'d'.repeat(64)}`],
     archive: { name: ARCHIVE, size: archive.length, sha256: sha256(archive) } }));
   const releaseKey = generateKeyPairSync('ed25519').privateKey;
@@ -75,7 +75,7 @@ async function fixture(context, { target = 'linux-x64', runtimeCommit = commit }
   await put(join(runtime, '.runtime-lease'), '', 0o444);
   const options = {
     platform: target, version: '0.2.0', sourceCommit: commit, executables: inputs.executables, sliceBuildContext: inputs.sliceBuildContext,
-    ...(target === 'linux-x64' ? { sliceImage: inputs.sliceImage } : {}),
+    sliceImage: inputs.sliceImage,
     runtime, runtimePublicKey: keyHex(runtimeKey), sourceRoot: inputs.sourceRoot, output: join(root, 'out', `chariox-0.2.0-${target}`),
   };
   return { root, options, runtimeKey, releaseKeyPath: inputs.releaseKeyPath, releasePublic: inputs.releasePublic };
@@ -204,8 +204,15 @@ test('a macOS bundle carries only executables the signing receipt codesigned and
   assert.deepEqual(manifest.macosSigning, { identity: receipt.identity, teamId: 'TEAM123456', notarySubmissionId: 'submission-1',
     receiptSha256: sha256(await readFile(receiptPath)) });
   assert.ok(!manifest.files.some(file => file.path.startsWith('deploy/') || file.path === 'install.sh' || file.path.includes('chariox-app-storage')));
+  // Docker Desktop on Apple Silicon loads the arm64 image from the signed bundle; an amd64 one would never run there.
+  assert.ok(manifest.files.some(file => file.path === `${SLICE_IMAGE}/${ARCHIVE}`));
+  assert.equal(JSON.parse(await readFile(join(options.output, SLICE_IMAGE, DESCRIPTOR), 'utf8')).architecture, 'arm64');
   await signBundle(options.output, releaseKeyPath);
   assert.equal((await verifyBundle(options.output, releasePublic)).platform, 'darwin-arm64');
+  const descriptorPath = join(options.sliceImage, DESCRIPTOR);
+  const descriptor = JSON.parse(await readFile(descriptorPath, 'utf8'));
+  await writeFile(descriptorPath, JSON.stringify({ ...descriptor, architecture: 'amd64' }));
+  await assert.rejects(assemble({ ...options, macosSigningReceipt: receiptPath, output: `${options.output}-amd64` }), /is a amd64 image, this bundle needs arm64/);
 });
 
 test('the release key must be private to the signer, and arguments are exact', async (context) => {
