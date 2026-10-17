@@ -144,8 +144,21 @@ impl AegsServer {
                 ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
             })
             .await?;
-        self.store
-            .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
+        // AEDS has the event, so a failed health stamp must not turn it into a retry.
+        if let Err(error) = self
+            .store
+            .mark_connection_event_accepted(&accepted_connection_id, now_ms())
+        {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "component": "chariox-aegs",
+                    "event": "connection_event_stamp_failed",
+                    "connection_id": accepted_connection_id,
+                    "error": error,
+                })
+            );
+        }
         Ok(Some(response))
     }
 

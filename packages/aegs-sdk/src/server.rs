@@ -3116,4 +3116,201 @@ mod mp11_delivery_http_tests {
         assert_eq!(signed_webhook(server).await["matched_interest_count"], 1);
         assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
     }
+
+    /// A delivery is finished: further retry sweeps make no AEDS call, change nothing and leave
+    /// no row waiting.
+    async fn assert_settled(
+        server: &Arc<AegsServer>,
+        store: &AegsStore,
+        publisher: &PublisherFixture,
+        delivery_id: &str,
+    ) {
+        let calls = publisher.calls.load(Ordering::SeqCst);
+        let before = store.inbox_event(delivery_id).unwrap().unwrap();
+        assert_eq!(before.next_attempt_at_ms, None);
+        let mut at = now_ms();
+        for _ in 0..12 {
+            at += 11 * 60_000;
+            server.deliver_due_inbox(at).await.unwrap();
+        }
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), calls, "no retry");
+        assert_eq!(store.inbox_event(delivery_id).unwrap().unwrap(), before);
+        for row in store.inbox_deliveries(delivery_id).unwrap() {
+            assert!(
+                matches!(
+                    row.status,
+                    crate::DeliveryStatus::Published | crate::DeliveryStatus::Fenced
+                ),
+                "{} is still {:?}",
+                row.connection_id,
+                row.status
+            );
+        }
+    }
+
+    fn server_without_connection_rows(
+        publisher: &PublisherFixture,
+    ) -> (Arc<AegsServer>, AegsStore) {
+        let (server, _) = subscribed_server(publisher);
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .reconcile("kernel", "dev.chariox.github", &[subscription_claim()])
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            store: store.clone(),
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        (server, store)
+    }
+
+    async fn owner_events(server: &Arc<AegsServer>, owner: &'static str) -> serde_json::Value {
+        let query = serde_json::json!({
+            "generator_id": "dev.chariox.github", "owner_id": owner, "limit": 10
+        });
+        management_post(server, "/v1/events/query", owner, query)
+            .await
+            .1
+    }
+
+    #[tokio::test]
+    async fn connection_owned_webhook_is_published_once_and_never_retried() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        let (status, body) = post_signed_webhook(server.clone(), Some("settled-1")).await;
+        assert_eq!((status, &body["matched_interest_count"]), (202, &1.into()));
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            owner_events(&server, "owner").await["events"][0]["status"],
+            "published"
+        );
+        assert_settled(&server, &store, &publisher, "settled-1").await;
+        let (_, again) = post_signed_webhook(server.clone(), Some("settled-1")).await;
+        assert_eq!(again["status"], "published");
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        let connection = store.connection("connection").unwrap().unwrap();
+        assert!(connection.last_accepted_event_at_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn legacy_subscription_without_a_connection_is_published_once_and_never_retried() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = server_without_connection_rows(&publisher);
+        let (status, body) =
+            post_signed_webhook_at(server.clone(), "/webhooks/github", Some("settled-2")).await;
+        assert_eq!((status, &body["matched_interest_count"]), (202, &1.into()));
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        let rows = store.inbox_deliveries("settled-2").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, crate::DeliveryStatus::Published);
+        assert_eq!(rows[0].attempts, 1);
+        assert_eq!(rows[0].last_error, None);
+        assert_settled(&server, &store, &publisher, "settled-2").await;
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn two_owners_sharing_an_interest_are_each_published_once_and_never_retried() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        let shared_b = crate::SubscriptionClaim {
+            event_interest_key: "interest".into(),
+            ..claim_b()
+        };
+        store
+            .reconcile(
+                "kernel",
+                "dev.chariox.github",
+                &[subscription_claim(), shared_b],
+            )
+            .unwrap();
+        let (status, body) =
+            post_signed_webhook_at(server.clone(), "/webhooks/github", Some("settled-3")).await;
+        assert_eq!((status, &body["matched_interest_count"]), (202, &2.into()));
+        assert_eq!(accepted_interests(&publisher), vec!["interest", "interest"]);
+        let rows = store.inbox_deliveries("settled-3").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|row| row.status == crate::DeliveryStatus::Published && row.attempts == 1));
+        assert_settled(&server, &store, &publisher, "settled-3").await;
+    }
+
+    #[tokio::test]
+    async fn revocation_waits_for_the_attempt_in_flight_and_the_event_is_published_once() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let (server, store) = subscribed_server(&publisher);
+        let receiving = tokio::spawn(post_signed_webhook(server.clone(), Some("settled-4")));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while publisher.calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(store
+            .revoke_connection("connection", "owner", now_ms())
+            .is_err());
+        publisher.hold.store(false, Ordering::SeqCst);
+        let (status, body) = receiving.await.unwrap();
+        assert_eq!((status, &body["matched_interest_count"]), (202, &1.into()));
+        assert!(store
+            .revoke_connection("connection", "owner", now_ms())
+            .unwrap());
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert_settled(&server, &store, &publisher, "settled-4").await;
+    }
+
+    #[tokio::test]
+    async fn revoked_before_the_retry_the_event_is_fenced_not_published_and_not_retried() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        let (_, body) = post_signed_webhook(server.clone(), Some("settled-5")).await;
+        assert_eq!(body["status"], "pending");
+        assert!(store
+            .revoke_connection("connection", "owner", now_ms())
+            .unwrap());
+        server
+            .deliver_due_inbox(now_ms() + 60 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+        let rows = store.inbox_deliveries("settled-5").unwrap();
+        assert_eq!(rows[0].status, crate::DeliveryStatus::Fenced);
+        assert_settled(&server, &store, &publisher, "settled-5").await;
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn replayed_event_is_published_once_by_the_replay_and_never_retried() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        let (_, body) = post_signed_webhook(server.clone(), Some("settled-6")).await;
+        assert_eq!(body["status"], "pending");
+        let (status, replayed) = replay_as(&server, "owner", "settled-6").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(replayed["event"]["status"], "published");
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert_settled(&server, &store, &publisher, "settled-6").await;
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
+    }
 }

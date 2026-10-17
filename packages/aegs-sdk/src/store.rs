@@ -1209,11 +1209,13 @@ impl AegsStore {
         Ok(())
     }
 
+    /// Stamps the connection's last accepted event. A legacy subscription has no connection row;
+    /// there is nothing to stamp and that is not an error (`false`).
     pub fn mark_connection_event_accepted(
         &self,
         connection_id: &str,
         accepted_at_ms: u64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let connection = self
             .connection
             .lock()
@@ -1225,10 +1227,7 @@ impl AegsStore {
                 params![connection_id, accepted_at_ms as i64],
             )
             .map_err(|error| error.to_string())?;
-        if changed == 0 {
-            return Err("the provider connection was not found".to_string());
-        }
-        Ok(())
+        Ok(changed != 0)
     }
 
     pub fn update_connection_credential(
@@ -1553,9 +1552,10 @@ mod tests {
             )
             .unwrap();
         store.mark_connection_health("installation-1", 20).unwrap();
-        store
+        assert!(store
             .mark_connection_event_accepted("installation-1", 30)
-            .unwrap();
+            .unwrap());
+        assert!(!store.mark_connection_event_accepted("legacy", 30).unwrap());
 
         let connection = store.connection("installation-1").unwrap().unwrap();
         assert_eq!(connection.last_successful_health_check_at_ms, Some(20));
