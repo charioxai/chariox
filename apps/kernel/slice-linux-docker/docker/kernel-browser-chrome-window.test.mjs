@@ -270,7 +270,7 @@ test("MP-08/MP-11 a toolbar click before the window's first list arms the list w
 // and Chrome process, so a window rebound at that geometry keeps its warm list; any other geometry starts unknown.
 test("MP-08/MP-11 a window rebound at the same geometry keeps the list rect it proved, another geometry does not", () => {
   const { windows } = fake();
-  const at = (generation, over = {}) => ({ browser_generation: 3, xid: 0x600001, window_generation: generation, scale: 1, bounds: { width: 1280, height: 887, ...over.bounds }, ...over });
+  const at = (generation, over = {}) => ({ browser_generation: 3, xid: 0x600001, window_generation: generation, scale: 1, content_top: 87, page_rect: { left: 0, top: 87, width: 1280, height: 800 }, bounds: { width: 1280, height: 887, ...over.bounds }, ...over });
   assert.equal(windows.omniboxRect(at(1)), null);
   windows.noteOmnibox(at(1), { x: 100, y: 87, width: 995, height: 344 });
   windows.omniboxLast = { x: 100, y: 87, width: 995, height: 344, window_generation: 1 };
@@ -280,6 +280,7 @@ test("MP-08/MP-11 a window rebound at the same geometry keeps the list rect it p
   assert.equal(windows.omniboxRect(at(2, { scale: 2 })), null, "another scale");
   assert.equal(windows.omniboxRect(at(2, { xid: 0x600002 })), null, "another X window");
   assert.equal(windows.omniboxRect(at(2, { browser_generation: 4 })), null, "another Chrome process");
+  assert.equal(windows.omniboxRect(at(2, { content_top: 127, page_rect: { left: 0, top: 127, width: 1280, height: 760 } })), null, "same outer window, another page boundary");
 });
 
 // MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.

@@ -20,7 +20,7 @@ export const POPUP_CORNER = 16;
 export const OMNIBOX_LIST_HEIGHT = 344;
 /** Protocol 540: an address bar without the person's input for this long no longer keeps its list stream warm. */
 const OMNIBOX_WARM_MS = 30_000;
-const omniboxSeenKey = t => `${t.browser_generation}:${t.xid}:${t.bounds.width}x${t.bounds.height}@${t.scale}`;
+const omniboxSeenKey = t => `${t.browser_generation}:${t.xid}:${t.bounds.width}x${t.bounds.height}@${t.scale}:${JSON.stringify(t.page_rect)}`;
 /** A state read right after an address-bar key waits this long for the list that key opens. */
 const OMNIBOX_LIST_WAIT_MS = 250;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
@@ -196,7 +196,7 @@ export class ChromeWindows {
     await this.resolve().catch(() => {});
   }
   /** The last list rect of this window (window CSS px), or null. A window that is rebound at the same X
-   * window, size, scale and Chrome process (a native capture fit and back) keeps the list rect Chrome showed
+   * window, size, scale, page boundary and Chrome process (a native capture fit and back) keeps the list rect Chrome showed
    * there: it is the same proven rect, so the first list after the rebind paints from a warm stream. */
   omniboxRect(tabbed = this.bound?.tabbed) {
     if (!tabbed) return null;
