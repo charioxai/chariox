@@ -294,3 +294,48 @@ generationOutcomes.push(
 for (const outcome of generationOutcomes) {
   test(`MP-08 / MP-10 OWNER-24 generation rule: ${outcome.name}`, outcome.run)
 }
+
+test("MP-08 / MP-10 OWNER-24 leaving for the waiting room during a lookup drops the retained binding", async () => {
+  let release!: () => void
+  const slowLookup = new Promise<void>(resolve => { release = resolve })
+  const attaches: string[] = []
+  const h = selectionHarness({
+    attachToSession: async (sessionId: string) => {
+      attaches.push(sessionId)
+      return { id: `att-${sessionId}-${attaches.length}`, session_id: sessionId }
+    },
+  }, { resolveSession: async () => { await slowLookup; return makeSession({ id: "session-b", agents: [] }) } })
+  const switching = h.attach("b")
+  const left = h.lifecycle.currentAttachment()
+  assert.equal(left?.id, "att-a")
+  await h.lifecycle.transitionToNoSession()
+  assert.equal(h.lifecycle.currentAttachment(), null, "nothing retained after leaving")
+  await h.lifecycle.attachBinding({ id: "session-a" } as never, false)
+  assert.deepEqual(attaches, ["session-a"], "reopening attaches fresh instead of restoring the detached binding")
+  assert.equal(h.attachment()?.id, "att-session-a-1")
+  release()
+  await switching
+  assert.equal(h.attachment()?.session_id, "session-a", "the abandoned selection does not take over")
+})
+
+test("MP-08 / MP-10 OWNER-24 transcript priming carries the selection ownership", async () => {
+  let release!: () => void
+  const primed = new Promise<void>(resolve => { release = resolve })
+  const owners: Array<() => boolean> = []
+  const h = selectionHarness({
+    primeAttachedSessionBinding: async (session: { id: string }, owned: () => boolean) => {
+      if (session.id !== "session-b") return
+      owners.push(owned)
+      await primed
+    },
+  })
+  const first = h.attach("session-b")
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(owners.length, 1)
+  assert.equal(owners[0]!(), true)
+  const second = h.lifecycle.attachBinding({ id: "session-c" } as never, false)
+  assert.equal(owners[0]!(), false, "a newer selection takes the priming away")
+  release()
+  await Promise.all([first, second])
+  assert.equal(h.attachment()?.session_id, "session-c")
+})

@@ -29,7 +29,8 @@ export type AttachedSessionPrimeControllerDeps = {
 export function createAttachedSessionPrimeController(
   deps: AttachedSessionPrimeControllerDeps,
 ) {
-  const prime = async (session: RuntimeSession) => {
+  // `owned` goes false once a newer selection took the view: nothing is written then.
+  const prime = async (session: RuntimeSession, owned: () => boolean = () => true) => {
     const promptHistoryGeneration = deps.promptHistoryHydrationController.begin()
     const visibleAgentId = selectResponsePaneAgents(
       session.agents,
@@ -39,6 +40,7 @@ export function createAttachedSessionPrimeController(
     ).visibleTranscriptAgentId
 
     if (!visibleAgentId) {
+      if (!owned()) return
       deps.replaceTranscriptEntries([], null)
       deps.setNextHistoryCursor(null)
       await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
@@ -49,7 +51,9 @@ export function createAttachedSessionPrimeController(
       session.id,
       session.agents.map((agent) => agent.id),
     )
+    if (!owned()) return
     await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
+    if (!owned()) return
     const entriesByAgent = new Map(outline.agents.map((agent) => {
       return [
         agent.agent_id,

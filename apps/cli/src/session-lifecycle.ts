@@ -105,7 +105,7 @@ type SessionLifecycleDeps = {
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
   getProviderCatalog: () => Promise<ProviderCatalog>
   getTerminalCommandCatalog: () => Promise<TerminalCommandCatalog>
-  primeAttachedSessionBinding?: (session: RuntimeSession) => Promise<void>
+  primeAttachedSessionBinding?: (session: RuntimeSession, owned: () => boolean) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
     attachmentId: string,
@@ -191,6 +191,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
 
   const transitionToNoSession = async (message = "No session attached.") => {
     supersedeSelection()
+    // Callers detach what they hold; a moved-aside attachment must not be restored.
+    retained = null
     const nextDetachedState = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
       waitingRoomState: deps.waitingRoomState(),
@@ -463,7 +465,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     applyAttachedState(attachedSession, attachment, createdSession)
 
     try {
-      await deps.primeAttachedSessionBinding?.(attachedSession)
+      await deps.primeAttachedSessionBinding?.(attachedSession, current)
     } catch (error) {
       deps.logWarning?.("failed to prime attached session view", {
         session_id: session.id,
