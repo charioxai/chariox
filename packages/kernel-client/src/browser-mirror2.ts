@@ -415,7 +415,7 @@ export class BrowserMirror2Renderer {
   private setStyled(id: string, entry: Styled | null): void {
     const previous = this.styled.get(id)
     if (!entry) { if (previous?.kind === 'css') previous.fontStyle?.remove(); this.styled.delete(id); return }
-    if (entry.kind === 'css') { entry.fontStyle = previous?.kind === 'css' && previous.node === entry.node ? previous.fontStyle : undefined; entry.fontStyle ??= new Mirror2FontStyle(entry.node); entry.fontStyle.set(entry.raw) }
+    if (entry.kind === 'css') { entry.fontStyle = (previous?.kind === 'css' && previous.node === entry.node ? previous.fontStyle : undefined) ?? new Mirror2FontStyle(entry.node); entry.fontStyle.set(entry.raw) }
     entry.keys = entry.kind === 'adopted' ? entry.raw.flatMap(text => this.keysOf(text)) : this.keysOf(entry.raw)
     this.styled.set(entry.kind === 'adopted' ? `${id}#adopted` : entry.kind === 'attr' ? `${id}#style` : id, entry)
     this.restyle(entry)
@@ -1059,7 +1059,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const fill = (): void => {
     if (!closed && applied && wantReset && !resetOutstanding) credit()
     else if (!closed && applied && wantResend && !resendOutstanding) credit()
-    while (!closed && inflight < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
+    // A packet received before its base (a small one overtaking a large one) still holds its credit: the kernel
+    // never runs further ahead of the applied base than the window.
+    while (!closed && inflight + buffered.size < (wantReset || !applied || performance.now() - activeAt > 3000 ? 1 : credits)) credit()
   }
   fill()
   const firstWait=setTimeout(()=>{if(!closed&&!applied)handlers.diagnostic?.("mirror_first_packet_wait","no_applied_packet",0)},8000)

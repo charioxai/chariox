@@ -436,6 +436,35 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   assert.deepEqual([after[0]!.after_sequence, after[0]!.resend], [1, true], 'MP-10: the first credit after the drop is the resend that ends the lost long polls')
 })
 
+// r47 quiet-host GitHub drill (8 Mbit/s): small deltas overtook a 420 KB reset on the relay. Each one was buffered
+// (its base not applied) yet released its credit, so the kernel answered credits past its 8-packet history while the
+// reset was still arriving, and reset again: ~70 full 420 KB snapshots a minute and the page never left video.
+test('MP-08/MP-10: packets that overtake a slow packet hold their credit until applied: the window stays bounded', async () => {
+  let sequence = 0, slow = true, issuedBehind = 0
+  const applied: number[] = [], requests: Array<Record<string, unknown>> = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const transport = { protocolVersion: 550, receiving: () => slow, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command)
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    const own = ++sequence
+    if ((command.after_sequence as number) < sequence - 8) issuedBehind++
+    // Packet 2 is large: it crosses the link while the small ones behind it arrive at once.
+    if (own === 2) await until(() => !slow, 5000); else await new Promise(resolve => setTimeout(resolve, 5))
+    return { KernelBrowser: { result: packet(own, false) } }
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { credits: 4, waitMs: 0, renderer })
+  await until(() => applied.length >= 1)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  const during = sequence; slow = false
+  await until(() => applied.length >= 6)
+  await view.close()
+  assert.ok(during <= 5, `MP-10: at most the credit window is answered past the applied base while packet 2 arrives (${during - 1})`)
+  assert.equal(issuedBehind, 0, 'MP-10: no credit falls behind the kernel history')
+  assert.deepEqual(applied.slice(0, 6), [1, 2, 3, 4, 5, 6], 'MP-08: packets apply in order without a reset')
+})
+
 // Round 11 hosted drop drill (b3, DPR2): a reply lost without a replay left a gap; the viewer waited 500 ms and reset
 // (a full snapshot: 2.2 s after the drop). Protocol 501: the missing packet is asked for at once (resend).
 test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the missing packet at once; it applies without a reset', async () => {
