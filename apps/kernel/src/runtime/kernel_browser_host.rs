@@ -210,6 +210,15 @@ impl KernelBrowserHost {
         crate::transport::mcp_server::catalog_changed();
         Ok(())
     }
+    /// L3: the direct frame channel of the user's running controller (never starts one).
+    pub(crate) fn direct_frames(
+        &self,
+        user: &str,
+    ) -> Option<Arc<super::browser_controller_process::DirectFrames>> {
+        let backend = self.inner.lock().ok()?.browsers.get(user)?.clone();
+        let backend = backend.lock().ok()?;
+        backend.direct_frames()
+    }
     fn backend(
         &self,
         user: &str,

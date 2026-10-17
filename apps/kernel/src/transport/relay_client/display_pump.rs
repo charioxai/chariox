@@ -5,6 +5,7 @@
 //! client's acknowledgements gate it, after Selkies' frame ACK backpressure
 //! (selkies websockets_mode.py `_run_frame_backpressure_logic`, MPL-2.0).
 use super::*;
+use crate::runtime::browser_controller_process::{DirectFrame, DirectFrames};
 use crate::runtime::state::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
 use std::collections::VecDeque;
 
@@ -269,6 +270,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
     let daemon_private_key = route.router.relay_private_key();
     let mut last_sent = pump.with(|state| state.acked);
     let (mut idle, mut failures) = (Duration::ZERO, 0u32);
+    let mut direct = DirectLease(None);
     loop {
         if pump.with(|state| state.stopped) || !lease_alive(&route).await {
             return;
@@ -280,6 +282,47 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             }
             Gate::Open(credit) => credit,
         };
+        // L3: while Node's lease lasts, whole frames come straight from the worker. A
+        // reset or congestion ends it and this credit goes to Node, which resumes on a key.
+        if let Some((frames, token)) = &direct.0 {
+            if credit.reset || credit.congested {
+                direct.end();
+            } else {
+                match frames
+                    .next(token, &route.display_id, Duration::from_millis(100))
+                    .await
+                {
+                    DirectFrame::Idle => continue,
+                    DirectFrame::Ended => direct.0 = None,
+                    DirectFrame::Frame(frame, revision) => {
+                        let Some(sequence) = frame["sequence"].as_u64() else {
+                            direct.end();
+                            continue;
+                        };
+                        let Ok(encrypted_event) = seal(&route, &daemon_private_key, frame) else {
+                            direct.end();
+                            continue;
+                        };
+                        frames.delivered(token, revision);
+                        pump.with(|state| state.sent_frame(sequence, Instant::now()));
+                        last_sent = sequence;
+                        if route
+                            .outgoing_tx
+                            .send_display_event(RelayEnvelope::DaemonEvent {
+                                subscription_id: route.relay_id.clone(),
+                                event_id: sequence,
+                                encrypted_event,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
         let started = Instant::now();
         let result =
             capture_frame(&route, &daemon_private_key, generation, last_sent, credit).await;
@@ -311,7 +354,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 continue;
             }
         };
-        let Some((sequence, encrypted_event)) = captured else {
+        let Some((sequence, encrypted_event, lease)) = captured else {
             if started.elapsed() < Duration::from_millis(5) {
                 idle = (idle * 2).clamp(Duration::from_millis(8), Duration::from_millis(100));
                 let _ = timeout(idle, pump.wake.notified()).await;
@@ -335,18 +378,65 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             return;
         }
         crate::transport::kernel_browser_display::timing("event_queue_credit", at);
+        if let Some((token, generation)) = lease {
+            let state = route.router.runtime_state();
+            if let Some(frames) = state.kernel_browser_direct_frames(&route.caller) {
+                if frames.bind(&token, &route.display_id, generation, sequence) {
+                    direct.0 = Some((frames, token));
+                }
+            }
+        }
     }
+}
+
+/// L3: the bound worker lease; ending it (or dropping the pump) retires its generation.
+struct DirectLease(Option<(Arc<DirectFrames>, String)>);
+impl DirectLease {
+    fn end(&mut self) {
+        if let Some((frames, token)) = self.0.take() {
+            frames.retire(&token);
+        }
+    }
+}
+impl Drop for DirectLease {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+fn seal(
+    route: &PumpRoute,
+    private_key: &str,
+    frame: serde_json::Value,
+) -> Result<chariox_relay::protocol::EncryptedRelayPayload, DaemonError> {
+    let failed = |message: &str| DaemonError::LocalTransport {
+        operation: "display frame",
+        message: message.into(),
+    };
+    let event = KernelEvent::KernelBrowserFrame {
+        subscription_id: route.display_id.clone(),
+        frame,
+    };
+    let bytes = crate::transport::kernel_browser_display::encode_display_event(event)
+        .map_err(|_| failed("invalid display frame"))?;
+    relay_crypto::encrypt_payload_for_peer(private_key, &route.public_key, &bytes)
+        .map_err(|_| failed("display encryption failed"))
 }
 
 // One ACK gate and event transport; Room placement supplies worker-sealed CXD1
 // rather than admitting a viewer as a terminal on the worker (MP-08/MP-11).
+type Captured = (
+    u64,
+    chariox_relay::protocol::EncryptedRelayPayload,
+    Option<(String, u64)>,
+);
 async fn capture_frame(
     route: &PumpRoute,
     private_key: &str,
     generation: u64,
     after_sequence: u64,
     credit: KernelBrowserPushCredit,
-) -> Result<Option<(u64, chariox_relay::protocol::EncryptedRelayPayload)>, DaemonError> {
+) -> Result<Option<Captured>, DaemonError> {
     let state = route.router.runtime_state();
     if state.is_room_display(&route.display_id) {
         return Ok(state
@@ -359,7 +449,7 @@ async fn capture_frame(
                 credit.congested,
             )
             .await?
-            .map(|frame| (frame.sequence, frame.encrypted_event)));
+            .map(|frame| (frame.sequence, frame.encrypted_event, None)));
     }
     let result = state
         .kernel_browser_display_request(
@@ -373,26 +463,28 @@ async fn capture_frame(
         )
         .await?;
     let mut response = serde_json::json!({"KernelBrowser":{"result":result}});
+    // L3: a private lease grant Node returns with this frame; never forwarded.
+    let lease = response
+        .pointer_mut("/KernelBrowser/result/direct_lease")
+        .map(serde_json::Value::take)
+        .and_then(|lease| {
+            let token = lease["token"].as_str()?;
+            let generation = lease["generation"].as_u64()?;
+            (token.len() == 32 && token.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| (token.to_owned(), generation))
+        });
     let Some((_, sequence, event)) =
         crate::transport::kernel_browser_display::take_display_event(&mut response)
     else {
         return Ok(None);
     };
     let at = std::time::Instant::now();
-    let bytes =
-        crate::transport::kernel_browser_display::encode_display_event(event).map_err(|_| {
-            DaemonError::LocalTransport {
-                operation: "display frame",
-                message: "invalid display frame".into(),
-            }
-        })?;
-    let encrypted = relay_crypto::encrypt_payload_for_peer(private_key, &route.public_key, &bytes)
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "display frame",
-            message: "display encryption failed".into(),
-        })?;
+    let KernelEvent::KernelBrowserFrame { frame, .. } = event else {
+        return Ok(None);
+    };
+    let encrypted = seal(route, private_key, frame)?;
     crate::transport::kernel_browser_display::timing("event_serialize_encrypt", at);
-    Ok(Some((sequence, encrypted)))
+    Ok(Some((sequence, encrypted, lease)))
 }
 
 #[cfg(test)]

@@ -495,6 +495,17 @@ impl KernelRuntimeState {
 
     /// MD-3/display: typed internal seam for the coordinator-owned public adapter.
     /// Retains the capture/Vault barrier; never accepts a client-supplied user/actor.
+    /// L3: the direct worker frame channel for this user's native displays.
+    pub(crate) fn kernel_browser_direct_frames(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+    ) -> Option<std::sync::Arc<crate::runtime::browser_controller_process::DirectFrames>> {
+        let user = self.provider_account_authority_owner_user_id(
+            &crate::runtime::command::command_caller_user_id(caller),
+        );
+        self.owned.kernel_browser_host.direct_frames(&user)
+    }
+
     pub(crate) async fn kernel_browser_display_request(
         &self,
         caller: &crate::runtime::command::KernelCommand,
