@@ -167,3 +167,22 @@ test('MP-08/MP-10/MP-11 visible-page preview holds its last page frame while Chr
   covered=false;source.pending=readback(3);await source.publish();assert.deepEqual(published,[1,3]);
  }finally{await source.close();}
 });
+
+// r48 quiet-host WHATWG: the preview's own attestation screenshot hit the parsing renderer. The proof belongs to the
+// window binding on this connection: a new document of the same binding reuses it, any changed binding attests again.
+test('MP-08/MP-11 a navigation preview reuses the attestation of an unchanged window binding',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const layout={cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};
+ let connection={send:async()=>layout};let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>proof,resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+ let screenshots=0;class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){if(!this.options.attestation?.proven()){screenshots++;this.options.attestation?.prove()}return this}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+ const open=async()=>host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+ await open();assert.equal(screenshots,1);
+ tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,1,'same binding, new document: no screenshot');
+ window.window_generation=3;await open();assert.equal(screenshots,2,'a resized/zoomed window attests again');
+ connection={send:async()=>layout};proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,3,'a new browser connection attests again');
+});

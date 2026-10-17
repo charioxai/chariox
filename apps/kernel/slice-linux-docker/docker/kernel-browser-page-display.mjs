@@ -23,7 +23,7 @@ export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
 // 5 s timeout). The layout read only narrows the crop inside the native page rect, so this target's last read under
 // the same emulated metrics and window binding stands in while the renderer is busy; a later read that differs
 // fails the current check and retires the display.
-const LAYOUT_WAIT_MS=400,layouts=new WeakMap();
+const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);
@@ -58,10 +58,14 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const alive=()=>host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
+  // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
+  const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1,geometry]);
+  const attestation={proven:()=>proofs.get(connection)?.get(tab.target_id)===proofKey,
+   prove:()=>{const proven=proofs.get(connection)??new Map();proven.set(tab.target_id,proofKey);proofs.set(connection,proven);}};
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{}};
   return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
+   args:{window,viewport,attestation,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});

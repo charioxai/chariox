@@ -366,3 +366,17 @@ test('MP-08/MP-10/MP-11 closing native capture cancels its pending restoration w
  const source=new LinuxCapture({connection:{presentationFence:fence}});source.valid=()=>!source.closed;source.wake=()=>{wakes++};source.pending={captured_ms:101,release(){}};
  await source.publish();await source.close();clock=200;finish();await restored;clock=202;await new Promise(resolve=>setTimeout(resolve,10));assert.equal(wakes,0);
 });
+
+// r48 quiet-host WHATWG typed URL: each new preview re-attested with a screenshot of the parsing renderer
+// (5 s CDP timeouts, then a failed fence restore held every native frame for ~30 s).
+test('MP-08/MP-11 a proven window binding admits a new document without a renderer screenshot',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ let proven=false,proofs=0,attests=0;const attestation={proven:()=>proven,prove:()=>{proofs++;proven=true}};
+ const source=new LinuxCapture({tab:{target_id:'t'},attestation});
+ source.screenshot=()=>assert.fail('a proven binding takes no screenshot');
+ source.attest=async()=>{attests++;if(attests===1)throw Error('native attestation RGB differed');};
+ await assert.rejects(source.admitSurface(),/RGB differed/);assert.equal(proofs,0,'a failed attestation proves nothing');
+ await source.admitSurface();assert.deepEqual([attests,proofs],[2,1]);
+ await source.admitSurface();assert.deepEqual([attests,proofs],[2,1],'the proven binding is reused');
+ const unbound=new LinuxCapture({tab:{target_id:'t'}});unbound.attest=async()=>{attests++};await unbound.admitSurface();assert.equal(attests,3,'no binding, fresh attestation');
+});
