@@ -29,14 +29,17 @@ export function startNativeReadback(capture,config){
     else if(/^MD-DISPLAY: native geometry requested \d+x\d+ owned (none|\d+x\d+(,\d+x\d+){0,7})$/.test(line))capture.timing(line.replace('MD-DISPLAY: native geometry ','native_geometry '),performance.timeOrigin+performance.now());
    }});
    const raster=new NativeRaster();
-   const pool=new SharedRasterPool(capture.poolRoot,(slot,serial)=>capture.control({release:slot,serial}),config.window_region?{width:config.width,height:config.height}:null);
+   const pool=new SharedRasterPool(capture.poolRoot,(slot,serial)=>{capture.nativeWorker?.dropAuto(serial);capture.control({release:slot,serial})},config.window_region?{width:config.width,height:config.height}:null);
    const pipe=new NativePipe(header=>{
     if(header.windows_changed!==undefined){if(!Number.isFinite(header.windows_changed)||Object.keys(header).length!==2)throw Error('MD-DISPLAY: native windows header');return;}
     if(header.reply!==undefined){capture.nativeWorker?.validate(header);if(!capture.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
+    if(header.generation!==undefined){if(!capture.nativeWorker||Object.keys(header).length!==3||!Number.isSafeInteger(header.auto)||!Number.isSafeInteger(header.generation)||!Number.isSafeInteger(header.length)||header.length<1||header.length>8*1024*1024)throw Error('MP-11: native auto reply');return;}
+    if(header.auto!=null&&(!capture.nativeWorker||!Number.isSafeInteger(header.auto)))throw Error('MP-11: native auto frame');
     if(header.width!==config.width||header.height!==config.height||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
    },(header,pixels)=>{
     if(header.windows_changed!==undefined){capture.windowsChanged?.();return;}
     if(header.reply!==undefined){capture.nativeWorker.receive(header,pixels);return;}
+    if(header.generation!==undefined){capture.nativeWorker.autoReceive(header,pixels);return;}
     const received=performance.timeOrigin+performance.now();
     if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)capture.timing(stage,header.captured_ms,header.captured_ms+cpu);}
     if(Number.isFinite(header.native_read_ms))capture.timing('native_capture_compare_copy',header.captured_ms,header.native_read_ms);
@@ -53,6 +56,11 @@ export function startNativeReadback(capture,config){
      raw.nativeRetire=encoder=>capture.nativeWorker.retire(encoder);
      raw.nativeDelivered=(encoder,revision)=>capture.nativeWorker.delivered(encoder,revision);
      raw.nativeCommit=(encoder,admit)=>capture.nativeWorker.commit(encoder,raw.serial,admit);
+     // L3: this readback was already encoded under state generation header.auto.
+     if(header.auto!=null){const worker=capture.nativeWorker,serial=raw.serial;worker.autoEntry(serial);raw.auto={generation:header.auto,take:()=>worker.takeAuto(serial)};}
+     raw.nativeArm=record=>capture.nativeWorker.arm(record);
+     raw.nativeAutoCurrent=()=>capture.nativeWorker.auto;
+     raw.nativeRetireState=encoder=>capture.nativeWorker.retireState(encoder);
     }
     if(capture.valid()){raw.format='bgr0';if(capture.pending)capture.rejected('serial_skipped');capture.pending?.release?.();capture.pending=raw;void capture.publish()}else raw.release?.()
    });

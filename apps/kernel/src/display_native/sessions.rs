@@ -114,7 +114,7 @@ struct Session {
     committed: u64,
     retired: bool,
 }
-fn session_name(value: &str) -> Result<(), String> {
+pub(super) fn session_name(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 80
         || !value

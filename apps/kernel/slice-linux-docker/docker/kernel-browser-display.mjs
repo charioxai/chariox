@@ -12,6 +12,7 @@ import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 import { cpuContention } from './kernel-browser-contention.mjs';
+import { discardPacket } from './kernel-browser-native-worker.mjs';
 
 // MP-08/MP-10: protocol 466 binary frame: JSON header without payload strings
 // plus raw payload bytes, then the relay's base64 ciphertext and envelope.
@@ -47,7 +48,18 @@ export class PortableEncoder {
       // repair still settles every pixel at DPR2), elsewhere only under
       // measured contention. Sparse stripes and protected frames stay native.
       const reduced=!stripes&&!raw[displayMaskRegions]?.length&&(raw.width===2560||cpuContention.engaged());
-      const reply=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[],...(raw[displayUnprotected]===true&&!raw[displayMaskRegions]?.length?{unprotected:true}:{})});
+      const unprotected=raw[displayUnprotected]===true&&!raw[displayMaskRegions]?.length;
+      this.nativeRetireState=raw.nativeRetireState;
+      // L3 (AUDIT2 §4): use the worker's auto-encoded packet only after this
+      // frame's fence proved it unprotected, under the current generation,
+      // when no key is needed; otherwise retire the record and encode a key.
+      const record=raw.nativeAutoCurrent?.(),mine=raw.auto&&record?.encoder===this.nativeSession&&record.generation===raw.auto.generation;
+      const auto=mine?raw.auto.take():null;let reply;
+      if(auto){
+        if(!stripes&&reset===false&&unprotected){const {generation,value}=await auto;if(generation===raw.auto.generation&&value.busy!==true){reply=value;this.timing?.('native_auto_encode',performance.timeOrigin+performance.now());}}
+        else{raw.nativeRetireState(this.nativeSession);auto.then(({value})=>discardPacket(value.packet),()=>{});reset=true;this.timing?.('native_auto_retired',performance.timeOrigin+performance.now());}
+      }
+      reply??=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[],...(unprotected?{unprotected:true}:{})});
       if(!['native-openh264','native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
       this.backend=reply.backend.slice('native-'.length);this.hardwareFallback=reply.hardware_fallback===true;this.converter='libyuv';this.workers=1;
       if(this.hardwareFallback&&typeof reply.hardware_diagnostic==='string'&&reply.hardware_diagnostic.length<=4096&&reply.hardware_diagnostic!==this.hardwareDiagnostic){this.hardwareDiagnostic=reply.hardware_diagnostic;this.timing?.hardware?.(reply.hardware_diagnostic);}
@@ -57,7 +69,13 @@ export class PortableEncoder {
         if(!process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT||!/^[a-f0-9]{32}\.json$/.test(reply.packet.name)||!Number.isSafeInteger(reply.packet.length)||reply.packet.length<1||reply.packet.length>1024*1024)throw Error('MP-11: native packet bounds');
         this.packets.add(reply.packet.name);
       }else if(reply.stripes.length)throw Error('MP-11: native packet missing');
-      if(!stripes&&reply.stripes.length){if(reply.stripes.length!==1||reply.stripes[0].row!==0||reply.stripes[0].y!==0||reply.stripes[0].height!==raw.height||reply.whole!==true)throw Error('MP-11: native whole frame');this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
+      if(!stripes&&reply.stripes.length){if(reply.stripes.length!==1||reply.stripes[0].row!==0||reply.stripes[0].y!==0||reply.stripes[0].height!==raw.height||reply.whole!==true)throw Error('MP-11: native whole frame');
+        // L3: a delta must follow the last packet this encoder returned; an
+        // encode nobody received in between skips this sample for a key.
+        const row=reply.stripes[0];
+        if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());throw Object.assign(Error('MD-DISPLAY: native chain gap'),{busy:true});}
+        this.chainSequence=row.sequence;
+        if(unprotected&&raw.nativeArm){const now=performance.timeOrigin+performance.now();if(!record||record.encoder!==this.nativeSession||record.bitrate!==bitrate||record.reduced!==reduced||record.until_ms-now<125)raw.nativeArm({encoder:this.nativeSession,bitrate,reduced,until_ms:now+250});}this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
@@ -151,10 +169,10 @@ export class PortableEncoder {
     if(name&&this.packets.delete(name))try{unlinkSync(path.join(process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT,name))}catch(error){if(error.code!=='ENOENT')throw error}
   }
   // MP-11: forget the native reference chain and its delivery certificates.
-  retire(){this.nativeRetire?.(this.nativeSession);this.nativeRevision=undefined;this.nativeDeliveredRevision=undefined;}
+  retire(){this.nativeRetireState?.(this.nativeSession);this.chainSequence=undefined;this.nativeRetire?.(this.nativeSession);this.nativeRevision=undefined;this.nativeDeliveredRevision=undefined;}
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
   async close() {
-    try{this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
+    try{this.nativeRetireState?.(this.nativeSession);this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
       if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
     }
   }

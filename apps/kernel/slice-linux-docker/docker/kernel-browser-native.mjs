@@ -77,6 +77,7 @@ export class LinuxCapture {
  currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
  // Retire every published, queued and in-flight pixel of the current mask projection.
  retireFrames(){
+  this.nativeWorker?.retireState();
   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
@@ -239,7 +240,7 @@ export class LinuxCapture {
   this.child.stdin.write(JSON.stringify(command)+'\n');return true;
  }
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.nativeWorker?.retireState();this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){

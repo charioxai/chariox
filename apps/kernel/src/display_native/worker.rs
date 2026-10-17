@@ -85,6 +85,64 @@ mod region_tests {
         // The worker's own bound owner is the only inventory owner.
         assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
     }
+    // L3: the worker auto-encodes only under a current, unexpired record.
+    #[test]
+    fn mp11_auto_state_refuses_retired_and_expired_generations() {
+        let state = |generation: u64, until_ms: f64| {
+            serde_json::from_value::<AutoState>(json!({"generation":generation,"encoder":"motion","bitrate":8000000,"reduced":false,"until_ms":until_ms})).unwrap()
+        };
+        let mut auto = Auto::default();
+        assert!(auto.job(1, 0.).is_none());
+        auto.arm(state(2, 100.)).unwrap();
+        let (q, generation) = auto.job(7, 50.).unwrap();
+        assert_eq!(
+            (
+                generation,
+                q.serial,
+                q.stripes,
+                q.unprotected,
+                q.regions.len()
+            ),
+            (2, 7, false, true, 0)
+        );
+        assert_eq!(q.reset, json!(false));
+        assert!(
+            auto.job(8, 100.).is_none(),
+            "an expired verdict stops itself"
+        );
+        auto.retire(2);
+        assert!(
+            auto.job(9, 50.).is_none(),
+            "a retire holds every later readback"
+        );
+        assert!(auto.arm(state(2, 1e15)).is_err());
+        assert!(auto.arm(state(1, 1e15)).is_err());
+        auto.arm(state(4, 1e15)).unwrap();
+        assert!(
+            auto.arm(state(3, 1e15)).is_err(),
+            "generations never go back"
+        );
+        auto.retire(3);
+        assert!(
+            auto.job(10, 50.).is_some(),
+            "an older retire keeps a newer record"
+        );
+        for bad in [
+            json!({"generation":5,"encoder":"../x","bitrate":8000000,"reduced":false,"until_ms":1}),
+            json!({"generation":5,"encoder":"motion","bitrate":1,"reduced":false,"until_ms":1}),
+        ] {
+            assert!(auto.arm(serde_json::from_value(bad).unwrap()).is_err());
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"state_retire":3}"#),
+            Ok(Command::StateRetire { state_retire: 3 })
+        ));
+        // A record cannot carry masks: protected frames always take a request.
+        assert!(serde_json::from_str::<Command>(
+            r#"{"state":{"generation":5,"encoder":"motion","bitrate":8000000,"reduced":false,"until_ms":1,"regions":[]}}"#
+        )
+        .is_err());
+    }
     #[test]
     fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
         let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
@@ -140,6 +198,12 @@ enum Command {
     },
     Retire {
         retire: String,
+    },
+    State {
+        state: AutoState,
+    },
+    StateRetire {
+        state_retire: u64,
     },
     Commit {
         commit: String,
@@ -229,6 +293,71 @@ struct Pointer {
 struct WindowsQuery {
     id: u64,
 }
+/// L3 (AUDIT2 §4): Node's state record lets the codec thread encode each
+/// readback as an unmasked whole frame without a request. Node still fences,
+/// masks and publishes every frame; it uses an auto-encoded packet only when
+/// that fence found no protected region, the generation is still current and
+/// the codec chain is unbroken. A retire stops auto-encoding before Node acts
+/// on the event; the record also expires on its own (`until_ms`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AutoState {
+    generation: u64,
+    encoder: String,
+    bitrate: i32,
+    reduced: bool,
+    until_ms: f64,
+}
+#[derive(Default)]
+pub(super) struct Auto {
+    state: Option<AutoState>,
+    retired: u64,
+}
+impl Auto {
+    pub(super) fn arm(&mut self, state: AutoState) -> Result<(), String> {
+        super::sessions::session_name(&state.encoder)?;
+        if state.generation <= self.retired
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|s| state.generation < s.generation)
+            || !state.until_ms.is_finite()
+            || !(500000..=64000000).contains(&state.bitrate)
+        {
+            return Err("MP-11: native state record".into());
+        }
+        self.state = Some(state);
+        Ok(())
+    }
+    pub(super) fn retire(&mut self, generation: u64) {
+        self.retired = self.retired.max(generation);
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|s| s.generation <= self.retired)
+        {
+            self.state = None;
+        }
+    }
+    /// The encode for this readback, or none (no current, unexpired record).
+    pub(super) fn job(&self, serial: u64, now: f64) -> Option<(Encode, u64)> {
+        let s = self.state.as_ref().filter(|s| now < s.until_ms)?;
+        Some((
+            Encode {
+                id: 0,
+                encoder: s.encoder.clone(),
+                serial,
+                bitrate: s.bitrate,
+                reset: json!(false),
+                regions: Vec::new(),
+                stripes: false,
+                reduced: s.reduced,
+                unprotected: true,
+            },
+            s.generation,
+        ))
+    }
+}
 fn admit_default() -> bool {
     true
 }
@@ -290,6 +419,16 @@ pub(super) fn reply(id: u64, value: Value) -> Result<(), String> {
     emit_to(
         &mut std::io::stdout().lock(),
         json!({"reply":id,"length":bytes.len()}),
+        &bytes,
+        8 * 1024 * 1024,
+    )
+}
+/// L3: an auto-encode reply names its readback serial and state generation.
+fn auto_reply(serial: u64, generation: u64, value: Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&value).map_err(|_| "MP-11: native reply")?;
+    emit_to(
+        &mut std::io::stdout().lock(),
+        json!({"auto":serial,"generation":generation,"length":bytes.len()}),
         &bytes,
         8 * 1024 * 1024,
     )
@@ -416,7 +555,8 @@ pub(super) fn run() -> Result<(), String> {
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
     let mut pending_rows = 0u8;
     let (codec_tx, codec_rx) =
-        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64)>(4);
+        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64, Option<u64>)>(4);
+    let mut auto = Auto::default();
     let codec_sessions = sessions.clone();
     std::thread::spawn(move || {
         let lock = || {
@@ -424,7 +564,7 @@ pub(super) fn run() -> Result<(), String> {
                 .lock()
                 .map_err(|_| "MP-11: native sessions poisoned".to_string())
         };
-        while let Ok((q, lease, queued)) = codec_rx.recv() {
+        while let Ok((q, lease, queued, generation)) = codec_rx.recv() {
             let started = epoch();
             // x264 runs between two short critical sections.
             let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
@@ -442,7 +582,10 @@ pub(super) fn run() -> Result<(), String> {
                     if let Some(spans) = value["timings"].as_array_mut() {
                         spans.push(json!(["native_codec_queue", queued, started]));
                     }
-                    reply(q.id, value)
+                    match generation {
+                        Some(generation) => auto_reply(q.serial, generation, value),
+                        None => reply(q.id, value),
+                    }
                 })
                 .is_err()
             {
@@ -520,8 +663,22 @@ pub(super) fn run() -> Result<(), String> {
                     unsafe {
                         ffi::cx_capture_cpu(capture.0, cpu.as_mut_ptr());
                     }
+                    // A full codec queue leaves this readback to Node's request.
+                    let auto_generation = match auto.job(serial, epoch()) {
+                        Some((q, generation)) => match codec_tx.try_send((
+                            q,
+                            slots[index].codec_lease(),
+                            epoch(),
+                            Some(generation),
+                        )) {
+                            Ok(()) => Some(generation),
+                            Err(std::sync::mpsc::TrySendError::Full(_)) => None,
+                            Err(_) => return Err("MP-11: native codec queue unavailable".into()),
+                        },
+                        None => None,
+                    };
                     emit(
-                        json!({"identical":changed == 0,"shift_adjacent":shift_header,"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
+                        json!({"auto":auto_generation,"identical":changed == 0,"shift_adjacent":shift_header,"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
                         &[0],
                     )?;
                     refresh = false;
@@ -598,6 +755,8 @@ pub(super) fn run() -> Result<(), String> {
                     slot.serial = None;
                 }
                 Command::Retire { retire } => locked()?.retire(&retire),
+                Command::State { state } => auto.arm(state)?,
+                Command::StateRetire { state_retire } => auto.retire(state_retire),
                 Command::Plans { plans } => unsafe {
                     ffi::cx_capture_plans(capture.0, plans as i32)
                 },
@@ -691,9 +850,9 @@ pub(super) fn run() -> Result<(), String> {
                         .ok_or("MP-11: native encode lease")?;
                     // MP-10 (#933 review 7): a full codec queue refuses this
                     // encode softly (Node skips one sample); never fatal.
-                    match codec_tx.try_send((q, slot.codec_lease(), epoch())) {
+                    match codec_tx.try_send((q, slot.codec_lease(), epoch(), None)) {
                         Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full((q, _, _))) => {
+                        Err(std::sync::mpsc::TrySendError::Full((q, _, _, _))) => {
                             reply(q.id, json!({"busy": true}))?
                         }
                         Err(_) => return Err("MP-11: native codec queue unavailable".into()),

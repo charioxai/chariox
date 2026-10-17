@@ -1,11 +1,17 @@
 // MP-08/MP-10/MP-11: control-only bridge to the kernel-owned native worker.
 // Frame pixels and compressed packets never pass through the motion bridge.
 import path from 'node:path';
+import {unlinkSync} from 'node:fs';
 // MP-08/MP-10/MP-11: browser and desktop workers share the kernel reader's
 // private packet directory; the worker derives it from its raster pool parent.
 export function nativeWorkerResource(environment=process.env){
  const executable=environment.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER,root=environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT;
  return path.isAbsolute(executable??'')&&path.isAbsolute(root??'')?{executable,root}:null;
+}
+// L3: an auto-encoded packet nobody published (the kernel never names it).
+export function discardPacket(packet,root=process.env.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT){
+ if(!root||!/^[a-f0-9]{32}\.json$/.test(packet?.name??''))return;
+ try{unlinkSync(path.join(root,packet.name))}catch(error){if(error.code!=='ENOENT')throw error}
 }
 const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error(message),{dispatched:false});
 // MP-08/MP-10/MP-11: two full native RGB rasters (PNG + WebP repair),
@@ -13,7 +19,7 @@ const notSent=(message='MP-11: native control unavailable')=>Object.assign(Error
 // Only an outstanding exact request may use this private IPC ceiling.
 export const nativeExactReplyLimit=32*1024*1024;
 export class NativeWorkerControl {
- constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;}
+ constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;this.autos=new Map();this.generation=0;this.auto=null;}
  request(operation,values){
   if(this.pending.size>=16||this.closed)throw notSent();
   const id=++this.sequence;
@@ -33,13 +39,52 @@ export class NativeWorkerControl {
    // MP-10 (#933 review 7): a full worker queue refuses one request softly.
    if(value.busy===true&&Object.keys(value).length===1){waiter.reject(Object.assign(Error('MD-DISPLAY: native worker busy'),{busy:true}));return;}
    if(value.error){waiter.reject(notSent('MP-11: native worker refused'));return;}
-   if(Array.isArray(value.timings)&&value.timings.length<=64){
-    const stages=new Set(['native_codec_queue','native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
-    const spans=value.timings.filter(s=>Array.isArray(s)&&s.length===3&&stages.has(s[0])&&Number.isFinite(s[1])&&Number.isFinite(s[2])&&s[2]>=s[1]);
-    if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
-   }
-   delete value.timings;waiter.resolve(value);
+   this.spans(value);waiter.resolve(value);
   }catch(error){waiter.reject(error);this.close()}
+ }
+ spans(value){
+  if(Array.isArray(value.timings)&&value.timings.length<=64){
+   const stages=new Set(['native_codec_queue','native_codec','codec_packetize','native_exact_prepare','native_shift_prepare','native_cpu_mask_guard','native_cpu_compare','native_cpu_convert','native_cpu_encode','native_cpu_output_guard','native_cpu_reference_copy']);
+   const spans=value.timings.filter(s=>Array.isArray(s)&&s.length===3&&stages.has(s[0])&&Number.isFinite(s[1])&&Number.isFinite(s[2])&&s[2]>=s[1]);
+   if(this.timing?.batch)this.timing.batch(spans);else for(const span of spans)this.timing?.(...span);
+  }
+  delete value.timings;
+ }
+ // L3 (AUDIT2 §4): one state record per encoder session. Its generation
+ // changes only on retire, so renewals and rate changes keep the chain.
+ arm(record){
+  if(this.closed)return null;
+  if(this.auto?.encoder!==record.encoder)this.auto={generation:++this.generation};
+  Object.assign(this.auto,record);
+  this.notify({state:{...this.auto}},true);return this.auto;
+ }
+ // Synchronous from every retiring event, before any other work on it.
+ retireState(encoder){
+  if(!this.auto||encoder!==undefined&&this.auto.encoder!==encoder)return;
+  this.notify({state_retire:this.auto.generation},true);this.auto=null;
+ }
+ // The frame header or its auto reply may arrive first; each entry is
+ // taken by its encoder or dropped with its raster, never both.
+ autoEntry(serial){
+  let entry=this.autos.get(serial);
+  if(!entry){
+   if(this.closed||this.autos.size>=32)throw Error('MP-11: native auto bound');
+   entry={};entry.promise=new Promise((resolve,reject)=>Object.assign(entry,{resolve,reject}));entry.promise.catch(()=>{});this.autos.set(serial,entry);
+  }
+  return entry;
+ }
+ autoReceive(header,bytes){
+  const entry=this.autoEntry(header.auto),value=JSON.parse(bytes);this.spans(value);entry.done=value;
+  if(entry.dropped){this.autos.delete(header.auto);discardPacket(value.packet);return;}
+  entry.resolve({generation:header.generation,value});if(entry.taken)this.autos.delete(header.auto);
+ }
+ takeAuto(serial){
+  const entry=this.autos.get(serial);if(!entry||entry.dropped||entry.taken)return null;
+  entry.taken=true;if(entry.done)this.autos.delete(serial);return entry.promise;
+ }
+ dropAuto(serial){
+  const entry=this.autos.get(serial);if(!entry||entry.taken)return;
+  if(entry.done){this.autos.delete(serial);discardPacket(entry.done.packet);}else entry.dropped=true;
  }
  // MP-08/MP-10/MP-11: same ordered JSON-lines contract, one bounded write
  // for a frame's notifications. Requests and physical input flush immediately.
@@ -67,5 +112,5 @@ export class NativeWorkerControl {
  }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
- close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();}
+ close(){if(this.closed)return;this.closed=true;if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();for(const entry of this.autos.values())entry.reject(Error('MP-11: native worker closed'));this.autos.clear();this.auto=null;}
 }
