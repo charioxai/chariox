@@ -494,6 +494,88 @@ pub struct AegsConnectionPage {
     pub next_cursor: Option<String>,
 }
 
+/// Where a webhook the generator received stands on its way to AEDS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AegsReceivedEventStatus {
+    /// Stored and waiting for a (re)try to publish it.
+    Pending,
+    Published,
+    /// Stored, but no active trigger matched when it was last processed.
+    Unmatched,
+    /// Retries ran out; replay it once the cause is fixed.
+    Failed,
+}
+
+/// One webhook the generator received and stored. The prompt and reply context are not part of
+/// the view, and neither is the provider payload: a listing stays small however large the
+/// webhook was.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsReceivedEvent {
+    pub delivery_id: String,
+    pub event_type: String,
+    pub occurrence_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    /// What the event is about, such as `owner/repo`.
+    pub connection_scope: String,
+    /// A short label inside the scope, such as `#1026`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    pub received_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at_ms: Option<u64>,
+    pub status: AegsReceivedEventStatus,
+    pub attempts: u32,
+    pub publication_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsReceivedEventQuery {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub limit: u32,
+}
+
+impl AegsReceivedEventQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        if !(1..=200).contains(&self.limit) {
+            return Err("received event limit must be between 1 and 200".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsReceivedEventPage {
+    pub events: Vec<AegsReceivedEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsReceivedEventReplayRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub delivery_id: String,
+}
+
+impl AegsReceivedEventReplayRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        require_opaque_id("delivery_id", &self.delivery_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsReceivedEventReplayResponse {
+    pub event: AegsReceivedEvent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AegsConnectionRevokeRequest {
     pub generator_id: String,

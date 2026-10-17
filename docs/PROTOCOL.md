@@ -3649,3 +3649,17 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+
+### Integration received events — local 551 / relay peer 159
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents` with the webhooks the integration's generator received for
+the calling owner (delivery id, event/action, `repo#PR` subject, received and
+published times, status; never prompt or reply context).
+`ReplayEventConnectionEvent { connection_id, delivery_id }` re-publishes one stored
+event and returns `EventConnectionEventReplayed`; AEDS dedupes on the occurrence id,
+so a replay of an already published event is acknowledged without a second run.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
+request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
+Relay peer 159 only pairs the embedded local response union with local 551.
