@@ -1274,6 +1274,19 @@ test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a 
     assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
   }));
 
+test('MP-10 M2: more than 100000 records on nodes the continuation has not reached do not restart it', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,evaluate,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);
+    // A parsing or hydrating document: 110011 records, almost all about nodes not yet sent.
+    await evaluate(`const ps=[...document.querySelectorAll('main p')];for(let i=0;i<11;i++)for(const p of ps)p.append('.');true`);
+    let tail=false;
+    for(let n=0;n<200&&!tail;n++){const packet=await next(200);assert.notEqual(packet.reset,true,'no overflow restart');for(const op of packet.ops)if(op.op==='children')tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last paragraph');}
+    assert(tail,'the continuation reaches the last paragraph');
+    const world=host.mirror.streams.get(subscription_id).world;
+    for(let n=0;n<20&&await host.mirror.v2.evaluate(world,`${world.ref}.pending()`);n++)await next(100);
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
+  }));
+
 
 test('MP-08/MP-10 M2: native form and text echoes take priority over continuing the document', () => mirrored(
   '<input id="q"><h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {

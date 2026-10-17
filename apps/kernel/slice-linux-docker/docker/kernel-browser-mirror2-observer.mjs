@@ -128,7 +128,24 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
-    const observer = new MutationObserver(list => { revision++; if (records.length + list.length > 100000) overflow = true; else for (const record of list) records.push(record); wake(); });
+    // While a snapshot continues, a record about a node it has not reached is moot (the walk reads that node
+    // live) unless a protected box or a style element holds it; consecutive child-list changes of one parent are
+    // one change. A parsing document (WHATWG, 15.8 MB) otherwise overflows and restarts its whole snapshot.
+    const moot = record => {
+      if (!continuation || record.target.parentNode?.localName === 'style') return false;
+      for (let n = record.target, depth = 0; n && depth < DEPTH; depth++) { const id = mirrored(n); if (id) return n !== record.target && !['mask', 'tile'].includes(kindOf.get(id)); n = n.parentNode ?? n.host; }
+      return true;
+    };
+    const observer = new MutationObserver(list => {
+      revision++;
+      for (const record of list) {
+        const last = records.at(-1);
+        if (record.type === 'childList' && last?.type === 'childList' && last.target === record.target || moot(record)) continue;
+        if (records.length >= 100000) { overflow = true; break; }
+        records.push(record);
+      }
+      wake();
+    });
     const idOf = node => { let id = ids.get(node); if (!id) { if (serial >= 999999) throw new Error('mirror2:node_budget'); id = `n${++serial}`; ids.set(node, id); } return id; };
     const mirrored = node => { const id = ids.get(node); return id && nodes.get(id) === node ? id : null; };
     const resource = (raw, base, kind) => {
