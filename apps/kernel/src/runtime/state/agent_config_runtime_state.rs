@@ -1005,6 +1005,9 @@ impl KernelRuntimeState {
         let original =
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
+        if original.remote_execution().is_some() {
+            self.ensure_remote_agent_binding_current(agent_id).await?;
+        }
         let profile_transition = self
             .owned
             .prompt_state_owner

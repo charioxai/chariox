@@ -48,6 +48,65 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A worker restarted since the last prompt no longer owns the leased agent,
+    /// and its relay rejects any request for it. Prompts recover through the
+    /// binding refresh; a profile change must too, before it claims the agent,
+    /// so it never half-applies against a lease the worker has lost.
+    pub(super) async fn ensure_remote_agent_binding_current(
+        &self,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let Some(remote) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        let mut config = self.config_snapshot().await;
+        if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
+            config.apply_remote_relay_override(url, token);
+        }
+        // The receipt of a prompt that never existed: the relay authorizes the
+        // leased agent first, and nothing is changed or replayed on the worker.
+        let probe = RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: remote.leased_agent_id.clone(),
+            home_prompt_id: "binding-probe".to_string(),
+        };
+        match self
+            .send_remote_profile_request(&config, &remote.worker_kernel_id, probe)
+            .await
+        {
+            Err(error) if remote_binding_lost(&error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.remote_agent_profile",
+                    "remote lease lost before a profile change; refreshing binding",
+                    serde_json::json!({ "agent_id": agent_id, "worker_kernel_id": remote.worker_kernel_id }),
+                );
+                self.refresh_remote_agent_binding_authorized(agent_id).await?;
+                // The runs of the lost lease can never end on their own: retire
+                // their home projection and session pointer so the agent does
+                // not keep advertising a run the worker no longer has.
+                self.owned.provider_run_projection.retire_leased_agent_runs(
+                    agent.session_id(),
+                    agent_id,
+                    &remote.leased_agent_id,
+                );
+                let session = self.owned.session_store.get_session(agent.session_id())?;
+                if let Some(run_id) = session.active_provider_run_id() {
+                    if crate::provider::worker_provider_run_id_from_projected_leased_id(
+                        &remote.leased_agent_id,
+                        run_id,
+                    )
+                    .is_some()
+                    {
+                        self.owned
+                            .clear_active_provider_run_session_pointer(agent.session_id(), run_id)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub(super) async fn send_remote_profile_request(
         &self,
         config: &crate::config::DaemonConfig,
@@ -100,6 +159,20 @@ impl KernelRuntimeState {
     }
 }
 
+fn remote_binding_lost(error: &DaemonError) -> bool {
+    super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(error)
+        || matches!(
+            error,
+            DaemonError::RelayTransport {
+                code,
+                message,
+                retryable: false,
+                ..
+            } if code == "unauthorized"
+                && message == "authenticated home kernel does not own the leased resource"
+        )
+}
+
 // A worker may spend the full native session-command deadline preparing a
 // Claude profile. Account sync and other profile requests keep their normal
 // response deadline. This changes no relay or client request shape.
@@ -121,6 +194,29 @@ fn remote_profile_response_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_restarted_worker_that_lost_the_leased_agent_marks_the_binding_stale() {
+        let lost = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "authenticated home kernel does not own the leased resource".to_string(),
+            retryable: false,
+        };
+        assert!(remote_binding_lost(&lost));
+        let other = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "unauthorized".to_string(),
+            message: "execution lease claims do not match the authenticated home kernel"
+                .to_string(),
+            retryable: false,
+        };
+        assert!(!remote_binding_lost(&other));
+        assert!(!remote_binding_lost(&DaemonError::LocalTransport {
+            operation: "update remote leased agent profile",
+            message: "relay unavailable".to_string(),
+        }));
+    }
+
     #[test]
     fn remote_claude_profile_deadline_includes_the_worker_compaction_budget() {
         let mut config = crate::config::DaemonConfig::for_tests();
