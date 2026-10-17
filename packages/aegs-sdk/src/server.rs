@@ -588,6 +588,8 @@ impl AegsServer {
                     ),
                 }
             }
+            (Method::POST, "/v1/events/query") => self.query_received_events(request).await,
+            (Method::POST, "/v1/events/replay") => self.replay_received_event(request).await,
             (Method::POST, "/v1/connections/query") => {
                 let authorization_guard = match self.authorize_management(&request) {
                     Ok(authorization) => authorization,
@@ -2356,6 +2358,94 @@ mod mp11_delivery_http_tests {
                 .unwrap(),
             0
         );
+    }
+
+    async fn management_post(
+        server: &Arc<AegsServer>,
+        path: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}{path}", listener.local_addr().unwrap());
+        let server = server.clone();
+        let serving = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(move |request| {
+                        let server = server.clone();
+                        async move { Ok::<_, Infallible>(server.handle(request).await) }
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let response = tokio::task::spawn_blocking(move || {
+            let request = ureq::post(&url)
+                .set("authorization", "Bearer management-token")
+                .set("x-chariox-owner-id", owner)
+                .set("connection", "close");
+            match request.send_json(body) {
+                Ok(response) => (response.status(), response.into_json().unwrap()),
+                Err(ureq::Error::Status(status, response)) => {
+                    (status, response.into_json().unwrap_or_default())
+                }
+                Err(error) => panic!("management transport failed: {error}"),
+            }
+        })
+        .await
+        .unwrap();
+        serving.await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn owner_sees_received_events_and_replays_one_that_never_reached_aeds() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, _) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        post_signed_webhook(server.clone(), Some("delivery-4")).await;
+
+        let query = |owner| {
+            serde_json::json!({
+                "generator_id": "dev.chariox.github", "owner_id": owner, "limit": 10
+            })
+        };
+        let (status, page) =
+            management_post(&server, "/v1/events/query", "owner", query("owner")).await;
+        assert_eq!(status, 200);
+        let events = page["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["delivery_id"], "delivery-4");
+        assert_eq!(events[0]["status"], "pending");
+        assert_eq!(events[0]["event_type"], "event");
+        assert!(events[0]["last_error"].is_string());
+        assert!(events[0].get("prompt").is_none());
+        let (_, page) =
+            management_post(&server, "/v1/events/query", "stranger", query("stranger")).await;
+        assert!(page["events"].as_array().unwrap().is_empty());
+
+        let replay = |owner| {
+            serde_json::json!({
+                "generator_id": "dev.chariox.github", "owner_id": owner, "delivery_id": "delivery-4"
+            })
+        };
+        let (status, _) =
+            management_post(&server, "/v1/events/replay", "stranger", replay("stranger")).await;
+        assert_eq!(status, 404);
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+        let (status, replayed) =
+            management_post(&server, "/v1/events/replay", "owner", replay("owner")).await;
+        assert_eq!(status, 200);
+        assert_eq!(replayed["event"]["status"], "published");
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

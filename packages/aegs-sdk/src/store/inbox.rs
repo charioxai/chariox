@@ -218,15 +218,15 @@ impl AegsStore {
         Ok(status)
     }
 
-    /// Makes a stored event publishable again with a fresh attempt budget. Returns `false` when
-    /// no such entry exists or it is already waiting for an attempt.
+    /// Makes a stored event publishable again with a fresh attempt budget and no backoff.
+    /// Returns `false` when no such entry exists.
     pub fn requeue_inbox_event(&self, delivery_id: &str, now_ms: u64) -> Result<bool, String> {
         let connection = self.lock()?;
         let changed = connection
             .execute(
                 "UPDATE webhook_inbox
                  SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL
-                 WHERE delivery_id = ?1 AND status != 'pending'",
+                 WHERE delivery_id = ?1",
                 params![delivery_id, now_ms as i64],
             )
             .map_err(|error| error.to_string())?;
@@ -237,8 +237,7 @@ impl AegsStore {
         inbox_entry(&*self.lock()?, delivery_id)
     }
 
-    /// The newest stored events of one owner, newest first. An event belongs to an owner when
-    /// its webhook route or its connection scope matches one of the owner's connections.
+    /// The newest stored events of one owner, newest first.
     pub fn inbox_events_for_owner(
         &self,
         owner_id: &str,
@@ -247,11 +246,7 @@ impl AegsStore {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(&format!(
-                "SELECT {INBOX_COLUMNS} FROM webhook_inbox
-                 WHERE route_connection_id IN
-                         (SELECT connection_id FROM connections WHERE owner_id = ?1)
-                    OR connection_scope IN
-                         (SELECT connection_scope FROM subscriptions WHERE owner_id = ?1)
+                "SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE {OWNED_BY}
                  ORDER BY received_at_ms DESC, delivery_id LIMIT ?2"
             ))
             .map_err(|error| error.to_string())?;
@@ -260,6 +255,26 @@ impl AegsStore {
             .map_err(|error| error.to_string())?;
         rows.map(|row| row.map_err(|error| error.to_string())?)
             .collect()
+    }
+
+    /// One stored event, only if it belongs to `owner_id`.
+    pub fn inbox_event_for_owner(
+        &self,
+        owner_id: &str,
+        delivery_id: &str,
+    ) -> Result<Option<InboxEntry>, String> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE {OWNED_BY} AND delivery_id = ?2"
+                ),
+                params![owner_id, delivery_id],
+                read_entry,
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .transpose()
     }
 
     /// Drops events older than the retention window. Pending events are never dropped.
@@ -279,6 +294,12 @@ fn retry_delay_ms(attempts: u32) -> u64 {
         .saturating_mul(1 << attempts.saturating_sub(1).min(20))
         .min(MAX_RETRY_DELAY_MS)
 }
+
+/// An event belongs to an owner when its webhook route or its connection scope matches one of
+/// the owner's connections or trigger subscriptions (`?1` is the owner id).
+const OWNED_BY: &str = "(route_connection_id IN
+         (SELECT connection_id FROM connections WHERE owner_id = ?1)
+     OR connection_scope IN (SELECT connection_scope FROM subscriptions WHERE owner_id = ?1))";
 
 const INBOX_COLUMNS: &str =
     "delivery_id, route_connection_id, event_json, received_at_ms, status, \

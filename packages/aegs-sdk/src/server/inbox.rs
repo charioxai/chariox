@@ -4,10 +4,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chariox_event_protocol::{PublishEventRequest, PublishEventResponse};
+use bytes::Bytes;
+use chariox_event_protocol::{
+    AegsReceivedEvent, AegsReceivedEventPage, AegsReceivedEventQuery,
+    AegsReceivedEventReplayRequest, AegsReceivedEventReplayResponse, AegsReceivedEventStatus,
+    PublishEventRequest, PublishEventResponse,
+};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
 
-use super::AegsServer;
-use crate::{metadata_matches_filter, now_ms, NormalizedEvent};
+use super::{enforce_management_owner, error, json, read_body, AegsServer};
+use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
 const RETRY_WORKER_INTERVAL: Duration = Duration::from_secs(2);
 const RETRY_BATCH: usize = 16;
@@ -172,6 +180,152 @@ impl AegsServer {
             redelivered += 1;
         }
         Ok(redelivered)
+    }
+}
+
+impl AegsServer {
+    /// `POST /v1/events/query`: the owner's stored webhooks, newest first.
+    pub(super) async fn query_received_events(
+        &self,
+        request: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        let authorization = match self.authorize_management(&request) {
+            Ok(authorization) => authorization,
+            Err(response) => return *response,
+        };
+        let query: AegsReceivedEventQuery = match self.read_management_json(request).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        if let Err(response) = self.check_management_target(
+            &authorization,
+            &query.owner_id,
+            &query.generator_id,
+            query.validate(),
+        ) {
+            return *response;
+        }
+        match self
+            .store
+            .inbox_events_for_owner(&query.owner_id, query.limit as usize)
+        {
+            Ok(entries) => json(
+                StatusCode::OK,
+                AegsReceivedEventPage {
+                    events: entries.into_iter().map(received_event).collect(),
+                },
+            ),
+            Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
+        }
+    }
+
+    /// `POST /v1/events/replay`: publishes a stored webhook again with a fresh attempt budget.
+    /// AEDS dedupes on the occurrence id, so replaying an event it already holds changes nothing.
+    pub(super) async fn replay_received_event(
+        &self,
+        request: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        let authorization = match self.authorize_management(&request) {
+            Ok(authorization) => authorization,
+            Err(response) => return *response,
+        };
+        let replay: AegsReceivedEventReplayRequest = match self.read_management_json(request).await
+        {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        if let Err(response) = self.check_management_target(
+            &authorization,
+            &replay.owner_id,
+            &replay.generator_id,
+            replay.validate(),
+        ) {
+            return *response;
+        }
+        let replayed = async {
+            if self
+                .store
+                .inbox_event_for_owner(&replay.owner_id, &replay.delivery_id)?
+                .is_none()
+            {
+                return Ok(None);
+            }
+            self.store
+                .requeue_inbox_event(&replay.delivery_id, now_ms())?;
+            self.attempt_inbox_delivery(&replay.delivery_id, now_ms())
+                .await?;
+            self.store.inbox_event(&replay.delivery_id)
+        }
+        .await;
+        match replayed {
+            Ok(Some(entry)) => json(
+                StatusCode::OK,
+                AegsReceivedEventReplayResponse {
+                    event: received_event(entry),
+                },
+            ),
+            Ok(None) => error(
+                StatusCode::NOT_FOUND,
+                "received_event_not_found",
+                "no stored webhook with that delivery id belongs to this owner",
+            ),
+            Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
+        }
+    }
+
+    async fn read_management_json<T: serde::de::DeserializeOwned>(
+        &self,
+        request: Request<Incoming>,
+    ) -> Result<T, Response<Full<Bytes>>> {
+        let body = read_body(request).await?;
+        serde_json::from_slice(&body)
+            .map_err(|message| error(StatusCode::BAD_REQUEST, "invalid_json", message.to_string()))
+    }
+
+    fn check_management_target(
+        &self,
+        authorization: &super::ManagementAuthorization,
+        owner_id: &str,
+        generator_id: &str,
+        validation: Result<(), String>,
+    ) -> Result<(), Box<Response<Full<Bytes>>>> {
+        enforce_management_owner(authorization, owner_id)?;
+        if let Err(message) = validation {
+            return Err(Box::new(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_received_event_request",
+                message,
+            )));
+        }
+        if generator_id != self.producer_id {
+            return Err(Box::new(error(
+                StatusCode::CONFLICT,
+                "generator_mismatch",
+                format!("this AEGS owns {}, not {generator_id}", self.producer_id),
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn received_event(entry: InboxEntry) -> AegsReceivedEvent {
+    AegsReceivedEvent {
+        delivery_id: entry.delivery_id,
+        event_type: entry.event.event_type,
+        occurrence_id: entry.event.occurrence_id,
+        connection_id: entry.route_connection_id,
+        metadata: entry.event.metadata,
+        received_at_ms: entry.received_at_ms,
+        published_at_ms: entry.published_at_ms,
+        status: match entry.status {
+            InboxStatus::Pending => AegsReceivedEventStatus::Pending,
+            InboxStatus::Published => AegsReceivedEventStatus::Published,
+            InboxStatus::Unmatched => AegsReceivedEventStatus::Unmatched,
+            InboxStatus::Failed => AegsReceivedEventStatus::Failed,
+        },
+        attempts: entry.attempts,
+        publication_count: entry.publication_count,
+        last_error: entry.last_error,
     }
 }
 
