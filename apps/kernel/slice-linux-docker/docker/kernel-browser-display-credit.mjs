@@ -15,7 +15,8 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
-  stream.adoptLease?.(command.after_sequence);
+  const leased=stream.adoptLease?.(command.after_sequence);
+  if(leased)host.timing.event?.('native_lease_ended',{frames:leased});
   const region=stream.regionLease;
   const regionAlive=()=>!region||(command.generation===host.generation&&stream.regionSource.valid()&&region.isAlive()&&stream.regionWindow.isCurrent());
   const retired=()=>{
@@ -187,7 +188,7 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
       stream.pushedAt = now();
       // L3: the private grant travels beside the frame; the kernel strips it.
       const lease = reply.display_frame?.[directLease]?.();
-      if (lease) reply.direct_lease = lease;
+      if (lease) { reply.direct_lease = lease; host.timing.event?.('native_lease_granted', { generation: lease.generation }); }
       return reply;
     }
     if (now() >= deadline || signal?.aborted) return reply;

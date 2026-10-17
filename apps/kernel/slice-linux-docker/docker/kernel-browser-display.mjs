@@ -278,10 +278,12 @@ export class DisplayStream {
     this.leaseTimer.unref?.();
   }
   // L3: a credit reaching Node ends any lease; the kernel sent up to afterSequence.
+  // Returns how many frames the worker sent under it.
   adoptLease(afterSequence){
-    if(!this.leased)return;
+    if(!this.leased)return 0;
     this.endLease();this.leased=false;
-    if(Number.isSafeInteger(afterSequence)&&afterSequence>this.sequence){this.sequence=afterSequence;this.invalidate();}
+    if(!Number.isSafeInteger(afterSequence)||afterSequence<=this.sequence)return 0;
+    const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate();return frames;
   }
   endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
   invalidate() { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
