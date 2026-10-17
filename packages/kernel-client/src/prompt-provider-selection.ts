@@ -71,8 +71,7 @@ export function providerRunForPromptSelection(
   if (!providerRun || !focusedAgent) {
     return providerRun
   }
-  // A run of the agent's previous provider no longer describes it.
-  return providerRun.agent_instance_id === focusedAgent.id && sameHarness(providerRun.provider, focusedAgent.provider)
+  return providerRun.agent_instance_id === focusedAgent.id && runDescribesAgent(providerRun, focusedAgent)
     ? providerRun
     : null
 }
@@ -90,9 +89,7 @@ export function applyProviderRunProfileToSession(
 
   let changed = false
   const agents = session.agents.map((agent) => {
-    // Only the kernel commits a provider switch; a lagging run of the
-    // previous provider must not revert it.
-    if (agent.id !== agentId || !sameHarness(agent.provider, providerRun.provider)) {
+    if (agent.id !== agentId || !runDescribesAgent(providerRun, agent)) {
       return agent
     }
     if (
@@ -149,6 +146,17 @@ export function normalizePromptProvider(provider?: string | null): string | null
 
 // OpenCode runs report their backend provider (e.g. "openai").
 const harnessIds = new Set(["opencode", "codex", "claude-headless", "claude-p"])
+// Only the kernel commits a provider switch: a run describes its agent when it
+// runs the agent's provider or one of its turn substitutes, so a lagging run of
+// the previous provider cannot revert the switch.
+function runDescribesAgent(run: RuntimeProviderRun, agent: AgentInstance): boolean {
+  return sameHarness(run.provider, agent.provider)
+    || (agent.substitutes ?? []).some((substitute) =>
+      sameHarness(substitute.provider, run.provider)
+      && substitute.model === run.model
+      && (!substitute.account_profile || substitute.account_profile === run.account_profile))
+}
+
 function sameHarness(left: string, right: string): boolean {
   const harness = (id: string) => id === "claude" ? "claude-p" : harnessIds.has(id) ? id : "opencode"
   return harness(left) === harness(right)

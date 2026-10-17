@@ -293,3 +293,30 @@ test("the previous provider's run does not describe an agent switched away from 
   assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "codex", model: "gpt-5.6-luna" })), null)
   assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "claude-p", model: "claude-haiku-5-5" })), run)
 })
+
+test("a current cross-provider turn substitute still describes its agent", () => {
+  const substituteRun = providerRun({
+    id: "run-substitute",
+    agent_instance_id: "agent-1",
+    provider: "claude-p",
+    account_profile: "claude-backup",
+    model: "claude-haiku-5-5",
+    variant: "low",
+  })
+  const primary = agent("agent-1", {
+    provider: "codex",
+    model: "gpt-5.6-luna",
+    effort: "high",
+    substitutes: [{ provider: "claude-p", model: "claude-haiku-5-5", variant: "low", account_profile: "claude-backup" }],
+  })
+
+  assert.equal(providerRunForPromptSelection(substituteRun, primary), substituteRun)
+  const projected = applyProviderRunProfileToSession(
+    session({ active_provider_run_id: "run-substitute", agents: [primary] }),
+    substituteRun,
+  )
+  assert.deepEqual(
+    [projected.agents[0]?.provider, projected.agents[0]?.model, projected.agents[0]?.effort],
+    ["claude-p", "claude-haiku-5-5", "low"],
+  )
+})
