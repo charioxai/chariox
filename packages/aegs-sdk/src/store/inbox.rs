@@ -482,7 +482,9 @@ impl AegsStore {
     }
 }
 
-/// Adds one pending row per selected binding, owned by the connection's owner.
+/// Adds one pending row per selected binding, owned by the connection's owner. A legacy
+/// subscription without a connection row is owned by the principal that reconciled it, so
+/// every selected claim keeps a row; a claim with no owner at all fails loudly.
 fn insert_deliveries(
     connection: &rusqlite::Connection,
     delivery_id: &str,
@@ -493,11 +495,14 @@ fn insert_deliveries(
         let interest_json = serde_json::to_string(claim).map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT OR IGNORE INTO webhook_inbox_delivery
+                "INSERT INTO webhook_inbox_delivery
                  (delivery_id, binding_id, connection_id, event_interest_key, owner_id,
                   interest_json, authority_generation, status, next_due_at_ms)
-                 SELECT ?1, ?7, ?2, ?3, owner_id, ?4, ?5, 'pending', ?6
-                 FROM connections WHERE connection_id = ?2",
+                 SELECT ?1, ?7, ?2, ?3, COALESCE(c.owner_id, s.owner_id), ?4, ?5, 'pending', ?6
+                 FROM (SELECT 1)
+                 LEFT JOIN connections c ON c.connection_id = ?2
+                 LEFT JOIN subscriptions s ON s.binding_id = ?7
+                 ON CONFLICT(delivery_id, binding_id) DO NOTHING",
                 params![
                     delivery_id,
                     claim.connection_id,
@@ -831,6 +836,28 @@ mod tests {
                 .requeue_inbox_event("missing", "owner", &[], 8)
                 .unwrap(),
             Requeue::NotFound
+        );
+    }
+
+    #[test]
+    fn legacy_subscription_without_a_connection_row_still_gets_a_delivery_row() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .reconcile("kernel-a", "dev.chariox.github", &[claim("legacy")])
+            .unwrap();
+        store.record_inbox_event("d1", None, &event(), 0).unwrap();
+        let selected = [(claim("legacy"), None)];
+        assert!(store.select_inbox_interests("d1", &selected, 0).unwrap());
+        let rows = store.inbox_deliveries("d1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].owner_id, "kernel-a");
+        assert_eq!(rows[0].status, DeliveryStatus::Pending);
+        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Published
         );
     }
 
