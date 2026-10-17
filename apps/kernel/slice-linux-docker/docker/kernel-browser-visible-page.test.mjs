@@ -115,3 +115,36 @@ test('MP-08/MP-10/MP-11 visible-page publication reuses the owner verdict but re
  clientWidth=1280;tab.document_id='d2';assert.equal(await publishCurrent(),false,'a new document retires it');
  tab.document_id='d';window.isCurrent=()=>false;assert.equal(await publishCurrent(),false,'a retired window retires it');
 });
+
+test('MP-11 visible-page publication reads the layout once, then only after a page report, a mismatch or a lost observer',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const listeners=new Set(),reads=[];let metrics={clientWidth:1280,clientHeight:800},binding_;
+ const connection={subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},async send(method,params){
+  if(method==='Page.getLayoutMetrics'){reads.push(1);return {cssLayoutViewport:metrics,cssVisualViewport:{zoom:1,scale:1}};}
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f'}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+  if(method==='Runtime.addBinding')binding_=params.name;
+  return {};
+ }};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},arbiter:{isActiveTab:async()=>true},
+  browser:{resolvePageTarget:async()=>({connection,sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+ let options;class Capture {constructor(o){options=o;this.region=visiblePageGeometry(o.window,o.viewport);}async start(){return this;}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ const stream=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ const report=()=>[...listeners].forEach(fn=>fn({sessionId:'s',method:'Runtime.bindingCalled',params:{name:binding_,executionContextId:7}}));
+ const publishReads=async()=>{reads.length=0;const ok=await options.publishCurrent();return [ok,reads.length];};
+ assert.deepEqual(await publishReads(),[true,1],'the first publication has no verdict and reads');
+ for(let i=0;i<5;i++)assert.deepEqual(await publishReads(),[true,0],'a proven verdict is reused');
+ reads.length=0;assert.equal(await options.validateCurrent(),true);assert.equal(reads.length,1,'admission and input always read fresh');
+ report();assert.deepEqual(await publishReads(),[true,1],'a page report forces one read');
+ assert.deepEqual(await publishReads(),[true,0]);
+ metrics={clientWidth:1265,clientHeight:800};report();
+ assert.deepEqual(await publishReads(),[false,1],'a changed layout is refused');
+ assert.deepEqual(await publishReads(),[false,1],'and never becomes the verdict');
+ metrics={clientWidth:1280,clientHeight:800};assert.deepEqual(await publishReads(),[true,1]);assert.deepEqual(await publishReads(),[true,0]);
+ [...listeners].forEach(fn=>fn({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f'}}}));
+ assert.deepEqual(await publishReads(),[true,1]);assert.deepEqual(await publishReads(),[true,1],'a lost observer reads every publication');
+ await [...host.displays.values()][0].close();assert.equal(listeners.size,0);
+});

@@ -7,6 +7,7 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
+import {observeLayout} from './kernel-browser-layout-observer.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
 // selecting cached document metadata. It grants no input by itself.
@@ -33,15 +34,18 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
   const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&host.tabs.get(tab.tab_id)?.document_id===document;
-  // The layout viewport (scrollbars, zoom, scale) has no CDP change event, so every check reads it.
+  // The layout viewport (scrollbars, zoom, scale) has no CDP change event: admission and input
+  // always read it; publication reuses the read only while the page-side observer proves it current.
   const layout=async()=>JSON.stringify(await measure())===JSON.stringify(viewport);
+  const observer=await observeLayout(connection,sessionId);
+  const publishLayout=()=>observer?observer.valid()||observer.confirm(layout):layout();
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&await layout()&&alive();
-  const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await layout()&&alive();
-  if(!await current())refuse();
+  const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await publishLayout()&&alive();
+  if(!await current()){observer?.close();refuse();}
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
-   isAlive:alive,isCurrent:current,close:async()=>{}};
-  return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});
+   isAlive:alive,isCurrent:current,close:async()=>observer?.close()};
+  try{return await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
+   args:{window,viewport,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});}catch(error){observer?.close();throw error;}
  });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
