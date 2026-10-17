@@ -41,11 +41,13 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const publishLayout=()=>observer?observer.valid()||observer.confirm(layout):layout();
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&await layout()&&alive();
   const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await publishLayout()&&alive();
-  if(!await current()){observer?.close();refuse();}
-  const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
-   isAlive:alive,isCurrent:current,close:async()=>observer?.close()};
-  try{return await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});}catch(error){observer?.close();throw error;}
+  try{
+   if(!await current())refuse();
+   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
+    isAlive:alive,isCurrent:current,close:async()=>observer?.close()};
+   return await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
+    args:{window,viewport,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined},window,tab,policy,generation,Capture});
+  }catch(error){observer?.close();throw error;}
  });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live

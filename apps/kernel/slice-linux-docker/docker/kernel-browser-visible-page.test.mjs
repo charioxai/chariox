@@ -148,3 +148,19 @@ test('MP-11 visible-page publication reads the layout once, then only after a pa
  assert.deepEqual(await publishReads(),[true,1]);assert.deepEqual(await publishReads(),[true,1],'a lost observer reads every publication');
  await [...host.displays.values()][0].close();assert.equal(listeners.size,0);
 });
+
+test('MP-11 visible-page subscribe closes the installed layout observer when admission rejects',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,isPageCurrent:async()=>true};
+ let metrics=0,listeners=0;const sent=[];
+ const connection={subscribe:()=>{listeners++;return()=>listeners--;},send:async(method)=>{sent.push(method);
+  if(method==='Page.getLayoutMetrics'){if(++metrics>1)throw Error('metrics timed out');return {cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};}
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f'}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+  return {};}};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromeWindows:{current:()=>({tabbed:window})},browser:{resolvePageTarget:async()=>({connection,sessionId:'s'})},timing:{}};
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture:class {}}),/metrics timed out/);
+ assert.equal(listeners,0);assert.ok(sent.includes('Runtime.removeBinding'));assert.equal(host.displays.size,0);
+});
