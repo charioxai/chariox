@@ -100,6 +100,18 @@ test('a read that finds nothing changed does no computed-style work', options, a
   assert.deepEqual(second.packet.removed, []);
 });
 
+// No author selector uses :hover/:active/:focus: only the user-agent rules for those states apply.
+const plain = page.replace('button:hover{background:#9f9}button:active{color:#c00}', '').replace('input:focus{outline:2px solid #f0f}', '').replace('.card:hover .tip{display:block}', '');
+
+test('hover and focus restyle only the elements themselves when no author selector depends on them', options, async () => {
+  const first = await open(plain);
+  const full = (await first.read()).reads;
+  const hovered = await matchesFreshRead(plain, s => s.hover('#btn'));
+  assert(hovered.reads < full / 4, `${hovered.reads} of ${full} property reads`);
+  await matchesFreshRead(plain, s => s.evaluate('inp.focus()'));
+  await matchesFreshRead(plain, async (s, settle) => { await s.hover('#btn'); await s.press('#btn', 'mousePressed'); await settle(); await s.press('#btn', 'mouseReleased'); await s.move(700, 500); });
+});
+
 test('a text change re-evaluates only what it touched', options, async () => {
   const first = await open(page);
   const full = (await first.read()).reads;

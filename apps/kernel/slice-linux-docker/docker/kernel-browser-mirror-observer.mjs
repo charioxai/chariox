@@ -20,19 +20,21 @@ function installMirrorObserver(initialStyles = {}) {
   };
   // Stylesheets are read once per shape: a sheet added, removed, disabled or given a rule, or a new viewport.
   // `plain` = cached styles can be trusted (every sheet readable, no :has()/@container/@scope);
-  // `structural` = some selector reaches siblings, so a change also restyles the siblings after it.
+  // `structural` = some selector reaches siblings, so a change also restyles the siblings after it;
+  // `pseudo` = [hover, active, focus] some author selector depends on, so such a change reaches the subtree
+  // (the user-agent rules for those states only ever restyle the element itself).
   const sheetShape = () => {
     let key=`${innerWidth}x${innerHeight}@${devicePixelRatio}`;
     for(const root of roots){key+='|';try{for(const sheet of [...root.styleSheets,...root.adoptedStyleSheets])key+=`${sheet.disabled?'-':''}${sheet.cssRules.length},`;}catch{key+='?';}}
     return key;
   };
   const scanSheets = () => {
-    const found={plain:true,structural:false,selectors:null,fonts:[]};
+    const found={plain:true,structural:false,pseudo:[false,false,false],selectors:null,fonts:[]};
     let count=0;
     const walk=rules=>{
       for(const rule of rules){
         if(++count>100000){found.plain=false;return;}
-        if(rule.selectorText!==undefined){if(/:has\(/.test(rule.selectorText))found.plain=false;else if(/[+~]|:(?:first|last|only|nth)-|:empty/.test(rule.selectorText))found.structural=true;}
+        if(rule.selectorText!==undefined){if(/:has\(/.test(rule.selectorText))found.plain=false;else {if(/[+~]|:(?:first|last|only|nth)-|:empty/.test(rule.selectorText))found.structural=true;[/:hover/,/:active/,/:focus|:target/].forEach((state,kind)=>{if(state.test(rule.selectorText))found.pseudo[kind]=true;});}}
         else if(['CSSContainerRule','CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
         if(rule.cssRules)walk(rule.cssRules);
         if(rule.styleSheet)walk(rule.styleSheet.cssRules);
@@ -125,8 +127,8 @@ function installMirrorObserver(initialStyles = {}) {
       for(const node of touchedAttributes)if(node.isConnected)mark(node,true);
       for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural);
       hotNow.forEach((now,kind)=>{
-        for(const node of now)if(!hot[kind].has(node))mark(node,true);
-        for(const node of hot[kind])if(!now.has(node)&&node.isConnected)mark(node,true);
+        for(const node of now)if(!hot[kind].has(node))mark(node,sheets.pseudo[kind]);
+        for(const node of hot[kind])if(!now.has(node)&&node.isConnected)mark(node,sheets.pseudo[kind]);
       });
       for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true);
       quick=dirtyDeep.size+dirtySelf.size<=4096;
