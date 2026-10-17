@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -124,6 +124,14 @@ test('MP-10: opaque region area is clipped to the viewport for the 25% handoff b
   assert.equal(regionArea([{ box: [-100, 700, 400, 400] }]), 300 * 100);
   assert.ok(regionArea([{ box: [0, 0, 1280, 300] }]) > 0.25 * 1280 * 800);
   assert.ok(regionArea([{ box: [10, 10, 300, 168] }]) < 0.25 * 1280 * 800);
+});
+
+test('MP-08/MP-10: an article lead video stays a region of the mirrored page; only a media-dominated viewport hands off', () => {
+  // Real BBC article (c32l4ekpvzl8o, 1280x800): the lead video is 721x406 CSS px (29% of the viewport).
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }]), false);
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }, { box: [957, 124, 300, 250] }]), false);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 800] }]), true);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 480] }, { box: [0, 480, 1280, 40] }]), true);
 });
 
 test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet, not a new sequence', async () => {

@@ -123,7 +123,7 @@ for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: 
     assert(await replaced(),'MP-10: replacement child snapshot also carries its closed region');
     await evaluate("(()=>{const f=document.querySelector('iframe');f.style.width='1100px';f.style.height='700px';f.contentWindow.postMessage('large','*');return true})()");
     let large=await next();for(let i=0;i<4&&large.fallback!=='region_area';i++)large=await next();
-    assert.equal(large.fallback,'region_area','MP-11: the same closed region obeys the 25% opaque-area video handoff');
+    assert.equal(large.fallback,'region_area','MP-11: the same closed region obeys the opaque-area video handoff');
   }));
 
 // MP-08/MP-10/MP-11: review a44f1afce F1, layout and pixels belong to the same opaque box.
