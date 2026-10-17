@@ -212,3 +212,26 @@ test('MP-08/MP-11 a navigation preview retires its cached crop when the delayed 
   await stream.close();
  }
 });
+
+test('MP-08/MP-11 a navigation preview rereads a layout that timed out and retires its cached crop if it differs or never answers',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ for(const [later,keeps] of [[1280,false],[1265,true],[null,false]]) {
+  let busy=false,calls=0;const layout=w=>({cssLayoutViewport:{clientWidth:w,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}});
+  const timeout=()=>Object.assign(Error('browser CDP method Page.getLayoutMetrics timed out after 5000ms'),{code:'browser_cdp_timeout'});
+  const connection={send:async()=>{if(!busy)return layout(1265);calls++;if(calls===1)return new Promise((_,reject)=>setTimeout(()=>reject(timeout()),600));if(later===null)throw timeout();return layout(later)}};
+  let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+  const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
+   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+   browser:{currentPageFrame:()=>proof,viewportByTarget:new Map([['target','emulated']]),resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+  await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+  busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+  const stream=host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id);
+  assert.equal(await stream.regionCurrent(),true,'the cached crop serves while the renderer is busy');
+  await new Promise(resolve=>setTimeout(resolve,900));
+  assert.equal(await stream.regionCurrent(),keeps,later===null?'a renderer that never answers retires the display':keeps?'an agreeing reread keeps the display':'a differing reread retires the display');
+  await stream.close();
+ }
+});
