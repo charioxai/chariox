@@ -1871,3 +1871,41 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
+
+// Protocol 541: the viewer's 250 ms state poll becomes one parked wait per change plus one read.
+const parkSignal=(host,after,wait_ms)=>host.handle({id:'p',method:'host.browser',params:{op:'state_signal',after,wait_ms}}).then(reply=>reply.result.signal);
+test('MP-08/MP-10 a state read reports the signal taken before it and a parked wait ends on a Tab change',()=>using(async({host,handlers})=>{
+ await host.request({op:'open',url:'https://example.com/a'});
+ const first=await host.request({op:'state',state_wait:true});
+ assert.equal(typeof first._state_signal,'number');
+ assert.equal('_state_signal' in await host.request({op:'state'}),false,'a plain state read is unchanged');
+ let answered;const parked=parkSignal(host,first._state_signal,5000).then(signal=>answered=signal);
+ await new Promise(r=>setTimeout(r,60));assert.equal(answered,undefined,'parked');
+ for(const method of ['Network.requestWillBeSent','Page.screencastFrame','DOM.childNodeInserted'])for(const handler of handlers)handler({method,params:{}});
+ await new Promise(r=>setTimeout(r,30));assert.equal(answered,undefined,'unrelated events leave it parked');
+ for(const handler of handlers)handler({method:'Target.targetInfoChanged',params:{targetInfo:{targetId:'target-1',type:'page'}}});
+ assert.equal(await parked,first._state_signal+1);
+ assert.equal(await parkSignal(host,first._state_signal,5000),first._state_signal+1,'a change before the wait arrived is not lost');
+}));
+test('MP-08/MP-10 a parked wait is answered at its deadline and by Tab or agent requests, not by a person\'s input',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://example.com/a'});
+ const signal=(await host.request({op:'state',state_wait:true}))._state_signal;
+ const started=performance.now();assert.equal(await parkSignal(host,signal,80),signal);assert(performance.now()-started>=70,'an idle wait lasts its deadline');
+ assert.equal(await parkSignal(host,null,5000),signal,'no baseline: answers at once');
+ const tab=opened.tabs[0];
+ const input=(extra={})=>host.handle({id:'i',method:'host.browser',params:{op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'x'},...extra}});
+ let woke=false;const parked=parkSignal(host,signal,400).then(()=>woke=true);
+ await input();await new Promise(r=>setTimeout(r,60));assert.equal(woke,false,'a person\'s input leaves it parked');
+ await input({_agent_input:true,observed_by:'agent:a'}).catch(()=>{});await parked;assert.equal(woke,true,'an agent acting wakes it');
+ const second=(await host.request({op:'state',state_wait:true}))._state_signal;
+ const waiting=parkSignal(host,second,5000);
+ await host.handle({id:'n',method:'host.browser',params:{op:'navigate',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,url:'https://example.com/b'}});
+ assert((await waiting)>second,'a navigation wakes it');
+}));
+test('MP-08/MP-10 a parked wait starts no browser and never queues behind the host barrier lane',()=>using(async({host,chromium})=>{
+ assert.equal(chromium.child,null);
+ assert.equal(await parkSignal(host,0,20),0);assert.equal(chromium.child,null,'waiting never launches Chromium');
+ const parked={method:'host.browser',params:{op:'state_signal',after:3,wait_ms:2000}};
+ for(const reconcilable of [true,false,undefined])assert.deepEqual(scheduleHostRequest(parked,{canReconcileConcurrently:()=>reconcilable}),{kind:'bridge'});
+ assert.deepEqual(scheduleHostRequest({method:'host.browser',params:{op:'state'}},{canReconcileConcurrently:()=>false}),{kind:'barrier'},'a plain state read keeps its viewport barrier');
+}));

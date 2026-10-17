@@ -968,3 +968,110 @@ fn mp08_native_codec_prefers_runtime_openh264_and_keeps_x264_optional() {
         assert_eq!(unsafe { ffi::cx_codec_openh264(codec.0) } == 1, !x264);
     }
 }
+
+/// Scalar definition of the rate model's input: gradient activity of the 16x16 luma blocks that differ
+/// from the previous input, and the previous luma those blocks leave behind.
+fn reference_activity(
+    y: &[u8],
+    stride: usize,
+    previous: &mut [u8],
+    compare: bool,
+    width: usize,
+    height: usize,
+) -> (f64, i32) {
+    let (mut total, mut changed) = (0f64, 0);
+    for my in 0..height / 16 {
+        for mx in 0..width / 16 {
+            let at = |buffer: usize, row: usize| (my * 16 + row) * buffer + mx * 16;
+            let differs = !compare
+                || (0..16).any(|r| y[at(stride, r)..][..16] != previous[at(width, r)..][..16]);
+            if !differs {
+                continue;
+            }
+            let mut sum = 64i32;
+            for r in 0..16 {
+                let row = &y[at(stride, r)..][..16];
+                for x in 1..16 {
+                    sum += (row[x] as i32 - row[x - 1] as i32).abs();
+                }
+                if r > 0 {
+                    let above = &y[at(stride, r - 1)..][..16];
+                    for x in 0..16 {
+                        sum += (row[x] as i32 - above[x] as i32).abs();
+                    }
+                }
+            }
+            total += sum as f64;
+            changed += 1;
+            for r in 0..16 {
+                let (from, to) = (at(stride, r), at(width, r));
+                previous[to..to + 16].copy_from_slice(&y[from..from + 16]);
+            }
+        }
+    }
+    (total, changed)
+}
+
+#[test]
+fn mp08_openh264_activity_pass_matches_the_scalar_definition_and_keeps_the_previous_luma() {
+    // Deterministic pseudo-random scroll-like frames: some blocks repeat, some shift, some change.
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for (width, height, stride) in [(64usize, 48usize, 64usize), (1264, 708, 1280), (48, 40, 48)] {
+        let mut previous_c = vec![0u8; width * height];
+        let mut previous_ref = vec![0u8; width * height];
+        let mut frame = vec![0u8; stride * height];
+        for n in 0..6 {
+            for (index, value) in frame.iter_mut().enumerate() {
+                // Rows past the macroblock grid and the stride padding stay constant: never read.
+                let block_row = index / stride / 16;
+                if n == 0 || (block_row + n) % 3 != 0 {
+                    *value = (next() >> 24) as u8;
+                }
+            }
+            let compare = n > 0;
+            let (expected, expected_changed) =
+                reference_activity(&frame, stride, &mut previous_ref, compare, width, height);
+            let mut changed = 0i32;
+            let got = unsafe {
+                ffi::cx_openh264_activity(
+                    frame.as_ptr(),
+                    stride as i32,
+                    previous_c.as_mut_ptr(),
+                    compare as i32,
+                    width as i32,
+                    height as i32,
+                    &mut changed,
+                )
+            };
+            assert_eq!(got, expected, "{width}x{height} frame {n}");
+            assert_eq!(changed, expected_changed, "{width}x{height} frame {n}");
+            // The covered luma area of `previous` matches; unchanged blocks keep the earlier copy.
+            let covered = |buffer: &[u8]| -> Vec<u8> {
+                (0..height / 16 * 16)
+                    .flat_map(|row| buffer[row * width..][..width / 16 * 16].to_vec())
+                    .collect()
+            };
+            assert_eq!(covered(&previous_c), covered(&previous_ref));
+        }
+    }
+}
+
+#[test]
+fn mp08_openh264_slice_threads_follow_frame_size_not_core_count() {
+    let threads = |w, h, limit| unsafe { ffi::cx_openh264_slice_threads(w, h, limit) };
+    // Quiet-host measurement: sliced threads only add CPU below ~3 MP and never shorten these frames.
+    for (w, h) in [(1264, 708), (1280, 720), (1280, 800), (1920, 1080)] {
+        assert_eq!(threads(w, h, 4), 1, "{w}x{h}");
+    }
+    for (w, h) in [(2528, 1416), (2560, 1600)] {
+        assert_eq!(threads(w, h, 4), 2, "{w}x{h}");
+    }
+    assert_eq!(threads(2560, 1600, 1), 1, "a single core never slices");
+    assert_eq!(threads(2560, 1600, 0), 1);
+}

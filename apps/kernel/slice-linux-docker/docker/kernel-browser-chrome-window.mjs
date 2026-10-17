@@ -59,6 +59,7 @@ export class ChromeWindows {
     const {window_generation} = this.bound.tabbed; this.bound = null;
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
+    this.host.stateSignal?.notify();
   }
   current() {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
@@ -121,10 +122,13 @@ export class ChromeWindows {
       if(!cached||(target_id!==undefined&&cached.target_id!==target_id))return false;
       try{return JSON.stringify(nativePageRect(row,cached,scale))===JSON.stringify(pageRect)&&isCurrent();}catch{return false;}
     }:undefined;
+    // MP-11: source publication reuses the native owner snapshot only while no extension, resize or
+    // detach event has retired it (same window generation, same Tab, same page rect); a miss reads fresh.
+    const isPagePublishable=isPageCurrentCached?async target_id=>isPageCurrentCached(target_id)||isPageCurrent(target_id):isPageCurrent;
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached});
+      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached,isPagePublishable});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -260,6 +264,9 @@ export class ChromeWindows {
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
+    // Protocol 541: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    const popups = JSON.stringify(this.auxiliaryState());
+    if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }
   /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
    * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */

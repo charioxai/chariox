@@ -2,11 +2,11 @@
 // until the owned extension/window changes. Page worlds never supply this state.
 export const nativeWindowChangedBinding='__charioxNativeWindowChanged';
 export class NativeTabState {
- constructor(connection,onDetached){
-  this.connection=connection;this.onDetached=onDetached;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
+ constructor(connection,onDetached,onChange){
+  this.connection=connection;this.onDetached=onDetached;this.onChange=onChange;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
   this.off=null;
  }
- invalidate(){this.epoch++;this.active=null;this.viewport=null;}
+ invalidate(){this.epoch++;this.active=null;this.viewport=null;this.onChange?.();}
  detach(){this.invalidate();this.session=null;this.ready=false;this.onDetached?.();}
  async attach(session){
   if(this.closed)throw Error('MP-11: native state observer closed');

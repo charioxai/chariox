@@ -507,6 +507,7 @@ mod kernel_browser_command_error;
 mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
+mod kernel_browser_state_wait;
 mod kernel_browser_secret_runtime;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};

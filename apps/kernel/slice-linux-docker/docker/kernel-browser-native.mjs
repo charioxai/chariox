@@ -158,7 +158,8 @@ export class LinuxCapture {
    // MP-08/MP-10/MP-11: finish asynchronous metadata work before the one
    // fresh binding check. No pixel mask or consumer runs before admission,
    // and there is no await between this fence, masking and publication.
-   if(this.validateCurrent&&!await this.validateCurrent()){this.fence();break;}
+   const publishCurrent=this.publishCurrent??this.validateCurrent;
+   if(publishCurrent&&!await publishCurrent()){this.fence();break;}
    if(!this.valid())break;
    // Review #1016 @05a700a84 P1: re-projection during that await retires the masks.
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}

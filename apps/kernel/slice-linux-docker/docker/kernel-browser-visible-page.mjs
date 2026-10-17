@@ -29,7 +29,7 @@ export class VisiblePageCapture extends LinuxCapture{
    }).filter(r=>r.width>0&&r.height>0);
    return {...cropProtectedPng(shot.data_base64,clip,options.scale),[displayMaskRegions]:masks};
   }});
-  this.region=region;this.window=window;this.validateCurrent=options.validateCurrent;
+  this.region=region;this.window=window;this.validateCurrent=options.validateCurrent;this.publishCurrent=options.publishCurrent;
  }
  valid(){return super.valid()&&this.window?.isCurrent()===true;}
  async prepareReadback(){
