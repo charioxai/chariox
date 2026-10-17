@@ -242,7 +242,7 @@ export class KernelBrowserHost {
     }
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
-      // Protocol 541: the same subscription wakes parked state reads (a Tab or document changed).
+      // Protocol 548: the same subscription wakes parked state reads (a Tab or document changed).
       if (stateChangingEvent(message)) this.stateSignal.notify();
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
@@ -669,7 +669,7 @@ export class KernelBrowserHost {
     }
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
-    // Protocol 541: the signal count is taken before the read, so a change during it wakes the next wait.
+    // Protocol 548: the signal count is taken before the read, so a change during it wakes the next wait.
     const stateSignal = this.stateSignal.count;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
@@ -847,6 +847,8 @@ export class KernelBrowserHost {
       }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
+      // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
+      if (command.input.kind === 'scroll' && command._display_input === true) return this.observe(this.tabState(), null, scope);
       const result = this.observe(await this.reconcile(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
@@ -955,7 +957,7 @@ export class KernelBrowserHost {
         await this.nativeComputer.reset();
         return { id: request.id, ok: true, result: { released: true } };
       }
-      // Protocol 541: the kernel parks here, outside its protection barrier, until a state read could differ.
+      // Protocol 548: the kernel parks here, outside its protection barrier, until a state read could differ.
       if (request.method === "host.browser" && request.params?.op === "state_signal") {
         const {after, wait_ms} = request.params;
         const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);

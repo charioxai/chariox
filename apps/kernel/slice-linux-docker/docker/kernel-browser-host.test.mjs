@@ -336,6 +336,22 @@ test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and rese
 
 }));
 
+// MP-08/MP-10 (vidlat r23): a person's wheel cannot change the Tab list, so it does not pay a full reconcile per event;
+// a click, an agent's scroll and every state read still do.
+test('MP-08 a displayed wheel replies from the last observation, other input reconciles', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const reconcile=host.browser.reconcile;let reconciles=0;
+ host.browser.reconcile=async(...args)=>{reconciles++;return reconcile(...args)};
+ const scroll=extra=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,...extra,input:{kind:'scroll',x:2,y:2,delta_x:0,delta_y:120}});
+ const wheel=await host.request(scroll({_display_input:true}));
+ assert.equal(reconciles,0,'a displayed wheel must not reconcile');
+ assert.equal(wheel.tabs[0].tab_id,tab.tab_id);
+ await host.request(scroll({_agent_input:true}));
+ assert.equal(reconciles,1,'an agent scroll still reconciles');
+ await host.request({...scroll({}),input:{kind:'click',x:2,y:2}});
+ assert.equal(reconciles,2,'a click still reconciles');
+}));
+
 test('MD-DISPLAY-02 bound input checks its document before dispatch without a full preflight reconciliation', () => using(async ({host, sent, pages}) => {
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  const reconcile=host.browser.reconcile;let reconciles=0;
@@ -1872,7 +1888,7 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 
-// Protocol 541: the viewer's 250 ms state poll becomes one parked wait per change plus one read.
+// Protocol 548: the viewer's 250 ms state poll becomes one parked wait per change plus one read.
 const parkSignal=(host,after,wait_ms)=>host.handle({id:'p',method:'host.browser',params:{op:'state_signal',after,wait_ms}}).then(reply=>reply.result.signal);
 test('MP-08/MP-10 a state read reports the signal taken before it and a parked wait ends on a Tab change',()=>using(async({host,handlers})=>{
  await host.request({op:'open',url:'https://example.com/a'});
