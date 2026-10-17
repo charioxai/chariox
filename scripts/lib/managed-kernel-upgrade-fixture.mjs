@@ -459,7 +459,7 @@ fi
 if [ "$1" = "show" ]; then
   case "$*" in
     *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
-      if [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
+      if { [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/unit-relink-pending" ]; } && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
         printf 'yes\n'
       else
         printf 'no\n'
@@ -491,6 +491,10 @@ if [ "$1" = "show" ]; then
   exit 0
 fi
 if [ "$1" = "daemon-reload" ]; then
+  if [ -f "$HARNESS_STATE/unit-relink-pending" ]; then
+    rm -f -- "$HARNESS_STATE/unit-relink-pending"
+    printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
+  fi
   if [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/disk-worker-drop-in" ]; then
     printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
   fi

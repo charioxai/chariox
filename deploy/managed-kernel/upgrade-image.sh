@@ -155,6 +155,16 @@ select_supervisor_service() {
   fi
 }
 
+# An interrupted activation has already switched the release links, so systemd's
+# loaded units are stale because of this transaction itself. Its rollback reloads
+# systemd and re-checks the drop-ins before it starts anything.
+activation_relinked() {
+  [ -d "$transaction_root" ] && [ ! -L "$transaction_root" ] || return 1
+  case $(sed -n '1p' "$transaction_root/phase" 2>/dev/null) in stopped|activated) ;; *) return 1 ;; esac
+  relinked_target=$(sed -n '1p' "$transaction_root/target-current" 2>/dev/null)
+  [ -n "$relinked_target" ] && [ "$(readlink "$current_link" 2>/dev/null)" = "$relinked_target" ]
+}
+
 assert_path1_service_overrides() {
   [ "$managed_provider_topology" = path1 ] || return 0
   path1_preflight_failure=0
@@ -169,9 +179,11 @@ assert_path1_service_overrides() {
     case "$need_daemon_reload" in
       no) ;;
       yes)
-        echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
-        path1_preflight_failure=1
-        path1_drop_in_failure=1
+        if ! activation_relinked; then
+          echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
+          path1_preflight_failure=1
+          path1_drop_in_failure=1
+        fi
         ;;
       *)
         echo "could not verify systemd reload state for Path-1 service $unit" >&2

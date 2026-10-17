@@ -1642,6 +1642,18 @@ test("managed kernel upgrade recovers interruption after every persisted nonterm
   }
 })
 
+test("Path-1 recovery reloads systemd for the units its own interrupted activation relinked", async (context) => {
+  const harness = await makeHarness(context, { path1Release: true })
+  const env = { CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1", CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey }
+  await put(join(harness.state, "crash-after-phase-activated"), "crash\n")
+  assert.equal(harness.run(env).signal, "SIGKILL")
+  // The activation switched the unit links, so systemd's loaded copy is stale without any foreign drop-in.
+  await put(join(harness.state, "unit-relink-pending"), "pending\n")
+  const retried = harness.run(env)
+  assert.equal(retried.status, 0, retried.stderr)
+  assert.doesNotMatch(retried.stderr, /needs systemd daemon-reload/)
+})
+
 test("managed kernel upgrade recovers interruption after the persisted rolled-back phase", async (context) => {
   const harness = await makeHarness(context)
   await put(join(harness.state, "fail-health-once"), "fail\n")
