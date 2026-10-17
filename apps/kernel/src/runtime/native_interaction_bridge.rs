@@ -1,5 +1,6 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tokio::runtime::Handle;
 
@@ -17,6 +18,12 @@ use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
 use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
 pub(crate) const REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+/// Backoff ceiling between forwards of one worker interaction while its home
+/// is unreachable.
+const REMOTE_NATIVE_INTERACTION_RETRY_MAX: Duration = Duration::from_secs(15);
+/// How long a home keeps a forwarded decision's answer for a worker whose
+/// reply was lost and that forwards the same interaction again.
+const FORWARDED_DECISION_RETENTION: Duration = Duration::from_secs(600);
 // A Claude permission hook outwaits a forwarded interaction's timeout and relay
 // buffer, with room for event pickup and the relay connection, so the deny it
 // resolves to still reaches Claude.
@@ -69,12 +76,12 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
                 .remote_native_interaction_context(&session_id, &interaction_agent_id, &origin)
                 .await
         })?;
-        if let Some((config, target_daemon_id, context)) = remote_target {
+        if let Some(target) = remote_target {
             return self.handle.block_on(forward_native_interaction_to_home(
                 &state,
-                config,
-                target_daemon_id,
-                context,
+                &session_id,
+                &origin,
+                target,
                 interaction,
             ));
         }
@@ -90,10 +97,99 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
     }
 }
 
+type RemoteNativeInteractionTarget = (
+    crate::config::DaemonConfig,
+    String,
+    RemoteNativeInteractionContext,
+);
+
+/// Forwards a worker interaction to its home until the home answers. A lost
+/// request or reply (relay hiccup, timeout) forwards the same interaction
+/// again, which joins the home's pending decision, while the lease still
+/// serves the run that asked.
 async fn forward_native_interaction_to_home(
     state: &KernelRuntimeState,
-    config: crate::config::DaemonConfig,
-    target_daemon_id: String,
+    session_id: &str,
+    origin: &crate::session::NativeInteractionOrigin,
+    mut target: RemoteNativeInteractionTarget,
+    interaction: RuntimeInteraction,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    let deadline = interaction.timeout_sec().map(|seconds| {
+        tokio::time::Instant::now()
+            + Duration::from_secs(seconds)
+            + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER
+    });
+    let mut backoff = Duration::from_secs(1);
+    let mut attempt = 1_u32;
+    loop {
+        let (config, target_daemon_id, context) = &target;
+        let error = match forward_native_interaction_once(
+            state,
+            config,
+            target_daemon_id,
+            context.clone(),
+            interaction.clone(),
+        )
+        .await
+        {
+            Ok(resolution) => return Ok(resolution),
+            Err(error) if !remote_native_interaction_forward_is_retryable(&error) => {
+                return Err(error)
+            }
+            Err(error) => error,
+        };
+        crate::logging::warn_with_fields(
+            "daemon.native_interaction",
+            "forwarding a native interaction to the home failed; retrying",
+            serde_json::json!({
+                "interaction_id": interaction.id(),
+                "attempt": attempt,
+                "error": error.to_string(),
+            }),
+        );
+        let next = tokio::time::Instant::now() + backoff;
+        if deadline.is_some_and(|deadline| next >= deadline) {
+            return Ok(timed_out_resolution());
+        }
+        tokio::time::sleep_until(next).await;
+        backoff = (backoff * 2).min(REMOTE_NATIVE_INTERACTION_RETRY_MAX);
+        attempt = attempt.saturating_add(1);
+        let Some(agent_id) = interaction.agent_id() else {
+            return Ok(timed_out_resolution());
+        };
+        match state
+            .remote_native_interaction_context(session_id, agent_id, origin)
+            .await?
+        {
+            Some(current) => target = current,
+            None => return Ok(timed_out_resolution()),
+        }
+    }
+}
+
+/// Only transport failures repeat a forward; a home refusal is final.
+fn remote_native_interaction_forward_is_retryable(error: &DaemonError) -> bool {
+    match error {
+        DaemonError::RelayTransport { retryable, .. } => *retryable,
+        DaemonError::LocalTransport { operation, .. } => {
+            *operation != "provider_native_interaction_bridge"
+        }
+        _ => false,
+    }
+}
+
+fn timed_out_resolution() -> ProviderNativeInteractionResolution {
+    ProviderNativeInteractionResolution {
+        status: "timed_out".into(),
+        choice_id: None,
+        reply: None,
+    }
+}
+
+async fn forward_native_interaction_once(
+    state: &KernelRuntimeState,
+    config: &crate::config::DaemonConfig,
+    target_daemon_id: &str,
     context: RemoteNativeInteractionContext,
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
@@ -101,8 +197,8 @@ async fn forward_native_interaction_to_home(
         remote_native_interaction_response_timeout(&interaction, config.relay_request_timeout_ms);
     let response = state
         .send_worker_home_runtime_request(
-            &config,
-            &target_daemon_id,
+            config,
+            target_daemon_id,
             crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
                 context,
                 interaction,
@@ -145,18 +241,12 @@ pub(crate) async fn request_provider_native_interaction(
             reply: None,
         });
     };
-    if let Some((config, target_daemon_id, context)) = state
+    if let Some(target) = state
         .remote_native_interaction_context(session_id, &agent_id, &origin)
         .await?
     {
-        return forward_native_interaction_to_home(
-            state,
-            config,
-            target_daemon_id,
-            context,
-            interaction,
-        )
-        .await;
+        return forward_native_interaction_to_home(state, session_id, &origin, target, interaction)
+            .await;
     }
     request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }
@@ -274,14 +364,105 @@ pub(crate) async fn forward_relay_native_interaction(
     let interaction = interaction
         .with_agent_id(context.home_agent_id.clone())
         .with_native_origin(Some(origin));
-    request_runtime_interaction_with_timeout(
-        state,
-        &context.home_session_id,
-        interaction,
-        "relay_forward_native_interaction",
-        Some(&context),
-    )
-    .await
+    join_forwarded_decision(state, context, interaction).await
+}
+
+type ForwardedDecisionKey = (String, String, String);
+type ForwardedDecisionAnswer = Option<Result<ProviderNativeInteractionResolution, String>>;
+
+struct ForwardedDecision {
+    answer: tokio::sync::watch::Receiver<ForwardedDecisionAnswer>,
+    opened_at: Instant,
+}
+
+fn forwarded_decisions() -> &'static Mutex<HashMap<ForwardedDecisionKey, ForwardedDecision>> {
+    static DECISIONS: OnceLock<Mutex<HashMap<ForwardedDecisionKey, ForwardedDecision>>> =
+        OnceLock::new();
+    DECISIONS.get_or_init(Default::default)
+}
+
+/// One home decision per forwarded worker interaction: a worker that lost its
+/// request or reply and forwards the same interaction again joins the pending
+/// decision, or gets its answer, instead of asking the human twice.
+async fn join_forwarded_decision(
+    state: &KernelRuntimeState,
+    context: RemoteNativeInteractionContext,
+    interaction: RuntimeInteraction,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    let key = (
+        context.home_session_id.clone(),
+        context.worker_provider_run_id.clone(),
+        interaction.id().to_string(),
+    );
+    let opened = {
+        let mut decisions = forwarded_decisions()
+            .lock()
+            .expect("forwarded decisions mutex poisoned");
+        // Keep a decision while it is pending, and its answer for a while.
+        decisions.retain(|_, decision| {
+            if decision.answer.borrow().is_some() {
+                decision.opened_at.elapsed() < FORWARDED_DECISION_RETENTION
+            } else {
+                decision.answer.has_changed().is_ok()
+            }
+        });
+        match decisions.get(&key) {
+            Some(decision) => Err(decision.answer.clone()),
+            None => {
+                let (sender, answer) = tokio::sync::watch::channel(None);
+                decisions.insert(
+                    key.clone(),
+                    ForwardedDecision {
+                        answer,
+                        opened_at: Instant::now(),
+                    },
+                );
+                Ok(sender)
+            }
+        }
+    };
+    let mut answer = match opened {
+        Ok(sender) => {
+            let result = request_runtime_interaction_with_timeout(
+                state,
+                &context.home_session_id,
+                interaction,
+                "relay_forward_native_interaction",
+                Some(&context),
+            )
+            .await;
+            if result.is_err() {
+                // A refused decision is not remembered: a later forward
+                // revalidates it from scratch.
+                forwarded_decisions()
+                    .lock()
+                    .expect("forwarded decisions mutex poisoned")
+                    .remove(&key);
+            }
+            let _ = sender.send(Some(
+                result
+                    .as_ref()
+                    .map(Clone::clone)
+                    .map_err(ToString::to_string),
+            ));
+            return result;
+        }
+        Err(answer) => answer,
+    };
+    let answered = answer
+        .wait_for(Option::is_some)
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "relay_forward_native_interaction",
+            message: "forwarded decision dropped before resolution".into(),
+        })?
+        .clone();
+    answered
+        .expect("waited for an answer")
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "relay_forward_native_interaction",
+            message,
+        })
 }
 
 async fn request_runtime_interaction_with_timeout(
@@ -381,6 +562,30 @@ mod tests {
             remote_native_interaction_response_timeout(&interaction(Some(5)), 60_000),
             Duration::from_secs(20)
         );
+    }
+
+    #[test]
+    fn only_transport_failures_repeat_a_forwarded_interaction() {
+        let relay = |retryable| DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "transport_error".into(),
+            message: "relay hiccup".into(),
+            retryable,
+        };
+        let local = |operation| DaemonError::LocalTransport {
+            operation,
+            message: "timed out waiting for relay peer response after 60000ms".into(),
+        };
+        assert!(remote_native_interaction_forward_is_retryable(&relay(true)));
+        assert!(remote_native_interaction_forward_is_retryable(&local(
+            "read temporary relay peer response"
+        )));
+        assert!(!remote_native_interaction_forward_is_retryable(&relay(
+            false
+        )));
+        assert!(!remote_native_interaction_forward_is_retryable(&local(
+            "provider_native_interaction_bridge"
+        )));
     }
 
     #[test]
