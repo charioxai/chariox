@@ -21,6 +21,7 @@ impl KernelRuntimeState {
                 &viewer_public_key,
                 &request.slice_ref,
                 false,
+                None,
             )
             .await?;
         if slice
@@ -74,6 +75,7 @@ impl KernelRuntimeState {
         viewer_public_key: &str,
         slice_ref: &str,
         shared_read: bool,
+        timing: Option<&room_shared_display::timing::ResumeTiming>,
     ) -> Result<
         (
             crate::slice::SliceRecord,
@@ -103,8 +105,14 @@ impl KernelRuntimeState {
                 return Err(display_error("caller cannot open a Room display"));
             }
         }
+        if let Some(timing) = timing {
+            timing.mark("keys_checked");
+        }
         self.ensure_attachment_in_session(&session_id, &attachment_id)
             .await?;
+        if let Some(timing) = timing {
+            timing.mark("attachment_checked");
+        }
         let caller_user_id = caller
             .user_id
             .as_deref()
@@ -114,6 +122,9 @@ impl KernelRuntimeState {
                 session_id: session_id.into(),
                 user_id: caller_user_id.to_string(),
             });
+        }
+        if let Some(timing) = timing {
+            timing.mark("owner_checked");
         }
         let binding = self
             .room_environment_slice(&session_id)?
@@ -129,6 +140,9 @@ impl KernelRuntimeState {
                 "Room Environment Selkies display is not running",
             ));
         }
+        if let Some(timing) = timing {
+            timing.mark("binding_checked");
+        }
         let guard = self
             .owned
             .slice_store
@@ -142,6 +156,9 @@ impl KernelRuntimeState {
                 },
             )
             .await?;
+        if let Some(timing) = timing {
+            timing.mark("queue_acquired");
+        }
         let slice = self.resolve_slice(&slice.id)?;
         if slice.status != SliceStatus::Running {
             return Err(display_error(

@@ -85,6 +85,7 @@ impl KernelRuntimeState {
                     viewer,
                     &request.slice_ref,
                     true,
+                    None,
                 )
                 .await?;
             if lease.session_id != session
@@ -113,6 +114,7 @@ impl KernelRuntimeState {
                 viewer,
                 &request.slice_ref,
                 false,
+                None,
             )
             .await?;
         guard.release_queue();
@@ -390,6 +392,7 @@ impl KernelRuntimeState {
                     command,
                     RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
                 ),
+                timing.as_ref(),
             )
             .await?;
         guard.release_queue();
@@ -458,6 +461,7 @@ impl KernelRuntimeState {
                 &lease.viewer_public_key,
                 &lease.slice_id,
                 true,
+                None,
             )
             .await?;
         let result = self
