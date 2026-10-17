@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+use super::control_state;
 use super::data_volume_observation::read_admitted_data_volume;
 use super::release::{
     managed_bootstrap_service_name, verify_managed_bootstrap_service_binding,
     VerifiedReleaseEvidence,
 };
-use super::state::BootstrapConfig;
+use super::state::{managed_bootstrap_grant_binding_path, BootstrapConfig};
 use super::{managed_provider_topology, ManagedProviderTopology};
 
 const LINUX_BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
@@ -631,7 +632,7 @@ fn is_chariox_runtime(observation: &ProcessObservation) -> bool {
         )
 }
 
-fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
+pub(super) fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
     let state_dir = config
         .receipt_path
         .parent()
@@ -640,26 +641,35 @@ fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
         .receipt_path
         .file_name()
         .ok_or_else(|| freshness_error("managed receipt has no file name"))?;
-    for entry in fs::read_dir(state_dir)
-        .map_err(|error| freshness_error(&format!("managed state cannot be inspected: {error}")))?
-    {
-        let entry = entry.map_err(|error| {
+    let release_override = state_dir.join("release-override.json");
+    let override_present = if control_state::uses_helper(&config.receipt_path) {
+        // The root-private control directory holds only control files and is not
+        // listable by the unprivileged bootstrap; ask the helper about the one
+        // control file that marks retired state.
+        control_state::exists(&release_override)?
+    } else {
+        let grant_binding = managed_bootstrap_grant_binding_path(&config.receipt_path)?;
+        for entry in fs::read_dir(state_dir).map_err(|error| {
             freshness_error(&format!("managed state cannot be inspected: {error}"))
-        })?;
-        let path = entry.path();
-        let allowed_receipt = entry.file_name() == receipt_name;
-        let allowed_envelope = path == config.envelope_path;
-        if !allowed_receipt && !allowed_envelope {
-            return Err(freshness_error("retired managed state residue is present"));
+        })? {
+            let entry = entry.map_err(|error| {
+                freshness_error(&format!("managed state cannot be inspected: {error}"))
+            })?;
+            let path = entry.path();
+            let allowed_receipt = entry.file_name() == receipt_name;
+            let allowed_envelope = path == config.envelope_path;
+            if !allowed_receipt && !allowed_envelope && path != grant_binding {
+                return Err(freshness_error("retired managed state residue is present"));
+            }
         }
-    }
+        false
+    };
     for path in [
-        state_dir.join("release-override.json"),
         state_dir.join("disposable-worker"),
         config.process_home.join("managed"),
         config.process_home.join("disposable-worker"),
     ] {
-        if fs::symlink_metadata(&path).is_ok() {
+        if override_present || fs::symlink_metadata(&path).is_ok() {
             return Err(freshness_error("retired managed state residue is present"));
         }
     }

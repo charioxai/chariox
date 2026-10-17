@@ -15,7 +15,8 @@ use super::cloud::{
     ReconcileManagedBootstrapGrantResponseV1, RuntimeIdentityReportResponse,
 };
 use super::freshness::{
-    ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks, ManagedKernelRuntimeIdentityReport,
+    validate_state_residue, ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
+    ManagedKernelRuntimeIdentityReport,
 };
 use super::prepare_managed_kernel;
 use super::release::verify_release;
@@ -74,6 +75,22 @@ fn ordinary_explicit_state_ignores_host_global_managed_receipt() {
         super::confirmed_managed_kernel_registration_with_receipt_fallback(fallback).is_err(),
         "a configured invalid topology must still fail closed"
     );
+}
+
+#[test]
+fn rebuild_freshness_state_check_accepts_the_grant_binding_sidecar_of_its_receipt() {
+    let fixture = Fixture::new("freshness-sidecar");
+    let state_dir = fixture
+        .config
+        .receipt_path
+        .parent()
+        .expect("state directory");
+    fs::create_dir_all(state_dir).expect("create state directory");
+    fs::write(&fixture.config.receipt_path, b"{}").expect("write receipt");
+    fs::write(state_dir.join("bootstrap-grant-binding.json"), b"{}").expect("write sidecar");
+    validate_state_residue(&fixture.config).expect("the exchange's own state is not residue");
+    fs::write(state_dir.join("previous-kernel-state.json"), b"{}").expect("write residue");
+    validate_state_residue(&fixture.config).expect_err("other state is retired residue");
 }
 
 #[test]

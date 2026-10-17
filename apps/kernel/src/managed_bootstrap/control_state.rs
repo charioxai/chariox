@@ -23,7 +23,7 @@ pub(super) fn protected(path: &Path) -> bool {
     PATHS.iter().any(|allowed| path == Path::new(allowed))
 }
 
-fn uses_helper(path: &Path) -> bool {
+pub(super) fn uses_helper(path: &Path) -> bool {
     if !protected(path)
         || std::env::var(super::MANAGED_PROVIDER_TOPOLOGY_ENV).as_deref() != Ok("path1")
     {
