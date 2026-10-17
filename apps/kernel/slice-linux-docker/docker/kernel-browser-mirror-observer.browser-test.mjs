@@ -134,6 +134,16 @@ for (const [name, act] of [
   if (name.startsWith('an animation')) assert(Object.values(after.packet.tile_states).some(state => state.startsWith('~')));
 });
 
+test('positional selectors restyle siblings when children come and go, not when an attribute changes', options, async () => {
+  const positional = `${page}<style>#list li:first-child{color:#c00}#list li:last-child{color:#06c}#list li:nth-child(2){color:#0a0}</style>`;
+  const first = await (await open(positional)).read();
+  await matchesFreshRead(positional, w => w.evaluate("list.prepend(document.createElement('li'));list.firstChild.textContent='0'"));
+  await matchesFreshRead(positional, w => w.evaluate("list.append(document.createElement('li'));list.lastChild.textContent='9'"));
+  await matchesFreshRead(positional, w => w.evaluate('list.firstElementChild.remove()'));
+  const attribute = await matchesFreshRead(positional, w => w.evaluate("a.className='x'"));
+  assert(attribute.reads < first.reads / 4, `${attribute.reads} of ${first.reads} property reads`);
+});
+
 test('a text change re-evaluates only what it touched', options, async () => {
   const first = await open(page);
   const full = (await first.read()).reads;

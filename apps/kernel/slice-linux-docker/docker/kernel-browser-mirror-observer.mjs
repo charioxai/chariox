@@ -19,7 +19,7 @@ function installMirrorObserver(initialStyles = {}) {
     }
   };
   // Stylesheets are read once per shape: a sheet added, removed, disabled or given a rule, or a new viewport.
-  // `plain` = cached styles can be trusted (every sheet readable, no @scope/@starting-style); `structural` = some selector reaches siblings, so a change also restyles the siblings after
+  // `plain` = cached styles can be trusted (every sheet readable, no @scope/@starting-style); `adjacent` = some selector reads an earlier sibling's attributes or state (`+`, `~`), so such a change also restyles the siblings after it; `structural` = some selector reads positions or emptiness too (:first-child, :empty ...), so added/removed children do as well; before:
   // it; `has` = compounds that host a :has() (a change below them restyles them; `hasSibling`: or beside them); `subject[hover, active, focus]` =
   // compounds that carry that state in some author selector: when such an element changes state it is restyled with
   // its subtree (descendants inherit from it). Other elements are restyled for the user-agent's own state rules only.
@@ -45,7 +45,7 @@ function installMirrorObserver(initialStyles = {}) {
     return selectors;
   };
   const scanSheets = () => {
-    const found={plain:true,structural:false,hasSibling:false,has:[],subject:[[],[],[],[]],selectors:null,fonts:[]};
+    const found={plain:true,adjacent:false,structural:false,hasSibling:false,has:[],subject:[[],[],[],[]],selectors:null,fonts:[]};
     let count=0;
     // A state inside :not() is dropped with the whole :not(): removing a constraint there would narrow the match.
     const withoutNegations=text=>{
@@ -85,7 +85,9 @@ function installMirrorObserver(initialStyles = {}) {
       for(const rule of rules){
         if(++count>100000){found.plain=false;return;}
         if(rule.selectorText!==undefined){
-          if(/[+~]|:(?:first|last|only|nth)-|:empty/.test(rule.selectorText.replaceAll(hasGroup,'')))found.structural=true;
+          const plain=rule.selectorText.replaceAll(hasGroup,'');
+          if(/[+~]|:nth-[\w-]+\([^)]*\bof\b/.test(plain))found.adjacent=found.structural=true;
+          else if(/:(?:first|last|only|nth)-|:empty/.test(plain))found.structural=true;
           if(/:(?:has|hover|active|focus|target)/.test(rule.selectorText))analyze(rule.selectorText);
         } else if(['CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
         if(rule.cssRules)walk(rule.cssRules);
@@ -178,7 +180,7 @@ function installMirrorObserver(initialStyles = {}) {
     if(quick) {
       // A change restyles its node, the subtree below it and (when selectors reach siblings) the siblings after it,
       // up through the hosts of any shadow trees it sits in.
-      const restyle=(node,deep,siblings=sheets.structural)=>{
+      const restyle=(node,deep,siblings)=>{
         while(node) {
           const host=node.getRootNode().host;
           if(deep||host){for(let sibling=node;sibling;sibling=siblings?sibling.nextElementSibling:null)dirtyDeep.add(sibling);}
@@ -188,11 +190,11 @@ function installMirrorObserver(initialStyles = {}) {
       };
       // Whatever hosts a :has() above the change is restyled with its subtree.
       let scanned=0;
-      const mark=(node,deep)=>{
-        restyle(node,deep);
-        if(sheets.has)for(let host=node.parentElement?.closest(sheets.has);host;host=host.parentElement?.closest(sheets.has))restyle(host,true);
+      const mark=(node,deep,siblings)=>{
+        restyle(node,deep,siblings);
+        if(sheets.has)for(let host=node.parentElement?.closest(sheets.has);host;host=host.parentElement?.closest(sheets.has))restyle(host,true,sheets.adjacent);
         // :has(+ x) / :has(~ x): the hosts are preceding siblings of the changed node or of one of its ancestors.
-        if(sheets.hasSibling)for(let ancestor=node;ancestor;ancestor=ancestor.parentElement)for(let before=ancestor.previousElementSibling;before;before=before.previousElementSibling)if(++scanned<=2000&&before.matches(sheets.has))restyle(before,true);
+        if(sheets.hasSibling)for(let ancestor=node;ancestor;ancestor=ancestor.parentElement)for(let before=ancestor.previousElementSibling;before;before=before.previousElementSibling)if(++scanned<=2000&&before.matches(sheets.has))restyle(before,true,sheets.adjacent);
       };
       // What a node changing state restyles: 2 = itself and its subtree (an author rule uses the state on it, or the
       // user-agent colours a pressed link), 1 = itself (the user-agent's rules for focus, and for form controls),
@@ -206,16 +208,16 @@ function installMirrorObserver(initialStyles = {}) {
           return kind===1&&node.matches('a,area')?2:node.matches(uaControls)?1:0;
         }catch{return 2;}
       };
-      for(const node of touchedAttributes)if(node.isConnected)mark(node,true);
-      for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural);
+      for(const node of touchedAttributes)if(node.isConnected)mark(node,true,sheets.adjacent);
+      for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural,sheets.adjacent);
       hotNow.forEach((now,kind)=>{
         for(const node of [...now].filter(node=>!hot[kind].has(node)).concat([...hot[kind]].filter(node=>!now.has(node)&&node.isConnected))) {
           const reach=effect(kind,node);
-          if(reach)mark(node,reach===2);
+          if(reach)mark(node,reach===2,sheets.adjacent);
         }
       });
       for(const node of [...animated,...lastAnimated])if(node?.isConnected)restyle(node,true,false);
-      for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true);
+      for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true,sheets.adjacent);
       quick=dirtyDeep.size+dirtySelf.size<=4096&&scanned<=2000;
     }
     if(!shaped||touchedAll)sheetGeneration++;
