@@ -35,6 +35,16 @@ impl Default for RowResult {
     }
 }
 extern "C" {
+    #[cfg(test)]
+    pub(super) fn cx_openh264_activity(
+        y: *const u8,
+        stride: i32,
+        previous: *mut u8,
+        compare: i32,
+        width: i32,
+        height: i32,
+        changed: *mut i32,
+    ) -> f64;
     pub(super) fn cx_codec_decoder_library() -> *const std::ffi::c_char;
     pub(super) fn cx_codec_available() -> i32;
     #[cfg(test)]

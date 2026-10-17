@@ -57,7 +57,7 @@ impl KernelRuntimeState {
                         remaining.as_millis() as u64,
                     );
                     // The wait holds no protection barrier: Vault insertion never waits on a parked viewer.
-                    signal = tokio::task::spawn_blocking(move || {
+                    tokio::task::spawn_blocking(move || {
                         host.state_signal(&user, Some(after_signal), wait)
                     })
                     .await
