@@ -2,6 +2,8 @@
  * authorize damage reuse. Owner 0 reads the root of the kernel-owned desktop
  * X server (never a login session); the kernel masks it before any encode.
  * No provider state. */
+#include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <time.h>
 static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
@@ -289,7 +291,6 @@ struct Inventory *cx_inventory_open(unsigned long owner){
     XSelectInput(d,DefaultRootWindow(d),SubstructureNotifyMask);XSync(d,False);
     return v;
 }
-int cx_inventory_fd(struct Inventory *v){return ConnectionNumber(v->display);}
 int cx_inventory_read(struct Inventory *v,int64_t *out,int limit){
     if(limit<1||limit>32)return -1;
     return inventory_read(v->display,v->owner,out,limit,1);
@@ -303,6 +304,19 @@ int cx_inventory_changed(struct Inventory *v){
         else changed=1;
     }
     return changed;
+}
+/* 1: a row may have changed; 2: the wake fd is readable; 0: timeout; -1: connection lost. Events a
+ * walk already read into Xlib's queue are checked before sleeping, so they wake the caller too. */
+int cx_inventory_wait(struct Inventory *v,int wake,int timeout_ms){
+    for(;;){
+        if(cx_inventory_changed(v))return 1;
+        struct pollfd p[2]={{.fd=ConnectionNumber(v->display),.events=POLLIN},{.fd=wake,.events=POLLIN}};
+        int n=poll(p,2,timeout_ms);
+        if(n<0&&errno==EINTR)continue;
+        if(n<0||p[0].revents&(POLLHUP|POLLERR|POLLNVAL))return -1;
+        if(n==0)return 0;
+        if(p[1].revents)return 2;
+    }
 }
 void cx_inventory_close(struct Inventory *v){if(v){XCloseDisplay(v->display);free(v);}}
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}

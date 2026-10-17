@@ -103,9 +103,8 @@ extern "C" {
     ) -> *mut c_void;
     pub(super) fn cx_capture_inventory(owner: libc::c_ulong, out: *mut i64, limit: i32) -> i32;
     pub(super) fn cx_inventory_open(owner: libc::c_ulong) -> *mut c_void;
-    pub(super) fn cx_inventory_fd(v: *mut c_void) -> i32;
     pub(super) fn cx_inventory_read(v: *mut c_void, out: *mut i64, limit: i32) -> i32;
-    pub(super) fn cx_inventory_changed(v: *mut c_void) -> i32;
+    pub(super) fn cx_inventory_wait(v: *mut c_void, wake: i32, timeout_ms: i32) -> i32;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;

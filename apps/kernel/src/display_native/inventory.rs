@@ -1,80 +1,77 @@
-//! L1: the bound owner's window inventory, off the worker loop. One persistent X connection walks
-//! the (unchanged) inventory on its own thread; a watcher thread reports the events that can
-//! change a row with one coalesced `windows_changed` header, re-armed by the next walk.
+//! L1: the bound owner's window inventory, off the worker loop. One thread owns a persistent X
+//! connection: it walks the (unchanged) inventory on request and otherwise waits for the events that
+//! can change a row, reported with one coalesced `windows_changed` header re-armed by the next walk.
+//! Walking and waiting on one thread means events a walk reads into Xlib's queue still wake it.
 use super::{ffi, worker};
 use serde_json::json;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 
 struct Connection(*mut c_void);
-// Every use is serialized by the mutex around it.
+// Owned by the inventory thread alone.
 unsafe impl Send for Connection {}
 
-pub(super) struct Inventory(mpsc::Sender<u64>);
+pub(super) struct Inventory {
+    requests: mpsc::Sender<u64>,
+    wake: i32,
+}
 
 impl Inventory {
     pub(super) fn start(owner: u32) -> Result<Self, String> {
         if owner <= 1 {
             return Err("MP-11: native window owner".into());
         }
-        let raw = unsafe { ffi::cx_inventory_open(owner as libc::c_ulong) };
-        if raw.is_null() {
+        let wake = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if wake < 0 {
             return Err("MP-11: native window inventory".into());
         }
-        let fd = unsafe { ffi::cx_inventory_fd(raw) };
-        let connection = Arc::new(Mutex::new(Connection(raw)));
-        let announced = Arc::new(AtomicBool::new(false));
-        {
-            let (connection, announced) = (connection.clone(), announced.clone());
-            std::thread::spawn(move || watch(fd, &connection, &announced));
+        let raw = unsafe { ffi::cx_inventory_open(owner as libc::c_ulong) };
+        if raw.is_null() {
+            unsafe { libc::close(wake) };
+            return Err("MP-11: native window inventory".into());
         }
-        let (tx, rx) = mpsc::channel::<u64>();
-        std::thread::spawn(move || {
-            for id in rx {
-                announced.store(false, Ordering::SeqCst);
-                let mut data = [0i64; 32 * 13];
-                let count = match connection.lock() {
-                    Ok(c) => unsafe { ffi::cx_inventory_read(c.0, data.as_mut_ptr(), 32) },
-                    Err(_) => -1,
-                };
-                let value = match worker::window_rows(&data, count) {
-                    Ok(rows) => json!({ "windows": rows }),
-                    Err(_) => json!({ "error": "MP-11: native window inventory" }),
-                };
-                if worker::reply(id, value).is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(Self(tx))
+        let (requests, rx) = mpsc::channel::<u64>();
+        let connection = Connection(raw);
+        std::thread::spawn(move || run(&connection, wake, &rx));
+        Ok(Self { requests, wake })
     }
     pub(super) fn ask(&self, id: u64) {
-        let _ = self.0.send(id);
+        if self.requests.send(id).is_ok() {
+            let one = 1u64;
+            unsafe { libc::write(self.wake, (&one as *const u64).cast(), 8) };
+        }
     }
 }
 
-fn watch(fd: i32, connection: &Mutex<Connection>, announced: &AtomicBool) {
+fn run(connection: &Connection, wake: i32, requests: &mpsc::Receiver<u64>) {
+    let mut announced = false;
     loop {
-        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        if unsafe { libc::poll(&mut p, 1, -1) } < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return;
-        }
-        if p.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-            return;
-        }
-        let changed = match connection.lock() {
-            Ok(c) => unsafe { ffi::cx_inventory_changed(c.0) },
-            Err(_) => return,
-        };
-        if changed > 0 && !announced.swap(true, Ordering::SeqCst) {
-            let header = json!({"windows_changed":worker::epoch(),"length":1});
-            if worker::emit(header, &[0]).is_err() {
+        while let Ok(id) = requests.try_recv() {
+            announced = false;
+            let mut data = [0i64; 32 * 13];
+            let count = unsafe { ffi::cx_inventory_read(connection.0, data.as_mut_ptr(), 32) };
+            let value = match worker::window_rows(&data, count) {
+                Ok(rows) => json!({ "windows": rows }),
+                Err(_) => json!({ "error": "MP-11: native window inventory" }),
+            };
+            if worker::reply(id, value).is_err() {
                 return;
             }
+        }
+        match unsafe { ffi::cx_inventory_wait(connection.0, wake, -1) } {
+            1 if !announced => {
+                announced = true;
+                let header = json!({"windows_changed":worker::epoch(),"length":1});
+                if worker::emit(header, &[0]).is_err() {
+                    return;
+                }
+            }
+            2 => {
+                let mut count = 0u64;
+                unsafe { libc::read(wake, (&mut count as *mut u64).cast(), 8) };
+            }
+            1 => {}
+            _ => return,
         }
     }
 }

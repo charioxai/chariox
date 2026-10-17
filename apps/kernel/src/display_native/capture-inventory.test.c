@@ -2,7 +2,6 @@
  * row depends on (a popup mapped, frame extents, focus, geometry, unmapping) is reported at once and
  * listed by the next read; a title change is not a trigger. */
 #include <assert.h>
-#include <poll.h>
 #include <unistd.h>
 #include <stdio.h>
 #include CAPTURE_SOURCE
@@ -21,13 +20,9 @@ static int listed(struct Inventory *v,Window w) {
 /* Milliseconds until the connection reports a change (or -1). */
 static int wait_changed(struct Inventory *v,int limit_ms) {
  struct timespec t0,t1;clock_gettime(CLOCK_MONOTONIC,&t0);
- for(;;){
-  struct pollfd p={.fd=cx_inventory_fd(v),.events=POLLIN};
-  clock_gettime(CLOCK_MONOTONIC,&t1);
-  int left=limit_ms-(int)((t1.tv_sec-t0.tv_sec)*1000+(t1.tv_nsec-t0.tv_nsec)/1000000);
-  if(left<0)return -1;
-  if(poll(&p,1,left)>0&&cx_inventory_changed(v))return limit_ms-left;
- }
+ if(cx_inventory_wait(v,-1,limit_ms)!=1)return -1;
+ clock_gettime(CLOCK_MONOTONIC,&t1);
+ return (int)((t1.tv_sec-t0.tv_sec)*1000+(t1.tv_nsec-t0.tv_nsec)/1000000);
 }
 #define QUIET(v) do { int64_t _r[13];(void)_r;usleep(300000);assert(cx_inventory_changed(v)==0&&"no event while nothing changed"); } while(0)
 int main(void) {
@@ -64,6 +59,11 @@ int main(void) {
  /* A window destroyed right after being found must not kill the process (BadWindow on the select). */
  for(int i=0;i<20;i++){Window w=make(d,1,0,0,20,20);XSync(d,False);XDestroyWindow(d,w);cx_inventory_read(v,rows,32);}
  XSync(d,False);cx_inventory_changed(v);
+ /* A popup whose MapNotify a concurrent walk already read into Xlib's queue (socket now empty) still wakes the waiter. */
+ Window late=make(d,1,30,30,40,40);XSync(d,False);usleep(50000);
+ cx_inventory_read(v,rows,32);
+ assert(wait_changed(v,200)>=0&&"an event buffered by a walk wakes the waiter without a later X event");
+ XDestroyWindow(d,late);XSync(d,False);usleep(50000);cx_inventory_changed(v);
  cx_inventory_close(v);XCloseDisplay(d);
  puts("L1 inventory connection: idle quiet, popup within 20 ms, extents/geometry/focus/unmap reported, title ignored PASS");
 }
