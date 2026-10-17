@@ -1998,3 +1998,14 @@ test('MP-08/MP-10/MP-11 viewer input parks on the first fence read that times ou
  assert.equal(timedOut,1,'every further read would cost another 5 s of the 30 s the viewer waits');
  assert.equal(host.busyInputs.queues.size,1);
 }));
+
+test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click never stops the browser',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let stops=0;const stop=host.stop.bind(host);host.stop=async()=>{stops++;return stop()};
+ connection.beforeSend=async(method,params)=>{if(method==='Input.dispatchMouseEvent'&&params.type==='mousePressed')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_cdp_timeout'&&error.afterDispatch===true);
+ assert.equal(stops,0,'the press and its release were both sent in order: nothing is stuck, and the page is only busy');
+ assert.ok(sent.some(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseReleased'),'the release was queued with the press');
+ connection.beforeSend=null;
+ assert.ok((await host.request({op:'state'})).tabs.length,'the browser is still there');
+}));

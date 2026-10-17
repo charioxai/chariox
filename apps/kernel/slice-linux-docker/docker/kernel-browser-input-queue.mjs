@@ -6,7 +6,9 @@ const LIMIT = 32, TTL_MS = 60_000;
 
 export const markDispatched = error => { if (error && typeof error === 'object') error.afterDispatch = true; return error; };
 // Any CDP read the fences make; an Input.* call that timed out may have reached the page.
-const busy = error => error?.code === 'browser_cdp_timeout' && error.afterDispatch !== true && !/^browser CDP method Input\./.test(error.message);
+// A CDP input call whose acknowledgement timed out: the press and its release were sent in order, so nothing is stuck.
+export const lateInputAck = error => error?.code === 'browser_cdp_timeout' && /^browser CDP method Input\./.test(error.message);
+const busy = error => error?.code === 'browser_cdp_timeout' && error.afterDispatch !== true && !lateInputAck(error);
 
 const typed = command => command.input?.kind === 'text' || command.input?.kind === 'key';
 const sameScroll = (a, b) => a.input?.kind === 'scroll' && b.input?.kind === 'scroll' && a.tab_id === b.tab_id && a.document_id === b.document_id
