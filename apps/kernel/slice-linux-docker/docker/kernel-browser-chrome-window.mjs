@@ -47,6 +47,8 @@ export function rowMode(bgr0) {
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
 
+/** The inventory poll is a backstop: the worker announces its changes. */
+const INVENTORY_BACKSTOP_MS = 1000;
 export class ChromeWindows {
   constructor(host, {inventory = noInventory} = {}) {
     this.host = host; this.inventory = inventory;
@@ -296,17 +298,27 @@ export class ChromeWindows {
     return this.inWindowOver(rect);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). The newest
-   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes. */
-  watch(read, interval = 150) {
-    const watcher = this.watcher ??= {reads: new Set(), timer: null};
+   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes.
+   * The worker reports inventory changes (`wakes(fn)` subscribes to them): a report reads at once,
+   * and `interval` is only the backstop for a change no event announces. Exactness never lives
+   * here: every consumer still proves its window with isCurrent(). */
+  watch(read, interval = INVENTORY_BACKSTOP_MS, wakes = null) {
+    const watcher = this.watcher ??= {reads: new Set(), timer: null, running: false, again: false, offs: new Set()};
     watcher.reads.add(read);
+    const arm = () => { clearTimeout(watcher.timer); watcher.timer = setTimeout(tick, interval).unref(); };
     const tick = async () => {
-      await this.observeRows();
-      if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
+      clearTimeout(watcher.timer); watcher.running = true;
+      try { await this.observeRows(); } finally { watcher.running = false; }
+      if (!watcher.reads.size) return;
+      if (watcher.again) { watcher.again = false; void tick(); } else arm();
     };
-    if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
+    const wake = () => { if (watcher.running) watcher.again = true; else if (watcher.reads.size) void tick(); };
+    const off = wakes?.(wake);
+    if (off) watcher.offs.add(off);
+    if (!watcher.timer && !watcher.running) arm();
     return () => {
       watcher.reads.delete(read);
+      if (off) { watcher.offs.delete(off); off(); }
       if (!watcher.reads.size) { clearTimeout(watcher.timer); this.watcher = null; }
     };
   }

@@ -31,9 +31,11 @@ export function startNativeReadback(capture,config){
    const raster=new NativeRaster();
    const pool=new SharedRasterPool(capture.poolRoot,(slot,serial)=>capture.control({release:slot,serial}),config.window_region?{width:config.width,height:config.height}:null);
    const pipe=new NativePipe(header=>{
+    if(header.windows_changed!==undefined){if(!Number.isFinite(header.windows_changed)||Object.keys(header).length!==2)throw Error('MD-DISPLAY: native windows header');return;}
     if(header.reply!==undefined){capture.nativeWorker?.validate(header);if(!capture.nativeWorker)throw Error('MP-11: unexpected native reply');return;}
     if(header.width!==config.width||header.height!==config.height||!Number.isSafeInteger(header.serial)||header.serial<1||!Number.isFinite(header.captured_ms)||!Number.isFinite(header.capture_ms)||!/^[a-f0-9]{16}$/.test(header.signature))throw Error('raw geometry');
    },(header,pixels)=>{
+    if(header.windows_changed!==undefined){capture.windowsChanged?.();return;}
     if(header.reply!==undefined){capture.nativeWorker.receive(header,pixels);return;}
     const received=performance.timeOrigin+performance.now();
     if(Array.isArray(header.native_cpu)&&header.native_cpu.length===3)for(const [index,stage] of ['native_cpu_xshm_fence_read','native_cpu_damage_compare','native_cpu_capture_copy'].entries()){const cpu=header.native_cpu[index];if(Number.isFinite(cpu)&&cpu>=0)capture.timing(stage,header.captured_ms,header.captured_ms+cpu);}

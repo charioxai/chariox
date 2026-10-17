@@ -277,7 +277,7 @@ pub(super) fn emit_to(
         .and_then(|_| out.flush())
         .map_err(|_| "MP-11: native reply pipe".into())
 }
-fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
+pub(super) fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
     emit_to(
         &mut std::io::stdout().lock(),
         header,
@@ -409,6 +409,7 @@ pub(super) fn run() -> Result<(), String> {
     let mut refresh = true;
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut wake = None;
+    let mut inventory = None;
     let mut damage_at = epoch();
     // MP-08/MP-10: video encoding runs on its own thread so readback continues
     // during x264; capture damage queues while that thread holds the sessions.
@@ -629,9 +630,10 @@ pub(super) fn run() -> Result<(), String> {
                     reply(p.id, json!({ "dragged": dragged }))?;
                 }
                 // A failed read refuses this request only; the capture keeps running.
-                Command::Windows { windows: q } => match owner_windows(owner) {
-                    Ok(rows) => reply(q.id, json!({ "windows": rows }))?,
-                    Err(_) => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
+                // The walk runs on its own thread: it never blocks readbacks or encodes.
+                Command::Windows { windows: q } => match &*inventory.get_or_insert_with(|| super::inventory::Inventory::start(owner).ok()) {
+                    Some(inventory) => inventory.ask(q.id),
+                    None => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
                 },
                 // MP-08/MP-10: [keysym, shift] one key press/release.
                 Command::Key {
@@ -760,6 +762,9 @@ fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
     }
     let mut data = [0i64; 32 * 13];
     let count = unsafe { ffi::cx_capture_inventory(pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    window_rows(&data, count)
+}
+pub(super) fn window_rows(data: &[i64; 32 * 13], count: i32) -> Result<Vec<Value>, String> {
     if count < 0 { return Err("MP-11: native window inventory".into()); }
     Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }

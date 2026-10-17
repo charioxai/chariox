@@ -171,6 +171,9 @@ export class NativeWindowRegionCapture extends LinuxCapture {
  // Protocol 530: a primary-button drag inside the band (Tab reorder).
  drag(x,y,toX,toY){return this.surface==='browser_chrome'&&this.point(x,y)&&this.point(toX,toY)?super.drag(x,y,toX,toY):false;}
  // Protocol 530: the band's worker reads the owned display's window inventory (no extra process).
+ // L1: the worker announces inventory changes with one coalesced header; a read follows.
+ onWindowsChanged(fn){(this.windowWakes??=new Set()).add(fn);return()=>this.windowWakes.delete(fn);}
+ windowsChanged(){for(const fn of [...this.windowWakes??[]])fn();}
  async windows(){
   if(this.surface!=='browser_chrome'||!this.nativeWorker||!this.valid())throw Error('MP-11: native window inventory lease');
   const reply=await this.nativeWorker.request('windows',{}); // the worker's own bound owner PID

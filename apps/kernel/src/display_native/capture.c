@@ -233,7 +233,7 @@ struct Capture *cx_capture_open_selected_region(unsigned long owner,Window selec
 }
 /* Numeric-only inventory on the kernel-owned private X server. Never names
  * a desktop/root surface, title, URL, pixels or credentials. */
-struct InventorySearch {Display *display;Window root,focus;unsigned long owner;int64_t *out;int limit,found,failed;unsigned remaining;};
+struct InventorySearch {Display *display;Window root,focus;unsigned long owner;int64_t *out;int limit,found,failed,select;unsigned remaining;};
 static void inventory_windows(struct InventorySearch *s,Window parent,unsigned depth){
     Window root,ancestor,*children=NULL;unsigned count=0;
     if(!XQueryTree(s->display,parent,&root,&ancestor,&children,&count)){s->failed=1;return;}
@@ -242,6 +242,8 @@ static void inventory_windows(struct InventorySearch *s,Window parent,unsigned d
     for(unsigned i=0;i<count&&!s->failed;i++){
         if(window_pid(s->display,children[i])==s->owner){
             XWindowAttributes a;Window transient=0,child;int x,y;unsigned long insets[4];
+            /* Selected before the reads below, so a change after them reaches the event queue. */
+            if(s->select)XSelectInput(s->display,children[i],StructureNotifyMask|PropertyChangeMask|FocusChangeMask);
             if(!XGetWindowAttributes(s->display,children[i],&a)||a.width<1||a.height<1||s->found==s->limit||
                 !XTranslateCoordinates(s->display,children[i],s->root,0,0,&x,&y,&child)||
                 !frame_insets(s->display,children[i],insets)){s->failed=1;break;}
@@ -255,13 +257,54 @@ static void inventory_windows(struct InventorySearch *s,Window parent,unsigned d
     }
     if(children)XFree(children);
 }
+static int inventory_read(Display *d,unsigned long owner,int64_t *out,int limit,int select){
+    struct InventorySearch s={.display=d,.root=DefaultRootWindow(d),.owner=owner,.out=out,.limit=limit,.select=select,.remaining=2048};
+    int revert;XGetInputFocus(d,&s.focus,&revert);
+    inventory_windows(&s,s.root,0);return s.failed?-1:s.found;
+}
 int cx_capture_inventory(unsigned long owner,int64_t *out,int limit){
     if(owner<=1||limit<1||limit>32)return -1;
     Display *d=XOpenDisplay(NULL);if(!d)return -1;
-    struct InventorySearch s={.display=d,.root=DefaultRootWindow(d),.owner=owner,.out=out,.limit=limit,.remaining=2048};
-    int revert;XGetInputFocus(d,&s.focus,&revert);
-    inventory_windows(&s,s.root,0);XCloseDisplay(d);return s.failed?-1:s.found;
+    int found=inventory_read(d,owner,out,limit,0);XCloseDisplay(d);return found;
 }
+/* L1: a persistent inventory connection. The walk is the one above; this adds the events that can
+ * change its result (root children, and the owner windows' structure, focus and the properties the
+ * rows read), so a caller can walk when told instead of polling. A missed event only delays a
+ * discovery: every consumer still proves its window with the exact fence before use. */
+struct Inventory {Display *display;unsigned long owner;Atom pid,state,insets,transient;};
+static Display *inventory_display;
+static XErrorHandler inventory_previous;
+static int inventory_failed(Display *display,XErrorEvent *event) {
+    if(display==inventory_display)return 0; /* a selected window that was destroyed meanwhile */
+    return inventory_previous?inventory_previous(display,event):0;
+}
+struct Inventory *cx_inventory_open(unsigned long owner){
+    if(owner<=1)return NULL;
+    Display *d=XOpenDisplay(NULL);if(!d)return NULL;
+    struct Inventory *v=calloc(1,sizeof(*v));if(!v){XCloseDisplay(d);return NULL;}
+    v->display=d;v->owner=owner;
+    v->pid=XInternAtom(d,"_NET_WM_PID",False);v->state=XInternAtom(d,"_NET_WM_STATE",False);
+    v->insets=XInternAtom(d,"_GTK_FRAME_EXTENTS",False);v->transient=XInternAtom(d,"WM_TRANSIENT_FOR",False);
+    inventory_display=d;inventory_previous=XSetErrorHandler(inventory_failed);
+    XSelectInput(d,DefaultRootWindow(d),SubstructureNotifyMask);XSync(d,False);
+    return v;
+}
+int cx_inventory_fd(struct Inventory *v){return ConnectionNumber(v->display);}
+int cx_inventory_read(struct Inventory *v,int64_t *out,int limit){
+    if(limit<1||limit>32)return -1;
+    return inventory_read(v->display,v->owner,out,limit,1);
+}
+/* Drains the queue; 1 when an event that can change the rows arrived. */
+int cx_inventory_changed(struct Inventory *v){
+    int changed=0;
+    while(XPending(v->display)){
+        XEvent e;XNextEvent(v->display,&e);
+        if(e.type==PropertyNotify){Atom a=e.xproperty.atom;changed|=a==v->pid||a==v->state||a==v->insets||a==v->transient;}
+        else changed=1;
+    }
+    return changed;
+}
+void cx_inventory_close(struct Inventory *v){if(v){XCloseDisplay(v->display);free(v);}}
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }

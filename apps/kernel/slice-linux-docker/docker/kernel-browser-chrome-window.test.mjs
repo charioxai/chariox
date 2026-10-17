@@ -795,3 +795,31 @@ test('MP-08/MP-10 window retirement and popup changes wake a parked state read o
   f.windows.retire('test');assert.equal(woken.length,first+2,'a retirement wakes it');
  }finally{await f.close()}
 });
+
+// L1: the inventory poll is a backstop; the worker's change header reads at once and coalesces.
+test("L1 a watched band reads on the worker's change report, not on a timer", async () => {
+  const { windows } = fake();
+  let reads = 0, wake = null, release = null;
+  const read = async () => { reads++; if (release) await new Promise(r => { release = r; }); return []; };
+  const stop = windows.watch(read, 10_000, fn => { wake = fn; return () => { wake = null; }; });
+  await new Promise(r => setTimeout(r, 120));
+  assert.equal(reads, 0, "an idle band is not polled between backstops");
+  wake(); await new Promise(r => setTimeout(r, 20));
+  assert.equal(reads, 1, "a report reads within 20 ms");
+  release = () => {}; wake();                       // a read in flight; two more reports arrive meanwhile
+  await new Promise(r => setTimeout(r, 5)); wake(); wake();
+  const pending = release; release = null; pending();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(reads, 3, "reports during a read coalesce into one more read");
+  stop(); assert.equal(wake, null, "the last viewer drops the subscription");
+  const before = reads; await new Promise(r => setTimeout(r, 30));
+  assert.equal(reads, before, "and the watch stops");
+});
+test("L1 the backstop still reads without any report", async () => {
+  const { windows } = fake();
+  let reads = 0;
+  const stop = windows.watch(async () => (reads++, []), 20, () => () => {});
+  await new Promise(r => setTimeout(r, 100));
+  stop();
+  assert(reads >= 3 && reads <= 6, `backstop cadence, got ${reads}`);
+});

@@ -45,7 +45,7 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   const close=stream.close.bind(stream);let closing,offRetire;
   stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
-  const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows()):null;
+  const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows(),undefined,fn=>source.onWindowsChanged?.(fn)):null;
   // The band's own frames tell when a browser-modal dialog dims the window (no other signal exists).
   const offBand=target.kind==='browser_chrome'&&typeof source.subscribe==='function'?source.subscribe(frame=>host.chromeWindows.observeBand?.(frame?.raw)):null;
   const offWindow=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});

@@ -2,6 +2,7 @@
 //! admitted control and trusted CDP fences; no pixels traverse its motion loop.
 mod exact;
 mod ffi;
+mod inventory;
 mod raster;
 mod sessions;
 mod worker;
