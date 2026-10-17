@@ -230,6 +230,39 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
+    // Truncated before the admission checks below: clients poll this log for first-start
+    // progress and must not read the previous start's lines while those checks run.
+    let log_path = local_docker_slice_action_log_path(&options.root, record, action);
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to create slice log dir {}: {error}",
+                parent.display()
+            ),
+        })?;
+    }
+    let log_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&log_path)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner log {}: {error}",
+                log_path.display()
+            ),
+        })?;
+    let stderr_log = log_file
+        .try_clone()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner stderr log {}: {error}",
+                log_path.display()
+            ),
+        })?;
     let disk_quota_limits = if matches!(
         action,
         LocalDockerSliceAction::Provision
@@ -369,37 +402,6 @@ pub fn run_local_docker_slice_action(
         }
     }
 
-    let log_path = local_docker_slice_action_log_path(&options.root, record, action);
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to create slice log dir {}: {error}",
-                parent.display()
-            ),
-        })?;
-    }
-    let log_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&log_path)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to open slice provisioner log {}: {error}",
-                log_path.display()
-            ),
-        })?;
-    let stderr_log = log_file
-        .try_clone()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to open slice provisioner stderr log {}: {error}",
-                log_path.display()
-            ),
-        })?;
     extension_build::prepare(
         &mut command,
         record,
