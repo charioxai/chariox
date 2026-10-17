@@ -20,7 +20,7 @@ export type KernelBrowserCommand =
   | { op: "computer"; command: KernelComputerCommand }
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
-  // Protocol 541: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
+  // Protocol 548: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
   | { op: "state_wait"; after: string; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2 }
@@ -80,7 +80,7 @@ export type KernelBrowserResult = {
   snapshot?: unknown; unsubscribed?: boolean;
   kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;
   reachable_by_focused_agent?: boolean;
-  // Protocol 541: a `state_wait` reply's opaque revision, echoed back as the next `after`.
+  // Protocol 548: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
 } | KernelBrowserFrame | UserDomainGrantEvent
 

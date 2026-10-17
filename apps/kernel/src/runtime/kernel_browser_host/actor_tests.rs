@@ -1279,7 +1279,7 @@ done
     );
 }
 
-// MP-08/MP-10 (protocol 541): a viewer's parked state wait holds neither the controller lock nor
+// MP-08/MP-10 (protocol 548): a viewer's parked state wait holds neither the controller lock nor
 // the protection barrier path: input and the following read proceed while it is parked.
 #[test]
 fn mp08_parked_state_signal_does_not_hold_input() {

@@ -1,4 +1,4 @@
-//! MP-08/MP-10: protocol 541 parked Browser state read. A viewer holds one `StateWait` instead of
+//! MP-08/MP-10: protocol 548 parked Browser state read. A viewer holds one `StateWait` instead of
 //! polling `State`; the host says when a read could differ and the reply's content decides.
 use super::kernel_browser_runtime::host_error;
 use super::KernelRuntimeState;

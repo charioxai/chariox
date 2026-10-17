@@ -469,13 +469,13 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
-// MP-08/MP-10 (vidlat r22, provisional 541/149): `state_wait` parks a Browser state read until the
+// MP-08/MP-10 (allocated 548/156): `state_wait` parks a Browser state read until the
 // state differs from the `revision` the caller holds; the reply is the state plus a new `revision`.
 #[test]
-fn mp08_mp10_browser_state_wait_541_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 541);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 149);
-    let bytes = include_bytes!("browser-state-wait-541.json");
+fn mp08_mp10_browser_state_wait_548_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 548);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 156);
+    let bytes = include_bytes!("browser-state-wait-548.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
         "4b72ea2ed7ac115e2de252bbf36e612b30016df3dd97bb6b48deef2b1c8eec73"

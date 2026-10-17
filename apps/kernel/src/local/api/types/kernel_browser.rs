@@ -22,7 +22,7 @@ pub enum KernelBrowserCommand {
         agent_id: Option<String>,
     },
     ListGrants,
-    /// Protocol 541: `State` that waits (<= 2000 ms) until the browser state differs from the one
+    /// Protocol 548: `State` that waits (<= 2000 ms) until the browser state differs from the one
     /// `after` names (the `revision` of the caller's last read; empty reads at once). Replaces a poll.
     StateWait {
         #[serde(default)]

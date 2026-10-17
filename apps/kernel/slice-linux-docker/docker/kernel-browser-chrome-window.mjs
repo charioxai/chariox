@@ -264,7 +264,7 @@ export class ChromeWindows {
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
-    // Protocol 541: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    // Protocol 548: a parked state read wakes when the popups it reports (menu, omnibox list) change.
     const popups = JSON.stringify(this.auxiliaryState());
     if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }

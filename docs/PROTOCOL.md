@@ -4165,8 +4165,7 @@ registration (as a 535 resume does) instead of after the viewer's first
 `display_ack` — one round trip less per stream open. Kernels report it only on
 the kernel-private `display_attach` reply; the relay sees nothing new.
 
-MP-08 / MP-10: provisional 541/149 (vidlat r22, awaiting the coordinator's
-allocation) adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
+MP-08 / MP-10: allocated 548/156 adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
 viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
 `revision`, an opaque string the viewer sends back as `after` (empty or invalid:
 read at once). The kernel answers when the state, as the caller sees it, differs
@@ -4177,8 +4176,8 @@ window changes, Tab or agent requests and a policy change; a person's keys and
 wheel raise none. A signal only means "read again": the reply's content decides, so
 a missed signal costs at most `wait_ms`. The wait holds no protection barrier, so
 Vault insertion never waits on a parked viewer. `state` itself is unchanged.
-`browser-state-wait-541.json` pins the shape (Rust hash test
-`mp08_mp10_browser_state_wait_541_snapshot`). Viewers feature-detect 541 and poll
+`browser-state-wait-548.json` pins the shape (Rust hash test
+`mp08_mp10_browser_state_wait_548_snapshot`). Viewers feature-detect 548 and poll
 older kernels as before; no client floor moves.
 
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the

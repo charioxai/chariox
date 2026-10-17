@@ -50,7 +50,7 @@ test('MP-08/MP-10/MP-11 generated extension invalidates native metadata on owner
  }finally{await rm(root,{recursive:true,force:true})}
 });
 
-// Protocol 541: every retirement of the native snapshot also wakes a parked state read.
+// Protocol 548: every retirement of the native snapshot also wakes a parked state read.
 test('MP-08/MP-10 owner events, resize and detach wake the state signal',async()=>{
  const woke=[];const h=fixture();
  const groups=new ChromeTabGroups({subscribe:fn=>h.groups.connection.subscribe(fn),send:(...a)=>h.groups.connection.send(...a)},()=>woke.push(1));

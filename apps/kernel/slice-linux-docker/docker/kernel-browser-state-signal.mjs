@@ -1,4 +1,4 @@
-// MP-08/MP-10 (protocol 541): a parked state read wakes when something a state read could report may have
+// MP-08/MP-10 (protocol 548): a parked state read wakes when something a state read could report may have
 // changed. Events only say "read again"; the kernel compares the read's content, so an extra wake costs one
 // read and a missed one is bounded by the wait.
 export class StateSignal {

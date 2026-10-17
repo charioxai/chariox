@@ -780,7 +780,7 @@ test('MP-08/MP-10/MP-11 a retired window or an unsupported owner never publishes
  }finally{await g.close()}
 });
 
-// Protocol 541: a parked state read wakes on a window retirement or a change of the popups, not on every poll.
+// Protocol 548: a parked state read wakes on a window retirement or a change of the popups, not on every poll.
 test('MP-08/MP-10 window retirement and popup changes wake a parked state read once per change',async()=>{
  const f=await publishFixture(),woken=[];
  try{

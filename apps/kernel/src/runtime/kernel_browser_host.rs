@@ -901,7 +901,7 @@ impl KernelBrowserHost {
             .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
             .clone())
     }
-    /// Protocol 541: park, outside the protection barrier, until a Browser state read could differ from
+    /// Protocol 548: park, outside the protection barrier, until a Browser state read could differ from
     /// the one taken at `after` (the host's signal count). `None`: no browser is running, nothing to wait for.
     pub(crate) fn state_signal(
         &self,

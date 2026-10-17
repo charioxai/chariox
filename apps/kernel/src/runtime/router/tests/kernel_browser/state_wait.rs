@@ -1,4 +1,4 @@
-//! MP-08/MP-10 (protocol 541): a viewer's parked state read answers when the state differs.
+//! MP-08/MP-10 (protocol 548): a viewer's parked state read answers when the state differs.
 use super::*;
 
 async fn wait(router: &CommandRouter, after: &str, wait_ms: u32) -> Value {

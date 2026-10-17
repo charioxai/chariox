@@ -327,6 +327,6 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
 /// Allocated 535 registers525 resumption, worker attach and initial push credit once.
 /// MP-08/MP-10/MP-11: allocated536 captures only the visible page on the owned desktop.
-/// MP-08/MP-10/MP-11: PROVISIONAL 541 (vidlat r22, awaiting the coordinator's allocation) adds
+/// MP-08/MP-10/MP-11: allocated 548 adds
 /// `KernelBrowser` `state_wait`: a parked state read replacing the viewer's 250 ms poll.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 541;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 548;
