@@ -93,7 +93,6 @@ import type {
   QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
   QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
   ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
-  SkillImportSkip as KernelSkillImportSkip,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
   WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
   WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
@@ -164,7 +163,6 @@ export type ExtensionKind = KernelExtensionKind
 
 export type ExtensionGrant = KernelExtensionGrant
 
-export type SkillImportSkip = KernelSkillImportSkip
 
 
 export type RuntimeSession = KernelRuntimeSession & {

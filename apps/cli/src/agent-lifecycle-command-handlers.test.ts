@@ -111,7 +111,6 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
     },
     extension_grants: [
       { kind: "mcp", name: "filesystem" },
-      { kind: "skill", name: "review" },
     ],
     remote_extension_manifest_sync: {
       state: "failed",
@@ -165,8 +164,8 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /slice: devbox \(id=slice-1, status=running, owner=kernel-home@machine-home, authority=home-managed, display=headless, worktree=\/repo\/feature, agents=2\)/)
   assert.match(summary, /slice provider auth: ready codex/)
   assert.match(summary, /slice provider accounts: codex=daily \(dev@example.com\)/)
-  assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
-  assert.match(summary, /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
+  assert.match(summary, /extensions: 1 grant \(active tools home-proxy; mcp=1\)/)
+  assert.match(summary, /extension runtime: home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(summary, /extension boundary: home validates every call; credentials never leave home/)
   assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
   assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
@@ -214,32 +213,6 @@ test("agent inspect summary gives recovery for slice lookup failures", () => {
   assert.match(summary, /placement: remote \(worker=hetzner, kernel=slice:linux-dev, lease=lease-1, leased_agent=leased-agent-1\)/)
   assert.match(summary, /slice lookup: kernel did not return slice inventory/)
   assert.match(summary, /slice next: run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
-})
-
-test("remote skill-only agent summaries do not report pending home-proxy manifest", () => {
-  const remoteSkillOnlyAgent = agent({
-    id: "agent-remote",
-    agent_ref: "agent-remote",
-    alias: "reviewer",
-    remote_execution: {
-      worker_kernel_id: "worker-kernel",
-      worker_machine_id: "worker-machine",
-      execution_lease_id: "lease-1",
-      leased_agent_id: "leased-agent-1",
-    },
-    extension_grants: [{ kind: "skill", name: "review" }],
-  })
-
-  const listSummary = formatAgentListSummary([remoteSkillOnlyAgent])
-  const inspectSummary = formatAgentInspectSummary(remoteSkillOnlyAgent)
-
-  assert.match(listSummary, /1 grant \(skills snapshot\)/)
-  assert.doesNotMatch(listSummary, /manifest pending/)
-  assert.match(inspectSummary, /extensions: 1 grant \(skills snapshot; skill=1\)/)
-  assert.match(inspectSummary, /extension runtime: skill snapshot: home projects passive content; executable helpers require a separate tool grant/)
-  assert.match(inspectSummary, /extension boundary: passive content only; executable helpers require separate tool grants/)
-  assert.match(inspectSummary, /remote extension sync: not applicable \(no active home-proxy tools\)/)
-  assert.doesNotMatch(inspectSummary, /pending, next=/)
 })
 
 test("agent summaries keep final remote extension revokes visible after grants are gone", () => {
