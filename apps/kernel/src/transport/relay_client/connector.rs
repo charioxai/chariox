@@ -1325,7 +1325,6 @@ async fn run_daemon_relay_connector_inner(
                                     )
                                 );
                             }
-                            let heartbeat_reauthenticated = heartbeat_registration.is_some();
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
                                 registration: heartbeat_registration,
@@ -1339,14 +1338,14 @@ async fn run_daemon_relay_connector_inner(
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
                             }
-                            if heartbeat_reauthenticated {
-                                ensure_managed_slice_activation_confirmation(
-                                    &router,
-                                    &state,
-                                    &mut activation_confirmation_task,
-                                )
-                                .await;
-                            }
+                            // The installer may stage the confirmation after the tick that
+                            // saw the renewed token, so recheck on every heartbeat.
+                            ensure_managed_slice_activation_confirmation(
+                                &router,
+                                &state,
+                                &mut activation_confirmation_task,
+                            )
+                            .await;
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),
                             ) {
