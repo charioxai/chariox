@@ -170,6 +170,16 @@ test('a control that becomes valid or invalid restyles the form and fieldset tha
   await matchesFreshRead(form, async (w, settle) => { await w.evaluate("vin.value='x'"); await settle(); await w.evaluate("vin.value=''"); });
 });
 
+test('a positional selector combined with validity still restyles when a sibling comes and goes', options, async () => {
+  const mixed = `${page}<style>form{display:block;width:100px;height:20px}.status{display:block;width:40px;height:10px}form:first-child:valid .status{color:#c00}</style><div id=mx><form id=mf><input id=min required value=x><span class=status>status</span></form></div>`;
+  await matchesFreshRead(mixed, w => w.evaluate("mx.prepend(Object.assign(document.createElement('div'),{hidden:true}))"));
+});
+
+test('a subtree moved between parents is restyled by its new ancestors', options, async () => {
+  const moved = `${page}<style>#mr,#mb{width:60px;height:30px}#mr{color:#c00}#mb{color:#06c}#mv{display:block;width:20px;height:10px}</style><div id=mr><span id=mv>m</span></div><div id=mb></div>`;
+  await matchesFreshRead(moved, w => w.evaluate('mb.append(mv)'));
+});
+
 test('a text change re-evaluates only what it touched', options, async () => {
   const first = await open(page);
   const full = (await first.read()).reads;

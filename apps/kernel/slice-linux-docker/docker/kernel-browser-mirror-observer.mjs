@@ -13,7 +13,9 @@ function installMirrorObserver(initialStyles = {}) {
     for(const record of records) {
       if(touchedAttributes.size+touchedContent.size>4096){touchedAll=true;return;}
       if(record.type==='attributes')touchedAttributes.add(record.target);
-      else {const node=record.target.nodeType===3?record.target.parentNode:record.target;if(node)touchedContent.add(node);}
+      else {const node=record.target.nodeType===3?record.target.parentNode:record.target;if(node)touchedContent.add(node);
+        // Nodes moved in keep their cached styles from the old parent: restyle them with their subtrees.
+        for(const added of record.addedNodes)if(added.nodeType===1)touchedAttributes.add(added);}
       // A stylesheet edited, added or removed restyles the whole document.
       if(['style','link'].includes(record.target.localName)||record.target.parentNode?.localName==='style'||[...record.addedNodes,...record.removedNodes].some(node=>['style','link'].includes(node.localName)))touchedAll=true;
     }
@@ -90,7 +92,7 @@ function installMirrorObserver(initialStyles = {}) {
           // :nth-last-child(n of S) reads the S-matching siblings after the element, so a change also restyles those before it.
           if(/:nth-last-[\w-]+\([^)]*\bof\b/.test(plain))found.reverse=true;
           if(/:(?:user-)?(?:in)?valid\b/.test(plain))found.validity=true;
-          else if(/:(?:first|last|only|nth)-|:empty/.test(plain))found.structural=true;
+          if(/:(?:first|last|only|nth)-|:empty/.test(plain))found.structural=true;
           if(/:(?:has|hover|active|focus|target)/.test(rule.selectorText))analyze(rule.selectorText);
         } else if(['CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
         if(rule.cssRules)walk(rule.cssRules);
