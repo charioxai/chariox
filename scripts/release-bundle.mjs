@@ -6,7 +6,7 @@
 //   release-bundle.mjs slice-context --source-root DIR --source-commit SHA --output DIR
 //   release-bundle.mjs assemble --platform linux-x64|darwin-arm64 --version V
 //       --source-commit SHA --executables DIR --runtime DIR --runtime-public-key HEX
-//       --slice-build-context DIR [--macos-signing-receipt FILE] [--source-root DIR]
+//       --slice-build-context DIR [--slice-image DIR] [--macos-signing-receipt FILE] [--source-root DIR]
 //       --output DIR
 //   release-bundle.mjs sign --bundle DIR --signing-key PEM
 //   release-bundle.mjs verify --bundle DIR --public-key HEX
@@ -15,6 +15,9 @@
 // release kernel runs its slice provisioner from: the provisioner's
 // runtime-source-roots.txt roots (which it fingerprints and builds the slice
 // image from) and every local Dockerfile input, in the repository layout.
+// The Linux bundle also ships the slice image built from that context
+// (`--slice-image`, see slice-image-archive.mjs), so a first slice start loads a
+// signed image instead of compiling one.
 // `assemble` copies already built (and, on macOS, already codesigned and
 // notarized) artifacts into the bundle layout and writes manifest.json: the
 // version, platform, source commit, the signed App runtime's inventory digest
@@ -24,13 +27,15 @@
 // file's size and SHA-256, refuses any file the manifest does not name, and
 // re-verifies the App runtime's own signed inventory.
 import { spawnSync } from 'node:child_process';
-import { createPrivateKey, createPublicKey, sign as signBytes, verify as verifyBytes } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign as signBytes, verify as verifyBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { relativeFile, sha256, stableJson } from './app-runtime-bundle-files.mjs';
 import { SLICE_DOCKERFILE, sliceDockerfileInputs, sliceInputRoot, validateSliceBuildContext } from './slice-build-context.mjs';
+import { validateSliceImage } from './slice-image-archive.mjs';
 
 export const SCHEMA = 'chariox.release-bundle.v1';
 const MACOS_RECEIPT_SCHEMA = 'chariox.macos-release-signing.v1';
@@ -38,6 +43,8 @@ const RUNTIME_SCHEMA = 'chariox.app-runtime-inventory.v1';
 const RUNTIME_CONTROL = ['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease'];
 // Release kernels look for this beside their bin/ (apps/kernel/src/slice/local_docker.rs).
 export const SLICE_CONTEXT = 'share/chariox/slice-build-context';
+// The prebuilt slice image the provisioner loads instead of building one (provision-linux-docker-slice.sh).
+export const SLICE_IMAGE = 'share/chariox/slice-image';
 const SLICE_ROOTS = 'apps/kernel/slice-linux-docker/runtime-source-roots.txt';
 export const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
 // Preserve the complete browser-import helper tree shipped by earlier releases.
@@ -51,11 +58,13 @@ export const PLATFORMS = {
     // The App storage helper is Linux only.
     libexec: ['chariox-app-storage', 'chariox-app-runtime-install'],
     linuxInstaller: true,
+    sliceImage: true,
   },
   'darwin-arm64': {
     bin: ['chariox', ...rustBinaries],
     libexec: ['chariox-app-runtime-install'],
     linuxInstaller: false,
+    sliceImage: false,
   },
 };
 
@@ -183,11 +192,19 @@ async function place(source, output, path) {
   await chmod(target, modeOf(path, (await stat(source)).mode));
 }
 
+/** Size and SHA-256 of a file of any size; the slice image archive is too large to read whole. */
+async function fileDigest(path) {
+  const hash = createHash('sha256');
+  let size = 0;
+  for await (const chunk of createReadStream(path)) { hash.update(chunk); size += chunk.length; }
+  return { size, sha256: hash.digest('hex') };
+}
+
 async function writeManifest(output, header) {
   const entries = [];
   for (const path of await files(output)) {
-    const bytes = await readFile(join(output, path));
-    entries.push({ path, size: bytes.length, sha256: sha256(bytes), mode: ((await stat(join(output, path))).mode & 0o777).toString(8).padStart(4, '0') });
+    const { size, sha256: digest } = await fileDigest(join(output, path));
+    entries.push({ path, size, sha256: digest, mode: ((await stat(join(output, path))).mode & 0o777).toString(8).padStart(4, '0') });
   }
   const manifest = { schema: SCHEMA, ...header, files: entries };
   await writeFile(join(output, 'manifest.json'), `${JSON.stringify(JSON.parse(stableJson(manifest)), null, 2)}\n`, { mode: 0o644 });
@@ -239,6 +256,8 @@ export async function assemble(options) {
   }
   installer.push([join(sourceRoot, 'LICENSE'), 'LICENSE']);
   const sliceContext = resolve(options.sliceBuildContext ?? fail('--slice-build-context is required'));
+  if (!platform.sliceImage && options.sliceImage) fail(`--slice-image does not apply to ${options.platform} bundles`);
+  const sliceImage = platform.sliceImage ? resolve(options.sliceImage ?? fail('--slice-image is required: the slice image archive scripts/slice-image-archive.mjs exported')) : null;
   for (const path of [SLICE_ROOTS, SLICE_PROVISIONER]) await regularFile(join(sliceContext, path), `the slice build context's ${path}`);
 
   await mkdir(dirname(output), { recursive: true });
@@ -251,6 +270,10 @@ export async function assemble(options) {
     for (const path of await files(resolve(options.runtime))) await place(join(resolve(options.runtime), path), output, `runtime/${path}`);
     for (const path of await files(sliceContext)) await place(join(sliceContext, path), output, `${SLICE_CONTEXT}/${path}`);
     await validateSliceBuildContext(join(output, SLICE_CONTEXT));
+    if (platform.sliceImage) {
+      await validateSliceImage(sliceImage);
+      for (const path of await files(sliceImage)) await place(join(sliceImage, path), output, `${SLICE_IMAGE}/${path}`);
+    }
     const manifest = await writeManifest(output, {
       name: 'chariox', version: options.version, platform: options.platform, sourceCommit: options.sourceCommit,
       runtime, macosSigning,
@@ -278,10 +301,10 @@ async function checkContents(directory, manifestBytes, signed) {
   const present = (await files(directory)).filter(path => path !== 'manifest.json' && (!signed || path !== 'manifest.sig'));
   for (const path of present) {
     const entry = listed.get(path) ?? fail(`${path} is not in the manifest`);
-    const bytes = await readFile(join(directory, path));
+    const actual = await fileDigest(join(directory, path));
     // Modes are recorded for the archive; an unpacking umask may narrow or widen them,
     // and the installers set their own.
-    if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) fail(`${path} does not match the manifest`);
+    if (actual.size !== entry.size || actual.sha256 !== entry.sha256) fail(`${path} does not match the manifest`);
     listed.delete(path);
   }
   if (listed.size) fail(`bundle is missing ${[...listed.keys()].join(', ')}`);
@@ -289,6 +312,7 @@ async function checkContents(directory, manifestBytes, signed) {
   if (manifest.runtime.inventorySha256 !== sha256(await readFile(join(directory, 'runtime/runtime-inventory.json'))))
     fail('the runtime inventory digest does not match the manifest');
   await validateSliceBuildContext(join(directory, SLICE_CONTEXT));
+  if (PLATFORMS[manifest.platform]?.sliceImage) await validateSliceImage(join(directory, SLICE_IMAGE));
   return { version: manifest.version, platform: manifest.platform, sourceCommit: manifest.sourceCommit,
     files: manifest.files.length, manifestSha256: sha256(manifestBytes), runtime: manifest.runtime };
 }
@@ -309,7 +333,7 @@ export async function signBundle(bundle, signingKey) {
 
 const COMMANDS = {
   'slice-context': ['source-root', 'source-commit', 'output'],
-  assemble: ['platform', 'version', 'source-commit', 'executables', 'runtime', 'runtime-public-key', 'slice-build-context', 'macos-signing-receipt', 'source-root', 'output'],
+  assemble: ['platform', 'version', 'source-commit', 'executables', 'runtime', 'runtime-public-key', 'slice-build-context', 'slice-image', 'macos-signing-receipt', 'source-root', 'output'],
   sign: ['bundle', 'signing-key'],
   verify: ['bundle', 'public-key'],
 };
