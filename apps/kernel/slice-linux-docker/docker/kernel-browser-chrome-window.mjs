@@ -21,6 +21,8 @@ export const POPUP_CORNER = 16;
 export const OMNIBOX_LIST_HEIGHT = 344;
 /** Protocol 540: an address bar without the person's input for this long no longer keeps its list stream warm. */
 const OMNIBOX_WARM_MS = 30_000;
+/** A state read right after an address-bar key waits this long for the list that key opens. */
+const OMNIBOX_LIST_WAIT_MS = 250;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
@@ -210,7 +212,7 @@ export class ChromeWindows {
     if (!this.omniboxWarm() || !this.bound?.tabbed.isCurrent()) return;
     for (;;) {
       this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(this.rows);
-      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > 250) return;
+      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > OMNIBOX_LIST_WAIT_MS) return;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
@@ -220,8 +222,8 @@ export class ChromeWindows {
     this.refreshAuxiliary(this.rows);
     return !!this.omniboxLive;
   }
-  /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
-  onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
+  /** Is window CSS x over the address bar (the last list's span)? null before a first list. */
+  onOmnibox(x) { const last = this.omniboxRect(); return last ? x >= last.x && x < last.x + last.width : null; }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
   observeBand(raw) {
     const tabbed = this.bound?.tabbed;
@@ -553,7 +555,7 @@ export class InputArbiter {
     const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
     // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
-    const omnibox = on => { this.inOmnibox = on; this.windows.focusOmnibox?.(on); };
+    const omnibox = (on, ago) => { this.inOmnibox = on; this.windows.focusOmnibox?.(on, ago); };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
       let tab;
@@ -578,7 +580,10 @@ export class InputArbiter {
       // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
       // A popup item (menu, dropdown) may navigate or switch Tabs: the keys return to the page.
       const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? uiFocus(tab) : null;
-      omnibox(!!this.chromeFocus && this.windows.onOmnibox?.(input.x) === true);
+      // Before the window's first list its span is unknown: a toolbar click may be the address bar, so the keys
+      // after it wait for the list they open (the click itself does not wait).
+      const over = this.windows.onOmnibox?.(input.x);
+      omnibox(!!this.chromeFocus && (over === true || over === null), over === null ? -OMNIBOX_LIST_WAIT_MS - 1 : 0);
       return dispatched(() => source.click(input.x, input.y, button));
     }
     if (input.kind === 'drag') {
