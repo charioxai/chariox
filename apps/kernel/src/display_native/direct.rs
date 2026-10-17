@@ -303,10 +303,12 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
 
+    // Node's stdio "pipe" is a socketpair.
     fn pipe() -> (RawFd, RawFd) {
         let mut fds = [0; 2];
+        let kind = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
         assert_eq!(
-            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) },
+            unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) },
             0
         );
         (fds[0], fds[1])

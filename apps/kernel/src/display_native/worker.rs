@@ -602,7 +602,8 @@ pub(super) fn run() -> Result<(), String> {
     let retires = if config.retires {
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(3, &mut stat) } != 0
-            || stat.st_mode & libc::S_IFMT != libc::S_IFIFO
+            // Node's stdio pipes are socketpairs.
+            || !matches!(stat.st_mode & libc::S_IFMT, libc::S_IFIFO | libc::S_IFSOCK)
             || unsafe { libc::fcntl(3, libc::F_SETFL, libc::O_NONBLOCK) } != 0
         {
             return Err("MP-11: native retire pipe".into());
