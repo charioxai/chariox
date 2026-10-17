@@ -636,9 +636,10 @@ export class BrowserMirror2Renderer {
     const doc = this.doc, documentId = this.documentId, proofSequence = this.sequence
     if (!doc || !this.navigation.readyToPresent) { this.handoverDiagnostic('wait_content'); return false }
     if (this.slices.size) { this.handoverDiagnostic('wait_slices'); return false }
-    // An image the page never loads (failed or never fetched) holds the switch only until
-    // resources stop arriving for a while.
-    if (performance.now() - Math.max(this.documentAt, this.resourceAt) < IMAGE_HOLD_MS) for (const [id, record] of this.records) {
+    // An image the page never loads (failed or never fetched, <img> or CSS) holds the switch only
+    // until resources stop arriving for a while.
+    const imageHold = performance.now() - Math.max(this.documentAt, this.resourceAt) < IMAGE_HOLD_MS
+    if (imageHold) for (const [id, record] of this.records) {
       if (!record.res || this.resources.has(record.res)) continue
       const element = this.dom.get(id) as Element | undefined
       const box = element?.nodeType === 1 ? element.getBoundingClientRect() : null
@@ -661,7 +662,7 @@ export class BrowserMirror2Renderer {
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = element.ownerDocument.defaultView?.getComputedStyle(element)
       if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
-      if (style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
+      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
     if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
     await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
