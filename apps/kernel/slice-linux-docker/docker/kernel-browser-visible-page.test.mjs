@@ -186,3 +186,27 @@ test('MP-08/MP-11 a navigation preview reuses the attestation of an unchanged wi
  window.window_generation=3;await open();assert.equal(screenshots,2,'a resized/zoomed window attests again');
  connection={send:async()=>layout};proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,3,'a new browser connection attests again');
 });
+
+// #1016 @3a955d73c review 2: a crop taken from the last layout while the renderer was busy is retired when the delayed
+// read disagrees (a scrollbar page -> a page without one), also on the production path with a native-state guard.
+test('MP-08/MP-11 a navigation preview retires its cached crop when the delayed layout read differs',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ for(const width of [1280,1265]){
+  let busy=false;const layout=w=>({cssLayoutViewport:{clientWidth:w,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}});
+  const connection={send:async()=>busy?new Promise(resolve=>setTimeout(resolve,600,layout(width))):layout(1265)};
+  let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+  const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
+   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+   browser:{currentPageFrame:()=>proof,viewportByTarget:new Map([['target','emulated']]),resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+  await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+  busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+  const stream=host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id);
+  assert.equal(await stream.regionCurrent(),true,'the cached crop serves while the renderer is busy');
+  await new Promise(resolve=>setTimeout(resolve,700));
+  assert.equal(await stream.regionCurrent(),width===1265,width===1265?'an agreeing read keeps the display':'a differing read retires the display');
+  await stream.close();
+ }
+});

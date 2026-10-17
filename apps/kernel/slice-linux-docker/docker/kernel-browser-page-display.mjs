@@ -41,13 +41,15 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
    :host.tabs.get(tab.tab_id)?.document_id===document);
   const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
   const reads=layouts.get(browser)??new Map(),key=JSON.stringify([metrics??null,window.window_generation,window.page_rect]);layouts.set(browser,reads);
+  // A crop served from the last read is retired when the renderer's delayed read disagrees.
+  let differs=false;const verify=(used,fresh)=>{fresh.then(viewport=>{if(JSON.stringify(viewport)!==JSON.stringify(used))differs=true;},()=>{});return used;};
   const measure=async()=>{
    const last=reads.get(tab.target_id),cached=last?.key===key?last:null;
-   if(cached?.pending)return cached.viewport;
+   if(cached?.pending)return verify(cached.viewport,cached.pending);
    const fresh=connection.send('Page.getLayoutMetrics',{},sessionId).then(m=>{const viewport={clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};reads.set(tab.target_id,{key,viewport,pending:null});return viewport;});
    if(!cached)return fresh;
    cached.pending=fresh;fresh.catch(()=>{if(cached.pending===fresh)cached.pending=null;});let timer;
-   try{return await Promise.race([fresh,new Promise(resolve=>{timer=setTimeout(resolve,LAYOUT_WAIT_MS,cached.viewport);})]);}finally{clearTimeout(timer);}
+   try{return await Promise.race([fresh,new Promise(resolve=>{timer=setTimeout(()=>resolve(verify(cached.viewport,fresh)),LAYOUT_WAIT_MS);})]);}finally{clearTimeout(timer);}
   };
   // The existing native observer retires this measurement on resize, zoom,
   // tab/window changes or detach. A cold binding retains fresh measurement.
@@ -55,7 +57,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
-  const alive=()=>host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
+  const alive=()=>!differs&&host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
   // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
