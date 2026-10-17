@@ -213,6 +213,12 @@ test('a stylesheet using :has() is served from the cache, and the host of a :has
   assert(small.reads < first.reads / 4);
 });
 
+test('a :has() host is restyled when a child is appended to or removed from it', options, async () => {
+  const held = kid => `${page}<style>.holder3:has(.on) .tip3{color:#c00}</style><div class=holder3 id=holder3>${kid}<b class=tip3>tip</b></div>`;
+  await matchesFreshRead(held(''), w => w.evaluate("holder3.append(Object.assign(document.createElement('i'),{className:'on',hidden:true}))"));
+  await matchesFreshRead(held('<i id=kid class=on hidden></i>'), w => w.evaluate("kid.remove()"));
+});
+
 test('a :has() with a sibling argument restyles the preceding sibling that hosts it', options, async () => {
   const sibling = `${page}<style>.holder:has(+ .on){color:#c00}.holder:has(~ .late .on){color:#06c}</style><div class=holder id=holder>h</div><i id=after>a</i><div class=late><b id=deep>d</b></div>`;
   const s = await open(sibling);

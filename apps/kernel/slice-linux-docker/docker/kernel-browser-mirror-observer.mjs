@@ -212,7 +212,8 @@ function installMirrorObserver(initialStyles = {}) {
         }catch{return 2;}
       };
       for(const node of touchedAttributes)if(node.isConnected)mark(node,true,sheets.adjacent);
-      for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural,sheets.adjacent);
+      // A child added to or removed from a :has() host changes whether it matches: the target itself may be the host.
+      for(const node of touchedContent)if(node.isConnected){mark(node,sheets.structural,sheets.adjacent);if(sheets.has&&node.matches?.(sheets.has))restyle(node,true,sheets.adjacent);}
       hotNow.forEach((now,kind)=>{
         for(const node of [...now].filter(node=>!hot[kind].has(node)).concat([...hot[kind]].filter(node=>!now.has(node)&&node.isConnected))) {
           const reach=effect(kind,node);
