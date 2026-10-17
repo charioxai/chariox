@@ -183,8 +183,10 @@ test('MP-08/MP-11 a navigation preview reuses the attestation of an unchanged wi
  const open=async()=>host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
  await open();assert.equal(screenshots,1);
  tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,1,'same binding, new document: no screenshot');
+ // r49 quiet host: the parsing WHATWG document had no scrollbar yet (1280 vs 1265 columns), same page rect.
+ layout.cssLayoutViewport.clientWidth=1280;tab.document_id='newer';proof={connection,sessionId:'s',frame:{loaderId:'newer'}};await open();assert.equal(screenshots,1,'a wider crop in the same page rect: no screenshot');
  window.window_generation=3;await open();assert.equal(screenshots,2,'a resized/zoomed window attests again');
- connection={send:async()=>layout};proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,3,'a new browser connection attests again');
+ connection={send:async()=>layout};proof={connection,sessionId:'s',frame:{loaderId:'newer'}};await open();assert.equal(screenshots,3,'a new browser connection attests again');
 });
 
 // #1016 @3a955d73c review 2: a crop taken from the last layout while the renderer was busy is retired when the delayed

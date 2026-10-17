@@ -61,7 +61,8 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
   // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
-  const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1,geometry]);
+  // The crop is not part of it: a new document without a scrollbar widens the crop inside the same page rect.
+  const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1]);
   const attestation={proven:()=>proofs.get(connection)?.get(tab.target_id)===proofKey,
    prove:()=>{const proven=proofs.get(connection)??new Map();proven.set(tab.target_id,proofKey);proofs.set(connection,proven);}};
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
