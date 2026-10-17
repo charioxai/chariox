@@ -44,12 +44,12 @@ impl KernelRuntimeState {
             return;
         };
         let session_id = run.session_id().to_string();
+        // All client and background callers retain the same per-run owner.
+        let _permit = self.provider_runtime_lanes.acquire(run_id).await;
         let recipients = self
             .owned
             .attachment_store
             .list_session_attachment_ids(&session_id);
-        // All client and background callers retain the same per-run owner.
-        let _permit = self.provider_runtime_lanes.acquire(run_id).await;
         if let Err(error) = self
             .pump_owned_provider_output(&session_id, run_id, recipients, false)
             .await

@@ -459,6 +459,85 @@ async fn panes_stream_next_ready_batch_does_not_wait_for_previous_history_ack() 
     );
 }
 
+#[tokio::test]
+async fn panes_stream_batch_reaches_an_attachment_registered_after_the_recipient_snapshot() {
+    // MP-08 / MP-10: a view attached while the pump waited for its run lane reads
+    // history that cannot yet contain the batch; it must receive the batch live.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-late-attachment");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let late = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-late-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-late-attachment",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-late-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    // The pump took its recipients before `late` attached.
+    let stale_recipients = Vec::new();
+    let records = runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            stale_recipients,
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("late-text".into()),
+                    bytes: b"LATE".to_vec(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+    let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+        .watch_relay_subscription_state(session.id(), late.id(), false, None, 0)
+        .await
+    else {
+        panic!("late attachment cannot watch");
+    };
+    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(

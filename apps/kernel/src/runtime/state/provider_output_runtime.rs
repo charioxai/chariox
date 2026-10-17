@@ -204,11 +204,7 @@ impl KernelRuntimeState {
                     (output, history_entry)
                 })
                 .collect::<Vec<_>>();
-            owned.append_history_and_fan_out(
-                session_id,
-                Some(recipient_attachment_ids),
-                terminal_outputs,
-            )
+            owned.append_history_and_fan_out(session_id, None, terminal_outputs)
         };
         if let Some(message) = terminal_failure {
             let run = owned

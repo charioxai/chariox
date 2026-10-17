@@ -731,12 +731,18 @@ impl KernelRuntimeState {
         for item in &prepared {
             terminal_outputs[positions[item.position]].sequence = Some(item.sequence);
         }
+        // A view attached from here on reads these rows from history; one that
+        // attached earlier is a recipient now, whatever the pump saw before it
+        // waited for the run lane.
+        self.enqueue_provider_history(prepared, history_lease);
+        let recipient_attachment_ids = owned
+            .attachment_store
+            .list_session_attachment_ids(session_id);
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        self.enqueue_provider_history(prepared, history_lease);
         if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
             self.flush_provider_history(provider_run_id).await?;
         }
