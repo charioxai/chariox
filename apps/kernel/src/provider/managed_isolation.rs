@@ -1935,7 +1935,13 @@ fn managed_working_directory(
 fn managed_runtime_roots(launch: &ProviderLaunchResult) -> Result<Vec<PathBuf>, DaemonError> {
     let mut roots = Vec::new();
     for (name, value) in &launch.pty_env {
-        if !name.starts_with("CHARIOX_CLAUDE_NATIVE_") {
+        // The receipts flag and chunk index are not paths; every other native value is.
+        if !name.starts_with("CHARIOX_CLAUDE_NATIVE_")
+            || matches!(
+                name.as_str(),
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS" | "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK"
+            )
+        {
             continue;
         }
         let path = PathBuf::from(value);
@@ -2982,6 +2988,46 @@ mod tests {
                 ]
         }));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_claude_runtime_roots_ignore_the_context_receipts_flag() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-receipts-flag-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("runtime root should exist");
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "managed-receipts-flag-test".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    root.join("events.jsonl").display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".to_string(),
+                    "1".to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+
+        let roots = managed_runtime_roots(&launch)
+            .expect("a managed Claude launch with context receipts should be accepted");
+
+        assert_eq!(
+            roots,
+            vec![root.canonicalize().expect("root should canonicalize")]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
