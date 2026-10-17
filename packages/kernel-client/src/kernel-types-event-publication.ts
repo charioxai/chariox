@@ -160,7 +160,8 @@ export type ReceivedEvent = {
   event_type: string
   occurrence_id: string
   connection_id?: string | null
-  metadata?: Record<string, unknown> | null
+  connection_scope: string
+  subject?: string | null
   received_at_ms: number
   published_at_ms?: number | null
   status: ReceivedEventStatus

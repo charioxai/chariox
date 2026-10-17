@@ -188,6 +188,13 @@ pub trait AegsProvider: Send + Sync {
         None
     }
 
+    /// A short human label for what the event is about inside its connection scope, such as a
+    /// pull request number. Received-event listings show it next to the scope instead of
+    /// returning the whole provider payload.
+    fn event_subject(&self, _event: &NormalizedEvent) -> Option<String> {
+        None
+    }
+
     /// Lists deliveries the provider logged at or after `since_ms`, so the redelivery sweep can
     /// find webhooks this AEGS never stored. Providers without a delivery log return nothing.
     fn recent_deliveries(&self, _since_ms: u64) -> Result<Vec<ProviderDelivery>, String> {

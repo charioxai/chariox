@@ -508,7 +508,8 @@ pub enum AegsReceivedEventStatus {
 }
 
 /// One webhook the generator received and stored. The prompt and reply context are not part of
-/// the view; `metadata` is the filterable summary (repository, pull request number, ...).
+/// the view, and neither is the provider payload: a listing stays small however large the
+/// webhook was.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AegsReceivedEvent {
     pub delivery_id: String,
@@ -516,8 +517,11 @@ pub struct AegsReceivedEvent {
     pub occurrence_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
-    #[serde(default, skip_serializing_if = "is_json_null")]
-    pub metadata: Value,
+    /// What the event is about, such as `owner/repo`.
+    pub connection_scope: String,
+    /// A short label inside the scope, such as `#1026`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub received_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at_ms: Option<u64>,

@@ -1982,6 +1982,9 @@ mod mp11_delivery_http_tests {
         fn webhook_delivery_id(&self, input: WebhookInput<'_>) -> Option<String> {
             input.headers.get("x-delivery").cloned()
         }
+        fn event_subject(&self, _: &crate::NormalizedEvent) -> Option<String> {
+            Some("#7".into())
+        }
     }
     fn event() -> crate::NormalizedEvent {
         crate::NormalizedEvent {
@@ -2427,7 +2430,10 @@ mod mp11_delivery_http_tests {
         assert_eq!(events[0]["status"], "pending");
         assert_eq!(events[0]["event_type"], "event");
         assert!(events[0]["last_error"].is_string());
+        assert_eq!(events[0]["connection_scope"], "scope");
+        assert_eq!(events[0]["subject"], "#7");
         assert!(events[0].get("prompt").is_none());
+        assert!(events[0].get("metadata").is_none());
         let (_, page) =
             management_post(&server, "/v1/events/query", "stranger", query("stranger")).await;
         assert!(page["events"].as_array().unwrap().is_empty());

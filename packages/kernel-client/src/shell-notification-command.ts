@@ -307,9 +307,7 @@ function formatAuthorization(authorization: EventConnectionAuthorization): strin
 }
 
 function formatReceivedEvent(event: ReceivedEvent): string {
-  const target = event.metadata?.repository
-    ? ` ${event.metadata.repository}${event.metadata.number ? `#${event.metadata.number}` : ""}`
-    : ""
+  const target = ` ${event.connection_scope}${event.subject ?? ""}`
   const published = event.published_at_ms ? ` published=${new Date(event.published_at_ms).toISOString()}` : ""
   const problem = event.last_error ? ` error=${event.last_error}` : ""
   return `${event.delivery_id}  ${event.event_type}${target}  ${event.status}`

@@ -212,7 +212,10 @@ impl AegsServer {
             Ok(entries) => json(
                 StatusCode::OK,
                 AegsReceivedEventPage {
-                    events: entries.into_iter().map(received_event).collect(),
+                    events: entries
+                        .into_iter()
+                        .map(|entry| self.received_event(entry))
+                        .collect(),
                 },
             ),
             Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
@@ -261,7 +264,7 @@ impl AegsServer {
             Ok(Some(entry)) => json(
                 StatusCode::OK,
                 AegsReceivedEventReplayResponse {
-                    event: received_event(entry),
+                    event: self.received_event(entry),
                 },
             ),
             Ok(None) => error(
@@ -313,13 +316,21 @@ impl AegsServer {
     }
 }
 
-fn received_event(entry: InboxEntry) -> AegsReceivedEvent {
+impl AegsServer {
+    fn received_event(&self, entry: InboxEntry) -> AegsReceivedEvent {
+        let subject = self.provider.event_subject(&entry.event);
+        received_event(entry, subject)
+    }
+}
+
+fn received_event(entry: InboxEntry, subject: Option<String>) -> AegsReceivedEvent {
     AegsReceivedEvent {
         delivery_id: entry.delivery_id,
         event_type: entry.event.event_type,
         occurrence_id: entry.event.occurrence_id,
         connection_id: entry.route_connection_id,
-        metadata: entry.event.metadata,
+        connection_scope: entry.event.connection_scope,
+        subject,
         received_at_ms: entry.received_at_ms,
         published_at_ms: entry.published_at_ms,
         status: match entry.status {
