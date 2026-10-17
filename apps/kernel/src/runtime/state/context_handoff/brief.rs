@@ -210,6 +210,61 @@ pub(super) fn parse_brief(output: &str) -> Option<String> {
     })
 }
 
+// A utility model can drop characters from a long digest or id while folding. Restore a
+// brief hex value that is not verbatim in its sources when exactly one longer source value
+// shares its first 12 and last 2 characters.
+pub(super) fn restore_exact_hex_values(brief: &str, sources: &[&str]) -> String {
+    let known: Vec<&str> = sources
+        .iter()
+        .flat_map(|source| hex_runs(source))
+        .map(|(_, value)| value)
+        .collect();
+    let mut restored = String::with_capacity(brief.len());
+    let mut copied = 0;
+    for (start, value) in hex_runs(brief) {
+        if known.contains(&value) {
+            continue;
+        }
+        let mut candidates: Vec<&str> = known
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                candidate.len() > value.len()
+                    && candidate.starts_with(&value[..12])
+                    && candidate.ends_with(&value[value.len() - 2..])
+            })
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        if let [candidate] = candidates[..] {
+            restored.push_str(&brief[copied..start]);
+            restored.push_str(candidate);
+            copied = start + value.len();
+        }
+    }
+    restored.push_str(&brief[copied..]);
+    restored
+}
+
+// Lowercase hex runs of at least 16 characters that are whole words.
+fn hex_runs(text: &str) -> Vec<(usize, &str)> {
+    let bytes = text.as_bytes();
+    let word = |index: usize| bytes.get(index).is_some_and(u8::is_ascii_alphanumeric);
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let start = index;
+        while index < bytes.len() && matches!(bytes[index], b'0'..=b'9' | b'a'..=b'f') {
+            index += 1;
+        }
+        if index - start >= 16 && (start == 0 || !word(start - 1)) && !word(index) {
+            runs.push((start, &text[start..index]));
+        }
+        index = index.max(start + 1);
+    }
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +426,19 @@ mod tests {
             text.contains("<transcript part=\"2 of 3\">\n[User] Use port 41000.\n</transcript>")
         );
         assert!(text.contains("## Critical Context"));
+    }
+
+    #[test]
+    fn a_folded_brief_keeps_a_digest_the_utility_shortened() {
+        let digest = "46a013aba608dcb59b32d613e77977ba420333e6a840a6e0bbe6b29a385ee6b3";
+        let chunk = format!("user: python_result is {digest}; lease-000001a14b24a75b");
+        let brief = "## Critical Context\n- `python_result = 46a013aba608dcb59b32d613e77977ba420333e6b3` (source: user)\n- lease-000001a14b24a75b";
+
+        let restored = restore_exact_hex_values(brief, &[&chunk]);
+
+        assert!(restored.contains(&format!("`python_result = {digest}`")));
+        assert!(restored.ends_with("- lease-000001a14b24a75b"));
+        assert_eq!(restore_exact_hex_values(brief, &[]), brief);
     }
 
     #[test]

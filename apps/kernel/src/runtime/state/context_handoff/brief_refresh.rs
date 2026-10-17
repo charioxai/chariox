@@ -16,7 +16,9 @@ use crate::runtime::agent_utility_executor::{
 
 use super::super::project_environment_export::MetadataUtilityScratch;
 use super::super::{KernelRuntimeOwnedState, KernelRuntimeState};
-use super::brief::{brief_prompt, current_brief, parse_brief, transcript_chunks};
+use super::brief::{
+    brief_prompt, current_brief, parse_brief, restore_exact_hex_values, transcript_chunks,
+};
 use super::PendingAgentContextHandoff;
 
 /// How long a dispatch waits for its brief before it falls back.
@@ -239,13 +241,13 @@ impl KernelRuntimeState {
                     .read_owned()
                     .await;
                 owned.require_brief_source_revision(session_id, source_revision)?;
-                brief =
-                    Some(owned.room_secret_observations.scrub(
-                        session_id,
-                        parse_brief(&output).ok_or_else(|| {
-                            brief_error("the utility answer is not a handoff brief")
-                        })?,
-                    )?);
+                let folded = parse_brief(&output)
+                    .ok_or_else(|| brief_error("the utility answer is not a handoff brief"))?;
+                let folded = restore_exact_hex_values(
+                    &folded,
+                    &[chunk.text.as_str(), brief.as_deref().unwrap_or_default()],
+                );
+                brief = Some(owned.room_secret_observations.scrub(session_id, folded)?);
             }
             let _guard = owned
                 .room_secret_observations
