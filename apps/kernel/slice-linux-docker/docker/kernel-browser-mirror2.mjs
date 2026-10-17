@@ -43,7 +43,7 @@ const DEFLATE_MIN_BYTES = 512;
 const PAINT_HOLD_MS = 2500;
 // A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
 // (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
-const BUSY_RENDERER_MS = 25_000;
+const BUSY_RENDERER_MS = 20_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.

@@ -1989,3 +1989,12 @@ test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover 
  for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
 }));
+
+test('MP-08/MP-10/MP-11 viewer input parks on the first fence read that times out, not after the last',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=60_000;let timedOut=0;
+ connection.beforeSend=async(method)=>{if(!method.startsWith('Input.')){timedOut++;throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})}};
+ await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.equal(timedOut,1,'every further read would cost another 5 s of the 30 s the viewer waits');
+ assert.equal(host.busyInputs.queues.size,1);
+}));

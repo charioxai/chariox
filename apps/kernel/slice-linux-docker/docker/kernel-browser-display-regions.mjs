@@ -92,6 +92,9 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  }
  return createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset,overlayTab,Capture});
 }
+// A visible page is admitted from the cached native state (a parsing page answers renderer reads late and an unparkable
+// wait here would outlast the viewer's request); every fence before the dispatch still reads live through the input guard.
+const streamAdmitted=stream=>stream.regionTarget.kind==='visible_page'&&stream.regionFrameCurrent?stream.regionFrameCurrent():stream.regionCurrent();
 function inputStream(host,command,scope) {
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  const stream=[...host.displays.values()].find(s=>s.binding_id===command.binding_id);
@@ -107,7 +110,7 @@ export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  // MP-11: this only names the stream's own tab/document. A visible page needs no renderer read for that (a parsing
  // page answers late); the input that follows runs the fresh regionCurrent, input guard and final fences.
- if(!await (stream.regionTarget.kind==='visible_page'&&stream.regionFrameCurrent?stream.regionFrameCurrent():stream.regionCurrent()))refuse();
+ if(!await streamAdmitted(stream))refuse();
  if(['region','visible_page'].includes(stream.regionTarget.kind))return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
  // This window epoch is kernel-issued private adapter data, not an extra
@@ -118,7 +121,7 @@ export async function regionInputTarget(host,command,scope,signal) {
 }
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await stream.regionCurrent())refuse();
+ if(!await streamAdmitted(stream))refuse();
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();

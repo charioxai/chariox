@@ -104,7 +104,8 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
   if(!await stream.regionCurrent())refuse();
   visiblePageInputSource(host,stream,tab,scope);
  };
- await inputGuard();
+ // The live crop check runs as a fence before the dispatch, where a busy renderer parks the input.
+ const tab=host.tabs.get(command.tab_id);if(!tab)refuse();visiblePageInputSource(host,stream,tab,scope);
  return host.request({...page,observed_by:scope},{signal,inputGuard,nativeDisplay:stream});
 }
 

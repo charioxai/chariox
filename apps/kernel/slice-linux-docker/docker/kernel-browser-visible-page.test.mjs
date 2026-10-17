@@ -67,6 +67,21 @@ test('MP-11 visible-page input keeps ordinary dispatch and the final live crop g
  }
 });
 
+test('MP-08/MP-10/MP-11 visible-page input is admitted without a live renderer read; the final guard still reads live',async()=>{
+ const {regionInput}=await import('./kernel-browser-display-regions.mjs');
+ let live=0,request;
+ const busy=Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});
+ const stream={subscription_id:'crop',binding_id:'crop',tab_id:'t',generation:1,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionTarget:{kind:'visible_page'},regionLease:{document_id:'d',sequence:2,isAlive:()=>true},regionWindow:{isCurrent:()=>true},
+  regionSource:{attested:true,valid:()=>true},css_width:1280,css_height:712,regionCurrent:async()=>{live++;throw busy},regionFrameCurrent:async()=>true};
+ const host={generation:1,displays:new Map([['crop',stream]]),tabs:new Map([['t',{tab_id:'t',document_id:'d'}]]),request:async(command,options)=>{request={command,options};}};
+ const command={op:'input',tab_id:'t',generation:1,document_id:'d',binding_id:'crop',sequence:2,input:{kind:'text',text:'a'}};
+ await regionInput(host,command,'terminal:a');
+ assert.equal(live,0,'a parsing page answers renderer reads late: nothing before the parkable fences may wait for it');
+ assert(request,'the input reached the fenced request (where a busy renderer parks it)');
+ await assert.rejects(request.options.inputGuard(),error=>error.code==='browser_cdp_timeout');assert.equal(live,1,'the dispatch fence reads live');
+});
+
 test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source, without an RGB exemption',()=>{
  const r=visiblePageGeometry(binding(),{clientWidth:1265,clientHeight:800,zoom:1,scale:1});
  assert.equal(r.width,1264);assert.equal(r.height,712);assert.equal(r.window_region.left,0);assert.equal(r.window_region.top,87);
