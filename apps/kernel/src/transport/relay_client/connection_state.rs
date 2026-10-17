@@ -110,7 +110,7 @@ pub(crate) struct PendingManagedSliceActivationConfirmation {
     pub(crate) worker_kernel_id: String,
     pub(crate) activation_nonce: String,
     expires_at: Instant,
-    attempts: u8,
+    pub(super) attempts: u8,
 }
 
 impl PendingManagedSliceActivationConfirmation {

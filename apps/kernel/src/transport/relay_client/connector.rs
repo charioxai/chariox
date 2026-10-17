@@ -548,7 +548,7 @@ fn spawn_managed_slice_activation_confirmation(
     })
 }
 
-async fn spawn_pending_managed_slice_activation_confirmation_after_connect(
+async fn spawn_pending_managed_slice_activation_confirmation(
     router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,
 ) -> Option<JoinHandle<()>> {
@@ -557,6 +557,23 @@ async fn spawn_pending_managed_slice_activation_confirmation_after_connect(
         .await
         .pending_managed_slice_activation_confirmation()?;
     Some(spawn_managed_slice_activation_confirmation(router, state))
+}
+
+// MP-08/MP-10/MP-11: a renewed key-bound token is also accepted in place on
+// the live socket, so confirm after reauthentication as well as after connect.
+async fn ensure_managed_slice_activation_confirmation(
+    router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
+    task: &mut Option<JoinHandle<()>>,
+) {
+    if task.as_ref().is_some_and(|task| !task.is_finished()) {
+        return;
+    }
+    *task = spawn_pending_managed_slice_activation_confirmation(
+        Arc::clone(router),
+        Arc::clone(state),
+    )
+    .await;
 }
 
 fn spawn_leased_projection_pump(
@@ -1007,10 +1024,12 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .runtime_state()
                     .retry_pending_slice_observation_revocations();
+                let mut activation_confirmation_task = None;
                 if static_relay.is_none() {
-                    let _ = spawn_pending_managed_slice_activation_confirmation_after_connect(
-                        Arc::clone(&router),
-                        Arc::clone(&state),
+                    ensure_managed_slice_activation_confirmation(
+                        &router,
+                        &state,
+                        &mut activation_confirmation_task,
                     )
                     .await;
                 }
@@ -1210,6 +1229,12 @@ async fn run_daemon_relay_connector_inner(
                                                 "phase": "token_refresh",
                                             }),
                                         );
+                                        ensure_managed_slice_activation_confirmation(
+                                            &router,
+                                            &state,
+                                            &mut activation_confirmation_task,
+                                        )
+                                        .await;
                                         None
                                     }
                                 }
@@ -1300,6 +1325,7 @@ async fn run_daemon_relay_connector_inner(
                                     )
                                 );
                             }
+                            let heartbeat_reauthenticated = heartbeat_registration.is_some();
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
                                 registration: heartbeat_registration,
@@ -1312,6 +1338,14 @@ async fn run_daemon_relay_connector_inner(
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
+                            }
+                            if heartbeat_reauthenticated {
+                                ensure_managed_slice_activation_confirmation(
+                                    &router,
+                                    &state,
+                                    &mut activation_confirmation_task,
+                                )
+                                .await;
                             }
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),
