@@ -181,8 +181,9 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     config_state: { version: 1, values: {} },
   }
 
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
     clearPendingPromptAttachments: () => events.push("clearPendingPromptAttachments"),
     clearWorkflows: () => events.push("clearWorkflows"),
     bumpHistoryLoadGeneration: () => events.push("bumpHistoryLoadGeneration"),
@@ -225,7 +226,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
       events.push("hydrateAttachedSessionBinding")
       return attachedSession
     },
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (next: unknown) => { shownAttachment = next; events.push("setAttachmentState") },
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
@@ -257,9 +258,23 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   await controller.attachBinding({ id: "session-2" }, false)
 
   assert.deepEqual(events, [
+    "setAttachmentState",
+    "setProviderRunState",
+    "setSessionState",
+    "clearWorkflows",
+    "clearActiveToolLabels",
+    "clearDirectoryTree",
+    "resetWorkspaceScreen",
+    "setWorking",
+    "setSubmitting",
+    "setStreamingAgentId",
+    "setProviderActivityLabel",
+    "setActiveStatusLabel",
+    "setStatusLine",
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
     "setSessionHydratingState",
+    "updateSessionChrome",
     "attachToSession",
     "getSessionState",
     "setMultiAgentResponseLayout",
@@ -540,8 +555,10 @@ test("attachBinding recovers when its launch target moves remote", async () => {
   const appliedSessions: RuntimeSession[] = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
   let stateReads = 0
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-moving", session_id: "session-moving" }),
     getSessionState: async () => {
       stateReads += 1
@@ -662,8 +679,10 @@ test("attachBinding preserves the actionable vault warning after session hydrati
     }],
     config_state: { version: 1, values: {} },
   }
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-vault-locked", session_id: "session-vault-locked" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -704,8 +723,9 @@ test("attachBinding skips provider launch when existing session exposes no visib
   }
   let launchCalled = false
   const providerRuns: Array<RuntimeProviderRun | null> = []
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
     attachToSession: async () => ({ id: "att-hidden-focus", session_id: "session-hidden-focus" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -716,7 +736,7 @@ test("attachBinding skips provider launch when existing session exposes no visib
     setProviderCatalogState: () => {},
     getProviderCatalog: async () => ({}),
     hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
-    setAttachmentState: () => {},
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     setCreatedSessionState: () => {},
     setSessionState: () => {},
     setCenterMode: () => {},
@@ -744,7 +764,7 @@ test("attachBinding skips provider launch when existing session exposes no visib
   await controller.attachBinding({ id: "session-hidden-focus" }, false)
 
   assert.equal(launchCalled, false)
-  assert.deepEqual(providerRuns, [null])
+  assert.deepEqual(providerRuns, [null, null], "the placeholder clears the run, the session has none")
 })
 
 test("attachBinding skips provider launch when focused agent is stale", async () => {
@@ -785,8 +805,10 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
     config_state: { version: 1, values: {} },
   }
   let launchCalled = false
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-stale-focus", session_id: "session-stale-focus" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -804,7 +826,7 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
   await controller.attachBinding({ id: "session-stale-focus" }, false)
 
   assert.equal(launchCalled, false)
-  assert.deepEqual(providerRuns, [null])
+  assert.deepEqual(providerRuns, [null, null], "the placeholder clears the run, the session has none")
   assert.deepEqual(warnings, [{
     session_id: "session-stale-focus",
     focused_agent_id: "missing-agent",
@@ -1119,8 +1141,9 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     config_state: { version: 1, values: {} },
   }
 
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
     attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => ({
@@ -1138,7 +1161,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (next: unknown) => { shownAttachment = next; events.push("setAttachmentState") },
     resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     clearDirectoryTree: () => events.push("clearDirectoryTree"),
     clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
@@ -1162,7 +1185,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events.slice(0, 15), [
+  assert.deepEqual(events.slice(events.indexOf("setMultiAgentResponseLayout")).slice(0, 15), [
     "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",

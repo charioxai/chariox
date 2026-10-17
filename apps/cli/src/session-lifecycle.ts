@@ -328,10 +328,9 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   // Switching: hand the view to the selected session's placeholder at once.
-  const beginSessionSelection = (session: SessionReference): SessionSelection | null => {
+  const beginSessionSelection = (session: SessionReference): SessionSelection => {
     const shown = deps.attachmentState()
-    if (shown?.session_id === session.id) return null
-    const previous = shown ?? retained
+    if (shown?.session_id === session.id) return keepShownSelection()
     selectionGeneration += 1
     const generation = selectionGeneration
     const current = () => generation === selectionGeneration
@@ -339,39 +338,35 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     // The old attachment may take seconds to detach: move display ownership
     // now, with no attachment or launch authority.
     if (shown) retained = shown
-    if (previous) {
-      const label = `Loading session ${session.alias?.trim() || session.id}…`
-      const pending = deps.deriveDetachedCliTransitionState({
-        cliOptions: deps.cliOptions,
-        waitingRoomState: deps.waitingRoomState(),
-        message: label,
-      })
-      deps.setAttachmentState(null)
-      deps.setProviderRunState(null)
-      deps.setSessionState({ ...pending.session, ...session, active_prompt: null, queued_prompts: [], attachment_ids: [] })
-      deps.clearTranscript()
-      deps.clearAgentPaneRuntime()
-      deps.setAgentPaneEntries({})
-      deps.setAgentPanePreviews({})
-      deps.setAgentActivityLabels({})
-      deps.clearWorkflows()
-      deps.clearActiveToolLabels()
-      deps.clearDirectoryTree()
-      deps.resetWorkspaceScreen()
-      deps.setWorking(false)
-      deps.setSubmitting(false)
-      deps.setStreamingAgentId(null)
-      deps.setProviderActivityLabel(null)
-      deps.setActiveStatusLabel(null)
-      deps.setStatusLine(label)
-    }
+    const label = `Loading session ${session.alias?.trim() || session.id}…`
+    const pending = deps.deriveDetachedCliTransitionState({
+      cliOptions: deps.cliOptions,
+      waitingRoomState: deps.waitingRoomState(),
+      message: label,
+    })
+    deps.setAttachmentState(null)
+    deps.setProviderRunState(null)
+    deps.setSessionState({ ...pending.session, ...session, active_prompt: null, queued_prompts: [], attachment_ids: [] })
+    deps.clearTranscript()
+    deps.clearAgentPaneRuntime()
+    deps.setAgentPaneEntries({})
+    deps.setAgentPanePreviews({})
+    deps.setAgentActivityLabels({})
+    deps.clearWorkflows()
+    deps.clearActiveToolLabels()
+    deps.clearDirectoryTree()
+    deps.resetWorkspaceScreen()
+    deps.setWorking(false)
+    deps.setSubmitting(false)
+    deps.setStreamingAgentId(null)
+    deps.setProviderActivityLabel(null)
+    deps.setActiveStatusLabel(null)
+    deps.setStatusLine(label)
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
     deps.setSessionHydratingState(true)
-    if (previous) {
-      deps.updateSessionChrome()
-      deps.requestRender()
-    }
+    deps.updateSessionChrome()
+    deps.requestRender()
     return {
       current,
       attach: (target, createdSession = false, launch) => serialized(async () => {
@@ -389,7 +384,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         if (!deps.attachmentState() && retained) {
           selection = { kind: "restoring", generation }
           await restoreRetained(current)
-        } else if (!deps.attachmentState() && previous) {
+        } else if (!deps.attachmentState()) {
           await transitionToNoSession("Could not open the selected session.")
         }
         if (!current()) return
@@ -400,13 +395,27 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
   }
 
+  // Selecting the shown session changes nothing, but its lookup is still owned:
+  // any newer selection or return to the waiting room discards its result.
+  const keepShownSelection = (): SessionSelection => {
+    const generation = selectionGeneration
+    const current = () => generation === selectionGeneration
+    return {
+      current,
+      attach: async (target, createdSession = false, launch) => {
+        if (!current() || deps.attachmentState()?.session_id === target.id) return
+        await attachBinding(target, createdSession, launch)
+      },
+      settle: async () => {},
+    }
+  }
+
   const attachBinding = async (
     session: SessionReference,
     createdSession: boolean,
     launch?: LaunchSelection,
   ) => {
     const selected = beginSessionSelection(session)
-    if (!selected) return
     try {
       await selected.attach(session, createdSession, launch)
     } finally {

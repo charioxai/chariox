@@ -13,11 +13,13 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 
 // One world per explored path: every kernel round trip of a selection (lookup,
 // detach, attach, state read) waits until the explorer completes it.
-function createWorld(targets: string[]) {
+function createWorld(targets: string[], attached: boolean) {
   const pending: Op[] = []
-  const live = new Set(["att-a"])
+  const live = new Set(attached ? ["att-a"] : [])
   const errors: string[] = []
-  let view: Attachment | null = { id: "att-a", session_id: "session-a" }
+  let view: Attachment | null = attached ? { id: "att-a", session_id: "session-a" } : null
+  // The session the screen shows: a placeholder, an attached session or none.
+  let shown = view?.session_id ?? "no-session"
   let attachSeq = 0
   const op = <T>(label: string, canFail: boolean, value: () => T) =>
     new Promise<T>((resolve, reject) => {
@@ -27,6 +29,7 @@ function createWorld(targets: string[]) {
   const { deps } = createBaseDeps({
     attachmentState: () => view,
     setAttachmentState: (next: Attachment | null) => { view = next },
+    setSessionState: (next: { id: string }) => { shown = next.id },
     detachAttachment: (id: string) => op(`detach ${id}`, id === "att-a", () => {
       if (!live.delete(id)) errors.push(`detached ${id} twice`)
     }),
@@ -56,6 +59,7 @@ function createWorld(targets: string[]) {
   return {
     pending, live, errors, selections, start,
     view: () => view,
+    shown: () => shown,
     selecting: () => lifecycle.isSessionSelecting(),
   }
 }
@@ -78,6 +82,11 @@ function choicesFor(world: ReturnType<typeof createWorld>, targets: string[], fa
 function checkStep(world: ReturnType<typeof createWorld>, trace: string[]) {
   const newest = world.selections.at(-1)
   if (!newest || newest.done) return
+  const shown = world.shown()
+  assert.ok(
+    shown === newest.target || shown === newest.shownAtBegin,
+    `screen shows ${shown} while ${newest.target} is pending\n${trace.join("\n")}`,
+  )
   const view = world.view()
   if (view === null) {
     assert.ok(world.selecting(), `selection guard dropped while ${newest.target} is pending\n${trace.join("\n")}`)
@@ -106,10 +115,11 @@ function checkEnd(world: ReturnType<typeof createWorld>, failed: string[], trace
     )
   }
   assert.deepEqual([...world.live], view ? [view.id] : [], `kernel attachments do not match the view${where}`)
+  assert.equal(world.shown(), view?.session_id ?? "no-session", `screen does not match the view${where}`)
 }
 
-async function runPath(targets: string[], maxFailures: number, prefix: number[]) {
-  const world = createWorld(targets)
+async function runPath(targets: string[], maxFailures: number, attached: boolean, prefix: number[]) {
+  const world = createWorld(targets, attached)
   const taken: number[] = []
   const widths: number[] = []
   const failed: string[] = []
@@ -139,12 +149,12 @@ async function runPath(targets: string[], maxFailures: number, prefix: number[])
   throw new Error(`path did not finish\n${trace.join("\n")}`)
 }
 
-async function explore(targets: string[], maxFailures: number) {
+async function explore(targets: string[], maxFailures: number, attached = true) {
   const stack: number[][] = [[]]
   let paths = 0
   while (stack.length > 0) {
     const prefix = stack.pop()!
-    const { taken, widths } = await runPath(targets, maxFailures, prefix)
+    const { taken, widths } = await runPath(targets, maxFailures, attached, prefix)
     paths += 1
     for (let step = prefix.length; step < widths.length; step += 1) {
       for (let choice = 1; choice < widths[step]!; choice += 1) {
@@ -159,6 +169,18 @@ test("MP-08 / MP-10 OWNER-24 every interleaving of two overlapping selections en
   const paths = await explore(["session-b", "session-c"], 2)
   t.diagnostic(`explored ${paths} paths`)
   assert.ok(paths > 50, `explored ${paths} paths`)
+})
+
+test("MP-08 / MP-10 OWNER-24 a lookup of the attached session cannot reopen it over a newer selection", async t => {
+  const paths = await explore(["session-a", "session-b"], 2)
+  t.diagnostic(`explored ${paths} paths`)
+  assert.ok(paths > 20, `explored ${paths} paths`)
+})
+
+test("MP-08 / MP-10 OWNER-24 selections from the waiting room show their own placeholder", async t => {
+  const paths = await explore(["session-b", "session-c"], 2, false)
+  t.diagnostic(`explored ${paths} paths`)
+  assert.ok(paths > 20, `explored ${paths} paths`)
 })
 
 test("MP-08 / MP-10 OWNER-24 every interleaving of three overlapping selections ends on the newest or a clean detach", async t => {
