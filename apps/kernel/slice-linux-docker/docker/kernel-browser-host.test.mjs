@@ -1931,3 +1931,17 @@ test('MP-08/MP-10/MP-11 a parked wheel burst replays as one scroll',()=>using(as
  const wheels=sent.filter(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseWheel');
  assert.equal(wheels.length,1);assert.equal(wheels[0].params.deltaY,600);
 }));
+
+test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never delivered mangled',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,refuseFirst=true;
+ connection.beforeSend=async(method,params)=>{
+  if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
+  if(!busy&&refuseFirst&&method==='Input.insertText'){refuseFirst=false;throw Object.assign(Error('refused'),{code:'user_domain_not_granted'})}
+ };
+ for(const text of ['h','t','t','p'])await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ busy=false;
+ for(let n=0;n<100&&!host.busyInputs.queues.size&&n<5;n++)await new Promise(r=>setTimeout(r,5));
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0,'no letter of a word that lost its first letter is typed');
+}));

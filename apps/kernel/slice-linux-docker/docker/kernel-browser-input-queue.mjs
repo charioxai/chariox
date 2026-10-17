@@ -8,6 +8,7 @@ export const markDispatched = error => { if (error && typeof error === 'object')
 // Any CDP read the fences make; an Input.* call that timed out may have reached the page.
 const busy = error => error?.code === 'browser_cdp_timeout' && error.afterDispatch !== true && !/^browser CDP method Input\./.test(error.message);
 
+const typed = command => command.input?.kind === 'text' || command.input?.kind === 'key';
 const sameScroll = (a, b) => a.input?.kind === 'scroll' && b.input?.kind === 'scroll' && a.tab_id === b.tab_id && a.document_id === b.document_id
   && a.binding_id === b.binding_id && a.input.x === b.input.x && a.input.y === b.input.y;
 
@@ -49,6 +50,8 @@ export class BusyInputQueue {
       catch (error) {
         if (busy(error)) { await new Promise(resolve => setTimeout(resolve, this.retryMs)); continue; }
         queue.entries.shift(); this.event('input_dropped');
+        // Typing that lost a key is dropped whole: the rest would arrive as a mangled word (a URL typed without its first letter).
+        if (typed(entry.command)) while (queue.entries.length && typed(queue.entries[0].command)) { queue.entries.shift(); this.event('input_dropped'); }
       }
     }
     this.queues.delete(queue.key);
