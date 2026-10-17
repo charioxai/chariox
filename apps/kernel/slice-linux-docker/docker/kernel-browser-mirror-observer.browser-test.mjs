@@ -19,7 +19,7 @@ button:hover{background:#9f9}button:active{color:#c00}input:focus{outline:2px so
 @media (max-width:500px){p{color:#a0a}}
 </style>
 <div class=a id=a><span class=b>b</span></div><div class=c id=c>c</div>
-<button id=btn>go</button><input id=inp><input type=checkbox class=box id=chk>
+<button id=btn>go</button><button id=nb style="width:120px;height:30px"><span id=nbs style="color:#f30">x</span></button><input id=inp><input type=checkbox class=box id=chk>
 <div class=card id=card>card<div class=tip>tip</div></div>
 <div id=wrap><div id=grow>g</div></div><div class=e id=e></div><p id=p1>one</p><p>two</p><ul id=list><li>1</li><li>2</li></ul><div id=host></div><div id=sticky style="position:sticky;top:0">st</div><div style="position:relative"><div id=filler style="height:20px"></div><div id=abs style="position:absolute">ab</div></div><div id=fixed style="position:fixed;right:0;bottom:0">fx</div><div style="height:1500px">tall</div>
 <iframe id=fr width=200 height=60 srcdoc="<style>p{color:#c00}.on{color:#00c}</style><p id=q>framed</p>"></iframe>
@@ -55,7 +55,7 @@ async function session(html) {
     for (const id of packet.removed) records.delete(id);
     for (const { style_index, ...node } of packet.nodes) records.set(node.id, style_index === undefined ? node : { ...node, style: packet.styles[style_index] });
     top = packet.root;
-    return { packet, reads };
+    return { packet, reads, states: JSON.stringify(packet.tile_states) };
   };
   // The page as the viewer would rebuild it: ids stripped, so two loads of the same document compare equal.
   const tree = (id = top) => { const { id: _id, parent: _parent, children, ...rest } = records.get(id); return { ...rest, children: children.map(child => tree(child)) }; };
@@ -117,6 +117,21 @@ test('scrolling re-evaluates only the positioned elements', options, async () =>
   const full = (await first.read()).reads;
   const scrolled = await matchesFreshRead(page, s => s.evaluate('scrollTo(0,400)'));
   assert(scrolled.reads < full / 4, `${scrolled.reads} of ${full} property reads`);
+});
+
+// A native control's subtree is not mirrored, so what repaints it must show in the private tile state.
+for (const [name, act] of [
+  ['a descendant repainted by an inline style', s => s.evaluate("nbs.style.color='#07c'")],
+  ['a descendant repainted by a stylesheet rule', s => s.evaluate("document.styleSheets[0].insertRule('#nbs{color:#0a0}')")],
+  ['pseudo-element content', s => s.evaluate("document.styleSheets[0].insertRule('#nb::before{content:\"+\"}')")],
+  ['an animation inside the control', s => s.evaluate("document.head.append(Object.assign(document.createElement('style'),{textContent:'@keyframes pulse{from{color:#f00}to{color:#00f}}#nbs{animation:pulse 100s linear}'}))")],
+]) test(`native control tile state changes for ${name}`, options, async () => {
+  const s = await open(page);
+  const before = await s.read();
+  await act(s);
+  const after = await s.read();
+  assert.notEqual(after.states, before.states);
+  if (name.startsWith('an animation')) assert(Object.values(after.packet.tile_states).some(state => state.startsWith('~')));
 });
 
 test('a text change re-evaluates only what it touched', options, async () => {

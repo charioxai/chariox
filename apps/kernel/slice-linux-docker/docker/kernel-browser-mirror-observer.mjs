@@ -8,7 +8,7 @@ function installMirrorObserver(initialStyles = {}) {
   // MP-10: what changed between two reads. A node whose style inputs did not change keeps its previous
   // style instead of enumerating ~360 computed properties again (that was most of a read).
   const touchedAttributes = new Set(), touchedContent = new Set(), styleCache = new WeakMap(), epochs = new WeakMap();
-  let touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set()], wasAnimated = new Set(), controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
+  let sheetGeneration = 0, touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set()], wasAnimated = new Set(), controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
   const touch = records => {
     for(const record of records) {
       if(touchedAttributes.size+touchedContent.size>4096){touchedAll=true;return;}
@@ -182,11 +182,16 @@ function installMirrorObserver(initialStyles = {}) {
       for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true);
       quick=dirtyDeep.size+dirtySelf.size<=4096&&scanned<=2000;
     }
+    if(!shaped||touchedAll)sheetGeneration++;
     touchedAttributes.clear();touchedContent.clear();touchedAll=false;hot=hotNow;
     // Private to the kernel (never in a packet): what a native control's pixels depend on beyond its record.
+    // Its subtree is not visited: a mutation below it (counted per tile), a stylesheet change, an animation inside it
+    // and its pseudo-element content all repaint it without changing its record.
+    const tileDamage = node => `${epochs.get(node)??0}.${sheetGeneration}`, animatedInside = node => animations.some(animation=>animation.effect?.target&&node.contains(animation.effect.target));
     const nativeTile = (record,node) => {
       const secret=node.localName==='input'&&node.type==='password',text=node.textContent;
-      tileStates[record.id]=`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}`;
+      nextTiles.add(node);
+      tileStates[record.id]=(animatedInside(node)?'~':'')+`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}|${tileDamage(node)}|${['::before','::after'].map(pseudo=>getComputedStyle(node,pseudo).content).join('|')}`;
       record.kind='tile';record.reason='native_control';return done(record);
     };
     // Private to the kernel: what an opaque tile's pixels depend on that the isolated world can observe.
@@ -195,7 +200,7 @@ function installMirrorObserver(initialStyles = {}) {
     const opaqueTile = (record,node,tag) => {
       const exact=['video','audio','svg'].includes(tag)||record.reason==='unsupported_pseudo';
       nextTiles.add(node);
-      tileStates[record.id]=`${exact?'=':'~'}${+hovered.has(node)}${+node.matches(':focus')}|${epochs.get(node)??0}|${tag==='video'||tag==='audio'?`${node.currentTime}|${+node.paused}${+node.ended}${+node.seeking}|${node.readyState}|${node.videoWidth}x${node.videoHeight}|${node.currentSrc}`:tag==='canvas'?`${node.width}x${node.height}`:''}`;
+      tileStates[record.id]=`${exact&&!animatedInside(node)?'=':'~'}${+hovered.has(node)}${+node.matches(':focus')}|${tileDamage(node)}|${tag==='video'||tag==='audio'?`${node.currentTime}|${+node.paused}${+node.ended}${+node.seeking}|${node.readyState}|${node.videoWidth}x${node.videoHeight}|${node.currentSrc}`:tag==='canvas'?`${node.width}x${node.height}`:''}`;
     };
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
