@@ -388,7 +388,19 @@ fn peer_parent(stream: &UnixStream) -> Option<u32> {
         .ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "linux")))]
+mod unavailable_tests {
+    use super::*;
+
+    // Without peer credentials there is no channel: Node publishes every frame.
+    #[test]
+    fn channel_is_unavailable_off_linux() {
+        let packets = Arc::new(DisplayPackets::create().unwrap());
+        assert!(DirectFrames::listen(packets).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

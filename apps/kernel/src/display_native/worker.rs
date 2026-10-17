@@ -122,8 +122,13 @@ mod region_tests {
             auto.job(9, 50.).is_none(),
             "a retire holds every later readback"
         );
-        assert!(auto.arm(state(2, 1e15)).is_err());
-        assert!(auto.arm(state(1, 1e15)).is_err());
+        // A record queued before the retire arrives after it: ignored, not fatal.
+        auto.arm(state(2, 1e15)).unwrap();
+        auto.arm(state(1, 1e15)).unwrap();
+        assert!(
+            auto.job(9, 50.).is_none(),
+            "a superseded record never revives a retired generation"
+        );
         auto.arm(state(4, 1e15)).unwrap();
         assert!(
             auto.arm(state(3, 1e15)).is_err(),
@@ -329,15 +334,19 @@ pub(super) struct Auto {
 impl Auto {
     pub(super) fn arm(&mut self, state: AutoState) -> Result<(), String> {
         super::sessions::session_name(&state.encoder)?;
-        if state.generation <= self.retired
-            || self
-                .state
-                .as_ref()
-                .is_some_and(|s| state.generation < s.generation)
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|s| state.generation < s.generation)
             || !state.until_ms.is_finite()
             || !(500000..=64000000).contains(&state.bitrate)
         {
             return Err("MP-11: native state record".into());
+        }
+        // A record queued on stdin before a retire reached the pipe: its
+        // generation stays retired and the worker lives on.
+        if state.generation <= self.retired {
+            return Ok(());
         }
         self.state = Some(state);
         Ok(())
@@ -404,6 +413,22 @@ pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> 
     } else {
         // No slot can be overwritten. Release/control/XDamage still wake us.
         1000
+    }
+}
+/// The poll wait. A lease also checks quiet and stalled credit on its own;
+/// a held readback sleeps until credit, retire or control wakes the poll.
+pub(super) fn poll_timeout(
+    dirty: bool,
+    free_slot: bool,
+    held: bool,
+    lease_link: bool,
+    elapsed: Duration,
+) -> i32 {
+    let timeout = readback_wait(dirty, free_slot, elapsed);
+    if held || lease_link && !(0..=20).contains(&timeout) {
+        20
+    } else {
+        timeout
     }
 }
 pub(super) fn epoch() -> f64 {
@@ -817,12 +842,14 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let mut timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
         let [retire_fd, link_fd] = locked_direct(&direct).fds();
-        // A lease checks quiet and stalled credit on its own.
-        if link_fd >= 0 && !(0..=20).contains(&timeout) {
-            timeout = 20;
-        }
+        let timeout = poll_timeout(
+            dirty,
+            slots.iter().any(|s| s.available()),
+            held,
+            link_fd >= 0,
+            last.elapsed(),
+        );
         let mut fds = [
             libc::pollfd {
                 fd: 0,

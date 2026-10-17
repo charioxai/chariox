@@ -1169,3 +1169,18 @@ fn mp11_guard_decode_is_skipped_only_for_proven_unprotected_delta_frames() {
         );
     }
 }
+#[test]
+fn mp11_held_readback_blocks_instead_of_spinning_on_damage() {
+    use std::time::Duration;
+    // Two leased frames in flight, new damage, a free slot: the readback is held
+    // until credit arrives, so the poll must sleep (credit and retire fds wake it).
+    for elapsed in [Duration::ZERO, Duration::from_millis(5)] {
+        let wait = super::worker::poll_timeout(true, true, true, true, elapsed);
+        assert!(wait >= 1, "MP-11: a held readback polls with {wait}ms");
+    }
+    assert_eq!(
+        super::worker::poll_timeout(true, true, false, true, Duration::from_millis(5)),
+        0,
+        "an unheld dirty readback still goes at once"
+    );
+}
