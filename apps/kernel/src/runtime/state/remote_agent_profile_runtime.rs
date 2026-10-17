@@ -2,6 +2,8 @@
 
 use super::*;
 
+const REMOTE_PROFILE_QUEUE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl KernelRuntimeState {
     pub(super) async fn confirm_remote_agent_profile(
         &self,
@@ -179,23 +181,55 @@ impl KernelRuntimeState {
             daemon_id: Some(worker_kernel_id.to_string()),
             daemon_alias: None,
         };
-        match self.connected_relay_state_for_config(config).await {
-            Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+        crate::logging::debug_with_fields(
+            "daemon.remote_agent_profile",
+            "remote profile request sending",
+            serde_json::json!({
+                "worker_kernel_id": worker_kernel_id,
+                "request": match &request {
+                    RelayPeerRequest::EnsureRemoteProviderAccount { .. } => "ensure_account",
+                    RelayPeerRequest::UpdateLeasedAgentProfile { .. } => "update_profile",
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => "lease_probe",
+                    _ => "other",
+                },
+            }),
+        );
+        // Only the reply may take long; reaching the relay never waits forever.
+        let queued = tokio::time::timeout(REMOTE_PROFILE_QUEUE_DEADLINE, async {
+            match self.connected_relay_state_for_config(config).await {
+                Some(relay_state) => crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
                     config,
                     &relay_state,
-                    target,
-                    request,
+                    target.clone(),
+                    request.clone(),
                     response_timeout,
                 )
                 .await
+                .map(Some),
+                None => Ok(None),
             }
-            None => {
+        })
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "send relay peer request",
+            message: format!(
+                "relay is not connected: the request was not queued within {}s",
+                REMOTE_PROFILE_QUEUE_DEADLINE.as_secs()
+            ),
+        })??;
+        match queued {
+            Some(waiter) => waiter.wait().await,
+            None => tokio::time::timeout(
+                response_timeout.saturating_add(REMOTE_PROFILE_QUEUE_DEADLINE),
                 crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                     config, target, request, response_timeout,
-                )
-                .await
-            }
+                ),
+            )
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "read temporary relay peer response",
+                message: "timed out waiting for relay peer response on a temporary connection".into(),
+            })?,
         }
     }
 

@@ -255,6 +255,42 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
     assert_active_turn_error(error, "update agent config");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_profile_request_the_relay_never_accepts_fails_instead_of_hanging() {
+    // lpb3: after "Preparing the worker's profile change…" the home logged
+    // nothing for minutes and the worker never saw the request.
+    let mut config = crate::config::DaemonConfig::for_tests();
+    let relay_url = "ws://127.0.0.1:1".to_string();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("relay-token".to_string());
+    let (app, runtime, _session_id, _agent_id) = agent_config_runtime_with_config(config).await;
+    let relay_state = app.lock().await.relay_client_state();
+    let (outgoing_tx, _priority_rx, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(4);
+    relay_state
+        .write()
+        .await
+        .test_set_connected_sender(outgoing_tx, relay_url);
+    let stalled = relay_state.write().await;
+    let config = runtime.config_snapshot().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        runtime.send_remote_profile_request(
+            &config,
+            "worker-1",
+            crate::transport::relay_peer::RelayPeerRequest::GetLeasedPromptReceipt {
+                leased_agent_id: "leased-agent-1".into(),
+                home_prompt_id: "binding-probe".into(),
+            },
+        ),
+    )
+    .await
+    .expect("a profile request must not wait forever for the relay");
+    drop(stalled);
+    let error = result.expect_err("an unaccepted request fails");
+    assert!(error.to_string().contains("was not queued"), "{error}");
+}
+
 #[tokio::test]
 async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket() {
     assert_remote_agent_profile_response(None, false, ProfileChange::Direct).await;
