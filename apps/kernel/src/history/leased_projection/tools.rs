@@ -22,20 +22,21 @@ pub(crate) struct ToolProjectionState {
 
 const OUTPUT_FIELDS: [&str; 5] = ["output", "stdout", "stderr", "result", "content"];
 
-/// The single output field a snapshot or delta carries, with the end offset of
-/// its bytes in that field's stream.
-fn output_end(payload: Option<&serde_json::Value>) -> Option<(&'static str, u64)> {
-    let payload = payload?;
-    let mut fields = OUTPUT_FIELDS
-        .into_iter()
-        .filter(|field| payload.get(*field).is_some_and(|v| v.is_string()));
-    let field = fields.next().filter(|_| fields.next().is_none())?;
+/// Each output field a snapshot or delta carries, with the end offset of its
+/// bytes in that field's stream. A delta with several fields does not say which
+/// one the offset belongs to, so every field is bounded with it.
+fn output_ends(payload: Option<&serde_json::Value>) -> Vec<(&'static str, u64)> {
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
     let start = payload
         .get("chariox_delta_offset_bytes")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let len = payload.get(field)?.as_str()?.len() as u64;
-    Some((field, start + len))
+    OUTPUT_FIELDS
+        .into_iter()
+        .filter_map(|field| Some((field, start + payload.get(field)?.as_str()?.len() as u64)))
+        .collect()
 }
 
 impl ToolProjectionState {
@@ -113,7 +114,7 @@ impl ToolProjectionState {
                 .and_then(|p| p.get("chariox_output_replaced"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let extends = output_end(payload.as_ref()).is_some_and(|(field, end)| {
+            let extends = output_ends(payload.as_ref()).into_iter().any(|(field, end)| {
                 replaced || end > self.history_end.get(field).copied().unwrap_or(0)
             });
             if !extends {
@@ -139,7 +140,7 @@ impl ToolProjectionState {
         let changed = self.record(snapshot_key, bytes, stable_identity);
         if changed {
             self.history_owned = true;
-            if let Some((field, end)) = output_end(payload.as_ref()) {
+            for (field, end) in output_ends(payload.as_ref()) {
                 let covered = self.history_end.entry(field.into()).or_default();
                 *covered = (*covered).max(end);
             }

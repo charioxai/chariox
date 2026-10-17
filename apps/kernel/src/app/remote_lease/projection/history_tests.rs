@@ -417,6 +417,15 @@ fn mp08_history_owned_tool_ignores_late_terminal_records() {
 
 #[test]
 fn mp08_history_owned_running_tool_keeps_forwarding_new_output() {
+    history_owned_running_tool_keeps_forwarding("output", false);
+}
+
+#[test]
+fn mp08_history_owned_multi_field_running_tool_keeps_forwarding_new_output() {
+    history_owned_running_tool_keeps_forwarding("stdout", true);
+}
+
+fn history_owned_running_tool_keeps_forwarding(field: &str, with_empty_stderr: bool) {
     let (mut app, leased) = worker_lease();
     let run = super::explicit_completion_tests::provider_run(
         "run",
@@ -428,10 +437,13 @@ fn mp08_history_owned_running_tool_keeps_forwarding_new_output() {
     );
     app.providers_mut().insert_run_for_test(run);
     let tool = |output: &str| {
-        serde_json::to_vec(&serde_json::json!({
-            "id": "long-tool", "name": "Bash", "status": "running", "output": output,
-        }))
-        .unwrap()
+        let mut payload = serde_json::json!({
+            "id": "long-tool", "name": "Bash", "status": "running", field: output,
+        });
+        if with_empty_stderr {
+            payload["stderr"] = "".into();
+        }
+        serde_json::to_vec(&payload).unwrap()
     };
     // The durable window projects the first running snapshot while the
     // bounded terminal batch is still queued.
@@ -486,7 +498,7 @@ fn mp08_history_owned_running_tool_keeps_forwarding_new_output() {
     let outputs: Vec<String> = forwarded
         .iter()
         .map(|bytes| {
-            serde_json::from_str::<serde_json::Value>(bytes).unwrap()["output"]
+            serde_json::from_str::<serde_json::Value>(bytes).unwrap()[field]
                 .as_str()
                 .unwrap()
                 .to_string()
