@@ -429,6 +429,50 @@ async fn post_connect_hook_retries_retryable_rejection_on_same_connection() {
     assert_eq!(attempts, 2);
 }
 
+#[tokio::test]
+async fn reauthentication_hook_runs_one_pending_confirmation_at_a_time() {
+    let mut worker_config = crate::config::DaemonConfig::for_tests();
+    worker_config.relay_url = Some("wss://relay.example.test".to_string());
+    worker_config.relay_token = Some("runtime-token".to_string());
+    let worker_kernel_id = worker_config.daemon_id.clone();
+    let worker_app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(worker_config).expect("worker daemon should bootstrap"),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(worker_app, 1));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (outgoing, _priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+    let owner_public_key = crate::config::DaemonConfig::for_tests().relay_public_key;
+    state
+        .write()
+        .await
+        .stage_managed_slice_activation_confirmation(
+            super::super::connection_state::PendingManagedSliceActivationConfirmation::new(
+                "slice-1".to_string(),
+                "owner-1".to_string(),
+                owner_public_key,
+                worker_kernel_id,
+                "activation-1".to_string(),
+            ),
+        );
+    set_connected(&state, outgoing, "wss://relay.example.test".to_string())
+        .await
+        .expect("relay should become connected");
+
+    let mut task = None;
+    ensure_managed_slice_activation_confirmation(&router, &state, &mut task).await;
+    assert!(task.is_some(), "reauthentication must start the confirmation");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    ensure_managed_slice_activation_confirmation(&router, &state, &mut task).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let attempts = state
+        .read()
+        .await
+        .pending_managed_slice_activation_confirmation()
+        .map(|pending| pending.attempts);
+    assert_eq!(attempts, Some(1), "a running confirmation must not be duplicated");
+    task.take().expect("task should exist").abort();
+}
+
 async fn exercise_post_connect_confirmation(
     owner_accepts_worker_key: bool,
     reject_first_attempt_as_retryable: bool,
@@ -490,7 +534,7 @@ async fn exercise_post_connect_confirmation(
     )
     .await
     .expect("worker relay should become connected");
-    let task = spawn_pending_managed_slice_activation_confirmation_after_connect(
+    let task = spawn_pending_managed_slice_activation_confirmation(
         Arc::clone(&worker_router),
         Arc::clone(&worker_state),
     )
