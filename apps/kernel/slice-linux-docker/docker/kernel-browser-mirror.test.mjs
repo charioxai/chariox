@@ -256,6 +256,12 @@ test('MP-08/MP-10: native controls whose pixels cannot have changed are not scre
   const second=await read(service,s.subscription_id,first.sequence);
   assert.equal(clips.length,1,'an unrelated change and a grown container leave the controls alone');assert.deepEqual(second.tiles,first.tiles);
 });
+test('MP-08/MP-10: reusing native controls on a page with nothing protected measures no protection',async()=>{
+  const {service,calls,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);
+  const measured=()=>calls.filter(c=>c.method==='Page.getLayoutMetrics').length,before=measured();
+  await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,1);assert.equal(measured(),before,'no capture, no protected region to fence');
+});
 test('MP-08/MP-10: a changed native control captures only its own rect',async()=>{
   const {service,state,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
   const first=await read(service,s.subscription_id);state.snapshot.tile_states={n2:'a',n4:'focused'};

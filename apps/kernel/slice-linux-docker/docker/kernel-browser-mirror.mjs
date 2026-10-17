@@ -191,11 +191,12 @@ export class MirrorService {
       // MP-08/MP-10: a native control is captured again only when its pixels can have changed.
       if(reset)stream.tileCache=null;
       const cache=stream.tileCache??=new TileCache(),keys=tileKeys(tiles,tileBoxes,tileStates);
-      const masks=await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy});
-      mark('tile_masks_before');
       let plan=refine?tiles:cache.stale(tiles,keys,tileBoxes,scale,damageOf(changed,removed,previous,globalBox,globalBoxes(previous)),byId),regions=0;
+      // Nothing is protected: no region can lie under a tile, so reusing every tile needs no protection fence.
+      const bare=!policy.unknown&&!policy.targets.length,masks=plan.length||!bare?await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy}):null;
+      if(masks)mark('tile_masks_before');
       // A protected region may lie under a reused tile: such a page captures every tile.
-      if(plan.length<tiles.length&&(await masks.afterCapture(size)).length)plan=tiles;
+      if(plan.length<tiles.length&&!bare&&(await masks.afterCapture(size)).length)plan=tiles;
       const fresh=new Map();
       if(plan.length) {
         // Bound the compositor crop to the tiles that changed; keep protection geometry in
