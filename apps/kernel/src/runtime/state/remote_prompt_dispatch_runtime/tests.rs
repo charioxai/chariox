@@ -3215,6 +3215,53 @@ mod projection_drain {
             None,
             "the old run no longer owns the binding"
         );
+
+        // A successor that fails during its first drain arrives already ended: follow it only with
+        // the completion it ended with.
+        let ended_event =
+            |completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>| {
+                let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    ..
+                } = successor_event(session.id(), "run-final")
+                else {
+                    unreachable!()
+                };
+                let mut run = run;
+                run.mark_ended();
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions,
+                }
+            };
+        assert_eq!(
+            rebind("run-next", &ended_event(Vec::new())),
+            None,
+            "an ended successor without its completion is not followed"
+        );
+        assert_eq!(
+            rebind(
+                "run-next",
+                &ended_event(vec![
+                    crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "completion-final".to_string(),
+                        completed_at_ms: 1,
+                        home_prompt_id: Some(prompt_id.clone()),
+                        provider_termination: None,
+                    }
+                ])
+            ),
+            Some("run-final".to_string())
+        );
     }
 
     #[tokio::test]

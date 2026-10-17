@@ -338,13 +338,17 @@ impl KernelRuntimeState {
             home_agent_id,
             provider_run_id: successor,
             provider_run,
+            completions,
             ..
         } = event;
+        // A successor that already ended may only be followed with the completion it ended with.
         if home_session_id != session_id
             || home_agent_id != agent_id
             || successor == previous_run_id
             || provider_run.as_ref().is_none_or(|run| {
-                run.id() != successor || run.state() == crate::provider::ProviderRunState::Ended
+                run.id() != successor
+                    || (run.state() == crate::provider::ProviderRunState::Ended
+                        && completions.is_empty())
             })
         {
             return Ok(None);
