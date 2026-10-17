@@ -42,9 +42,9 @@ if(process.argv[2]!=='child') {
     sandboxProfile=path.join(root,'chromium.apparmor');
     await writeFile(sandboxProfile,`abi <abi/4.0>,\ninclude <tunables/global>\nprofile chariox-mdmirror-${path.basename(root)} ${chromeDir}/chrome flags=(unconfined) {\n  userns,\n}\n`);
     execFileSync('/usr/sbin/apparmor_parser',['-r',sandboxProfile]);
-    // The viewer is a realistic remote browser (fractional text advances). The kernel's host fontconfig is hinted unless
+    // The viewer is a realistic remote browser (fractional text advances; macOS/Windows have no Linux ascent/descent borrow, so the flag below). The kernel's host fontconfig is hinted unless
     // CHARIOX_MIRROR_DRILL_UNHINTED: the product must not let that hinting decide the owned browser's text layout.
-    const fonts=hinted=>`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir>${hinted?'':'<match target="font"><edit name="hinting" mode="assign"><bool>false</bool></edit><edit name="hintstyle" mode="assign"><const>hintnone</const></edit></match>'}</fontconfig>`;
+    const fonts=hinted=>`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><dir>${root}/sysroot/usr/share/fonts</dir><cachedir>${root}/home/font-cache</cachedir><alias binding="same"><family>Arial</family><accept><family>Liberation Sans</family></accept></alias>${hinted?'':'<match target="font"><edit name="hinting" mode="assign"><bool>false</bool></edit><edit name="hintstyle" mode="assign"><const>hintnone</const></edit></match>'}</fontconfig>`;
     await writeFile(path.join(root,'fonts.conf'),fonts(!process.env.CHARIOX_MIRROR_DRILL_UNHINTED));
     await writeFile(path.join(root,'viewer-fonts.conf'),fonts(false));
     await writeFile(path.join(root,'chromium-launcher'),`#!/bin/sh\nexport LD_LIBRARY_PATH='${root}/sysroot/usr/lib/x86_64-linux-gnu'\nexport FONTCONFIG_FILE="\${FONTCONFIG_FILE:-${root}/fonts.conf}"\nexec '${chromeDir}/chrome' "$@" 2>>'${root}/evidence/chromium.log'\n`,{mode:0o755});
@@ -93,7 +93,7 @@ if(process.argv[2]!=='child') {
     await resource();await new Promise(resolve=>origin.listen(0,'127.0.0.1',resolve));await new Promise(resolve=>serve.listen(0,'127.0.0.1',resolve));
     const originUrl=`http://127.0.0.1:${origin.address().port}`,viewerUrl=`http://127.0.0.1:${serve.address().port}`;
     // MP-11: the reference viewer is fixture-owned; product source CDP stays on its private pipe.
-    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,env:{...process.env,FONTCONFIG_FILE:path.join(root,'viewer-fonts.conf')},ignoreDefaultArgs:['--hide-scrollbars'],args:['--disable-frame-rate-limit']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
+    browser=await chromium.launch({executablePath:path.join(root,'chromium-launcher'),chromiumSandbox:true,headless:true,env:{...process.env,FONTCONFIG_FILE:path.join(root,'viewer-fonts.conf')},ignoreDefaultArgs:['--hide-scrollbars'],args:['--disable-frame-rate-limit','--disable-font-subpixel-positioning']});const context=await browser.newContext();viewer=await context.newPage();await viewer.setViewportSize({width:1280,height:800});
     let forbiddenRequests=0;viewer.on('request',req=>{if(req.url().startsWith(originUrl))forbiddenRequests++});
     const viewerCdp=await browser.contexts()[0].newCDPSession(viewer);
     // MP-10: send JSON bytes across the synthetic bridge, as production does.

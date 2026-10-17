@@ -710,3 +710,15 @@ drifted 1.5-29 CSS px from its viewer and the renderer fell back to 1x tiles. On
 with `FONTCONFIG_FILE` pointing at a kernel-written file that includes the host's own configuration and then assigns
 `hinting=false`, `hintstyle=hintnone`. The drill's default mode keeps a hinted host against a fractional-advance viewer
 (red before, green after); `CHARIOX_MIRROR_DRILL_UNHINTED=1` keeps the unhinted baseline for both.
+
+### Line-box drift at DPR2 (MD-R2-20, r32)
+
+Chromium on Linux rounds font ascent and descent in physical pixels and, when subpixel positioning is on, borrows one
+unit from the ascent if the descent rounded down. At 16 px (DSF1) that borrow applies; at 32 px (DSF2) it does not, so a
+DPR1 kernel and a DPR2 viewer placed baseline-aligned inline-blocks and inline frames 1 CSS px apart (`frames` fixture:
+counter `y` 185.875 vs 186.875) and the renderer correctly turned `main` into a `layout_drift` tile. macOS and Windows
+have no such borrow, and every DSF2 configuration already lays out without it. The display/mirror browser therefore
+launches with `--disable-font-subpixel-positioning` (advances stay fractional; only the borrow goes). The drill's Linux
+viewer passes the same flag to model a non-Linux viewer. `text-rendering: geometricPrecision` in the viewer was tried
+and rejected: it changes DSF1 layouts that already matched. Drill (frames fixture, aliased `Arial` to Liberation Sans):
+red before (`frames` DPR2 RED_FIDELITY), 14/14 fidelity rows after, `pixel_mse` 0 at DSF1 and DSF2.

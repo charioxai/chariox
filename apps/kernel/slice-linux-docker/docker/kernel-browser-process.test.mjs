@@ -60,6 +60,14 @@ test('MP-08/MP-10 source browser keeps normal animation cadence rather than outr
  assert(!launchArguments('/private',false,true).includes('--disable-frame-rate-limit'));
 });
 
+// MP-08/MP-10: Chromium rounds ascent and descent differently per density unless subpixel positioning is off in
+// the kernel browser and the viewer lays out with geometricPrecision, so a DPR2 viewer saw 1 CSS px line-box drift.
+test('MP-08/MP-10 display browser lays out text without subpixel metrics',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ assert(launchArguments('/private',false,true).includes('--disable-font-subpixel-positioning'));
+ assert(!launchArguments('/private',false,false).includes('--disable-font-subpixel-positioning'));
+});
+
 // MP-08/MP-10/MP-11: after an unclean kernel stop Chromium's crash-restore
 // bubble covered the page in the owned window, so native attestation refused
 // the window until a click dismissed it. The host restores tabs itself.
