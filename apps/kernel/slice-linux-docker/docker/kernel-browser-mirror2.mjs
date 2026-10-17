@@ -222,6 +222,13 @@ export class Mirror2 {
       }
     }
   }
+  /** BROWSER-UX-05: the first (reset) packet is built at registration, overlapping the viewer's round trip
+   * for its first credit; that credit takes the packet in flight instead of starting one. */
+  begin(stream, scope, generation) {
+    const early = this.next(stream, { subscription_id: stream.id, generation, after_sequence: 0, wait_ms: 0 }, scope);
+    stream.early = early;
+    early.catch(() => { if (stream.early === early) stream.early = null; });
+  }
   async next(stream, command, scope, { signal } = {}) {
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
@@ -241,6 +248,11 @@ export class Mirror2 {
     const resend = command.resend === true && command.after_sequence > 0;
     const lost = this.lost(stream, command, scope, resend);
     if (lost) return lost;
+    if (stream.early && command.after_sequence === 0 && command.resend === undefined) {
+      const run = stream.early; stream.early = null;
+      if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); }
+      return run;
+    }
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend) this.hurry(stream);

@@ -384,7 +384,7 @@ test('MP-08/MP-10 a v2 subscription reads its own Tab without an all-tab reconci
 // MP-08/MP-10 (BROWSER-UX-05): a Tab that just opened has a busy renderer; its first subscription must not ask it
 // for the document twice. The page session's navigation events (the cached document) name it.
 test('MP-08/MP-10 a v2 subscription of a document the page session already named asks the renderer nothing', async () => {
- const {service,host,calls,state}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};
+ const {service,host,calls,state}=fixture();host.browser.inputCapture={async hold(){return async()=>{}}};service.v2.begin=()=>{};
  host.browser.documentIdsByTarget=new Map([['target','d']]);
  await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,wire:2},'a');
  assert.equal(calls.filter(call=>call.method==='Page.getFrameTree').length,0,'no renderer round trip');

@@ -71,6 +71,7 @@ export class MirrorService {
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
       try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender}));}
       catch(error){await releaseRender().catch(()=>{});throw error;}
+      this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
