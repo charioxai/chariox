@@ -156,11 +156,12 @@ jobs:
           CHARIOX_SLICE_BUILD_IMAGE=always CHARIOX_SLICE_CARGO_BUILD_JOBS=4 \
             bash "$RUNNER_TEMP/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh" build-image
       - name: Export the image archive and its descriptor
-        run: node scripts/slice-image-archive.mjs export --image chariox-slice-linux:0.1.0 --output "$RUNNER_TEMP/slice-image"
+        # Not beside the context: the provisioner would take a sibling slice-image for a release install.
+        run: node scripts/slice-image-archive.mjs export --image chariox-slice-linux:0.1.0 --output "$RUNNER_TEMP/slice-image-out"
       - uses: actions/upload-artifact@v4
         with:
           name: slice-image-linux-x64
-          path: ${{ runner.temp }}/slice-image
+          path: ${{ runner.temp }}/slice-image-out
           if-no-files-found: error
           retention-days: 7
 
