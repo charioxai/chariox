@@ -795,6 +795,24 @@ impl KernelRuntimeState {
                 });
             }
         }
+        let account_lease = leased_agent_id.clone();
+        if let Err(error) = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).require_leased_prompt_account(&account_lease)
+            })
+            .await
+        {
+            if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+                self.update_relay_leased_prompt_admission_receipt(
+                    &leased_agent_id,
+                    home_prompt_id,
+                    WorkerPromptReceiptPhase::Rejected,
+                    None,
+                )
+                .await?;
+            }
+            return Err(error);
+        }
         // Fence replay durably before any launch or prompt side effect. Permanent
         // preparation failures above also create their definitive rejection.
         if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {

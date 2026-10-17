@@ -711,6 +711,7 @@ fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> 
     ) && matches!(
         code.as_str(),
         crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+            | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
             | "leased_agent_not_found"
             | "execution_lease_not_found"
             | "target_not_connected"

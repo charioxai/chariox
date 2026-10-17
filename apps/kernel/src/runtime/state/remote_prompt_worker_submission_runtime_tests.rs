@@ -1231,3 +1231,22 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
 
 #[path = "remote_prompt_worker_submission_runtime_handoff_tests.rs"]
 mod handoff;
+
+#[test]
+fn a_worker_account_refusal_fails_the_prompt_instead_of_reconciling() {
+    let refused = classify_error(
+        DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "provider_account_unusable".to_string(),
+            message: "selected claude account `work` is not authenticated".to_string(),
+            retryable: false,
+        },
+        true,
+    );
+    assert!(matches!(
+        &refused,
+        RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+            if !remote_prompt_error_should_retry_transport(error)
+                && !remote_prompt_error_should_refresh_binding(error)
+    ));
+}

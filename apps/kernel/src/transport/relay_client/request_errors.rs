@@ -41,6 +41,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
+                == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
         DaemonError::LocalTransport { operation, message }
             if *operation == "project environment setup" =>
         {
@@ -207,6 +217,18 @@ mod tests {
             message: "temporary read failure".into(),
         };
         assert!(map_relay_error(&transient).retryable);
+    }
+
+    #[test]
+    fn a_leased_prompt_account_refusal_is_a_definitive_pre_admission_code() {
+        let error = DaemonError::LocalTransport {
+            operation: "admit leased prompt account",
+            message: "selected claude account `work` is not authenticated".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "provider_account_unusable");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
     }
 
     #[test]

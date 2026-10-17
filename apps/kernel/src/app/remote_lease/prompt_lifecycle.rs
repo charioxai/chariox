@@ -649,6 +649,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    /// The worker refuses a leased prompt whose account cannot start work here
+    /// definitively, before any launch or receipt fence, so the home fails the
+    /// prompt with the reason instead of reconciling an uncertain delivery.
+    pub(crate) fn require_leased_prompt_account(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        self.app
+            .provider_account_profiles
+            .require_agent_authenticated(
+                &self.app.config,
+                &backing_agent,
+                crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+            )
+    }
+
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,

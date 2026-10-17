@@ -1205,14 +1205,16 @@ impl ProviderAccountProfileRegistry {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
-        // the user to replace a potentially valid token before that check.
+        // the user to replace a potentially valid token before that check. A
+        // home's Claude replica holds no token: the home supplies it to every
+        // launch of the lease, and that launch runs the same check.
         let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
             && profile.provider == "claude"
-            && crate::provider::provider_account_credential_registered(
+            && (crate::provider::provider_account_credential_registered(
                 owner_user_id,
                 "claude",
                 &profile.profile_id,
-            )?;
+            )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
         if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
@@ -2565,6 +2567,25 @@ impl ProviderAccountProfileRegistry {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// A lease replica of a home Claude account carries no credential file:
+    /// the worker refuses one and the home supplies its token to every launch.
+    /// A deployment replica must carry one and validate it first.
+    fn is_home_token_claude_replica(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?;
+        if !stored.materialized_replica || stored.managed_context_replica.is_some() {
+            return Ok(false);
+        }
+        let environment = self.resolve_environment(owner_user_id, "claude", profile_id)?;
+        Ok(environment
+            .get("CLAUDE_CONFIG_DIR")
+            .is_some_and(|dir| !Path::new(dir).join(".credentials.json").exists()))
     }
 
     pub(crate) fn is_legacy_unpinned_replica(

@@ -111,6 +111,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
+/// The worker refused a leased prompt before admission because the selected
+/// account cannot start work there; repeating the prompt cannot repair it.
+pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
+pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
