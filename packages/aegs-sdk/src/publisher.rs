@@ -33,9 +33,13 @@ impl AedsPublisher {
                 request = request.set("authorization", &format!("Bearer {token}"));
             }
             let body = serde_json::to_string(&event).map_err(|error| error.to_string())?;
-            let response = request
-                .send_string(&body)
-                .map_err(|error| error.to_string())?;
+            // The error text of ureq carries the service URL; owners see this message.
+            let response = request.send_string(&body).map_err(|error| match error {
+                ureq::Error::Status(status, _) => {
+                    format!("the event service returned HTTP {status}")
+                }
+                ureq::Error::Transport(_) => "the event service could not be reached".to_string(),
+            })?;
             let response_body = response.into_string().map_err(|error| error.to_string())?;
             serde_json::from_str(&response_body).map_err(|error| error.to_string())
         })

@@ -2429,7 +2429,10 @@ mod mp11_delivery_http_tests {
         assert_eq!(events[0]["delivery_id"], "delivery-4");
         assert_eq!(events[0]["status"], "pending");
         assert_eq!(events[0]["event_type"], "event");
-        assert!(events[0]["last_error"].is_string());
+        assert_eq!(
+            events[0]["last_error"],
+            "the event service returned HTTP 503"
+        );
         assert_eq!(events[0]["connection_scope"], "scope");
         assert_eq!(events[0]["subject"], "#7");
         assert!(events[0].get("prompt").is_none());
