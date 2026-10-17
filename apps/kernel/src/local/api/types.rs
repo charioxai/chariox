@@ -331,4 +331,6 @@ pub use workspace::*;
 /// entry (visible height 0) while the address bar has the person's keys.
 /// MP-08/MP-10/MP-11: allocated 550 versions the mirror v2 wire extensions (navigation preview,
 /// font requirements, known sheets, flush, snapshot completion); clients require it for mirror v2.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 550;
+/// MP-08/MP-10/MP-11: allocated 552 adds the Browser reply's `parked_input` (input this observer has
+/// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 552;

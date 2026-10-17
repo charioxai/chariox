@@ -14,6 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ use std::time::Duration;
 pub(crate) struct KernelBrowserHost {
     inner: Arc<Mutex<HostState>>,
     root: PathBuf,
+    /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
+    authority_epoch: Arc<AtomicU64>,
 }
 #[derive(Default)]
 struct HostState {
@@ -138,6 +141,7 @@ impl KernelBrowserHost {
         Self {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
+            authority_epoch: Arc::default(),
         }
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -927,9 +931,10 @@ impl KernelBrowserHost {
         }
         let actor_id = actor.actor_id.clone();
         let outcome = model.takeover(actor, tab, generation)?;
+        let epoch = self.authority_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         drop(model);
         // A viewer input parked in the browser host lost its kernel action when it was parked: the previous owner's
-        // waiting input ends with its authority.
+        // waiting input ends with its authority. The takeover is not reported before the host has dropped it.
         let backend = self
             .inner
             .lock()
@@ -938,15 +943,13 @@ impl KernelBrowserHost {
             .get(user)
             .cloned();
         if let Some(backend) = backend {
-            let tab = tab.to_string();
-            std::thread::spawn(move || {
-                if let Ok(mut backend) = backend.lock() {
-                    let _ = backend.host_request(
-                        "host.browser.retire_input",
-                        serde_json::json!({"tab_id": tab, "except": actor_id}),
-                    );
-                }
-            });
+            if let Ok(mut backend) = backend.lock() {
+                // An unreachable host has no parked input left to retire.
+                let _ = backend.host_request(
+                    "host.browser.retire_input",
+                    serde_json::json!({"tab_id": tab, "except": actor_id, "epoch": epoch}),
+                );
+            }
         }
         Ok(outcome)
     }
@@ -994,14 +997,31 @@ impl KernelBrowserHost {
             .cloned();
         let actor = actor.to_string();
         if let Some(backend) = backend {
-            std::thread::spawn(move || {
-                if let Ok(mut backend) = backend.lock() {
-                    let _ = backend.host_request(
-                        "host.computer.retire",
-                        serde_json::json!({"observer":actor}),
-                    );
+            let retire = move |backend: &mut BrowserControllerProcessStdioBackend| {
+                let _ = backend.host_request(
+                    "host.computer.retire",
+                    serde_json::json!({"observer":actor}),
+                );
+            };
+            // Disconnect must not wait on a busy backend: retire now when it is free, else right behind the request in flight.
+            let busy = match backend.try_lock() {
+                Ok(mut backend) => {
+                    retire(&mut backend);
+                    false
                 }
-            });
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    retire(&mut error.into_inner());
+                    false
+                }
+                Err(std::sync::TryLockError::WouldBlock) => true,
+            };
+            if busy {
+                std::thread::spawn(move || {
+                    if let Ok(mut backend) = backend.lock() {
+                        retire(&mut backend);
+                    }
+                });
+            }
         }
     }
 

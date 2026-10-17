@@ -196,7 +196,7 @@ export class Mirror2 {
     this.css.watch(world, frameId, streamId).then(() => this.host.timing?.('mirror2_css_ready', cssAt), () => { world.cssFailed = true; });
   }
   async evaluate(world, expression, awaitPromise = false, timeoutMs) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs });
+    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
@@ -233,7 +233,7 @@ export class Mirror2 {
       if (!match) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId: Number(match[1]), executionContextId: world.contextId }, world.sessionId);
-        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this,${JSON.stringify(target.value_hash ?? null)},${JSON.stringify(target.fill_revision ?? null)})}`, returnByValue: true }, world.sessionId);
+        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this,${JSON.stringify(target.value_hash ?? null)},${JSON.stringify(target.fill_revision ?? null)})}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
         if (marked.exceptionDetails || marked.result?.value !== true) throw new Error('MP-11: protected target unavailable');
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
       } catch (error) {
@@ -315,7 +315,7 @@ export class Mirror2 {
     catch (error) {
       if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
       return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
-    }
+    } finally { if (stream.world) stream.world.patience = null; }
   }
   async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
@@ -357,6 +357,8 @@ export class Mirror2 {
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
+    // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s); other reads keep the short timeout.
+    world.patience = reset ? patience : null;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.

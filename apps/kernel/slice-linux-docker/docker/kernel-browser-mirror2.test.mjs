@@ -738,3 +738,13 @@ test('MP-08/MP-10/MP-11 a busy renderer without a native preview still surfaces 
  mirror.world=async()=>{throw Object.assign(Error('timed out'),{code:'browser_cdp_timeout'})};
  await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),error=>error.code==='browser_cdp_timeout');
 });
+
+test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, any other read keeps the short timeout',async()=>{
+ const sent=[],world={contextId:1,sessionId:'S',connection:{send:async(method,params,session,options)=>{sent.push(options?.timeoutMs);return{result:{value:1}}}}};
+ const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{}},require:()=>({}),streams:new Map()});
+ await mirror.evaluate(world,'1');
+ world.patience=()=>17_000;
+ await mirror.evaluate(world,'1');
+ await mirror.evaluate(world,'1',false,3000);
+ assert.deepEqual(sent,[undefined,17_000,3000]);
+});

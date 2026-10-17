@@ -98,7 +98,9 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (verdict === 'frame') verdict = resolved?.frameSensitive ? await resolved.frameSensitive(sensitiveFocusExpression(false)) : true;
       if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
-    let mirrorGuard=inputGuard;
+    // The guards are awaited right before a physical dispatch: a retirement (parked retry) that arrives inside one must stop it.
+    const guarded = guard => guard && (async () => { assertNotCancelled(signal); await guard(); assertNotCancelled(signal); });
+    let mirrorGuard=guarded(inputGuard);
     const admitInput = async (method, params) => {
       // CDP fallbacks retain their fresh document barriers.
       await check(true);
@@ -137,7 +139,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       // separates this redundant query from that final fence.
       if (!resolved?.fenced) await check();
       if(resolved) {
-        mirrorGuard=inputGuard?async()=>{await inputGuard();await resolved.guard?.();}:resolved.guard;
+        mirrorGuard=guarded(inputGuard?async()=>{await inputGuard();await resolved.guard?.();}:resolved.guard);
         if(resolved.perform) {if(!resolved.fenced)await check();await resolved.perform(sendInput,onDispatch);await check();return;}
         input=resolved.input;
       }

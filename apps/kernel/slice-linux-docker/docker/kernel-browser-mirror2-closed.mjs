@@ -15,7 +15,7 @@ export async function discoverClosedHosts(mirror, world, source) {
       const { result } = await world.connection.send('Runtime.getProperties', { objectId, ownProperties: true }, world.sessionId);
       const hosts = result.filter(p => /^(0|[1-9][0-9]*)$/.test(p.name) && p.value?.objectId);
       if (hosts.length > 256) throw new Error('MP-11: closed-root candidate bounds');
-      const ids = await world.connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: `function(){return this.map(node=>${world.ref}.idOfNode.call(node))}`, returnByValue: true }, world.sessionId);
+      const ids = await world.connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: `function(){return this.map(node=>${world.ref}.idOfNode.call(node))}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
       if (ids.exceptionDetails || !Array.isArray(ids.result?.value) || ids.result.value.length !== hosts.length) throw new Error('MP-11: closed-root candidate identities unavailable');
       // Retain request ordering but let CDP coalesce the narrow descriptions.
       const descriptions = await Promise.all(hosts.map(p => world.connection.send('DOM.describeNode', { objectId: p.value.objectId, depth: 0, pierce: true }, world.sessionId)));
@@ -23,13 +23,13 @@ export async function discoverClosedHosts(mirror, world, source) {
         const hostId = host.value.objectId;
         try {
           if (descriptions[i].node?.shadowRoots?.some(root => root.shadowRootType === 'closed')) {
-            const value = await world.connection.send('Runtime.callFunctionOn', { objectId: hostId, functionDeclaration: `function(fresh){return ${world.ref}.markClosedHost.call(this,fresh)}`, arguments: [{ value: fresh.has(ids.result.value[Number(host.name)]) }], returnByValue: true }, world.sessionId);
+            const value = await world.connection.send('Runtime.callFunctionOn', { objectId: hostId, functionDeclaration: `function(fresh){return ${world.ref}.markClosedHost.call(this,fresh)}`, arguments: [{ value: fresh.has(ids.result.value[Number(host.name)]) }], returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
             if (value.exceptionDetails || !value.result?.value) throw new Error('MP-11: closed-root marking unavailable');
             const patch = value.result.value;
             if (!patch.record) published++;
             if (patch.record) { replacements.set(patch.record.id, patch.record); for (const id of patch.removed) removed.add(id); }
           }
-          const checked = await world.connection.send('Runtime.callFunctionOn', { objectId: hostId, functionDeclaration: `function(){return ${world.ref}.closedChecked.call(this)}`, returnByValue: true }, world.sessionId);
+          const checked = await world.connection.send('Runtime.callFunctionOn', { objectId: hostId, functionDeclaration: `function(){return ${world.ref}.closedChecked.call(this)}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
           if (checked.exceptionDetails || checked.result?.value !== true) throw new Error('MP-11: closed-root inspection unavailable');
         } finally { await world.connection.send('Runtime.releaseObject', { objectId: hostId }, world.sessionId).catch(() => {}); }
       }));

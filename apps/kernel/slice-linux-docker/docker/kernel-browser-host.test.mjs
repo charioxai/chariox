@@ -1990,6 +1990,48 @@ test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover 
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
 }));
 
+test('MP-08/MP-10/MP-11 the parking reply and the observer\'s state report its parked input (protocol 552), nobody else\'s',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ assert.equal((await type('terminal:a','a')).parked_input,1);
+ assert.equal((await type('terminal:a','b')).parked_input,2);
+ assert.equal((await host.request({op:'state',observed_by:'terminal:a'})).parked_input,2,'a state read answers without waiting for the busy renderer');
+ assert.equal((await host.request({op:'state',observed_by:'terminal:b'})).parked_input,undefined);
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal((await host.request({op:'state',observed_by:'terminal:a'})).parked_input,undefined,'cleared once the input is admitted');
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a','b']);
+}));
+
+test('MP-08/MP-10/MP-11 a retirement from an older ownership change cannot retire the newer owner\'s parked input',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ await type('terminal:b','b');await type('terminal:c','c');
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:c',epoch:2}});
+ await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b',epoch:1}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
+}));
+
+test('MP-08/MP-10/MP-11 a parked retry retired inside its final input guard dispatches nothing',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,reached,release;
+ const inGuard=new Promise(r=>{reached=r}),gate=new Promise(r=>{release=r});
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const inputGuard=async()=>{reached();await gate};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}},{inputGuard});
+ busy=false;await inGuard;
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b'}});
+ release();
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText'),[]);
+}));
+
 test('MP-08/MP-10/MP-11 viewer input parks on the first fence read that times out, not after the last',()=>using(async({host,connection})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=60_000;let timedOut=0;

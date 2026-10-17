@@ -1556,3 +1556,45 @@ done
         true
     );
 }
+
+#[test]
+fn takeover_is_not_reported_before_the_host_retired_the_previous_owners_parked_input() {
+    let root = crate::test_support::TestWorktree::new("mp11-takeover-retire");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+  *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.browser.retire_input"'*) printf '%s\n' "$request" >> "$root/retired"; printf '{"id":%s,"ok":true,"result":{"retired":true}}\n' "$id" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.actor_model("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}))
+        .unwrap();
+    let backend = host.inner.lock().unwrap().browsers.get("alice").cloned().unwrap();
+    backend.lock().unwrap().ensure_host_started().unwrap();
+    let held = backend.lock().unwrap();
+    let retired = root.path().join("retired");
+    std::thread::scope(|scope| {
+        let takeover = scope.spawn(|| {
+            host.request_takeover("alice", EnvironmentActor::new("terminal:b", EnvironmentActorKind::Human, "B"), "host-tab-a", 1)
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!takeover.is_finished(), "takeover was reported while the host could still run the previous owner's parked input");
+        drop(held);
+        takeover.join().unwrap().unwrap();
+        let sent = std::fs::read_to_string(&retired).unwrap();
+        assert!(sent.contains(r#""except":"terminal:b""#) && sent.contains(r#""epoch":1"#), "{sent}");
+    });
+    host.shutdown().unwrap();
+}

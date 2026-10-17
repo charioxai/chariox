@@ -4280,6 +4280,18 @@ explicit `snapshot_complete` and the font packets. No shape changes; the
 (`browserMirror2MinimumProtocolVersion`) and send every field without a schema
 retry; older kernels keep the legacy mirror.
 
+MP-08 / MP-10 / MP-11: allocated 552/160 adds the optional integer `parked_input`
+to a Browser reply (the input `op` and `state` for the observer; omitted when 0).
+A viewer's input that a busy renderer cannot pass the renderer-bound fences for is
+parked in order by the kernel and answered with success; `parked_input` is how many
+inputs of that observer are still parked. A `state` read for an observer with parked
+input answers from the kernel's last observation without waiting for the renderer.
+The viewer holds its preview-to-mirror handover while `parked_input` is positive,
+because the handover retires the display the parked input is bound to. The kernel
+never re-resolves or re-binds a display for parked input. The
+`browser-parked-input-552.json` fixture pins the shape. Older kernels never park
+(they refuse the input), so the field is simply absent.
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;

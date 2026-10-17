@@ -501,7 +501,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "d5576f87d081908e4d9ad6a95c52e9781a137739e7194e4815475c535eb950d0");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "be98a1b33d961f9023e2404b32148dc471712c2fc958375ae25e676a0280e92f");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
@@ -528,4 +528,20 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
     let ack: LocalDaemonResponse = serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(ack).unwrap(), snapshot["ack_response"]);
+}
+
+// MP-08/MP-10/MP-11: allocated 552/160 adds the Browser reply's `parked_input` count.
+#[test]
+fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 552);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 160);
+    let bytes = include_bytes!("browser-parked-input-552.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "e52a88111dc29c63dbddf377c8a797b264bca205ff89176d596abebf5e99906e");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
 }

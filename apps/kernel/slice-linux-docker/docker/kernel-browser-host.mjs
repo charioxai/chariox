@@ -81,7 +81,7 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
-    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.observe(this.tabState(), null, command.observed_by ?? "adapter"), { event: name => this.timing(`busy_${name}`, timestamp()) });
+    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.parkedState(command.observed_by ?? "adapter"), { event: name => this.timing(`busy_${name}`, timestamp()) });
     this.chromium = chromium;
     // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
     this.chromeWindows = new ChromeWindows(this,{inventory:(display,pid,isCurrent)=>nativeWindowInventory({display,pid,isCurrent})});
@@ -605,6 +605,11 @@ export class KernelBrowserHost {
       await this.browser.connection?.send("Page.stopScreencast", {}, stream.sessionId).catch(() => {});
     }
   }
+  // Protocol 552: input this observer has parked behind a busy renderer; the viewer holds its preview handover until it is admitted.
+  parkedState(scope) {
+    const state = this.observe(this.tabState(), null, scope), parked_input = this.busyInputs.queues.get(scope)?.entries.length ?? 0;
+    return parked_input ? { ...state, parked_input } : state;
+  }
   observe(result, tab, scope) {
     let observed = this.observedDocuments.get(scope);
     if (!observed) {
@@ -639,6 +644,8 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // newest observation, as at a navigation commit
       return this.observe(this.tabState(), tab, scope);
     }
+    // The reconcile below would wait on the busy renderer that parked this observer's input.
+    if (command.op === "state" && this.busyInputs.queues.get(scope)?.entries.length) return this.parkedState(scope);
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
@@ -918,7 +925,9 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result };
       }
       if (request.method === 'host.browser.retire_input') {
-        this.busyInputs.retire((key, command) => command.tab_id === request.params.tab_id && key !== request.params.except);
+        // Retirements arrive from concurrent takeovers: an older ownership change must not retire the newer owner's input.
+        const {tab_id,except,epoch}=request.params;
+        if(!(epoch<(this.retiredEpoch??0))){this.retiredEpoch=epoch;this.busyInputs.retire((key, command) => command.tab_id === tab_id && key !== except)}
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {
