@@ -15,6 +15,7 @@ import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
+import type { SessionSelection } from "./session-lifecycle.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -235,6 +236,7 @@ export type CliCommandActionCompositionDeps = {
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
+  beginSessionSelection?: (session: { id: string }) => SessionSelection | null
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn
@@ -523,6 +525,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    beginSessionSelection: reference => deps.beginSessionSelection?.({ id: reference }) ?? null,
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),

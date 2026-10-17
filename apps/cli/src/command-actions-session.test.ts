@@ -8,6 +8,19 @@ import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentLi
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, SliceRecord, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
+test("MP-08 / MP-10 OWNER-24 a session command selects its placeholder before resolving a slow reference", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const selected: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    ...{ beginSessionSelection: (reference: string) => { selected.push(reference); return null } },
+    resolveSession: async () => { await pending; return { id: "next-session", alias: null } },
+  }))
+  const joining = handlers.handleSessionCommand({ kind: "session", raw: "/session attach next", action: "attach", args: ["next"], value: "next" })
+  try { assert.deepEqual(selected, ["next"]) } finally { release() }
+  await joining
+})
+
 test("session new can attach a new session in an existing directory", async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), "chariox-session-dir-"))
   const createCalls: Array<{ workspace: string; worktree: string; alias: string | undefined }> = []
@@ -296,3 +309,13 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+test("MP-08 / MP-10 OWNER-24 failed reference lookup settles its selected placeholder", async () => {
+  let settled = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    ...{ beginSessionSelection: () => ({ current: () => true, attach: async () => {}, settle: async () => { settled = true } }) },
+    resolveSession: async () => { throw new Error("unknown session") },
+  }))
+  await assert.rejects(handlers.handleSessionCommand({ kind: "session", raw: "/session attach missing", action: "attach", args: ["missing"], value: "missing" }), /unknown session/)
+  assert.equal(settled, true)
+})

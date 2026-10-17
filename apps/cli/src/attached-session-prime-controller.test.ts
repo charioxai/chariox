@@ -348,3 +348,31 @@ function externalProviderImport(
     imported_at_ms: 1,
   }
 }
+
+test("MP-08 / MP-10 OWNER-24 a superseded prime writes nothing after its history arrives", async () => {
+  let release!: () => void
+  const writes: string[] = []
+  let owned = true
+  const controller = createAttachedSessionPrimeController({
+    promptHistoryHydrationController: { begin: () => 1, loadAndApply: async () => {} },
+    splitAgentResponseMode: () => false,
+    maxAgentsPerScreen: () => 1,
+    loadSessionHistoryOutline: async () => {
+      await new Promise<void>(resolve => { release = resolve })
+      return { agents: [{ agent_id: "agent-1", turns: [] }] } as never
+    },
+    setAgentPaneEntries: () => { writes.push("pane") },
+    setAgentPanePreview: () => { writes.push("preview") },
+    replaceTranscriptEntries: () => { writes.push("transcript") },
+    setNextHistoryCursor: () => { writes.push("cursor") },
+  })
+  const priming = controller.prime({
+    id: "session-b",
+    agents: [{ id: "agent-1" }],
+    focused_agent_id: "agent-1",
+  } as never, () => owned)
+  owned = false
+  release()
+  await priming
+  assert.deepEqual(writes, [])
+})
