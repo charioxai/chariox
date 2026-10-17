@@ -588,9 +588,15 @@ fn is_current_managed_bootstrap(
     observation: &ProcessObservation,
     active_release_path: &Path,
 ) -> bool {
-    observation.executable_name.trim() == "chariox-managed-bootstrap"
+    comm_matches(&observation.executable_name, "chariox-managed-bootstrap")
         && observation.executable_path
             == active_release_path.join("usr/local/bin/chariox-managed-bootstrap")
+}
+
+/// `/proc/<pid>/comm` holds at most 15 bytes, so long names arrive truncated.
+fn comm_matches(comm: &str, name: &str) -> bool {
+    let comm = comm.trim();
+    comm == name || (name.len() > 15 && comm == &name[..15])
 }
 
 fn is_bubblewrap(observation: &ProcessObservation) -> bool {
@@ -605,10 +611,10 @@ fn is_bubblewrap(observation: &ProcessObservation) -> bool {
 }
 
 fn is_chariox_runtime(observation: &ProcessObservation) -> bool {
-    matches!(
-        observation.executable_name.trim(),
-        "chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap"
-    ) || matches!(
+    ["chariox", "chariox-kernel", "chariox-relay", "chariox-managed-bootstrap"]
+        .iter()
+        .any(|name| comm_matches(&observation.executable_name, name))
+        || matches!(
         observation
             .executable_path
             .file_name()
@@ -717,6 +723,20 @@ mod tests {
             executable_name: "chariox-kernel".to_string(),
             executable_path: PathBuf::from("/old/usr/local/bin/chariox-kernel"),
         };
+        assert!(validate_process_observations(&[current, retired], 10, &release).is_err());
+    }
+
+    #[test]
+    fn kernel_truncated_comm_still_identifies_bootstrap_and_runtime() {
+        let release = PathBuf::from("/release");
+        let current = ProcessObservation {
+            pid: 10,
+            parent_pid: 0,
+            executable_name: "chariox-managed".to_string(),
+            executable_path: release.join("usr/local/bin/chariox-managed-bootstrap"),
+        };
+        assert!(validate_process_observations(&[current.clone()], 10, &release).is_ok());
+        let retired = ProcessObservation { pid: 12, parent_pid: 0, executable_name: "chariox-managed".to_string(), executable_path: PathBuf::new() };
         assert!(validate_process_observations(&[current, retired], 10, &release).is_err());
     }
 
