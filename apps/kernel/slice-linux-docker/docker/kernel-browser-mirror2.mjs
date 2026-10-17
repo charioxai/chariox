@@ -305,6 +305,7 @@ export class Mirror2 {
       if(this.host.generation!==command.generation||tab.document_id!==document)throw new Error('MP-11: navigation preview document retired');
       stream.previewWaitedDocument=document;this.host.timing?.('mirror2_preview_wait',previewAt);
     }
+    const browser = this.host.browser;
     const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
     stream.world = world;
     if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');
@@ -329,7 +330,12 @@ export class Mirror2 {
     const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
     // Ordered navigation events retire this credit before any old-world retry.
     // A renderer query here would queue behind the newly loading document.
-    const assertDocument = () => { if (moved()) throw new BrowserActionError('stale_document_reference', 'browser mirror document retired'); };
+    const assertDocument = () => {
+      if (this.host.browser !== browser || world.connection.isOpen?.() === false ||
+          'connection' in browser && browser.connection !== world.connection ||
+          browser.sessionsByTarget && browser.sessionsByTarget.get(tab.target_id) !== world.sessionId || moved())
+        throw new BrowserActionError('stale_document_reference', 'browser mirror document retired');
+    };
     const read = async () => {
       assertDocument();
       if (reset) {

@@ -16,7 +16,7 @@ function page(fontRequirements) {
  mirror.evaluate=async(_world,expression)=>expression.endsWith('customHosts()')?false:expression.endsWith('snapshot()')?{...state,nodes,root:'n1',resources:[{key:'r1',url:'https://public.example/font.woff2',kind:'font'}],ops:[{op:'fonts',id:'n1',required:['a'.repeat(64)]}]}:state;
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_stream,source)=>source};
  mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.encode=async(_stream,packet)=>packet;
- return {mirror,stream,command:{subscription_id:'s',generation:1,after_sequence:0}};
+ return {mirror,stream,host,command:{subscription_id:'s',generation:1,after_sequence:0}};
 }
 
 test('MP-08/MP-10/MP-11 opted-in first DOM does not wait for font bytes; the next quiet credit carries them',async()=>{
@@ -61,4 +61,19 @@ test('MP-08/MP-10/MP-11 a completed font response needs no busy-renderer image o
  mirror.evaluate=async()=>{throw Error('the busy renderer must not hold completed font bytes')};
  const out=await mirror.materializeWorld({ref:'m'},[entry],0,256*1024,{issued:1,movedAt:0,resources:new Map([['r1',entry]])});
  assert.equal(out[0].mime_type,'font/woff2');
+});
+
+for(const retirement of ['browser','connection','session'])test(`MP-08/MP-10/MP-11 deferred font bytes refuse ${retirement} retirement with the same loader`,async()=>{
+ const {mirror,stream,host,command}=page(true);
+ await mirror.packet(stream,command,'scope');
+ const started=Promise.withResolvers(),release=Promise.withResolvers();
+ mirror.materialize=async()=>{started.resolve();await release.promise;return [{key:'r1',mime_type:'font/woff2',data_base64:'AAAA'}]};
+ const pending=mirror.packet(stream,{...command,after_sequence:1},'scope',undefined,Date.now());
+ await started.promise;
+ if(retirement==='browser')host.browser={...host.browser};
+ if(retirement==='connection')host.browser.connection={};
+ if(retirement==='session')host.browser.sessionsByTarget.set('T','replacement');
+ release.resolve();
+ await assert.rejects(pending,error=>error.code==='stale_document_reference');
+ assert.equal(stream.issued,1,'a retired owner cannot publish the deferred resource packet');
 });
