@@ -2170,7 +2170,7 @@ mod mp11_delivery_http_tests {
             active: true,
         };
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: claim.generator_id.clone(),

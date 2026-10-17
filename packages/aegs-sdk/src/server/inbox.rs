@@ -195,7 +195,7 @@ impl AegsServer {
         };
         let query: AegsReceivedEventQuery = match self.read_management_json(request).await {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         if let Err(response) = self.check_management_target(
             &authorization,
@@ -232,7 +232,7 @@ impl AegsServer {
         let replay: AegsReceivedEventReplayRequest = match self.read_management_json(request).await
         {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         if let Err(response) = self.check_management_target(
             &authorization,
@@ -276,10 +276,15 @@ impl AegsServer {
     async fn read_management_json<T: serde::de::DeserializeOwned>(
         &self,
         request: Request<Incoming>,
-    ) -> Result<T, Response<Full<Bytes>>> {
-        let body = read_body(request).await?;
-        serde_json::from_slice(&body)
-            .map_err(|message| error(StatusCode::BAD_REQUEST, "invalid_json", message.to_string()))
+    ) -> Result<T, Box<Response<Full<Bytes>>>> {
+        let body = read_body(request).await.map_err(Box::new)?;
+        serde_json::from_slice(&body).map_err(|message| {
+            Box::new(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                message.to_string(),
+            ))
+        })
     }
 
     fn check_management_target(
