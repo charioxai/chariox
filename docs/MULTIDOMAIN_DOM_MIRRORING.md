@@ -690,3 +690,23 @@ flow with an installed signed or unsigned Todo or Docs App:
 Retain fail-first baseline and final-head screenshots, console/log captures,
 per-key timings, exact source/binary identities, shaping calibration and cleanup.
 Controller fixtures supplement these drills and do not close their acceptance.
+
+## MP-08/MP-10 r26: native-control tile cost and text hinting (MD-R2-20)
+
+The v1 mirror screenshotted the bounding crop of every tile on every read: a button the page never touched cost
+~30 ms of CDP capture per update (quiet 4-vCPU host: 31 ms of a 55 ms read). A native control (`reason: native_control`)
+is now captured again only when its pixels can have changed: its record or private UA state differs (`:hover`,
+`:active`, `:focus`, `:focus-visible`, disabled/checked/indeterminate, password length and selection, label text, child
+count; the observer returns these in a private `tile_states` map that never enters a packet), a changed or removed
+record overlapped it (old and new position), the density changed, the read is a reset, or a protected region exists.
+A container ancestor whose own paint did not change (it only grew or gained children) does not count. Only the crop of the
+stale tiles is captured; the rest keeps its previous packet entry. The idle full-frame refinement is unchanged and
+never skipped. Other opaque tiles (canvas, video, cross-origin frames) have no damage signal and are captured on every read
+as before. Wire shapes and the protocol are unchanged.
+
+The kernel browser never inherits the host's font hinting. A mirror viewer lays text out with fractional advances;
+Chromium on Linux rounds advances at 1x when fontconfig asks for `hintfull`/`hintmedium`, so a hinted kernel browser
+drifted 1.5-29 CSS px from its viewer and the renderer fell back to 1x tiles. On Linux, a display/mirror browser launches
+with `FONTCONFIG_FILE` pointing at a kernel-written file that includes the host's own configuration and then assigns
+`hinting=false`, `hintstyle=hintnone`. The drill's default mode keeps a hinted host against a fractional-advance viewer
+(red before, green after); `CHARIOX_MIRROR_DRILL_UNHINTED=1` keeps the unhinted baseline for both.

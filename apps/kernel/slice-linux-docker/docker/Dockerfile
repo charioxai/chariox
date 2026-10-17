@@ -363,6 +363,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-resources.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-styles.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-tile-cache.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \

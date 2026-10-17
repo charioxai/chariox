@@ -106,3 +106,24 @@ test('the owned window has no "Sign in to Chrome?" chip in its band', async () =
  const {launchArguments}=await import('./kernel-browser-process.mjs');
  assert(launchArguments('/private',false,true).includes('--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill'));
 });
+
+test('MP-08/MP-10 the display browser never inherits the host font hinting',async()=>{
+ const {writeFontConfig,textLayoutEnvironment}=await import('./kernel-browser-process.mjs');
+ const {mkdtemp,readFile,writeFile}=await import('node:fs/promises');const {spawnSync}=await import('node:child_process');
+ const root=await mkdtemp(tmpdir()+'/chariox-fontconfig-');
+ try{
+  const hinted=root+'/hinted.conf';
+  await writeFile(hinted,'<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><match target="font"><edit name="hinting" mode="assign"><bool>true</bool></edit><edit name="hintstyle" mode="assign"><const>hintfull</const></edit></match></fontconfig>');
+  const environment=await textLayoutEnvironment(root,{CHARIOX_KERNEL_BROWSER_MIRROR:'1',FONTCONFIG_FILE:hinted},true,'linux');
+  assert.equal(environment.FONTCONFIG_FILE,root+'/fontconfig.conf');
+  assert.match(await readFile(environment.FONTCONFIG_FILE,'utf8'),new RegExp(`<include ignore_missing="yes">${hinted}</include>`));
+  for(const [platform,display] of [['darwin',true],['linux',false]])assert.deepEqual(await textLayoutEnvironment(root,{A:'1'},display,platform),{A:'1'},'only a Linux display browser is configured');
+  assert.match(await readFile(await writeFontConfig(root,'/a"<b>'),'utf8'),/\/etc\/fonts\/fonts.conf/,'an unsafe base is replaced by the system configuration');
+  const probe=spawnSync('fc-match',['-v','sans'],{env:{...process.env,FONTCONFIG_FILE:hinted},encoding:'utf8'});
+  if(probe.status===0){
+   assert.match(probe.stdout,/hintstyle: 3/,'the host configuration asks for full hinting');
+   const wrapped=spawnSync('fc-match',['-v','sans'],{env:{...process.env,FONTCONFIG_FILE:environment.FONTCONFIG_FILE},encoding:'utf8'});
+   assert.match(wrapped.stdout,/hintstyle: 0/);assert.match(wrapped.stdout,/hinting: False/);
+  }
+ }finally{await rm(root,{recursive:true,force:true})}
+});

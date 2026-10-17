@@ -4218,3 +4218,24 @@ recovery request. Sender/generation admission, lease renewal and protected
 frame publication keep their existing paths. `browser-visible-page-536.json`
 pins the additive request and ACK capability response. See the display region
 drill for required real-path checks; source regressions do not close acceptance.
+
+## MP-08 / MP-10 / MP-11 Independent page display advertisement (546 / peer 154)
+
+Browser state now includes `page_display: boolean`, true exactly when the kernel's
+page display path is enabled (`CHARIOX_KERNEL_BROWSER_DISPLAY=1`). It is independent
+of `browser_lockdown`, the native band's `chrome_window`, and its window binding.
+A display-enabled kernel without managed policy or a current native band still
+advertises page video. A mirror-only kernel advertises false. This is capability
+discovery; normal display subscription admission and observed-frame guards apply.
+
+The primary Browser surface uses this bit for labelled whole-page video fallback
+when the mirror is unavailable, then retries the mirror with bounded backoff.
+An explicit false wins over legacy positive `chrome_window` hints. When the bit is
+absent, clients may retain the legacy positive band hint; absence alone does not
+promise video. Mirror-only kernels go to unavailable with bounded mirror retry,
+without loading a video adapter or sending a display subscription. Clients feature
+detect the bit, so no global Web/native minimum version changes.
+
+`browser-page-display-546.json` pins true with/without the band and false without
+it; the numbered Rust hash/round-trip test and host state-key/admission regression
+pin the advertisement to this allocation. Historical snapshots retain their shapes.

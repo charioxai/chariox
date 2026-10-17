@@ -69,6 +69,15 @@ export function isTrustedStaleReferenceError(error) {
     && ["stale_document_reference", "stale_element_reference"].includes(error.code)
   );
 }
+// The adapter's own document-moved check: trusted by construction, unlike a caller-built error.
+function staleDocumentError(targetId) {
+  const error = new BrowserControllerError(
+    "stale_document_reference",
+    `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
+  );
+  normalizedStaleReferences.add(error);
+  return error;
+}
 function normalizeNativeError(error) {
   const normalized = new BrowserControllerError(error.code, error.message);
   if (isTrustedStaleReferenceError(error)) normalizedStaleReferences.add(normalized);
@@ -569,10 +578,7 @@ export class BrowserCdpClient {
       );
     }
     if (this.documentIdsByTarget.get(targetId) !== documentId) {
-      throw new BrowserControllerError(
-        "stale_document_reference",
-        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
-      );
+      throw staleDocumentError(targetId);
     }
     assertNotCancelled(signal);
     if (action === "activate") {
@@ -847,10 +853,7 @@ export class BrowserCdpClient {
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
     if (this.documentIdsByTarget.get(targetId) !== documentId) {
-      throw new BrowserControllerError(
-        "stale_document_reference",
-        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
-      );
+      throw staleDocumentError(targetId);
     }
     const defaultPrompt = action === "accept" && promptText == null
       ? this.dialogDefaults.get(targetId, documentId)

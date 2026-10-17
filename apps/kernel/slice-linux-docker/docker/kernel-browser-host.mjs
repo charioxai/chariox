@@ -369,6 +369,8 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      // MP-08/MP-10/MP-11 (546): page video does not require a native band.
+      page_display: process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === "1",
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }

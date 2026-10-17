@@ -27,6 +27,7 @@ async function withAdapter(run) {
   // Host admission has already selected the observed tab. The browser adapter,
   // document validation, backend-node resolution and normalization remain real.
   host.browser = browser; host.generation = 1;
+  host.chromium.desktop ??= {}; // the owned desktop exists only on Linux; activation is the owned-desktop path on every platform
   host.start = async () => {};
   host.target = async () => ({ tab_id: 'host-tab', target_id: 'target', document_id: 'observed' });
   host.displayTarget = host.target; // navigation and bound input read their own Tab (MP-08/MP-10)
@@ -43,12 +44,22 @@ test('detached secure-fill node keeps trusted provenance through real performAct
   assert.ok(wire.calls.includes('DOM.resolveNode'));
   assert.deepEqual(reply.error, stale);
 }));
-test('changed navigation document keeps trusted provenance through real navigate normalization', () => withAdapter(async (host, wire) => {
+const navigate = { id: 2, method: 'host.browser', params: { op: 'navigate', tab_id: 'host-tab', generation: 1, url: 'https://fixture.invalid/next' } };
+// An owned-desktop host activates the Tab before navigating; the adapter's observed document must match for that step to pass.
+test('changed document at tab activation keeps trusted provenance through real manageTab normalization', () => withAdapter(async (host, wire) => {
   wire.document = 'replacement';
-  const reply = await host.handle({ id: 2, method: 'host.browser', params: {
-    op: 'navigate', tab_id: 'host-tab', generation: 1, url: 'https://fixture.invalid/next',
-  } });
-  assert.ok(wire.calls.includes('Page.getFrameTree'));
+  const reply = await host.handle(navigate);
+  assert.ok(wire.calls.includes('Target.getTargets'));
+  assert.ok(!wire.calls.includes('Page.getFrameTree'), 'refused before the navigation path');
+  assert.deepEqual(reply.error, stale);
+}));
+test('changed navigation document keeps trusted provenance through real navigate normalization', () => withAdapter(async (host, wire) => {
+  await host.browser.resolvePageTarget('target'); // opening the connection clears observed documents, so seed afterwards
+  host.browser.documentIdsByTarget.set('target', 'observed'); // activation passes; only the navigation document check can refuse
+  wire.calls.length = 0;
+  wire.document = 'replacement';
+  const reply = await host.handle(navigate);
+  assert.ok(wire.calls.includes('Page.getFrameTree'), 'navigation path reached');
   assert.deepEqual(reply.error, stale);
 }));
 for (const forged of [

@@ -1488,10 +1488,10 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
   await assert.rejects(host.handle({ id: 4, method: 'host.browser', params: { op: 'input', tab_id: mine.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'click', x: 10, y: 10 }, ...agent } }).then(r => { if (!r.ok) throw new Error(r.error?.message ?? r.error); return r; }), refused, 'an agent cannot click Add to Chrome');
 }));
 
-// MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
+// MP-08/MP-10/MP-11 (protocol 546/154): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 546 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-page-display-546.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1870,4 +1870,29 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
+}));
+
+// MP-08/MP-10/MP-11: page video admission is independent of native Chrome chrome.
+test('MP-08 page display advertisement is independent of native band availability', () => using(async ({ host }) => {
+  const before = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  try {
+    await host.request({ op: 'open', url: 'https://example.com/' });
+    for (const enabled of ['1', '0', undefined]) {
+      if (enabled === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+      else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = enabled;
+      for (const policy of ['managed', 'unavailable']) {
+        host.chromium.policy = policy;
+        for (const current of [true, false]) {
+          host.chromeWindows.bound = { tabbed: { window_generation: 3, isCurrent: () => current }, auxiliary: [] };
+          const state = await host.request({ op: 'state' });
+          assert.equal(state.page_display, enabled === '1');
+          assert.equal(Boolean(state.chrome_window), enabled === '1' && policy === 'managed' && current);
+        }
+        host.chromeWindows.bound = null;
+        const state = await host.request({ op: 'state' });
+        assert.equal(state.page_display, enabled === '1', 'page capture does not require a native window binding');
+        assert.equal(state.chrome_window, null);
+      }
+    }
+  } finally { if (before === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = before; }
 }));

@@ -11,7 +11,7 @@ test('MP-10 actual SIMD conversion survives the browser encoder adapter',{skip:!
   assert.equal(e.converter,null,'a full-video fallback cannot retain the previous stripe converter receipt');
  }finally{await e.close()}
 });
-test('MP-11 OpenH264 protected PNG fallback never silently chooses x264',async()=>{
+test('MP-11 OpenH264 protected PNG fallback never silently chooses x264',{skip:!process.env.CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER},async()=>{
  const before=process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER,software=process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE;
  process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER='libopenh264';process.env.CHARIOX_BROWSER_DISPLAY_SOFTWARE='1';
  const e=new PortableEncoder();
