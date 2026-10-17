@@ -680,3 +680,52 @@ async fn terminal_output_read_does_not_wait_for_the_provider_app_lock() {
         crate::local::LocalDaemonResponse::TerminalOutput { .. }
     ));
 }
+
+// MP-11: the Vault panel's unlock prompt belongs to the user, so the turn that
+// is current when it opens (for example a prompt still reconciling after a
+// restart) ending must not withdraw it and fail the panel with "timed out".
+#[tokio::test]
+async fn panel_vault_unlock_prompt_outlives_the_agents_turn() {
+    use crate::runtime::state::runtime_vault_unlock_state::vault_passphrase_interaction;
+    let f = Fixture::new().await;
+    let panel = vault_passphrase_interaction(&f.session, &f.agent, "credential_vault_manage");
+    let mut panel_rx = f
+        .runtime
+        .create_terminal_credential_interaction(&f.session, panel)
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.session, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.owned.withdraw_stale_agent_interactions();
+    assert!(matches!(
+        panel_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn launch_vault_unlock_prompt_is_withdrawn_when_the_turn_ends() {
+    use crate::runtime::state::runtime_vault_unlock_state::vault_passphrase_interaction;
+    let f = Fixture::new().await;
+    let launch = vault_passphrase_interaction(&f.session, &f.agent, "provider_launch");
+    let mut rx = f
+        .runtime
+        .create_terminal_credential_interaction(&f.session, launch)
+        .unwrap();
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.session, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.owned.withdraw_stale_agent_interactions();
+    f.assert_withdrawn(&mut rx).await;
+}

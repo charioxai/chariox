@@ -413,7 +413,7 @@ impl KernelRuntimeState {
             vault_lease_choice_from_resolution(
                 self.await_vault_interaction(
                     session_id,
-                    vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
+                    vault_unlock_lease_interaction(session_id, agent_id, operation, &vault_config),
                     operation,
                     "vault unlock lease",
                 )
@@ -624,7 +624,31 @@ fn vault_passphrase_change_interaction(
     )
 }
 
-fn vault_passphrase_interaction(
+/// The Vault panel's own unlock and management prompts are the user's, not an
+/// agent turn's: a turn ending (or a restart settling its receipt) must not
+/// withdraw the prompt mid-entry and fail the panel with "unlock timed out".
+const PANEL_VAULT_OPERATION: &str = "credential_vault_manage";
+
+fn vault_prompt_id(kind: &str, agent_id: &str, operation: &str) -> String {
+    let scope = if operation == PANEL_VAULT_OPERATION {
+        "-panel"
+    } else {
+        ""
+    };
+    format!(
+        "vault-{kind}{scope}-{agent_id}-{}",
+        crate::session::unix_epoch_ms()
+    )
+}
+
+pub(super) fn is_panel_vault_interaction(interaction: &crate::session::RuntimeInteraction) -> bool {
+    let id = interaction.id();
+    id.starts_with("vault-unlock-panel-")
+        || id.starts_with("vault-unlock-lease-panel-")
+        || id.starts_with("vault-manage-")
+}
+
+pub(super) fn vault_passphrase_interaction(
     session_id: &str,
     agent_id: &str,
     operation: &'static str,
@@ -636,11 +660,7 @@ fn vault_passphrase_interaction(
         Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
     )];
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-unlock-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
+        vault_prompt_id("unlock", agent_id, operation),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -664,14 +684,11 @@ fn vault_passphrase_interaction(
 fn vault_unlock_lease_interaction(
     session_id: &str,
     agent_id: &str,
+    operation: &str,
     config: &crate::config::UserCredentialVaultConfig,
 ) -> crate::session::RuntimeInteraction {
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-unlock-lease-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
+        vault_prompt_id("unlock-lease", agent_id, operation),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -1106,7 +1123,7 @@ mod tests {
     #[test]
     fn vault_duration_prompt_is_a_separate_non_secret_interaction() {
         let config = crate::config::UserCredentialVaultConfig::default();
-        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", &config);
+        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", "test", &config);
 
         assert!(interaction.custom_choice().is_none());
         assert_eq!(
