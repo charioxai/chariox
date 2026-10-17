@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
@@ -24,10 +24,12 @@ use tokio::net::TcpListener;
 use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
 use crate::store::ActionReceiptLookupError;
 use crate::{
-    baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
-    AegsProvider, AegsStore, ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION,
-    MAX_WEBHOOK_BYTES,
+    baseline_provider_connection_inspection, now_ms, AedsPublisher, AegsProvider, AegsStore,
+    ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION, MAX_WEBHOOK_BYTES,
 };
+
+mod inbox;
+use inbox::InboxAttempt;
 
 fn action_receipt_is_durable(action_id: &str) -> bool {
     // Context lookups are bounded, read-only queries. Persisting their full provider response
@@ -150,6 +152,8 @@ where
     if server.provider.authorization_configured() {
         spawn_subscription_maintenance(Arc::clone(&server.provider));
     }
+    inbox::spawn_inbox_delivery(server.clone());
+    inbox::spawn_delivery_sweep(server.clone());
     let listener = TcpListener::bind(address).await?;
     eprintln!(
         "{}",
@@ -1242,85 +1246,54 @@ impl AegsServer {
                         )
                     }
                 };
-                let subscriptions = match self
-                    .store
-                    .matching_for_delivery(
-                        &self.producer_id,
-                        &normalized.event_type,
-                        &normalized.connection_scope,
-                    )
-                    .await
-                {
-                    Ok(values) => values,
+                let delivery_id = self
+                    .provider
+                    .webhook_delivery_id(input)
+                    .unwrap_or_else(|| crate::random_opaque("delivery"));
+                // The event is durable before GitHub-style senders, which never retry on their
+                // own, are told it arrived.
+                if let Err(message) = self.store.record_inbox_event(
+                    &delivery_id,
+                    route.connection_id.as_deref(),
+                    &normalized,
+                    now_ms(),
+                ) {
+                    return error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message);
+                }
+                match self.attempt_inbox_delivery(&delivery_id, now_ms()).await {
+                    Ok(InboxAttempt::Published(responses)) => json(
+                        StatusCode::ACCEPTED,
+                        serde_json::json!({
+                            "delivery_id": delivery_id,
+                            "occurrence_id": normalized.occurrence_id,
+                            "matched_interest_count": responses.len(),
+                            "publications": responses,
+                        }),
+                    ),
+                    Ok(InboxAttempt::Retrying | InboxAttempt::NotRun) => {
+                        match self.store.inbox_event(&delivery_id) {
+                            Ok(Some(entry)) => json(
+                                StatusCode::ACCEPTED,
+                                serde_json::json!({
+                                    "delivery_id": delivery_id,
+                                    "occurrence_id": normalized.occurrence_id,
+                                    "status": entry.status,
+                                }),
+                            ),
+                            Ok(None) => error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "store_failed",
+                                "the stored webhook event disappeared",
+                            ),
+                            Err(message) => {
+                                error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
+                            }
+                        }
+                    }
                     Err(message) => {
-                        return error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
-                    }
-                };
-                let mut interest_keys = HashSet::new();
-                let mut responses = Vec::new();
-                for (subscription, generation) in subscriptions {
-                    if route
-                        .connection_id
-                        .as_deref()
-                        .is_some_and(|connection_id| subscription.connection_id != connection_id)
-                    {
-                        continue;
-                    }
-                    if !metadata_matches_filter(&normalized.metadata, &subscription.filter) {
-                        continue;
-                    }
-                    if !interest_keys.insert(subscription.event_interest_key.clone()) {
-                        continue;
-                    }
-                    let _delivery_guard =
-                        match self.store.delivery_guard(&subscription, generation).await {
-                            Ok(guard) => guard,
-                            Err(_) => {
-                                interest_keys.remove(&subscription.event_interest_key);
-                                continue;
-                            }
-                        };
-                    let connection_id = subscription.connection_id.clone();
-                    let event = PublishEventRequest {
-                        producer_id: self.producer_id.clone(),
-                        event_interest_key: subscription.event_interest_key,
-                        occurrence_id: normalized.occurrence_id.clone(),
-                        event_type: normalized.event_type.clone(),
-                        event_type_version: subscription.event_type_version,
-                        occurred_at: normalized.occurred_at.clone(),
-                        prompt: normalized.prompt.clone(),
-                        artifacts: Vec::new(),
-                        metadata: normalized.metadata.clone(),
-                        reply_context: normalized.reply_context.clone(),
-                        ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
-                    };
-                    match self.publisher.publish(event).await {
-                        Ok(response) => {
-                            if let Err(message) = self
-                                .store
-                                .mark_connection_event_accepted(&connection_id, now_ms())
-                            {
-                                return error(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "store_failed",
-                                    message,
-                                );
-                            }
-                            responses.push(response)
-                        }
-                        Err(message) => {
-                            return error(StatusCode::BAD_GATEWAY, "aeds_rejected", message)
-                        }
+                        error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
                     }
                 }
-                json(
-                    StatusCode::ACCEPTED,
-                    serde_json::json!({
-                        "occurrence_id": normalized.occurrence_id,
-                        "matched_interest_count": interest_keys.len(),
-                        "publications": responses,
-                    }),
-                )
             }
             _ => error(StatusCode::NOT_FOUND, "not_found", "route was not found"),
         }
@@ -1389,52 +1362,10 @@ impl AegsServer {
         normalized: crate::NormalizedEvent,
         connection_id: Option<&str>,
     ) -> Result<AegsConnectionTestEventResponse, String> {
-        let subscriptions = self
-            .store
-            .matching_for_delivery(
-                &self.producer_id,
-                &normalized.event_type,
-                &normalized.connection_scope,
-            )
-            .await?;
-        let mut interest_keys = HashSet::new();
-        for (subscription, generation) in subscriptions {
-            if connection_id.is_some_and(|value| subscription.connection_id != value) {
-                continue;
-            }
-            if !metadata_matches_filter(&normalized.metadata, &subscription.filter) {
-                continue;
-            }
-            if !interest_keys.insert(subscription.event_interest_key.clone()) {
-                continue;
-            }
-            let _delivery_guard = match self.store.delivery_guard(&subscription, generation).await {
-                Ok(guard) => guard,
-                Err(_) => {
-                    interest_keys.remove(&subscription.event_interest_key);
-                    continue;
-                }
-            };
-            let accepted_connection_id = subscription.connection_id.clone();
-            self.publisher
-                .publish(PublishEventRequest {
-                    producer_id: self.producer_id.clone(),
-                    event_interest_key: subscription.event_interest_key,
-                    occurrence_id: normalized.occurrence_id.clone(),
-                    event_type: normalized.event_type.clone(),
-                    event_type_version: subscription.event_type_version,
-                    occurred_at: normalized.occurred_at.clone(),
-                    prompt: normalized.prompt.clone(),
-                    artifacts: Vec::new(),
-                    metadata: normalized.metadata.clone(),
-                    reply_context: normalized.reply_context.clone(),
-                    ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
-                })
-                .await?;
-            self.store
-                .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
-        }
-        let accepted = !interest_keys.is_empty();
+        let accepted = !self
+            .publish_to_matching(&normalized, connection_id)
+            .await?
+            .is_empty();
         Ok(AegsConnectionTestEventResponse {
             occurrence_id: normalized.occurrence_id,
             accepted,
@@ -2046,6 +1977,9 @@ mod mp11_delivery_http_tests {
             }
             Ok(event())
         }
+        fn webhook_delivery_id(&self, input: WebhookInput<'_>) -> Option<String> {
+            input.headers.get("x-delivery").cloned()
+        }
     }
     fn event() -> crate::NormalizedEvent {
         crate::NormalizedEvent {
@@ -2062,6 +1996,8 @@ mod mp11_delivery_http_tests {
     struct PublisherFixture {
         url: String,
         calls: Arc<AtomicUsize>,
+        accepted: Arc<AtomicUsize>,
+        refusals: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
@@ -2075,6 +2011,9 @@ mod mp11_delivery_http_tests {
             let url = format!("http://{}/events", listener.local_addr().unwrap());
             listener.set_nonblocking(true).unwrap();
             let calls = Arc::new(AtomicUsize::new(0));
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let refusals = Arc::new(AtomicUsize::new(0));
+            let (accepts, refuse) = (accepted.clone(), refusals.clone());
             let stop = Arc::new(AtomicBool::new(false));
             let count = calls.clone();
             let done = stop.clone();
@@ -2114,6 +2053,16 @@ mod mp11_delivery_http_tests {
                             if done.load(Ordering::SeqCst) {
                                 break;
                             }
+                            if refuse
+                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                                    left.checked_sub(1)
+                                })
+                                .is_ok()
+                            {
+                                write!(stream, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                                continue;
+                            }
+                            accepts.fetch_add(1, Ordering::SeqCst);
                             let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                         }
@@ -2127,6 +2076,8 @@ mod mp11_delivery_http_tests {
             Self {
                 url,
                 calls,
+                accepted,
+                refusals,
                 stop,
                 hold,
                 thread: Some(thread),
@@ -2140,6 +2091,12 @@ mod mp11_delivery_http_tests {
         }
     }
     async fn signed_webhook(server: Arc<AegsServer>) -> serde_json::Value {
+        post_signed_webhook(server, None).await.1
+    }
+    async fn post_signed_webhook(
+        server: Arc<AegsServer>,
+        delivery_id: Option<&'static str>,
+    ) -> (u16, serde_json::Value) {
         use hmac::Mac;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!(
@@ -2171,22 +2128,236 @@ mod mp11_delivery_http_tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let response = tokio::task::spawn_blocking(move || {
-            ureq::AgentBuilder::new()
+            let mut request = ureq::AgentBuilder::new()
                 .timeout(Duration::from_secs(3))
                 .build()
                 .post(&url)
                 .set("x-signature", &signature)
-                .set("connection", "close")
-                .send_string(body)
-                .unwrap()
-                .into_json::<serde_json::Value>()
-                .unwrap()
+                .set("connection", "close");
+            if let Some(delivery_id) = delivery_id {
+                request = request.set("x-delivery", delivery_id);
+            }
+            match request.send_string(body) {
+                Ok(response) => (response.status(), response.into_json().unwrap()),
+                Err(ureq::Error::Status(status, response)) => {
+                    (status, response.into_json().unwrap_or_default())
+                }
+                Err(error) => panic!("webhook transport failed: {error}"),
+            }
         })
         .await
         .unwrap();
         serving.await.unwrap();
         response
     }
+    fn subscribed_server(publisher: &PublisherFixture) -> (Arc<AegsServer>, AegsStore) {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = crate::SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: claim.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+        (server, store)
+    }
+    #[tokio::test]
+    async fn signed_webhook_is_acknowledged_when_aeds_refuses_the_first_publication() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(2, Ordering::SeqCst);
+        let (server, _) = subscribed_server(&publisher);
+        let (status, _) = post_signed_webhook(server, None).await;
+        assert_eq!(status, 202);
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn refused_publication_is_retried_until_aeds_recovers_and_published_once() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(2, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        let (status, body) = post_signed_webhook(server.clone(), Some("delivery-1")).await;
+        assert_eq!((status, body["status"].as_str()), (202, Some("pending")));
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        let stored = store.inbox_event("delivery-1").unwrap().unwrap();
+        assert_eq!(stored.status, crate::InboxStatus::Pending);
+        assert!(stored.last_error.is_some());
+
+        // Not due yet: the backoff protects a struggling AEDS.
+        server
+            .deliver_due_inbox(stored.received_at_ms)
+            .await
+            .unwrap();
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+
+        let mut at = stored.received_at_ms;
+        for _ in 0..4 {
+            at += 10 * 60_000;
+            server.deliver_due_inbox(at).await.unwrap();
+        }
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 3);
+        let stored = store.inbox_event("delivery-1").unwrap().unwrap();
+        assert_eq!(stored.status, crate::InboxStatus::Published);
+        assert_eq!(stored.publication_count, 1);
+    }
+
+    #[tokio::test]
+    async fn redelivered_webhook_with_a_stored_delivery_id_is_not_published_again() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let (_, first) = post_signed_webhook(server.clone(), Some("delivery-2")).await;
+        assert_eq!(first["matched_interest_count"], 1);
+        let (status, again) = post_signed_webhook(server.clone(), Some("delivery-2")).await;
+        assert_eq!((status, again["status"].as_str()), (202, Some("published")));
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert!(store.has_inbox_event("delivery-2").unwrap());
+    }
+
+    #[tokio::test]
+    async fn exhausted_publication_waits_for_a_replay_with_a_fresh_budget() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(usize::MAX, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        post_signed_webhook(server.clone(), Some("delivery-3")).await;
+        let mut at = now_ms();
+        for _ in 0..20 {
+            at += 11 * 60_000;
+            server.deliver_due_inbox(at).await.unwrap();
+        }
+        let stored = store.inbox_event("delivery-3").unwrap().unwrap();
+        assert_eq!(stored.status, crate::InboxStatus::Failed);
+        assert_eq!(stored.attempts, 8);
+        let calls = publisher.calls.load(Ordering::SeqCst);
+        server.deliver_due_inbox(at + 11 * 60_000).await.unwrap();
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), calls);
+
+        publisher.refusals.store(0, Ordering::SeqCst);
+        assert!(store.requeue_inbox_event("delivery-3", at).unwrap());
+        server.deliver_due_inbox(at).await.unwrap();
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.inbox_event("delivery-3").unwrap().unwrap().status,
+            crate::InboxStatus::Published
+        );
+    }
+
+    // Stands in for the provider's delivery log (GitHub's app hook deliveries API).
+    struct DeliveryLogProvider {
+        log: Vec<crate::ProviderDelivery>,
+        redelivered: std::sync::Mutex<Vec<String>>,
+    }
+    impl AegsProvider for DeliveryLogProvider {
+        fn generator_id(&self) -> &'static str {
+            "dev.chariox.github"
+        }
+        fn provider_slug(&self) -> &'static str {
+            "github"
+        }
+        fn normalize_webhook(
+            &self,
+            _: WebhookInput<'_>,
+            _: &crate::WebhookRoute,
+        ) -> Result<crate::NormalizedEvent, String> {
+            Ok(event())
+        }
+        fn recent_deliveries(&self, since_ms: u64) -> Result<Vec<crate::ProviderDelivery>, String> {
+            Ok(self
+                .log
+                .iter()
+                .filter(|delivery| delivery.delivered_at_ms >= since_ms)
+                .cloned()
+                .collect())
+        }
+        fn redeliver(&self, delivery: &crate::ProviderDelivery) -> Result<(), String> {
+            self.redelivered
+                .lock()
+                .unwrap()
+                .push(delivery.redelivery_ref.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn sweep_redelivers_only_recent_deliveries_that_were_never_stored() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let now = 100 * 60 * 60_000;
+        let delivery = |id: &str, age_ms: u64| crate::ProviderDelivery {
+            delivery_id: id.into(),
+            redelivery_ref: format!("ref-{id}"),
+            delivered_at_ms: now - age_ms,
+        };
+        let provider = Arc::new(DeliveryLogProvider {
+            log: vec![
+                delivery("stored", 10 * 60_000),
+                delivery("missing", 20 * 60_000),
+                delivery("in-flight", 30_000),
+                delivery("too-old", 7 * 60 * 60_000),
+            ],
+            redelivered: Default::default(),
+        });
+        store
+            .record_inbox_event("stored", None, &event(), now - 10 * 60_000)
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            provider: provider.clone(),
+            ..(*server).clone()
+        });
+        let mut requested = HashMap::new();
+        assert_eq!(
+            server
+                .sweep_missed_deliveries(now, &mut requested)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(*provider.redelivered.lock().unwrap(), vec!["ref-missing"]);
+
+        // Still missing on later sweeps: asked again, but only a few times.
+        for _ in 0..5 {
+            server
+                .sweep_missed_deliveries(now, &mut requested)
+                .await
+                .unwrap();
+        }
+        assert_eq!(provider.redelivered.lock().unwrap().len(), 3);
+
+        // Once the redelivery arrives it is stored and the sweep leaves it alone.
+        store
+            .record_inbox_event("missing", None, &event(), now)
+            .unwrap();
+        assert_eq!(
+            server
+                .sweep_missed_deliveries(now, &mut requested)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn mp11_review_oauth_completion_survives_blocked_webhook_publisher() {
         let publisher = PublisherFixture::with_blocked_publication(true);

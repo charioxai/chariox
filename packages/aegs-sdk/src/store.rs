@@ -8,6 +8,9 @@ use sha2::{Digest, Sha256};
 
 use chariox_event_protocol::AegsProviderActionResponse;
 
+mod inbox;
+pub use inbox::{InboxEntry, InboxStatus};
+
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +88,12 @@ pub struct AegsStore {
 }
 
 impl AegsStore {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
         let connection = Connection::open(path)?;
         connection.execute_batch(
@@ -161,6 +170,25 @@ impl AegsStore {
                 created_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(owner_id, connection_id, idempotency_key)
             );
+            CREATE TABLE IF NOT EXISTS webhook_inbox (
+                delivery_id TEXT PRIMARY KEY NOT NULL,
+                route_connection_id TEXT,
+                connection_scope TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                occurrence_id TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                received_at_ms INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at_ms INTEGER NOT NULL,
+                published_at_ms INTEGER,
+                publication_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS webhook_inbox_due
+                ON webhook_inbox(status, next_attempt_at_ms);
+            CREATE INDEX IF NOT EXISTS webhook_inbox_received
+                ON webhook_inbox(received_at_ms);
             ",
         )?;
         migrate_subscription_owner(&connection)?;
