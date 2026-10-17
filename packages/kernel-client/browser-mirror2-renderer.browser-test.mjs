@@ -841,6 +841,30 @@ test('MP-10 navigation keeps the prior page until the continued document has vis
   } finally { await page.close(); }
 });
 
+// BROWSER-UX-09 (browserux r20, typed github.com): the head-only continuation of a real page shows
+// an unstyled, visible "Skip to content" link; presenting it put a near-white page over the old one.
+test('MP-10 an unfinished document holds the prior page until it covers the viewport; a sparse one presents after a bound', async () => {
+  const page = await viewer();
+  try {
+    const shown = () => page.evaluate(() => [...document.querySelectorAll('#c > iframe')].filter(f=>getComputedStyle(f).visibility!=='hidden').map(f=>f.contentDocument?.body?.innerText??'').join('|'));
+    const pending = { snapshot_complete: false };
+    const skip = (document_id, sequence) => ({...snapshot([{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'body'},
+      {id:'n4',parent:'n3',kind:'element',tag:'a'},{id:'n5',parent:'n4',kind:'text',text:'Skip to content'}]),...pending,document_id,sequence});
+    await apply(page, snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Prior page stays visible'}])));
+    await apply(page, skip('next', 2)); await frames();
+    assert.match(await shown(), /Prior page stays visible/, 'a visible skip link alone is not meaningful content');
+    await apply(page, delta(3, [{op:'children',id:'n3',children:['n4','n6'],nodes:[{id:'n6',parent:'n3',kind:'element',tag:'main'},{id:'n7',parent:'n6',kind:'element',tag:'h1'},{id:'n8',parent:'n7',kind:'text',text:'Repository title'},
+      {id:'n9',parent:'n6',kind:'element',tag:'p'},{id:'n10',parent:'n9',kind:'text',text:'Readme text '.repeat(200)}]}], {...pending,document_id:'next'})); await frames();
+    assert.match(await shown(), /Repository title/); assert.doesNotMatch(await shown(), /Prior page stays visible/);
+    await apply(page, skip('sparse', 4)); await frames();
+    assert.match(await shown(), /Repository title/, 'the sparse continuation is held');
+    await page.waitForFunction(() => window.r.painted, {}, { timeout: 3000 });
+    assert.equal(await shown(), 'Skip to content', 'a sparse page presents after the bound');
+    await apply(page, {...snapshot(page2([{id:'n4',parent:'n3',kind:'element',tag:'p'},{id:'n5',parent:'n4',kind:'text',text:'Tiny'}])),document_id:'tiny',sequence:5}); await frames();
+    assert.equal(await shown(), 'Tiny', 'a completed small page presents at once');
+  } finally { await page.close(); }
+});
+
 test('MP-11 navigation retires unpainted replacements, preserves the last paint on failure, and closes both frames', async () => {
   const page = await viewer();
   try {
