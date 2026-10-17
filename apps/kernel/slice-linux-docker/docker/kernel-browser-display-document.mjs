@@ -87,8 +87,9 @@ export async function resolveDisplayTarget(host, command, native = false) {
  const owner=frame?captureDocumentOwner(browser,{target_id:target,document_id:frame.frame.loaderId}):null;
  const {connection,sessionId}=owner??await browser.resolvePageTarget(target);
  // BROWSER-UX-05: a newly attached page may have a loader event before its
- // full frame owner exists. Reuse that event only in this live session.
- const cachedDocument=frame?null:browser.documentIdsByTarget?.get(target);
+ // full frame owner exists. Reuse that event only in this live session;
+ // input admission (fresh) proves the active document from its renderer.
+ const cachedDocument=frame||command.fresh?null:browser.documentIdsByTarget?.get(target);
  const document_id=frame?.frame.loaderId??cachedDocument??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
  if(typeof document_id!=='string'||!document_id)throw Error('MD-DISPLAY: document unavailable');
  const current=()=>{

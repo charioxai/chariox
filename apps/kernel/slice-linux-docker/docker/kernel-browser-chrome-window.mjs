@@ -443,7 +443,7 @@ export class InputArbiter {
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     // Native navigation commits independently of inventory polling. Admit the
     // live document instead of attributing a person's new input to cached state.
-    tab = await this.host.displayTarget({tab_id: tab.tab_id, generation});
+    tab = await this.host.displayTarget({tab_id: tab.tab_id, generation, fresh: true});
     const active = await this.activeTab();
     if (!binding.isCurrent() || generation !== this.host.generation || !active || active.target_id !== tab.target_id) throw new UserDomainRefusal('stale_reference');
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation};

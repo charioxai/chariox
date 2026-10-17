@@ -100,7 +100,7 @@ test("MP-08/MP-10/MP-11 band preflight observes the live document before ledger 
   const binding = { window_generation: 2, isCurrent: () => true };
   const arbiter = new InputArbiter(host, { current: () => ({ tabbed: binding }) });
   assert.deepEqual(await arbiter.resolveDisplayInput({ window_generation: 2 }), { tab_id: 't', document_id: 'live', generation: 3 });
-  assert.deepEqual(calls, [{ tab_id: 't', generation: 3 }]);
+  assert.deepEqual(calls, [{ tab_id: 't', generation: 3, fresh: true }], 'input admission asks for a renderer proof');
 });
 
 test("MP-08/MP-10/MP-11 band preflight discovers a newly created native Tab", async () => {
