@@ -31,6 +31,10 @@ struct Capture {
     unsigned long insets[4];
     unsigned long owner;
     Atom state_atom,fullscreen_atom;
+    /* Owned-surface fence: proved once, then re-proved only after the server reports a change to
+     * the window, its ancestors or the three properties the binding reads. */
+    Atom pid_atom,insets_atom;
+    Window ancestors[16];int ancestor_count,surface_dirty,woken;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
      * and a slot is compared before it can be overwritten by a new readback. */
@@ -198,7 +202,10 @@ image:
     c->hash_cur=malloc(height*sizeof(uint64_t));c->hash_last=malloc(height*sizeof(uint64_t));
     if (!c->previous||!c->hash_cur||!c->hash_last) goto fail;
     c->damage=XDamageCreate(c->display,c->window,XDamageReportRawRectangles);
-    XSelectInput(c->display,c->window,StructureNotifyMask);
+    c->pid_atom=XInternAtom(c->display,"_NET_WM_PID",False);c->insets_atom=XInternAtom(c->display,"_GTK_FRAME_EXTENTS",False);
+    if(!c->state_atom)c->state_atom=XInternAtom(c->display,"_NET_WM_STATE",False);
+    XSelectInput(c->display,c->window,c->desktop?StructureNotifyMask:StructureNotifyMask|PropertyChangeMask);
+    c->surface_dirty=1; /* the first readback proves the binding after the events are armed */
     return c;
 fail:
     cx_capture_close(c); return NULL;
@@ -265,16 +272,67 @@ static int owned_window_current(struct Capture *c) {
     if(c->retired||!bound_surface(c)){c->retired=1;return 0;}
     return 1;
 }
+/* MP-11: ancestors can hide the window (map_state) without an event on it, so the fence also
+ * watches the chain below the root. Re-walked at every full check; a deeper tree grants nothing. */
+static int watch_ancestors(struct Capture *c) {
+    Window root,parent=c->window,*children=NULL;unsigned count=0;c->ancestor_count=0;
+    if(c->desktop)return 1;
+    int complete=0;
+    for(int depth=0;depth<16&&!complete;depth++){
+        if(!XQueryTree(c->display,parent,&root,&parent,&children,&count))return 0;
+        if(children)XFree(children);
+        if(parent==None||parent==root)complete=1;else c->ancestors[c->ancestor_count++]=parent;
+    }
+    if(!complete)return 0;
+    /* A window destroyed meanwhile makes the select fail: refuse instead of dying on the X error. */
+    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
+    redirect_previous=XSetErrorHandler(redirect_failed);
+    for(int i=0;i<c->ancestor_count;i++)XSelectInput(c->display,c->ancestors[i],StructureNotifyMask);
+    XSync(c->display,False);XSetErrorHandler(redirect_previous);redirect_display=NULL;
+    return !redirect_error;
+}
+static int surface_atom(struct Capture *c,Atom atom) {return atom==c->pid_atom||atom==c->state_atom||atom==c->insets_atom;}
+/* Everything bound_surface reads: attributes and mapping of the window and its ancestors, and
+ * the PID, state and frame-extents properties of the window. */
+static int surface_event(struct Capture *c,XEvent *event) {
+    Window at=event->xany.window;int watched=at==c->window;
+    for(int i=0;i<c->ancestor_count;i++)watched|=at==c->ancestors[i];
+    if(!watched)return 0;
+    switch(event->type){
+        case ConfigureNotify:case MapNotify:case UnmapNotify:case DestroyNotify:case ReparentNotify:case GravityNotify:return 1;
+        case PropertyNotify:return at==c->window&&surface_atom(c,event->xproperty.atom);
+    }
+    return 0;
+}
+/* Same effect as cx_capture_damage on a binding change; the wake it owes is delivered there. */
+static void note_surface_event(struct Capture *c,XEvent *event) {
+    if(event->type==DestroyNotify&&event->xdestroywindow.window==c->window)c->retired=1;
+    if(event->type==UnmapNotify&&event->xunmap.window==c->window)c->retired=1;
+    if(event->type==ConfigureNotify&&event->xconfigure.window==c->window&&
+        (event->xconfigure.width!=c->window_width||event->xconfigure.height!=c->window_height))c->retired=1;
+    c->surface_dirty=c->woken=1;
+}
+static Bool surface_predicate(Display *d,XEvent *event,XPointer arg) {(void)d;return surface_event((struct Capture *)arg,event);}
+static void take_surface_events(struct Capture *c) {
+    XEvent event;
+    while(XCheckIfEvent(c->display,&event,surface_predicate,(XPointer)c))note_surface_event(c,&event);
+}
+/* The binding is current while no event reported a change since the last full proof. Events the
+ * server generated before a reply reach the client before that reply. */
+static int surface_current(struct Capture *c) {
+    take_surface_events(c);
+    if(c->retired)return 0;
+    if(c->surface_dirty){
+        c->surface_dirty=0;
+        if(!watch_ancestors(c)||!bound_surface(c)){c->retired=1;return 0;}
+    }
+    return 1;
+}
 int cx_capture_damage(struct Capture *c) {
-    int dirty=0;
+    int dirty=c->woken;c->woken=0;
     while (XPending(c->display)) {
         XEvent event; XNextEvent(c->display,&event);
-        if(event.type==DestroyNotify&&event.xdestroywindow.window==c->window){c->retired=1;dirty=1;}
-        if(event.type==UnmapNotify&&event.xunmap.window==c->window){c->retired=1;dirty=1;}
-        if(event.type==ConfigureNotify&&event.xconfigure.window==c->window){
-            if(event.xconfigure.width!=c->window_width||event.xconfigure.height!=c->window_height)c->retired=1;
-            dirty=1;
-        }
+        if(surface_event(c,&event)){note_surface_event(c,&event);dirty=1;}
         if (event.type==c->event) {
             XRectangle r=((XDamageNotifyEvent *)&event)->area;
             if (r.x<c->xoffset+c->width && r.x+r.width>c->xoffset && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
@@ -431,7 +489,9 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
-    if (!owned_window_current(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->xoffset,c->offset,AllPlanes)) return -1;
+    if (!surface_current(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->xoffset,c->offset,AllPlanes)) return -1;
+    /* A change reported before the image reply makes this image unproven: prove it again or refuse. */
+    if (!surface_current(c)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;
