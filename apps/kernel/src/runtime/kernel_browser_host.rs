@@ -925,7 +925,30 @@ impl KernelBrowserHost {
         if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
             return Err("MP-11: not_granted: browser authority revoked".into());
         }
-        model.takeover(actor, tab, generation)
+        let actor_id = actor.actor_id.clone();
+        let outcome = model.takeover(actor, tab, generation)?;
+        drop(model);
+        // A viewer input parked in the browser host lost its kernel action when it was parked: the previous owner's
+        // waiting input ends with its authority.
+        let backend = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .browsers
+            .get(user)
+            .cloned();
+        if let Some(backend) = backend {
+            let tab = tab.to_string();
+            std::thread::spawn(move || {
+                if let Ok(mut backend) = backend.lock() {
+                    let _ = backend.host_request(
+                        "host.browser.retire_input",
+                        serde_json::json!({"tab_id": tab, "except": actor_id}),
+                    );
+                }
+            });
+        }
+        Ok(outcome)
     }
     pub(crate) fn release_input(
         &self,

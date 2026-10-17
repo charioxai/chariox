@@ -817,7 +817,8 @@ export class KernelBrowserHost {
       }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
-      const result = this.observe(await this.reconcile(), null, scope);
+      // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
+      const result = this.observe(await this.reconcile().catch(error => { throw markDispatched(error); }), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
     }
@@ -915,7 +916,12 @@ export class KernelBrowserHost {
         if(request.params.op==='input')this.timing('computer_input '+(/^[a-z_]{1,16}$/.test(request.params.input?.kind)?request.params.input.kind:'other'),at);
         return { id: request.id, ok: true, result };
       }
+      if (request.method === 'host.browser.retire_input') {
+        this.busyInputs.retire((key, command) => command.tab_id === request.params.tab_id && key !== request.params.except);
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
       if (request.method === 'host.computer.retire') {
+        this.busyInputs.retire(key => key === request.params.observer);
         await this.desktopDisplay.retire(request.params.observer);
         await this.nativeComputer.retire(request.params.observer);
         this.nativeAccessibility.retire(request.params.observer);

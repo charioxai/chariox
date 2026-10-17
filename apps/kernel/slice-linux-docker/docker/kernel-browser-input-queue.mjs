@@ -31,23 +31,28 @@ export class BusyInputQueue {
 
   park(queue, command, options, cause) {
     const last = queue.entries.at(-1);
-    if (last && sameScroll(last.command, command)) { // a wheel burst replays as one scroll, not as a late jump of many
+    if (last && last !== queue.active && sameScroll(last.command, command)) { // a wheel burst replays as one scroll, not as a late jump of many
       last.command = { ...last.command, input: { ...last.command.input, delta_x: (last.command.input.delta_x ?? 0) + (command.input.delta_x ?? 0), delta_y: (last.command.input.delta_y ?? 0) + (command.input.delta_y ?? 0) } };
       return this.reply(command, options);
     }
     if (queue.entries.length >= this.limit) throw cause ?? Object.assign(Error('MP-08: busy page input queue full'), { code: 'browser_cdp_timeout' });
-    queue.entries.push({ command, options: { ...options, signal: undefined }, expires: Date.now() + this.ttlMs });
+    const abort = new AbortController();
+    queue.entries.push({ command, options: { ...options, signal: abort.signal }, abort, expires: Date.now() + this.ttlMs });
     this.event('input_parked');
     if (!queue.draining) { queue.draining = true; void this.drain(queue); }
     return this.reply(command, options);
   }
 
   async drain(queue) {
+    await new Promise(resolve => setTimeout(resolve, this.retryMs)); // the fence just failed: let a burst join before the first retry
     while (!this.stopped && queue.entries.length) {
       const entry = queue.entries[0];
       if (Date.now() > entry.expires) { queue.entries.shift(); this.event('input_expired'); continue; }
-      try { await this.run(entry.command, entry.options); queue.entries.shift(); this.event('input_admitted'); }
+      queue.active = entry;
+      try { await this.run(entry.command, entry.options); queue.active = null; if (queue.entries[0] === entry) queue.entries.shift(); this.event('input_admitted'); }
       catch (error) {
+        queue.active = null;
+        if (entry.abort.signal.aborted) continue;
         if (busy(error)) { await new Promise(resolve => setTimeout(resolve, this.retryMs)); continue; }
         queue.entries.shift(); this.event('input_dropped');
         // Typing that lost a key is dropped whole: the rest would arrive as a mangled word (a URL typed without its first letter).
@@ -55,6 +60,16 @@ export class BusyInputQueue {
       }
     }
     this.queues.delete(queue.key);
+  }
+
+  // The parking reply ended the kernel's action for this input, so its authority ends here: the terminal that parked it
+  // disconnected, or another actor took over its tab. A request already being admitted is cancelled at its next fence.
+  retire(drop) {
+    for (const queue of this.queues.values()) {
+      const kept = [];
+      for (const entry of queue.entries) if (drop(queue.key, entry.command)) { entry.abort.abort(); this.event('input_dropped'); } else kept.push(entry);
+      queue.entries = kept;
+    }
   }
 
   stop() { this.stopped = true; this.queues.clear(); }
