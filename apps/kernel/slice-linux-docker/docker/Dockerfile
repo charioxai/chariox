@@ -18,6 +18,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
+# The kernel embeds these files at compile time (runtime/ssh_machine_control.rs).
+COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/path1-service-policy.mjs deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/verify-image-release.mjs deploy/managed-kernel/
 COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
