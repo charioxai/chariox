@@ -322,6 +322,79 @@ impl KernelRuntimeState {
         Ok(outcome)
     }
 
+    /// After a provider sign-in the worker relaunches the provider and answers the retained
+    /// prompt on a successor run. Follow it only for a reply to our own drain while the active
+    /// prompt is delivered on the run we asked about.
+    pub(super) fn rebind_remote_prompt_to_successor_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_binding: &crate::agent::RemoteAgentBinding,
+        previous_run_id: &str,
+        event: &RelayPeerEvent,
+    ) -> Result<Option<String>, DaemonError> {
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run_id: successor,
+            provider_run,
+            ..
+        } = event;
+        if home_session_id != session_id
+            || home_agent_id != agent_id
+            || successor == previous_run_id
+            || provider_run.as_ref().is_none_or(|run| {
+                run.id() != successor || run.state() == crate::provider::ProviderRunState::Ended
+            })
+        {
+            return Ok(None);
+        }
+        let sessions = self.owned.session_store.write();
+        let session = sessions.get_session(session_id)?;
+        let mut agents = self.owned.agent_store.write();
+        let agent = agents.get_agent(agent_id)?;
+        let Some(current) = agent.remote_execution() else {
+            return Ok(None);
+        };
+        if agent.session_id() != session_id
+            || !same_remote_prompt_worker_binding(current, expected_binding)
+            || current.active_worker_provider_run_id.as_deref() != Some(previous_run_id)
+        {
+            return Ok(None);
+        }
+        let prompt_id =
+            self.owned
+                .prompt_state_owner
+                .with_active_prompt(&session, agent_id, |active| {
+                    Ok(active
+                        .filter(|prompt| {
+                            prompt.durable_delivery_phase()
+                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                                && prompt.durable_delivery_provider_run_id()
+                                    == Some(previous_run_id)
+                        })
+                        .map(|prompt| prompt.id().to_string()))
+                })?;
+        let Some(prompt_id) = prompt_id else {
+            return Ok(None);
+        };
+        agents.set_remote_execution_active_worker_provider_run_id(
+            agent_id,
+            Some(successor.clone()),
+        )?;
+        drop(agents);
+        drop(sessions);
+        self.owned.mark_active_prompt_delivery(
+            session_id,
+            agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(successor.clone()),
+            None,
+        )?;
+        Ok(Some(successor.clone()))
+    }
+
     pub(super) async fn drain_active_remote_prompt_projections_for_session(
         &self,
         session: &crate::session::RuntimeSession,
@@ -415,6 +488,27 @@ impl KernelRuntimeState {
         match response {
             RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
                 if let Some(event) = event {
+                    let mut provider_run_id = provider_run_id;
+                    if let Some(successor) = self
+                        .with_app_side_effect(|_| {
+                            authority
+                                .peer
+                                .authorize_worker(&remote_execution.worker_kernel_id)?;
+                            self.rebind_remote_prompt_to_successor_run(
+                                session_id,
+                                agent_id,
+                                &remote_execution,
+                                &provider_run_id,
+                                &event,
+                            )
+                        })
+                        .await?
+                    {
+                        if let Some(binding) = authority.expected_binding.as_mut() {
+                            binding.active_worker_provider_run_id = Some(successor.clone());
+                        }
+                        provider_run_id = successor;
+                    }
                     if !projection_reply_matches(session_id, agent_id, &provider_run_id, &event) {
                         return Err(DaemonError::LocalTransport {
                             operation: "drain remote prompt projection",
