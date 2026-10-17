@@ -16,6 +16,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let command =
         kernel_arguments::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|message| {
             eprintln!("error: {message}\nRun chariox-kernel --help for usage.");

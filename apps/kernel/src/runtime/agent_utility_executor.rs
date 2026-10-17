@@ -27,7 +27,7 @@ use crate::runtime::semantic_recall_utility::{
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
-const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
 // Project discovery can need the same bounded budget as setup/validation.
 // Lightweight metadata discovery and ordinary utilities retain their limit.
 const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
@@ -36,6 +36,7 @@ fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
     match policy {
         ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
         ProviderUtilityExecutionPolicy::ExistingRun
+        | ProviderUtilityExecutionPolicy::SessionCommand
         | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
     }
 }
@@ -254,6 +255,7 @@ async fn run_workspace_commit_message_utility(
         prompt.into(),
         "run workspace commit message utility",
         ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
     )
     .await
 }
@@ -283,6 +285,7 @@ async fn run_semantic_recall_search_utility(
         prompt.into(),
         "run semantic recall search utility",
         ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
     )
     .await?;
     let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
@@ -305,6 +308,7 @@ async fn run_project_environment_setup_utility(
         prompt.into(),
         "run project environment setup utility",
         ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
+        agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
     )
     .await?;
     let definition = if allow_definition_revision {
@@ -337,8 +341,29 @@ pub(crate) async fn run_provider_utility_prompt(
     prompt: AgentUtilityPromptParts,
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
 ) -> Result<String, DaemonError> {
-    let timeout = agent_utility_timeout(policy);
+    run_provider_utility_prompt_with_admission(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_provider_utility_prompt_with_admission(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
@@ -358,18 +383,28 @@ pub(crate) async fn run_provider_utility_prompt(
                 prompt.hidden_system_context,
                 timeout,
                 policy,
+                admission,
             )
             .await;
     }
-    tokio::task::spawn_blocking(move || {
-        crate::provider::run_blocking_provider_utility_prompt(
+    tokio::task::spawn_blocking(move || match admission {
+        Some(admission) => crate::provider::run_blocking_provider_utility_prompt_with_admission(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
             timeout,
             operation,
             policy,
-        )
+            Some(admission),
+        ),
+        None => crate::provider::run_blocking_provider_utility_prompt(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            timeout,
+            operation,
+            policy,
+        ),
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -378,6 +413,7 @@ pub(crate) async fn run_provider_utility_prompt(
     })?
 }
 
+#[derive(Clone)]
 pub(crate) struct AgentUtilityPromptParts {
     pub(crate) visible_user_prompt: String,
     pub(crate) hidden_system_context: String,

@@ -1144,3 +1144,77 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
     );
     let _ = app.pty_mut().remove_process(run.id());
 }
+
+// MP-08 / MP-10 / MP-11: a leased run uses the home account authority.
+#[tokio::test]
+async fn leased_output_usage_does_not_require_a_worker_account_registration() {
+    for leased in [false, true] {
+        let worktree = crate::test_support::TestWorktree::new("leased-output-usage");
+        let mut app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .expect("session");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-p",
+            "home-claude-only",
+            "haiku",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-leased-usage",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "leased-usage-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run.clone());
+        if leased {
+            app.mark_leased_provider_run(run.id());
+        }
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let batch = crate::provider::ProviderPromptSignalBatch {
+            account_usage: Some(
+                crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    "home-claude-only",
+                    "claude",
+                ),
+            ),
+            resolved_resume_state: Some(
+                crate::provider::ProviderResumeState::from_claude_session_id("worker-native"),
+            ),
+            ..Default::default()
+        };
+        let result = runtime
+            .apply_owned_structured_output_batch(session.id(), run.id(), Vec::new(), batch)
+            .await;
+        if leased {
+            result.expect(
+                "home-owned account usage must not prevent leased native output or settlement",
+            );
+            let run = runtime.owned.provider_store.get_run(run.id()).expect("run");
+            assert_eq!(
+                run.resume_state().claude_session_id(),
+                Some("worker-native")
+            );
+        } else {
+            assert!(result
+                .expect_err("ordinary local runs still require a registered local account")
+                .to_string()
+                .contains("home-claude-only"));
+        }
+    }
+}

@@ -13,6 +13,24 @@ import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 const commandTree = loadCommandCenterTestCatalog()
 
+test("Enter leaves a fully typed agent profile command for the normal submit handler", () => {
+  for (const prompt of ["/agent provider reviewer opencode", "/agent model reviewer codex/gpt-6-luna"]) {
+    const harness = createHarness(prompt, [{
+      id: "profile-scope",
+      label: "Profile options",
+      description: "Profile options",
+      value: `${prompt} `,
+      children: [{ id: "child-option", label: "Child option", description: "Child option", value: `${prompt} child` }],
+    }])
+    harness.controller.sync(prompt)
+    assert.equal(harness.controller.open(), true)
+    assert.equal(harness.controller.handleKey({ name: "return" }), false)
+    assert.equal(harness.controller.selectFromSubmit(), false)
+    assert.equal(harness.promptText, prompt)
+    assert.deepEqual(harness.executed, [])
+  }
+})
+
 function createHarness(initialPrompt = "", tree: readonly CommandNode[] = commandTree, execute?: () => Promise<void>) {
   let promptText = initialPrompt
   const executed: string[] = []

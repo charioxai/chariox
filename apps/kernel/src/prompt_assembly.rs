@@ -1,3 +1,7 @@
+// MP-08 / MP-10 / MP-11: identify only optional recreated-lease replay.
+pub(crate) const RECREATED_LEASE_CONTEXT_OPEN: &str = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
+pub(crate) const RECREATED_LEASE_CONTEXT_CLOSE: &str = "\n</chariox_context_handoff>";
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;

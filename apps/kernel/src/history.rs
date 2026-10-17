@@ -14,12 +14,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) use handoff_brief::AgentHandoffBrief;
+mod compaction_boundary;
+mod handoff_brief;
 pub(crate) mod leased_projection;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
 mod operational_retention;
 mod operational_session;
+mod remote_lease_context;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
@@ -600,6 +604,8 @@ impl OperationalHistoryStore {
             .execute_batch(OPERATIONAL_HISTORY_SCHEMA)
             .map_err(|error| operational_history_error("migrate schema", error))?;
         ensure_operational_history_merge_key_index(&mut connection)?;
+        ensure_operational_history_answered_sessions(&connection)?;
+        remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM history_events",
@@ -1051,8 +1057,22 @@ fn commit_operational_history_batch(
     };
     let result = (|| -> Result<(), rusqlite::Error> {
         let mut statement = transaction.prepare(OPERATIONAL_HISTORY_INSERT_SQL)?;
+        let mut answered = transaction.prepare(OPERATIONAL_HISTORY_ANSWERED_SESSION_SQL)?;
         for record in batch.iter().flat_map(|request| request.records.iter()) {
             let event = &record.event;
+            if let (
+                HistoryEventKind::ProviderOutput,
+                Some(session_id),
+                Some(agent_id),
+                Some(provider_session_id),
+            ) = (
+                event.kind,
+                event.session_id.as_deref(),
+                event.agent_id.as_deref(),
+                event.provider_session_id.as_deref(),
+            ) {
+                answered.execute(params![session_id, agent_id, provider_session_id])?;
+            }
             statement.execute(params![
                 event.event_id.as_str(),
                 event.sequence as i64,
@@ -1079,6 +1099,7 @@ fn commit_operational_history_batch(
             ])?;
         }
         drop(statement);
+        drop(answered);
         transaction.commit()
     })();
     match result {
@@ -1135,6 +1156,13 @@ const OPERATIONAL_HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO history_even
                     merge_key,
                     event_json
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)";
+
+const OPERATIONAL_HISTORY_ANSWERED_SESSION_SQL: &str =
+    "INSERT OR IGNORE INTO history_answered_provider_sessions (
+        session_id,
+        agent_id,
+        provider_session_id
+    ) VALUES (?1, ?2, ?3)";
 
 impl OperationalHistoryStore {
     pub fn path(&self) -> &Path {
@@ -1210,7 +1238,66 @@ CREATE TABLE IF NOT EXISTS history_session_markers (
     session_id TEXT PRIMARY KEY,
     legacy_fallback_disabled_at_ms INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    covered_through_sequence INTEGER NOT NULL,
+    brief TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, agent_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    delivered_revision INTEGER NOT NULL,
+    provider_family TEXT NOT NULL,
+    source_provider TEXT NOT NULL,
+    source_model TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT,
+    PRIMARY KEY (session_id, agent_id)
+) WITHOUT ROWID;
 "#;
+
+/// The provider sessions that answered each agent, kept apart from the events
+/// so retention cannot erase which native sessions hold an agent's conversation.
+fn ensure_operational_history_answered_sessions(
+    connection: &Connection,
+) -> Result<(), DaemonError> {
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'history_answered_provider_sessions')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| operational_history_error("inspect answered provider sessions", error))?;
+    if exists {
+        return Ok(());
+    }
+    connection
+        .execute_batch(
+            "BEGIN;
+             CREATE TABLE history_answered_provider_sessions (
+                 session_id TEXT NOT NULL,
+                 agent_id TEXT NOT NULL,
+                 provider_session_id TEXT NOT NULL,
+                 PRIMARY KEY (session_id, agent_id, provider_session_id)
+             ) WITHOUT ROWID;
+             INSERT OR IGNORE INTO history_answered_provider_sessions
+             SELECT session_id, agent_id, json_extract(event_json, '$.provider_session_id')
+             FROM history_events
+             WHERE kind = 'provider_output'
+               AND session_id IS NOT NULL
+               AND agent_id IS NOT NULL
+               AND json_extract(event_json, '$.provider_session_id') IS NOT NULL;
+             COMMIT;",
+        )
+        .map_err(|error| operational_history_error("create answered provider sessions", error))
+}
 
 fn ensure_operational_history_merge_key_index(
     connection: &mut Connection,

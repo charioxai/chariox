@@ -986,6 +986,8 @@ impl KernelRuntimeState {
                 permission_level_override,
             )?;
         }
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }
@@ -1003,27 +1005,46 @@ impl KernelRuntimeState {
         let original =
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
-        let profile_transition = if original.remote_execution().is_some() {
-            Some(
-                self.owned
-                    .prompt_state_owner
-                    .claim_idle_agent_profile_transition(
-                        &self.owned.session_store.get_session(session_id)?,
-                        agent_id,
-                    )?,
-            )
-        } else {
-            None
+        if original.remote_execution().is_some() {
+            self.ensure_remote_agent_binding_current(agent_id).await?;
+        }
+        let profile_transition = self
+            .owned
+            .prompt_state_owner
+            .claim_idle_agent_profile_transition(
+                &self.owned.session_store.get_session(session_id)?,
+                agent_id,
+            )?;
+        let selections = super::agent_profile_owned_state::AgentProfileSelections {
+            provider,
+            account_profile,
+            model,
+            effort,
         };
         let result = async {
+            // All owned checks precede the irreversible provider session command.
+            let target = self.owned.validate_agent_profile_update(
+                session_id,
+                agent_id,
+                caller_user_id,
+                selections.clone(),
+            )?;
+            if original.remote_execution().is_none() {
+                self.compact_before_window_downshift(
+                    session_id,
+                    &target.agent,
+                    Some(&target.provider),
+                    Some(&target.account_profile),
+                    target.model.as_deref(),
+                )
+                .await?;
+            }
+
             let update = self.owned.update_agent_profile(
                 session_id,
                 agent_id,
                 caller_user_id,
-                provider,
-                account_profile,
-                model,
-                effort,
+                selections,
             )?;
             for provider_run_id in update.terminated_run_ids {
                 let (_, process_key) = self
@@ -1048,20 +1069,27 @@ impl KernelRuntimeState {
                     remote_update.model,
                     remote_update.effort,
                 )?;
+                self.append_agent_durable_event("agent.updated", &agent, None)
+                    .await?;
+            } else {
+                agent = self.owned.persist_current_local_agent_profile(agent.id())?;
             }
-            self.append_agent_durable_event("agent.updated", &agent, None)
-                .await?;
             self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
             Ok(agent)
         }
         .await;
-        if let Some(claim) = profile_transition {
+        if original.remote_execution().is_some() {
             let finish = self
-                .finish_remote_agent_profile_transition(session_id, agent_id, claim)
+                .finish_remote_agent_profile_transition(session_id, agent_id, profile_transition)
                 .await;
             if result.is_ok() {
                 finish?;
             }
+        } else {
+            // The profile is committed (or rejected) before admission resumes.
+            // Reuse the normal Project/provider activation and queue dispatch path.
+            drop(profile_transition);
+            self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id)?;
         }
         result
     }

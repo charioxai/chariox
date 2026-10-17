@@ -1,5 +1,22 @@
 # Chariox v1 Protocol
 
+### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
+
+`UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
+carry optional `codex_brief_model` and `claude_brief_model` strings. Unset keys
+are omitted; the entire `handoff` object is omitted when both keys are unset.
+Normal `/config set history.handoff.<key> <model>` writes use the shared kernel
+config service and persist across restarts. No kernel-to-kernel peer shape changes
+or client minimum-version changes are required for this optional config surface.
+
+The populated response snapshot/hash is in
+`apps/kernel/src/local/api/tests/protocol_shapes/handoff_config.rs`. The focused
+live drill is `scripts/e2e-stack/context-switch/handoff-config-live.mjs` in the
+companion validation-tooling change; it drives the built TUI over hosted WSS,
+checks both populated response variants and protocol advertisements, and verifies
+persistence after restart. Source tests alone do not establish live acceptance.
+
+
 ### Hosted terminal renewal (local protocol 472)
 
 `RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.

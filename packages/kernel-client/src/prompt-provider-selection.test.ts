@@ -130,6 +130,7 @@ test("derivePromptProviderSelection does not infer focused agent ownership from 
 test("applyProviderRunProfileToSession overlays accepted run profile onto the matching agent", () => {
   const projected = applyProviderRunProfileToSession(
     session({
+      active_provider_run_id: "run-1",
       agents: [
         agent("agent-1", { provider: "opencode", model: "opencode/gpt-5.4", effort: "high" }),
         agent("agent-2", { provider: "codex", model: "gpt-5.4", effort: "medium" }),
@@ -146,6 +147,39 @@ test("applyProviderRunProfileToSession overlays accepted run profile onto the ma
   assert.equal(projected.agents[0]?.effort, "low")
   assert.equal(projected.agents[0]?.model, "opencode/gpt-5.4")
   assert.equal(projected.agents[1]?.effort, "medium")
+})
+
+test("a replaced leased run cannot overwrite the kernel-selected return model", () => {
+  const current = session({
+    active_provider_run_id: "leased:lease-agent:provider-run-5",
+    agents: [agent("agent-1", { provider: "claude-p", model: "sonnet", effort: "high" })],
+  })
+  const projected = applyProviderRunProfileToSession(current, providerRun({
+    id: "leased:lease-agent:provider-run-4",
+    agent_instance_id: "agent-1",
+    provider: "claude-p",
+    model: "claude-haiku-4-5-20251001",
+    variant: "high",
+  }))
+
+  assert.equal(projected, current)
+  assert.equal(projected.agents[0]?.model, "sonnet")
+})
+
+test("a cleared run cannot resurrect its old profile in a kernel snapshot", () => {
+  const current = session({
+    active_provider_run_id: null,
+    agents: [agent("agent-1", { provider: "codex", model: "gpt-6.1-sol", effort: "high" })],
+  })
+  const projected = applyProviderRunProfileToSession(current, providerRun({
+    agent_instance_id: "agent-1",
+    provider: "claude-p",
+    model: "claude-haiku-4-5-20251001",
+    variant: "high",
+  }))
+
+  assert.equal(projected, current)
+  assert.equal(projected.agents[0]?.provider, "codex")
 })
 
 test("provider context limit resolves provider/model references", () => {
@@ -236,3 +270,26 @@ function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstanc
     ...overrides,
   }
 }
+
+test("a lagging run of the previous provider cannot revert a committed provider switch", () => {
+  const committed = session({
+    active_provider_run_id: "run-claude",
+    agents: [agent("agent-1", { provider: "codex", model: "gpt-5.6-luna", effort: "high" })],
+  })
+  const projected = applyProviderRunProfileToSession(committed, providerRun({
+    id: "run-claude",
+    agent_instance_id: "agent-1",
+    provider: "claude-p",
+    model: "claude-haiku-5-5",
+    variant: "low",
+  }))
+
+  assert.equal(projected, committed)
+})
+
+test("the previous provider's run does not describe an agent switched away from it", () => {
+  const run = providerRun({ id: "run-claude", agent_instance_id: "agent-1", provider: "claude-p", model: "claude-haiku-5-5" })
+
+  assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "codex", model: "gpt-5.6-luna" })), null)
+  assert.equal(providerRunForPromptSelection(run, agent("agent-1", { provider: "claude-p", model: "claude-haiku-5-5" })), run)
+})

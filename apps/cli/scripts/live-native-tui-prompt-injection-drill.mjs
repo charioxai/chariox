@@ -1,3 +1,4 @@
+import { claudeNativeRunPaths, waitForClaudeNativePrompts, captureClaudeNativeScreen } from "./lib/claude-native-drill-runtime.mjs"
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import os from "node:os"
@@ -122,11 +123,6 @@ async function screenQuit(name) {
   await screen(name, ["-X", "quit"]).catch(() => {})
 }
 
-function nativeTempRootForClaudeScreen(screenName) {
-  const suffix = screenName.replace(/^chariox-claude-/, "")
-  return path.join(os.tmpdir(), `chariox-claude-native-${suffix}`)
-}
-
 function startScreen(name, logDir, command, args, env) {
   return execFileAsync("screen", [
     "-dmS",
@@ -193,35 +189,6 @@ async function waitForProxyHiddenForward(logFile, timeoutMs = 90_000) {
     await sleep(250)
   }
   throw new Error(`timed out waiting for hidden instruction forwarding in ${logFile}\n${text.slice(-4000)}`)
-}
-
-async function waitForClaudeHookPrompt(eventsFile, visiblePrompt, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs
-  let raw = ""
-  while (Date.now() < deadline) {
-    raw = await readFile(eventsFile, "utf8").catch(() => "")
-    const prompts = raw
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          return JSON.parse(line)
-        } catch {
-          return null
-        }
-      })
-      .filter((event) => event?.hook_event_name === "UserPromptSubmit")
-      .map((event) => event.prompt ?? "")
-    const prompt = prompts.find((entry) => entry.includes(visiblePrompt))
-    if (prompt) {
-      if (prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request")) {
-        throw new Error(`Claude hook prompt showed hidden Chariox instructions in ${eventsFile}`)
-      }
-      return prompt
-    }
-    await sleep(500)
-  }
-  throw new Error(`timed out waiting for Claude hook prompt ${visiblePrompt} in ${eventsFile}\n${raw}`)
 }
 
 async function assertNativeTuiDidNotShowHiddenInstructions(logFile) {
@@ -358,12 +325,11 @@ async function runProvider(provider, options) {
     const claudeScreen = provider === "claude"
       ? (await waitForFileMatch(logs.native, /screen:\s+(chariox-claude-[^\s]+)/)).match[1]
       : null
-    if (claudeScreen) {
-      logs.claudeScreen = path.join(nativeTempRootForClaudeScreen(claudeScreen), "screen", "screenlog.0")
-      logs.claudeEvents = path.join(nativeTempRootForClaudeScreen(claudeScreen), "events.jsonl")
-    }
-
     client = new LocalIpcClient(kernelUrl)
+    const nativeClaude = claudeScreen ? await claudeNativeRunPaths(client, logs.native) : null
+    if (nativeClaude) {
+      logs.claudeScreen = path.join(root, "claude-hardcopy.txt")
+    }
     const attachment = unwrap(
       await client.send(attachToSessionRequest(sessionId, `native-tui-injection-${provider}-${process.pid}`)),
       "SessionAttached",
@@ -386,11 +352,16 @@ async function runProvider(provider, options) {
       await waitForProxyHiddenForward(logs.proxy)
     }
     if (provider === "claude") {
-      await waitForClaudeHookPrompt(logs.claudeEvents, outputMarker)
+      const prompts = await waitForClaudeNativePrompts(nativeClaude, [outputMarker], 120_000, { providerTranscript: true })
+      if (prompts.filter(text => text.includes(outputMarker)).some(prompt =>
+        prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request"))) {
+        throw new Error("Claude visible transcript prompt contains hidden instructions")
+      }
     }
     await sleep(1_000)
     await assertNativeTuiDidNotShowHiddenInstructions(logs.native)
     if (logs.claudeScreen) {
+      await captureClaudeNativeScreen(claudeScreen, logs.claudeScreen)
       await assertNativeTuiDidNotShowHiddenInstructions(logs.claudeScreen)
     }
     const result = { provider, status: "ok", sessionId, alias, outputMarker, logs }
@@ -421,9 +392,7 @@ async function runProvider(provider, options) {
       },
       log: (name, details) => console.log(`[native-tui-prompt-injection-drill] ${name}`, JSON.stringify(details)),
     })
-    if (!finalized.preserved && logs.claudeScreen) {
-      await rm(path.dirname(path.dirname(logs.claudeScreen)), { recursive: true, force: true }).catch(() => {})
-    }
+
   }
 }
 

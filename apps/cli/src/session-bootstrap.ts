@@ -46,6 +46,7 @@ export type BootstrapDeps = {
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
   getSessionState: (client: LocalIpcClient, sessionId: string) => Promise<RuntimeSession>
+  getCredentialVaultStatus?: (client: LocalIpcClient) => Promise<Record<string, unknown>>
   launchProviderRun: (
     client: LocalIpcClient,
     sessionId: string,
@@ -192,6 +193,9 @@ export async function bootstrapSession(
     options.accountProfile,
     createdSession,
     {
+      ...(deps.getCredentialVaultStatus
+        ? { getCredentialVaultStatus: () => deps.getCredentialVaultStatus!(client) }
+        : {}),
       launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
         deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),

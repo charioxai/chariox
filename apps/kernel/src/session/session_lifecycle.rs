@@ -28,6 +28,7 @@ pub enum SchedulerState {
 pub struct KernelRestartReconciliation {
     pub cleared_active_provider_run: bool,
     pub cleared_attachment_count: usize,
+    pub cleared_agent_interaction_count: usize,
     pub recoverable_prompt_count: usize,
     pub recoverable_workflow_run_count: usize,
     pub repaired_workflow_prompt_count: usize,
@@ -41,6 +42,7 @@ impl KernelRestartReconciliation {
     pub fn changed(&self) -> bool {
         self.cleared_active_provider_run
             || self.cleared_attachment_count > 0
+            || self.cleared_agent_interaction_count > 0
             || self.interrupted_prompt_count > 0
             || self.repaired_workflow_prompt_count > 0
             || self.removed_orphaned_workflow_prompt_count > 0

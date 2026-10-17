@@ -107,21 +107,20 @@ fn fixture(label: &str) -> Fixture {
     }
 }
 
-fn submit_active(
+fn seed_active(
     app: &mut DaemonApp,
     session_id: &str,
     attachment_id: &str,
     agent_id: &str,
     id: &str,
 ) {
-    let outcome = app
-        .prompt_owner_submit_prepared_prompt(
-            session_id,
-            PromptQueueItem::new(id, attachment_id, agent_id, id, PromptStatus::Queued),
-            false,
-        )
-        .expect("active prompt should be accepted");
-    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    // This fixture represents already-owned work under the fence. Ordinary
+    // admission must keep FIFO instead of starting a new turn over its backlog.
+    app.prompt_owner_activate_prompt(
+        session_id,
+        PromptQueueItem::new(id, attachment_id, agent_id, id, PromptStatus::Running),
+    )
+    .expect("already-owned active prompt should be seeded");
 }
 
 #[test]
@@ -130,7 +129,7 @@ fn app_queue_promotion_stays_pending_until_exact_release_then_dispatches_once() 
     let mut app = fixture.app.blocking_lock();
 
     // Seed already-owned app work behind the fence so this test isolates promotion.
-    submit_active(
+    seed_active(
         &mut app,
         &fixture.session_id,
         &fixture.attachment_id,
@@ -170,7 +169,7 @@ fn app_queue_promotion_stays_pending_until_exact_release_then_dispatches_once() 
         "completion must leave promotion pending while fenced"
     );
 
-    submit_active(
+    seed_active(
         &mut app,
         &fixture.session_id,
         &fixture.attachment_id,

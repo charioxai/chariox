@@ -66,15 +66,44 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
+            // Keep registration/retirement out of the final protected hook replay.
+            let room_guard = owned
+                .room_secret_observations
+                .barrier(session_id)?
+                .read_owned()
+                .await;
             let outcome = self
                 .with_app_side_effect(|app| {
-                    app.process_claude_native_bridge_for_runtime(
+                    app.process_claude_native_bridge_with_handoff_for_runtime(
                         session_id,
                         provider_run_id,
                         &provider_run,
+                        owned,
                     )
                 })
                 .await?;
+            drop(room_guard);
+            if !outcome.rejected_prompts.is_empty() {
+                if let Some(agent_id) = provider_run.agent_instance_id() {
+                    for prompt in &outcome.rejected_prompts {
+                        self.inject_metaagent_turn_failure_event(
+                            session_id,
+                            agent_id,
+                            prompt,
+                            Some(provider_run_id),
+                            crate::app::CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+                        )?;
+                    }
+                    Box::pin(
+                        self.advance_project_queued_prompt_after_settlement(session_id, agent_id),
+                    )
+                    .await;
+                }
+                self.spawn_workflow_prompt_dispatches(
+                    owned.workflow_maybe_start_next_queued_prompt(session_id),
+                );
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
             if let Some(message) = outcome.terminal_failure {
                 let run = owned
                     .provider_store
@@ -160,6 +189,11 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
+        let terminal_failure = terminal_failure.or_else(|| {
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
+                .then(|| crate::app::claude_native_recent_terminal_failure(&provider_run))
+                .flatten()
+        });
         let has_active_prompt = owned.provider_run_has_active_prompt(session_id, &provider_run)?;
         if !crate::app::provider_output::should_project_pty_output(
             has_active_prompt,
@@ -408,7 +442,8 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .into_iter()
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
-                !run.client_interface().is_chariox()
+                (!run.client_interface().is_chariox()
+                    || crate::provider::provider_run_uses_claude_native_bridge(run))
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
@@ -433,7 +468,8 @@ fn provider_run_requires_owned_output_pump(
     if run.state() == crate::provider::ProviderRunState::Starting {
         return true;
     }
-    if !run.client_interface().is_chariox()
+    if (!run.client_interface().is_chariox()
+        || crate::provider::provider_run_uses_claude_native_bridge(run))
         && matches!(
             run.state(),
             crate::provider::ProviderRunState::Starting

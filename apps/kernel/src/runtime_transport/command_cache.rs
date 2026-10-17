@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -975,12 +975,15 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
 }
 
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?,
+    );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
-    file.write_all(b"\n")
+    file.write_all(b"\n")?;
+    file.flush()
 }
 
 fn rewrite_persistent_results(
@@ -991,7 +994,7 @@ fn rewrite_persistent_results(
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = fs::File::create(&tmp_path)?;
+    let mut file = BufWriter::new(fs::File::create(&tmp_path)?);
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {
@@ -1004,7 +1007,8 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    file.sync_all()?;
+    file.flush()?;
+    file.get_ref().sync_all()?;
     fs::rename(tmp_path, path)?;
     if let Some(parent) = path.parent() {
         fs::File::open(parent)?.sync_all()?;
