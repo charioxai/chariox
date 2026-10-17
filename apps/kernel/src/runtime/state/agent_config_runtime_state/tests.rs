@@ -491,6 +491,46 @@ async fn assert_remote_agent_profile_response(
                 .await
         }
     });
+    // A profile change first confirms the worker still holds the lease.
+    let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), priority_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        encrypted_request,
+        ..
+    } = envelope
+    else {
+        panic!("expected the lease probe")
+    };
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &target_config.relay_private_key,
+        &encrypted_request,
+    )
+    .unwrap();
+    assert!(matches!(
+        serde_json::from_slice(&decrypted.plaintext).unwrap(),
+        crate::transport::relay_peer::RelayPeerRequest::GetLeasedPromptReceipt { .. }
+    ));
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &target_config.relay_private_key,
+        &home_public_key,
+        &serde_json::to_vec(
+            &crate::transport::relay_peer::RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: None,
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        "worker-1".into(),
+        encrypted,
+    )
+    .await;
     if fixture_account {
         let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), priority_rx.recv())
             .await

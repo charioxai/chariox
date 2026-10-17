@@ -12,15 +12,35 @@ impl KernelRuntimeState {
         // Show that wait on every home attachment without running or predicting
         // the worker's provider session command here.
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        self.owned.record_notice_for_agent(
-            agent.session_id(),
-            None,
-            Some(agent_id),
-            self.owned
-                .attachment_store
-                .list_session_attachment_ids(agent.session_id()),
-            "Preparing the worker's profile change…",
-        );
+        let notify = |message: String| {
+            self.owned.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                message,
+            )
+        };
+        notify("Preparing the worker's profile change…".into());
+        let result = self.request_remote_agent_profile(agent_id, update).await;
+        if let Err(error) = &result {
+            // The home keeps the profile it had; every attachment learns why.
+            notify(format!(
+                "The worker's profile change failed; the agent keeps {} · {}. {error}",
+                agent.provider(),
+                agent.model().unwrap_or("default model"),
+            ));
+        }
+        result
+    }
+
+    async fn request_remote_agent_profile(
+        &self,
+        agent_id: &str,
+        update: &owned::OwnedRemoteAgentProfileUpdate,
+    ) -> Result<(), DaemonError> {
         let mut config = self.config_snapshot().await;
         if let (Some(url), Some(token)) = (update.relay_url.clone(), update.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
@@ -107,7 +127,44 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Profile requests ride out a worker's brief relay absence the way a
+    /// prompt does; each is idempotent on the worker.
     pub(super) async fn send_remote_profile_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        worker_kernel_id: &str,
+        request: RelayPeerRequest,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let started = tokio::time::Instant::now();
+        let mut attempt = 0_u32;
+        loop {
+            match self
+                .send_remote_profile_request_once(config, worker_kernel_id, request.clone())
+                .await
+            {
+                Err(error)
+                    if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_retry_transport(&error)
+                        && !super::remote_prompt_worker_submission_runtime::remote_prompt_transport_retry_window_expired(started.elapsed()) =>
+                {
+                    attempt = attempt.saturating_add(1);
+                    if attempt == 1 {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_agent_profile",
+                            "remote profile request transport unavailable; retrying",
+                            serde_json::json!({ "worker_kernel_id": worker_kernel_id, "error": error.to_string() }),
+                        );
+                    }
+                    tokio::time::sleep(
+                        super::remote_prompt_worker_submission_runtime::remote_prompt_transport_retry_delay(attempt),
+                    )
+                    .await;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn send_remote_profile_request_once(
         &self,
         config: &crate::config::DaemonConfig,
         worker_kernel_id: &str,

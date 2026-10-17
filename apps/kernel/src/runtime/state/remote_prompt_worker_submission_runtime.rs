@@ -675,7 +675,7 @@ pub(super) fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Du
     std::time::Duration::from_millis(250_u64.saturating_mul(multiplier))
 }
 
-fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) -> bool {
+pub(super) fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) -> bool {
     elapsed >= REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW
 }
 
