@@ -512,8 +512,8 @@ export class BrowserCdpClient {
   // One isolated world per document: polls reuse it, a new document gets a new one.
   // Input capture emulates focus while it runs: report the physical visibility
   // it captured before enabling emulation instead.
-  ensureFocusWorld(connection, sessionId, targetId, frame) {
-    return ensureFocusWorld(this, connection, sessionId, targetId, frame);
+  ensureFocusWorld(connection, sessionId, targetId, frame, options) {
+    return ensureFocusWorld(this, connection, sessionId, targetId, frame, options);
   }
   async observeNote(request) { return observeBrowserNote(this, request); }
 

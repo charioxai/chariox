@@ -42,9 +42,10 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
   const reads=layouts.get(browser)??new Map(),key=JSON.stringify([metrics??null,window.window_generation,window.page_rect]);layouts.set(browser,reads);
   // A crop served from the last read is retired when the renderer's delayed read disagrees.
-  // A read that timed out proves nothing about the crop: it is read again (bounded), and retired if the renderer never answers.
-  let differs=false;const watched=new WeakSet(),verify=(used,fresh,retries=2)=>{if(watched.has(fresh))return used;watched.add(fresh);fresh.then(viewport=>{if(JSON.stringify(viewport)!==JSON.stringify(used))differs=true;},()=>{
-   if(differs)return;if(retries>0)verify(used,read(),retries-1);else differs=true;});return used;};
+  // A renderer that is late is not a renderer that disagrees: a read that timed out keeps the crop and is read again
+  // while the display lives; any other failure of the read retires it.
+  let differs=false;const watched=new WeakSet(),verify=(used,fresh,retries=40)=>{if(watched.has(fresh))return used;watched.add(fresh);fresh.then(viewport=>{if(JSON.stringify(viewport)!==JSON.stringify(used))differs=true;},error=>{
+   if(differs)return;if(error?.code==='browser_cdp_timeout'){if(retries>0&&alive())verify(used,read(),retries-1);}else differs=true;});return used;};
   const read=()=>connection.send('Page.getLayoutMetrics',{},sessionId).then(m=>{const viewport={clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};reads.set(tab.target_id,{key,viewport,pending:null});return viewport;});
   const measure=async()=>{
    const last=reads.get(tab.target_id),cached=last?.key===key?last:null;

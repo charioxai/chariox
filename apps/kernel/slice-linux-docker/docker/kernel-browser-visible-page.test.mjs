@@ -228,12 +228,12 @@ test('MP-08/MP-11 a navigation preview retires its cached crop when the delayed 
  }
 });
 
-test('MP-08/MP-11 a navigation preview rereads a layout that timed out and retires its cached crop if it differs or never answers',async()=>{
+test('MP-08/MP-11 a navigation preview rereads a layout that timed out: late keeps its cached crop, a differing answer retires it',async()=>{
  const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
- for(const [later,keeps] of [[1280,false],[1265,true],[null,false]]) {
+ for(const [later,keeps] of [[1280,false],[1265,true],[null,true],['late',false]]) {
   let busy=false,calls=0;const layout=w=>({cssLayoutViewport:{clientWidth:w,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}});
   const timeout=()=>Object.assign(Error('browser CDP method Page.getLayoutMetrics timed out after 5000ms'),{code:'browser_cdp_timeout'});
-  const connection={send:async()=>{if(!busy)return layout(1265);calls++;if(calls===1)return new Promise((_,reject)=>setTimeout(()=>reject(timeout()),600));if(later===null)throw timeout();return layout(later)}};
+  const connection={send:async()=>{if(!busy)return layout(1265);calls++;if(calls===1)return new Promise((_,reject)=>setTimeout(()=>reject(timeout()),600));if(later===null||later==='late'&&calls<4)throw timeout();return layout(later==='late'?1280:later)}};
   let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
   const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
   const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
@@ -246,7 +246,7 @@ test('MP-08/MP-11 a navigation preview rereads a layout that timed out and retir
   const stream=host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id);
   assert.equal(await stream.regionCurrent(),true,'the cached crop serves while the renderer is busy');
   await new Promise(resolve=>setTimeout(resolve,900));
-  assert.equal(await stream.regionCurrent(),keeps,later===null?'a renderer that never answers retires the display':keeps?'an agreeing reread keeps the display':'a differing reread retires the display');
+  assert.equal(await stream.regionCurrent(),keeps,later===null?'a renderer that never answers has not disagreed: the display stays':keeps?'an agreeing reread keeps the display':'a differing reread retires the display');
   await stream.close();
  }
 });

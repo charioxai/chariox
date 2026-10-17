@@ -739,6 +739,45 @@ test('MP-08/MP-10/MP-11 a busy renderer without a native preview still surfaces 
  await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),error=>error.code==='browser_cdp_timeout');
 });
 
+function busyFixture(extra = {}) {
+ const policy = { targets: [], values: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+ const connection = { isOpen: () => true, send: async () => ({}) };
+ const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+ const stream = { id: 's', wire: 2, chain: Promise.resolve(), tab_id: 't', world, issued: 0, document_id: null, policy: null, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', ...extra };
+ const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab, mirrorTarget: async () => tab, browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+ const mirror = new Mirror2({ host, require: () => stream, streams: new Map([['s', stream]]) });
+ mirror.frames = { attach: async () => ({ records: [], ops: [], opaque: [] }), drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source, opaqueBoxes: async () => [] };
+ mirror.materialize = async () => []; mirror.sheetOps = async () => []; mirror.tiles = async () => []; mirror.markClosedHosts = async () => {};
+ return { mirror, stream, world };
+}
+const SNAPSHOT = { root: 'n1', nodes: [{ id: 'n1', parent: null, kind: 'element', tag: 'main' }], sheets: [], resources: [], scroll: [0, 0], focused: null, selection: null, fragment: null, snapshot_complete: false };
+
+test('MP-08/MP-10/MP-11 a snapshot the busy page has not answered is awaited by the next credit, never issued twice', async () => {
+ const { mirror, stream } = busyFixture({ navigationPreview: true, previewDocument: 'D1', previewWaitedDocument: 'D1' });
+ mirror.busyMs = 30;
+ let snapshots = 0, answer;
+ mirror.evaluate = async (_, expression) => {
+  if (expression === 'm.snapshot()') { snapshots++; return new Promise(resolve => { answer = () => resolve(SNAPSHOT); }); }
+  return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ };
+ const first = await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope');
+ assert.equal(first.fallback, 'navigation_preview', 'the busy round is a waiting heartbeat');
+ const second = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: first.sequence, wait_ms: 0 }, 'scope');
+ await new Promise(resolve => setTimeout(resolve, 10)); answer();
+ const real = await second;
+ assert.equal(snapshots, 1, 'the abandoned snapshot is the one that answers');
+ assert.equal(real.reset, true); assert(!real.fallback);
+});
+
+test('MP-08/MP-10/MP-11 a delta credit waits for a busy renderer like a snapshot does', async () => {
+ const { mirror, stream, world } = busyFixture({ issued: 1, document_id: 'D1', policy: {}, resetAt: 1 });
+ stream.policy = mirror.host.protection;
+ let patient;
+ mirror.evaluate = async (w, expression) => { if (expression.includes('drain')) patient = typeof w.patience; return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, pressed: 0 }; };
+ await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 0 }, 'scope');
+ assert.equal(patient, 'function');
+});
+
 test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, any other read keeps the short timeout',async()=>{
  const sent=[],world={contextId:1,sessionId:'S',connection:{send:async(method,params,session,options)=>{sent.push(options?.timeoutMs);return{result:{value:1}}}}};
  const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{}},require:()=>({}),streams:new Map()});

@@ -788,9 +788,9 @@ test('MP-11 an occlusion probe cannot be shared across native input revisions', 
  assert.equal(await second,true);assert.equal(reads,2);finish();
 });
 
-// PERF_AUDIT 4.2.7 (C2): a key for the page reads the document's frame tree once; the fence that asserted the
-// document already holds it (the focus world and the sensitive-field check still run on every key).
-test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
+// PERF_AUDIT 4.2.7 (C2), r53: a key for the page reads no frame tree while the ordered navigation events prove the document,
+// so a renderer busy with a long parse is not asked before every key (the focus world and the sensitive-field check still run).
+test("MP-08/MP-11 a band key reads no page frame tree while navigation events prove the document", async () => {
   const sent = [];
   const connection = { send: async (method) => (sent.push(method), method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
     : method === "Runtime.evaluate" ? { result: { value: false } } : {}) };
@@ -799,7 +799,7 @@ test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
   const arbiter = new InputArbiter(host, {});
   const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "text", text: "a" } } }), { dispatched: true });
-  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 1);
+  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 0);
   assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
 });
 

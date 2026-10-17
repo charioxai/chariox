@@ -518,14 +518,13 @@ export class InputArbiter {
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      let proved = false;
       const currentProof = async () => {
         const active = await activeAdmitted();
         if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
-        const cached = proved && this.host.browser.currentPageFrame?.(tab.target_id);
+        // The page session's ordered navigation events prove the document: a busy renderer is not asked.
+        const cached = this.host.browser.currentPageFrame?.(tab.target_id);
         const frame = cached && cached.connection === connection && cached.sessionId === sessionId && cached.frame.loaderId === documentId
           ? {frameTree:{frame:cached.frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
-        proved = true;
         if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
         return frame;
       };

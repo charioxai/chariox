@@ -44,6 +44,8 @@ const PAINT_HOLD_MS = 2500;
 // A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
 // (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
 const BUSY_RENDERER_MS = 20_000;
+// A hung renderer still ends: the one snapshot in flight is abandoned after this.
+const SNAPSHOT_MS = 120_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
@@ -173,7 +175,7 @@ export class Mirror2 {
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
     this.host.timing?.('mirror2_world_target', targetAt);
     const installAt = timestamp();
-    const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+    const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame, { timeoutMs: patience?.() });
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
       const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId, { timeoutMs: patience?.() });
@@ -194,6 +196,17 @@ export class Mirror2 {
     // Activation re-reads sheet owners; ordinary pages need not await resource
     // bodies in DOM.enable/CSS.enable before their first sanitized snapshot.
     this.css.watch(world, frameId, streamId).then(() => this.host.timing?.('mirror2_css_ready', cssAt), () => { world.cssFailed = true; });
+  }
+  // One snapshot per world in flight. A snapshot the page has not answered keeps running in the renderer; the credit
+  // that gave up on it leaves it pending and the next credit takes its answer instead of queueing a second one.
+  async snapshotOnce(world, policy, patience) {
+    if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot()`, false, SNAPSHOT_MS) };
+    pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
+    let timer;
+    const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
+    try { const snap = await Promise.race([pending.promise, late]); if (world.snapshotPending === pending) world.snapshotPending = null; return snap; }
+    finally { clearTimeout(timer); }
   }
   async evaluate(world, expression, awaitPromise = false, timeoutMs) {
     const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
@@ -320,7 +333,7 @@ export class Mirror2 {
   async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
-    const patience = () => Math.max(1000, BUSY_RENDERER_MS - (timestamp() - started));
+    const busyMs = this.busyMs ?? BUSY_RENDERER_MS, patience = () => Math.max(Math.min(1000, busyMs), busyMs - (timestamp() - started));
     this.service.require(command.subscription_id, scope, command.generation);
     // MP-08/MP-10: between packets the page session's navigation events keep the document current, so an
     // unchanged document reuses its world without renderer round trips (a busy page answers those only after
@@ -357,8 +370,8 @@ export class Mirror2 {
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
-    // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s); other reads keep the short timeout.
-    world.patience = reset ? patience : null;
+    // Every renderer call of a credit waits for a busy page (the viewer's credit has 30 s): a slow answer is not an error.
+    world.patience = patience;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
@@ -388,9 +401,9 @@ export class Mirror2 {
         stream.resetAt = stream.issued + 1;
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
-        await this.protectTargets(world, tab, policy, '', patience);
+        if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.evaluate(world, `${world.ref}.snapshot()`, false, patience());
+        const snap = await this.snapshotOnce(world, policy, patience);
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
