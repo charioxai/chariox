@@ -277,6 +277,26 @@ test('native control tile state changes when an existing rule is edited through 
   assert.notEqual((await s.read()).states, before);
 });
 
+// Review #1001 @4715d6039: a sampled subtree is not proof of unchanged paint; same-count stylesheet replacement.
+test('native control tile state changes when a descendant font weight is edited through the CSSOM', options, async () => {
+  const s = await open(`${page}<style>#fw{font-weight:400}</style><button id=fb style="display:block;width:120px;height:30px"><span id=fw style="display:inline-block;width:40px;height:16px">x</span></button>`);
+  await s.read(); await delay(50); await s.read();
+  const before = (await s.read()).states;
+  await s.evaluate("[...document.styleSheets].at(-1).cssRules[0].style.fontWeight='700'");
+  await delay(1100);
+  assert.notEqual((await s.read()).states, before);
+});
+
+test('a same-count stylesheet replacement that adds a hover selector is seen on the next hover', options, async () => {
+  const s = await open(`<style id=st>.menu{color:#000}</style><div class=menu id=m style="width:100px;height:30px">menu<span id=ms>s</span></div>`);
+  await s.read(); await delay(50); await s.read();
+  await s.evaluate("st.textContent='.menu:hover{color:#f00}'");
+  await s.read();
+  await s.hover('#m');
+  const hovered = await s.read();
+  assert(JSON.stringify([...hovered.packet.styles]).includes('rgb(255, 0, 0)'), 'the hovered menu is restyled');
+});
+
 test('native control tile state changes when the pointer moves between its descendants', options, async () => {
   const s = await open(`${page}<style>#hb span:hover{background:#0c0}</style><button id=hb style="width:200px;height:40px"><span id=h1 style="display:inline-block;width:80px">a</span><span id=h2 style="display:inline-block;width:80px">b</span></button>`);
   await s.evaluate("hb.scrollIntoView({block:'center'})");

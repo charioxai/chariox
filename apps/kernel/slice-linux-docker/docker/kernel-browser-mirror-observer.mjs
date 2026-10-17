@@ -160,7 +160,7 @@ function installMirrorObserver(initialStyles = {}) {
     const records = [], resources = [], fonts = [], nextLive = new Map(), tileStates = {}, nextRoots = [], nextControls = new Map(), nextTiles = new Set();
     // MP-10: decide which nodes need their style evaluated again. Anything not listed keeps the style of the
     // previous read, provided the sheets, the viewport and the node's box are unchanged and nothing animates.
-    const now=performance.now(),lastFull=fullAt,key=sheetShape(),shaped=key===sheetKey;fullAt=-Infinity;
+    const now=performance.now(),lastFull=fullAt,key=sheetShape(),shaped=key===sheetKey&&!touchedAll&&now-lastFull<=1500;fullAt=-Infinity;
     if(!shaped){sheets=scanSheets();sheetKey=key;}
     const hovered=new Set(),pressed=new Set(),focusing=new Set(),within=new Set(),dirtyDeep=new Set(),dirtySelf=new Set();
     for(const root of roots) {
@@ -231,11 +231,11 @@ function installMirrorObserver(initialStyles = {}) {
     // and its pseudo-element content all repaint it without changing its record.
     const tileDamage = node => `${epochs.get(node)??0}.${sheetGeneration}`, animatedInside = node => animations.some(animation=>animation.effect?.target&&node.contains(animation.effect.target));
     // Every paint input of a descendant that no DOM mutation reports (CSSOM edits of existing rules, SVG paint, pseudo-elements).
-    // A subtree too large to sample completely cannot be proven unchanged and is recaptured every read ('~').
+    // A subtree too large to sample completely cannot be proven unchanged and is recaptured every read ('~'). A sample is never proof: a subtree with descendants is also recaptured once a second.
     const paintProps=['color','backgroundColor','backgroundImage','opacity','visibility','display','borderTopColor','textDecorationColor','fill','stroke','boxShadow','filter','transform'];
     const subtreePaint = node => {
       const all=node.querySelectorAll('*'),sampled=[...all].slice(0,64),paint=(element,pseudo)=>{const c=getComputedStyle(element,pseudo);return (pseudo?[c.content,...paintProps.slice(0,3)]:paintProps).map(p=>c[p]).join();};
-      return {exact:all.length<=64,state:sampled.map(child=>[paint(child),paint(child,'::before'),paint(child,'::after')].join('/')).join(';')};
+      return {exact:all.length<=64,state:(all.length?`${Math.floor(performance.now()/1000)}/`:'')+sampled.map(child=>[paint(child),paint(child,'::before'),paint(child,'::after')].join('/')).join(';')};
     };
     const nativeTile = (record,node) => {
       const secret=node.localName==='input'&&node.type==='password',text=node.textContent,sub=subtreePaint(node);
