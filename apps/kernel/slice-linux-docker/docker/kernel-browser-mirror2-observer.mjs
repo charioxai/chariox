@@ -184,7 +184,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const timed = new Set();
     const timing = new PerformanceObserver(list => { for (const entry of list.getEntries()) { timed.delete(entry.name); timed.add(entry.name); if (timed.size > 20000) timed.delete(timed.values().next().value); } });
     try { timing.observe({ type: 'resource', buffered: true }); } catch {}
-    const dispose = () => { continuation?.return(); continuation = null; progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
+    const dispose = () => { continuation?.return(); continuation = null; open.clear(); deferred.clear(); progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
     const changedForm = control => { dirty.form.add(control); if (control.multiple) for (const option of control.options ?? []) dirty.form.add(option); };
     const watch = (root, rootId) => {
       roots.set(rootId, root);
@@ -214,7 +214,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
-    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false;
+    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false, yielded = false;
+    // Nodes the continuation is still walking, and those whose children changed meanwhile: diffed once it leaves them.
+    const open = new Set(), deferred = new Set();
     const spend = (bytes) => { if (bytes > 1024 * 1024) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
     const forget = id => {
       const node = nodes.get(id);
@@ -364,7 +366,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         spend(32); remember(record, node); yield record;
         if (nodes.get(id) !== node) return null;
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; yield* serializeTree(child, id, depth + 1); }
+        open.add(id);
+        try { for (const child of [...node.childNodes]) { if (nodes.get(id) !== node) break; if (type === 9 && child.nodeType !== 1 || child.parentNode !== node || mirrored(child)) continue; yield* serializeTree(child, id, depth + 1); } }
+        finally { open.delete(id); }
         return id;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
@@ -389,7 +393,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
         record.kind = 'frame'; record.tag = 'iframe';
         spend(64); remember(record, node); yield record;
-        yield* serializeTree(nested, id, depth + 1);
+        if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
@@ -402,8 +406,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       yield record;
       if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      for (const child of node.childNodes) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; yield* serializeTree(child, id, depth + 1); }
-      if (node.shadowRoot) yield* serializeTree(node.shadowRoot, id, depth + 1);
+      // A snapshot of the children: mutations meanwhile are diffed after this node closes (drain), so a
+      // child removed, moved or already serialized by such a diff is skipped, never introduced twice.
+      open.add(id);
+      try {
+        for (const child of [...node.childNodes]) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; if (child.parentNode !== node || mirrored(child)) continue; yield* serializeTree(child, id, depth + 1); }
+        if (node.shadowRoot && nodes.get(id) === node && !mirrored(node.shadowRoot)) yield* serializeTree(node.shadowRoot, id, depth + 1);
+      } finally { open.delete(id); }
       return id;
     };
     const serialize = (node, parent, out, depth = 0) => {
@@ -505,7 +514,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      continuation?.return(); continuation = serializeTree(document, null);
+      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
       progressive = document.getElementsByTagName('*').length > 10000;
       // A slow task must not publish only half a detailed viewport header.
       // The first prefix has a fixed 1024-visit ceiling; later credits yield
@@ -579,10 +588,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
       if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
-      // A snapshot spanning tasks must not publish a subtree captured before a
-      // structural mutation under another parent/protection kind. Restart its bounded
-      // prefix; the viewer retains its last good paint until the reset arrives.
-      if (continuation && records.some(record => record.type === 'childList' && record.target.localName !== 'style')) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       const urgent = records.length > 0 || Object.values(dirty).some(set => set.size > 0);
       if (!continuation) budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];
@@ -632,7 +637,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
       }
-      if (continuation && (dirty.replace.size || dirty.frames.size || dirty.children.size)) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       for (const node of dirty.replace) replaceNode(node);
       for (const node of dirty.frames) replaceNode(node);
       for (const node of dirty.text) {
@@ -644,7 +648,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (const [id, host] of pendingHosts) if (host.shadowRoot) dirty.children.add(host);
       const hostNow = performance.now();
       if (hostNow - lastHostCheck > 2000 && nodes.size) { lastHostCheck = hostNow; for (let i = 0; i < Math.min(5000, nodes.size); i++) { hostIterator ??= nodes.keys(); let item = hostIterator.next(); if (item.done) { hostIterator = nodes.keys(); item = hostIterator.next(); } const id = item.value, node = nodes.get(id); if (node && kindOf.get(id) === 'element') { if (node.shadowRoot && !mirrored(node.shadowRoot)) dirty.children.add(node); else if (pendingHosts.has(id) && (checkedClosed.get(node) !== node.matches(':defined') || node.matches(':defined') && hostNow - lastClosedCheck >= 2000)) closedTodo.add(node); } } }
-      if (continuation && dirty.children.size) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
+      // A snapshot spanning tasks is never restarted by a mutation (MP-10, BROWSER-UX-09): the
+      // continuation reads each node when it reaches it. Children of nodes it already left are diffed
+      // now; those of a node it is still walking wait until it closes, but drop forgotten children now.
+      for (const node of deferred) { const id = mirrored(node); if (!id) deferred.delete(node); else if (!open.has(id)) { deferred.delete(node); dirty.children.add(node); } }
+      for (const node of dirty.children) {
+        const id = mirrored(node); if (!id || !open.has(id)) continue;
+        dirty.children.delete(node); deferred.add(node);
+        const list = kids.get(id), kept = list.filter(child => nodes.has(child));
+        if (kept.length !== list.length) { kids.set(id, kept); ops.push({ op: 'children', id, children: [...kept], nodes: [] }); }
+      }
       for (const node of dirty.children) {
         if (!node.isConnected) continue;
         const id = mirrored(node);
@@ -696,7 +709,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      if (continuation && !urgent && !ops.length) ops.push(...continuationOps(chunk()));
+      // Echoes and page changes go alone for one credit; the continuation then resumes even on a busy page.
+      if (continuation && (yielded || !urgent && !ops.length)) { yielded = false; ops.push(...continuationOps(chunk())); } else if (continuation) yielded = true;
       return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
@@ -957,7 +971,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -1030,6 +1044,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

@@ -1244,12 +1244,34 @@ test('MP-10 M2: continuations finish the full DOM with bounded ordinary children
     assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
   }));
 
-test('MP-10/MP-11 M2: mutation during a continuation restarts a bounded current snapshot', () => mirrored(
-  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
-    const first=await next();assert(!first.fallback);
-    await evaluate(`document.querySelector('h1').replaceChildren('Changed viewport');true`);
-    const reset=await next();assert.equal(reset.reset,true);assert(!reset.fallback);assert(reset.nodes.length<4096);
-    assert(texts(reset).has('Changed viewport'),'no stale saved subtree crosses the reset');
+// BROWSER-UX-09 / GATE-bytes (browserux r20, typed github.com): the page hydrates while the bounded
+// snapshot continues. Each restart re-sent the whole head CSS (3 x 362 KB on an 8 Mbit/s link).
+test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a restarted snapshot', () => mirrored(
+  '<style>.marker-once{color:#123456}' + '.pad{margin:1px}'.repeat(6000) + '</style><h1>Viewport first</h1><main id="m"><p>kept</p><p id="gone">removed later</p>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>'
+  + '<script>let n=0;window.tick=setInterval(()=>{document.querySelector("h1").append(" t"+(n++))},15)</script>', async ({next,evaluate,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
+    const [main]=elements(first).find(([,,attrs])=>attrs.id==='m'),[gone]=elements(first).find(([,,attrs])=>attrs.id==='gone');
+    // Hydration shape: script/style churn in head, a removal and an insertion under the parent being walked.
+    await evaluate(`document.head.append(Object.assign(document.createElement('script'),{textContent:'1'}),Object.assign(document.createElement('style'),{textContent:'i{}'}));document.querySelector('#gone').remove();document.querySelector('#m').append(Object.assign(document.createElement('section'),{textContent:'Appended paragraph'}));true`);
+    const seen=new Set(first.nodes.map((_,i,rows)=>rows.slice(0,i+1).reduce((n,row)=>n+row[0],0)));
+    let bytes=JSON.stringify(first).length,tail=false,appended=false,mainKids=null,ticks=false;
+    const marker=JSON.stringify(first).split('marker-once').length-1;assert.equal(marker,1,'the head CSS is in the first packet');
+    for(let n=0;n<300&&!(tail&&appended&&mainKids&&!mainKids.includes(gone)&&ticks);n++){
+      const packet=await next(200);assert.notEqual(packet.reset,true,'a mutation never restarts the snapshot');assert(!packet.fallback);
+      const json=JSON.stringify(packet);bytes+=json.length;assert(!json.includes('marker-once'),'the head CSS crosses once');
+      for(const op of packet.ops){
+        if(op.op!=='children')continue;
+        let id=0;for(const row of op.nodes){id+=row[0];assert(!seen.has(id),'a node is introduced once');seen.add(id);tail||=row[2]===0&&row[3]==='Last paragraph';appended||=row[2]===0&&row[3]==='Appended paragraph';ticks||=row[2]===0&&/^ t\d+$/.test(row[3]);}
+        if(op.id===main)mainKids=op.children;
+      }
+    }
+    assert(tail,'the continuation reaches the last paragraph');assert(appended,'an insertion under the walked parent arrives');assert(ticks,'changes to finished nodes arrive while it continues');
+    assert(mainKids&&!mainKids.includes(gone),'a child removed from the walked parent leaves the viewer');
+    assert(bytes<2*JSON.stringify(first).length+1024*1024,`bounded total bytes: ${bytes}`);
+    await evaluate('clearInterval(window.tick);true');
+    const world=host.mirror.streams.get(subscription_id).world;
+    for(let n=0;n<20&&await host.mirror.v2.evaluate(world,`${world.ref}.pending()`);n++)await next(100);
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
   }));
 
 
