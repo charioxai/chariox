@@ -369,6 +369,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs \
