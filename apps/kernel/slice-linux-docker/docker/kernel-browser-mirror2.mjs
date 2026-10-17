@@ -202,6 +202,8 @@ export class Mirror2 {
     return reply.result.value;
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
+  // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
+  invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
     this.regions.retireStream(stream);
     stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);

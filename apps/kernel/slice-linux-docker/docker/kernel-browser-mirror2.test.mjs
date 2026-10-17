@@ -628,6 +628,29 @@ test('MP-11 #1016 review 2: a completed early packet is retired when protection 
  assert(!JSON.stringify(packet).includes('old secret'),'no pre-update form data reaches the viewer');
 });
 
+test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit replies and resend history', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=(command_id,after,extra={})=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0,...extra},'scope');
+ const first=await credit('c1',0);assert(JSON.stringify(first).includes('old secret'),'the field is plain under the first policy');
+ const second=await credit('c2',first.sequence);
+ assert.equal(await credit('c1',0),first,'before a change a lost reply is replayed');
+ host.protection={targets:[],values:['old secret']};field='[protected]';mirror.invalidate(stream);
+ const count=snapshots,resent=await credit('r1',first.sequence,{resend:true});
+ assert.notEqual(resent,second,'resend history from the old policy is not returned');
+ assert.equal(resent.reset,true);assert.equal(snapshots,count+1,'recovery is a fresh protected reset');
+ assert(!JSON.stringify(resent).includes('old secret'));
+ const replayed=await credit('c1',0);
+ assert.notEqual(replayed,first,'a completed reply cached under the old policy is not replayed');
+ assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
+});
+
 test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view) hands the page to video on the next quiet packet', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
