@@ -651,6 +651,27 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
 });
 
+test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=(command_id,after,extra={})=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0,...extra},'scope');
+ const encode=mirror.encode.bind(mirror);let resume,paused;const encoding=new Promise(r=>paused=r);
+ mirror.encode=async(...args)=>{paused();await new Promise(r=>resume=r);return encode(...args)};
+ const pending=credit('c1',0);await encoding;
+ host.protection={targets:[],values:['old secret']};field='[protected]';mirror.invalidate(stream);
+ resume();const outcome=await pending.then(packet=>packet,error=>error);mirror.encode=encode;
+ assert(outcome instanceof Error&&/stale mirror protection/.test(outcome.message),'the pre-protection packet is refused');
+ assert(!JSON.stringify([...(stream.history?.values()??[])]).includes('old secret'),'it is not remembered for resends');
+ const replayed=await credit('c1',0);assert(!JSON.stringify(replayed).includes('old secret'),'a replay of its credit carries no pre-protection value');
+ const resent=await credit('r1',1,{resend:true}).catch(error=>error);assert(!JSON.stringify(resent).includes('old secret'),'nor does a resend');
+});
+
 test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight do not reset again', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};

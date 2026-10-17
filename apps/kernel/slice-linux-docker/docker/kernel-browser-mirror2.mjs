@@ -513,6 +513,10 @@ export class Mirror2 {
     if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     const wire = await this.encode(stream, packet);
+    // MP-11: a protection change during the asynchronous deflate retired this packet (invalidate cleared the caches).
+    if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
+      stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
+    }
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
