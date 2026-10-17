@@ -1,6 +1,10 @@
-// MP-08/MP-10: damage-driven native-control tiles. A control's pixels follow its own record, its private UA
-// state (hover, focus, value, label) and the records drawn over or under it. A read where none of those
-// changed reuses the previous capture instead of screenshotting the control again.
+// MP-08/MP-10: damage-driven opaque tiles. A tile's pixels follow its own record, the private state the observer
+// reports for it (a control's hover/focus/value/label, a video's playback, a subtree's mutations) and the records
+// drawn over or under it. A read where none of those changed reuses the previous capture instead of
+// screenshotting the tile again. A state starting with '~' marks pixels nothing observable can see change (canvas
+// drawing, plugin and cross-origin frame content): those are captured again after `volatileMs`, or after any input
+// while the tile is hovered or focused ('~' + hover + focus bits).
+const volatileMs = 250;
 const paint = node => JSON.stringify({ ...node, children: undefined, box: undefined });
 const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
@@ -16,10 +20,10 @@ export function globalBoxes(byId) {
   };
 }
 
-// Identity of a native control's pixels; undefined (never reused) without the observer's private state.
+// Identity of a tile's pixels; undefined (never reused) without the observer's private state.
 export function tileKeys(tiles, boxes, states) {
   const keys = new Map();
-  for (const tile of tiles) if (tile.reason === 'native_control' && typeof states?.[tile.id] === 'string') keys.set(tile.id, JSON.stringify([tile, boxes.get(tile.id), states[tile.id]]));
+  for (const tile of tiles) if (typeof states?.[tile.id] === 'string') keys.set(tile.id, JSON.stringify([tile, boxes.get(tile.id), states[tile.id]]));
   return keys;
 }
 
@@ -37,23 +41,24 @@ export function damageOf(changed, removed, previous, boxOf, previousBoxOf) {
 export class TileCache {
   constructor() { this.entries = new Map(); this.scale = 0; this.clean = false; }
   // Tiles to capture again. An ancestor whose own paint did not change (it only grew or gained children)
-  // leaves the pixels of the control inside it alone.
-  stale(tiles, keys, boxes, scale, damage, byId) {
+  // leaves the pixels of the tile inside it alone.
+  stale(tiles, keys, boxes, scale, damage, byId, states, now, epoch) {
     if (!this.clean || this.scale !== scale) return tiles;
     const inside = (ancestor, id) => { for (let n = byId.get(id)?.parent; n; n = byId.get(n)?.parent) if (n === ancestor) return true; return false; };
     return tiles.filter(tile => {
-      const key = keys.get(tile.id);
-      if (key === undefined || this.entries.get(tile.id)?.key !== key) return true;
-      const box = boxes.get(tile.id);
-      return damage.some(d => d.id !== tile.id && !(d.container && inside(d.id, tile.id)) && [d.now, d.was].some(rect => rect && overlaps(rect, box)));
+      const key = keys.get(tile.id), entry = this.entries.get(tile.id);
+      if (key === undefined || entry?.key !== key) return true;
+      const box = boxes.get(tile.id), state = states[tile.id];
+      if (damage.some(d => d.id !== tile.id && !(d.container && inside(d.id, tile.id)) && [d.now, d.was].some(rect => rect && overlaps(rect, box)))) return true;
+      return state[0] === '~' && (now - entry.at >= volatileMs || state.slice(1, 3) !== '00' && epoch !== entry.epoch);
     });
   }
   // `captured` maps the tiles screenshotted this read to their packet entries. Tiles that were not captured
   // keep their entry. A capture under a protected region is never reused (the region can move under a tile).
-  store(tiles, keys, captured, scale, protectedRegions) {
+  store(tiles, keys, captured, scale, protectedRegions, now, epoch) {
     const entries = new Map();
     for (const { id } of tiles) {
-      const entry = captured.has(id) ? { key: keys.get(id), data: captured.get(id) } : this.entries.get(id);
+      const entry = captured.has(id) ? { key: keys.get(id), data: captured.get(id), at: now, epoch } : this.entries.get(id);
       if (entry) entries.set(id, entry);
     }
     this.entries = entries; this.scale = scale; this.clean = protectedRegions === 0;

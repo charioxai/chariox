@@ -188,10 +188,10 @@ export class MirrorService {
       // a full-frame refinement that the next echo queues behind: refine once input settles.
       const inputEpoch=this.host.inputEpochs?.get(tab.tab_id)??0,typedAt=this.host.inputChangedAt?.get(tab.tab_id)??-Infinity;
       const refine=stream.refinePending&&stream.tileRevision===sourceRevision&&stream.tileInputEpoch===inputEpoch&&performance.now()-typedAt>=refineQuietMs;
-      // MP-08/MP-10: a native control is captured again only when its pixels can have changed.
+      // MP-08/MP-10: a tile is captured again only when its pixels can have changed.
       if(reset)stream.tileCache=null;
       const cache=stream.tileCache??=new TileCache(),keys=tileKeys(tiles,tileBoxes,tileStates);
-      let plan=refine?tiles:cache.stale(tiles,keys,tileBoxes,scale,damageOf(changed,removed,previous,globalBox,globalBoxes(previous)),byId),regions=0;
+      let plan=refine?tiles:cache.stale(tiles,keys,tileBoxes,scale,damageOf(changed,removed,previous,globalBox,globalBoxes(previous)),byId,tileStates??{},this.now(),inputEpoch),regions=0;
       // Nothing is protected: no region can lie under a tile, so reusing every tile needs no protection fence.
       const bare=!policy.unknown&&!policy.targets.length,masks=plan.length||!bare?await captureRegionMasks(world.connection,world.sessionId,{targetId:tab.target_id,policy}):null;
       if(masks)mark('tile_masks_before');
@@ -221,7 +221,7 @@ export class MirrorService {
         }
       } else mark('tile_reuse');
       stream.tileRevision=sourceRevision;stream.tileInputEpoch=inputEpoch;
-      cache.store(tiles,keys,fresh,scale,regions);
+      cache.store(tiles,keys,fresh,scale,regions,this.now(),inputEpoch);
       tileFrame=tiles.flatMap(n=>cache.data(n.id)??[]);
     }
     mark('tile_decode_mask_encode');

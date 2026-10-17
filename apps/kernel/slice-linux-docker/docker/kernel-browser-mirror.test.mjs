@@ -277,6 +277,35 @@ test('MP-08/MP-10: a record changing over a native control, or moving off it, ca
   state.snapshot.nodes[3].box={x:60,y:30,width:8,height:8};
   const third=await read(service,s.subscription_id,second.sequence);assert.equal(clips.length,3,'moved off n2 repaints the area it left');assert.deepEqual(clips[2],{x:10,y:10,width:20,height:10,scale:1});assert.equal(third.tiles.length,2);
 });
+function opaqueTiles(first,second) {
+  const f=nativeTiles();
+  f.state.snapshot.nodes[1].reason='opaque_media';f.state.snapshot.nodes[2].reason='opaque_media';
+  f.state.snapshot.tile_states={n2:first,n4:second};
+  return f;
+}
+const n2={x:10,y:10,width:20,height:10,scale:1},n4={x:50,y:10,width:20,height:10,scale:1};
+test('MP-08/MP-10: a paused video and an unchanged subtree are not screenshotted again, a playing video is',async()=>{
+  const {service,state,clips,read}=opaqueTiles('=00|0|video|1.5|10|','=00|0'),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);
+  const second=await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,1,'nothing changed');assert.deepEqual(second.tiles,first.tiles);
+  state.snapshot.tile_states={n2:'=00|0|video|1.6|10|',n4:'=00|0'};
+  await read(service,s.subscription_id,second.sequence);assert.deepEqual(clips[1],n2,'the video moved on');
+  state.snapshot.tile_states={n2:'=00|0|video|1.6|10|',n4:'=00|1'};
+  await read(service,s.subscription_id,3);assert.deepEqual(clips[2],n4,'mutations inside the other tile');
+});
+test('MP-08/MP-10: tiles whose pixels nothing observes are captured again only after a while',async()=>{
+  const {service,clips,read}=opaqueTiles('~00|90x60|0','~00||0'),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let t=1000;service.now=()=>t;
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);
+  t+=200;const second=await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,1,'reused within the window');assert.deepEqual(second.tiles,first.tiles);
+  t+=100;await read(service,s.subscription_id,second.sequence);assert.equal(clips.length,2,'stale after the window');
+});
+test('MP-08/MP-10: input recaptures only the unobserved tile the pointer or focus is on',async()=>{
+  const {service,host,clips,read}=opaqueTiles('~10|90x60|0','~00||0'),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');let t=1000;service.now=()=>t;
+  const first=await read(service,s.subscription_id);assert.equal(clips.length,1);
+  t+=10;const second=await read(service,s.subscription_id,first.sequence);assert.equal(clips.length,1,'no input yet');
+  host.inputEpochs.set('t',2);host.inputChangedAt.set('t',performance.now());
+  t+=10;await read(service,s.subscription_id,second.sequence);assert.equal(clips.length,2);assert.deepEqual(clips[1],n2,'the hovered canvas, not the other tile');
+});
 test('MP-08/MP-10: idle refinement, document resets and tiles without private state still capture',async()=>{
   const {service,state,host,clips,read}=nativeTiles(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
   const first=await read(service,s.subscription_id);host.inputChangedAt.set('t',performance.now()-2000);
