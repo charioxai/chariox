@@ -32,6 +32,7 @@ use super::{
 use crate::config::{DaemonConfig, ManagedRuntimeIdentity, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
+mod cloud_enrollment;
 mod disposable_worker;
 
 #[test]
@@ -2577,6 +2578,24 @@ impl AttestedReleaseFixture {
         attestation_source_tree: &str,
         target: &str,
     ) -> Self {
+        Self::with_app_artifacts(
+            label,
+            attestation_source_commit,
+            attestation_source_tree,
+            target,
+            false,
+            |_| {},
+        )
+    }
+
+    fn with_app_artifacts(
+        label: &str,
+        attestation_source_commit: &str,
+        attestation_source_tree: &str,
+        target: &str,
+        include_apps: bool,
+        mutate_attestation: impl FnOnce(&mut serde_json::Value),
+    ) -> Self {
         use std::os::unix::fs::symlink;
 
         let root = std::env::temp_dir().join(format!(
@@ -2593,7 +2612,24 @@ impl AttestedReleaseFixture {
         let supervisor_digest = format!("sha256:{:x}", Sha256::digest(supervisor_bytes));
         let source_commit = "a".repeat(40);
         let source_tree = "b".repeat(40);
-        let attestation = serde_json::to_vec(&serde_json::json!({
+        let app_artifacts = [
+            (
+                "chariox-app-package",
+                "/usr/local/bin/chariox-app-package",
+                b"app-package".as_slice(),
+            ),
+            (
+                "chariox-app-storage",
+                "/usr/libexec/chariox-app-storage",
+                b"app-storage".as_slice(),
+            ),
+            (
+                "chariox-app-storage.service",
+                "/etc/systemd/system/chariox-app-storage.service",
+                b"app-storage-service".as_slice(),
+            ),
+        ];
+        let mut attestation = serde_json::json!({
             "schemaVersion": 1,
             "sourceCommit": attestation_source_commit,
             "sourceTree": attestation_source_tree,
@@ -2603,11 +2639,22 @@ impl AttestedReleaseFixture {
                 { "name": "chariox-managed-bootstrap", "sha256": supervisor_digest },
                 { "name": "chariox-relay", "sha256": format!("sha256:{}", "d".repeat(64)) },
             ],
-        }))
-        .expect("encode build attestation");
+        });
+        if include_apps {
+            for (name, _, bytes) in app_artifacts.iter().take(2) {
+                attestation["artifacts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({
+                        "name": name, "sha256": format!("sha256:{:x}", Sha256::digest(bytes)),
+                    }));
+            }
+        }
+        mutate_attestation(&mut attestation);
+        let attestation = serde_json::to_vec(&attestation).expect("encode build attestation");
         let builder_key = SigningKey::from_bytes(&[8_u8; 32]);
         let attestation_signature = builder_key.sign(&attestation);
-        let manifest = serde_json::to_vec(&serde_json::json!({
+        let mut manifest = serde_json::json!({
             "schemaVersion": 2,
             "sourceCommit": source_commit,
             "sourceTree": source_tree,
@@ -2652,8 +2699,15 @@ impl AttestedReleaseFixture {
                     ),
                 },
             ],
-        }))
-        .expect("encode release manifest");
+        });
+        if include_apps {
+            for (name, path, bytes) in &app_artifacts {
+                manifest["artifacts"].as_array_mut().unwrap().push(serde_json::json!({
+                    "name": name, "path": path, "sha256": format!("sha256:{:x}", Sha256::digest(bytes)),
+                }));
+            }
+        }
+        let manifest = serde_json::to_vec(&manifest).expect("encode release manifest");
         let release_digest = format!("sha256:{:x}", Sha256::digest(&manifest));
         let release_name = release_digest
             .strip_prefix("sha256:")
@@ -2669,6 +2723,13 @@ impl AttestedReleaseFixture {
             .expect("create kernel facade directory");
         fs::write(&release_kernel, kernel_bytes).expect("write kernel artifact");
         fs::write(&release_supervisor, supervisor_bytes).expect("write supervisor artifact");
+        if include_apps {
+            for (_, path, bytes) in &app_artifacts {
+                let path = release_root.join(path.trim_start_matches('/'));
+                fs::create_dir_all(path.parent().unwrap()).expect("create App artifact directory");
+                fs::write(path, bytes).expect("write App artifact");
+            }
+        }
         fs::write(
             release_chariox_root.join("build-attestation.json"),
             &attestation,
@@ -2990,6 +3051,92 @@ fn managed_release_evidence_is_kernel_verified_from_active_release_and_receipt()
     assert!(evidence.bootstrap_receipt_verified);
 
     fixture.cleanup();
+}
+
+// MP-09/MP-11: the production signer attests the two App binaries after the runtime binaries.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn managed_release_evidence_accepts_signed_app_artifacts_and_rejects_tampering() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = AttestedReleaseFixture::with_app_artifacts(
+        "apps",
+        &"a".repeat(40),
+        &"b".repeat(40),
+        "x86_64-unknown-linux-gnu",
+        true,
+        |_| {},
+    );
+    let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+    set_release_evidence_env(&fixture);
+    super::authoritative_managed_release_evidence_from_env()
+        .expect("current signed five-binary release must verify");
+    for (path, bytes) in [
+        (
+            "usr/local/bin/chariox-app-package",
+            b"app-package".as_slice(),
+        ),
+        ("usr/libexec/chariox-app-storage", b"app-storage".as_slice()),
+        (
+            "etc/systemd/system/chariox-app-storage.service",
+            b"app-storage-service".as_slice(),
+        ),
+    ] {
+        let path = fixture.release_root.join(path);
+        fs::write(&path, b"tampered").unwrap();
+        assert!(
+            super::authoritative_managed_release_evidence_from_env().is_err(),
+            "App artifacts must remain pinned to the signed release"
+        );
+        fs::write(path, bytes).unwrap();
+    }
+    fixture.cleanup();
+}
+
+// MP-09/MP-11: valid signatures cannot authorize a changed App binary set or digest.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn managed_release_evidence_rejects_invalid_app_attestations() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let cases: [(&str, fn(&mut serde_json::Value)); 5] = [
+        ("package-digest", |value| {
+            value["artifacts"][3]["sha256"] =
+                serde_json::json!(format!("sha256:{}", "c".repeat(64)))
+        }),
+        ("storage-digest", |value| {
+            value["artifacts"][4]["sha256"] =
+                serde_json::json!(format!("sha256:{}", "c".repeat(64)))
+        }),
+        ("order", |value| {
+            value["artifacts"].as_array_mut().unwrap().swap(3, 4)
+        }),
+        ("missing", |value| {
+            value["artifacts"].as_array_mut().unwrap().pop();
+        }),
+        ("unknown", |value| {
+            value["artifacts"][3]["name"] = serde_json::json!("unexpected-app")
+        }),
+    ];
+    for (label, mutate) in cases {
+        let fixture = AttestedReleaseFixture::with_app_artifacts(
+            label,
+            &"a".repeat(40),
+            &"b".repeat(40),
+            "x86_64-unknown-linux-gnu",
+            true,
+            mutate,
+        );
+        let _restore = EnvironmentRestoreGuard::capture(RELEASE_EVIDENCE_ENV_NAMES);
+        set_release_evidence_env(&fixture);
+        let error = super::authoritative_managed_release_evidence_from_env()
+            .expect_err("signed malformed App attestation must fail closed");
+        assert!(
+            error.to_string().contains("build attestation"),
+            "{label}: {error}"
+        );
+        fixture.cleanup();
+    }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

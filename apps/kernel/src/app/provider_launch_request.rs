@@ -104,6 +104,13 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
+            let lease_owner_authorized = request.leased_account_authority
+                || request.agent_id.as_deref().is_some_and(|agent_id| {
+                    self.is_leased_backing_agent(&request.session_id, agent_id)
+                });
+            if lease_owner_authorized {
+                request = request.with_leased_account_authority();
+            }
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_for_launch(
                     &self.config,

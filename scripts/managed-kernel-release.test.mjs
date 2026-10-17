@@ -1000,6 +1000,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     (artifact) => !dataVolumeArtifactNames.has(artifact.name),
   )
   for (const relativePath of dataVolumeArtifactPaths) await rm(join(releaseRoot, relativePath))
+  // MP-07/MP-11: old installers leave both empty drop-in directories.
   const noVolumeManifestBytes = Buffer.from(JSON.stringify(noVolumeManifest))
   await writeFile(manifestPath, noVolumeManifestBytes)
   await writeFile(signaturePath, sign(null, noVolumeManifestBytes, fixture.releasePrivateKey).toString("base64"))
@@ -1047,6 +1048,20 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
       "usr/lib/chariox/releases",
       noVolumeDigest.slice("sha256:".length),
     )
+    for (const relativePath of dataVolumeArtifactPaths.slice(1)) {
+      const directory = posix.dirname(relativePath)
+      assert.equal(await lstat(join(oldSharedHostReleasePath, directory)).then(() => true, () => false), false)
+      // Reproduce the published layout of older installers without rewriting signed bytes.
+      await mkdir(join(oldSharedHostReleasePath, directory))
+    }
+    const publishedLegacy = runVerifier(oldSharedHostReleasePath, noVolumeDigest, fixture.trustedPublicKey, "shared_host")
+    assert.equal(publishedLegacy.status, 0, publishedLegacy.stderr)
+    const extra = join(oldSharedHostReleasePath, dataVolumeArtifactPaths[1]).replace("50-chariox-data-volume.conf", "99-extra.conf")
+    await writeFile(extra, "unlisted")
+    const tamperedLegacy = runVerifier(oldSharedHostReleasePath, noVolumeDigest, fixture.trustedPublicKey, "shared_host")
+    assert.equal(tamperedLegacy.status, 1)
+    assert.match(tamperedLegacy.stderr, /release root contains an undeclared entry/)
+    await rm(extra)
     for (const relativePath of dataVolumeArtifactPaths) {
       assert.equal(
         await lstat(join(oldSharedHostReleasePath, relativePath)).then(() => true, () => false),
@@ -2147,6 +2162,12 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(badDigest.status, 1)
   assert.match(badDigest.stderr, /release manifest digest does not match/)
   assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  // MP-07/MP-11: closed-set verification rejects even an ignored source sibling.
+  const unlisted = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(unlisted.status, 1)
+  assert.match(unlisted.stderr, /release root contains an undeclared entry/)
+  assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  await rm(join(output, "rootfs/usr/local/bin/unsigned-extra"))
   const brokerWantsLink = join(
     harness.installRoot,
     "etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service",

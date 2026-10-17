@@ -30,6 +30,18 @@ impl KernelRuntimeOwnedState {
                     || (agent.provider_account_profile() == "default"
                         && run.resolved_provider_account.is_none()))
         }) {
+            if self
+                .provider_run_projection
+                .is_leased_provider_run(run.id())
+            {
+                return crate::account_profile::require_agent_account_authenticated(
+                    &self.provider_account_profiles,
+                    run.owner_user_id(),
+                    agent,
+                    Some(&run),
+                    operation,
+                );
+            }
             let owner = crate::account_profile::provider_account_authority_for_run(
                 &config,
                 &self.provider_account_profiles,

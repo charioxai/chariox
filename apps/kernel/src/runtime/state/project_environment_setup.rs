@@ -24,7 +24,10 @@ use crate::provider::{ProviderProcessService, RuntimeProviderRun};
 use crate::runtime::agent_utility_executor::{
     assert_agent_utility_can_run, run_agent_utility_on_provider_run_for_project_environment_repair,
 };
-use crate::runtime::project_environment_setup_utility::project_environment_setup_utility_missing_input_message;
+use crate::runtime::project_environment_setup_utility::{
+    project_environment_setup_utility_failure_message,
+    project_environment_setup_utility_missing_input_message,
+};
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RelayProjectEnvironmentSetupStatus,
@@ -1391,7 +1394,7 @@ impl KernelRuntimeState {
                         &execution.operation_id,
                         attempt,
                         "utility_failed",
-                        "utility agent could not prepare the target environment",
+                        &project_environment_setup_utility_failure_message(&error),
                     );
                 }
                 return;

@@ -30,6 +30,49 @@ async fn mp08_mp10_mp11_queued_project_synchronous_completion_defers_activation(
     run_case(Case::SynchronousCompletion).await;
 }
 
+// MP-05/MP-08: a copied Project's empty environment must not ask the managed
+// target for a Vault passphrase before its first turn.
+#[tokio::test]
+async fn mp05_mp08_empty_project_environment_does_not_wait_for_vault() {
+    let _env = crate::env_lock::lock();
+    let workspace = crate::test_support::TestWorktree::new("empty-project-environment-vault");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = config
+        .private_runtime_state_root()
+        .join("absent-vault.json")
+        .to_string_lossy()
+        .into_owned();
+    let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+        .unwrap();
+    save_manifest(&app, &session, false);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let prepared = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.with_project_prompt_environment(session.id(), agent.id(), |_| Ok(())),
+    )
+    .await;
+    assert!(
+        matches!(prepared, Ok(Ok(()))),
+        "an empty Project environment must not wait for a Vault unlock"
+    );
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|interaction| !interaction.id().starts_with("vault-unlock-")));
+}
+
 async fn run_case(case: Case) {
     use std::os::unix::fs::PermissionsExt;
     let _env = crate::env_lock::lock();
@@ -77,7 +120,7 @@ async fn run_case(case: Case) {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    save_manifest(&app, &session);
+    save_manifest(&app, &session, true);
     std::fs::write(workspace.path().join(".env"), "APP_LABEL=before\n").unwrap();
     app.launch_provider(
         crate::provider::LaunchProviderRequest::new(
@@ -374,7 +417,7 @@ async fn wait_for_prompt_delivery(
     .expect("provider must acknowledge delivery of the matching native turn");
 }
 
-fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
+fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession, with_entry: bool) {
     ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
         .save(&StoredProjectEnvironment {
             source: None,
@@ -382,7 +425,7 @@ fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
                 schema_version: 1,
                 project_id: session.project_id().into(),
                 evidence_digest: ProjectEnvironmentEvidence::default().digest(),
-                entries: vec![ProjectEnvironmentEntry {
+                entries: [ProjectEnvironmentEntry {
                     name: "APP_LABEL".into(),
                     workspace_id: session.workspace_id().into(),
                     kind: ProjectEnvironmentEntryKind::Variable,
@@ -397,7 +440,10 @@ fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
                         key: "APP_LABEL".into(),
                     },
                     status: ProjectEnvironmentEntryStatus::Found,
-                }],
+                }]
+                .into_iter()
+                .filter(|_| with_entry)
+                .collect(),
                 private_files: vec![],
                 toolchain_hints: vec![],
                 package_hints: vec![],

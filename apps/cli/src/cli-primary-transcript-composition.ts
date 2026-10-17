@@ -45,6 +45,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   setProviderCatalogState: AnyFn
+  setProviderRunState: AnyFn
   setProviderCommandCatalogState: AnyFn
   setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
@@ -325,6 +326,9 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     getDeferred: () => deps.bootstrap.deferred,
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
+    focusedAgentId: () => deps.sessionState()?.focused_agent_id ?? null,
+    setProviderRun: deps.setProviderRunState,
+    providerLaunchFailed: message => deps.flashFooter(message, "error"),
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,

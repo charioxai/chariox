@@ -499,13 +499,21 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
-        self.write().run_structured_utility_prompt(
+        // MP-05/MP-10: a utility turn can take minutes; wait for the run actor
+        // without holding the provider service, which every provider read needs.
+        let response = self.write().enqueue_structured_utility_prompt(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
             policy,
-        )
+        )?;
+        response
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!("provider run actor utility response failed: {error}"),
+            })?
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
@@ -781,5 +789,68 @@ mod manifest_revision_tests {
             .unwrap()
             .is_none());
         assert_eq!(store.get_run("run").unwrap(), restored);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod structured_utility_lock_tests {
+    use super::*;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult,
+        ProviderUtilityExecutionPolicy,
+    };
+    use std::time::{Duration, Instant};
+
+    /// MP-05/MP-10 (real Path-1 Claude copied-Project setup): a Claude utility
+    /// turn must not hold the provider store while it waits, or every provider
+    /// read (attachment heartbeats, relay requests) stalls for the whole turn
+    /// and the session's attachment is detached as stale mid-setup.
+    #[test]
+    fn mp05_mp10_claude_utility_turn_leaves_the_provider_store_available() {
+        let script = r#"while IFS= read -r line; do sleep 2; printf '{"type":"result","subtype":"success","is_error":false,"result":"{}","session_id":"fixture"}\n'; done"#;
+        let run = RuntimeProviderRun::new(
+            "utility-store-lock",
+            &LaunchProviderRequest::new("session", "claude", "claude", "default", "haiku"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-c".to_string(), script.to_string()],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let mut service = ProviderProcessService::new();
+        service.insert_run_for_test(run.clone());
+        service
+            .apply_runtime_binding(run.id(), ProviderRuntimeBinding::Claude(binding))
+            .unwrap();
+        let store = ProviderProcessServiceStore::new(service);
+        let run = store.get_run(run.id()).unwrap();
+        let utility = {
+            let (store, run) = (store.clone(), run.clone());
+            std::thread::spawn(move || {
+                store.run_structured_utility_prompt(
+                    &run,
+                    "discover",
+                    "",
+                    Duration::from_secs(10),
+                    ProviderUtilityExecutionPolicy::ExistingRun,
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        store.get_run(run.id()).unwrap();
+        let waited = started.elapsed();
+        let _ = utility.join().unwrap();
+        assert!(
+            waited < Duration::from_millis(1000),
+            "provider store was held by the utility turn for {waited:?}"
+        );
     }
 }

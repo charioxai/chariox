@@ -35,6 +35,8 @@ managed_home=$install_root/home/chariox
 managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$script_root/image-preparation-progress.sh"
+record_image_preparation_phase image_install_start
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-image-install.XXXXXX")
 chmod 0700 "$staging_root"
 cleanup() {
@@ -116,6 +118,7 @@ verify_selected_release() {
   fi
   node "$script_root/managed-kernel-upgrade-state.mjs" verify-immutable-release-tree "$1" 0
 }
+record_image_preparation_phase image_install_verify
 verify_selected_release "$image_root" "$expected_release_digest" "$trusted_public_key"
 
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
@@ -403,10 +406,13 @@ esac
 
 require_real_ancestor_chain "$state_root" "managed kernel state root"
 require_real_ancestor_chain "$managed_home" "managed service-account home"
-install -d -o root -g root -m 0750 "$state_root"
+install -d -o root -g root -m 0755 "$state_root"
 validate_state_root_entries
 migrate_legacy_home_transaction
 validate_state_root_entries
+# MP-03: bootstrap receipt I/O uses the signed root helper, never provider ownership.
+repair_root_control_state
+install -d -o root -g root -m 0700 "$state_root/managed" "$state_root/disposable-worker"
 
 if ! id chariox-docker >/dev/null 2>&1; then
   useradd --system --gid chariox-docker --home-dir /var/lib/chariox-docker/home --shell /usr/sbin/nologin chariox-docker
@@ -496,6 +502,7 @@ install -d -o root -g root -m 0755 \
   "$releases_root"
 if [ "$managed_provider_topology" = path1 ]; then
   trusted_builder_runtime_key=$install_root/etc/chariox/trusted-builder-public-key
+  record_image_preparation_phase image_install_pin
   require_real_ancestor_chain "$install_root/etc/chariox" "trusted builder key directory"
   ensure_directory_parent "$install_root/etc/chariox" "trusted builder key directory"
   if [ "$(stat -c %u "$install_root/etc/chariox")" != 0 ] \
@@ -517,7 +524,7 @@ if [ "$managed_provider_topology" = path1 ]; then
     require_regular_file "$trusted_builder_runtime_key"
     if [ "$(stat -c %u "$trusted_builder_runtime_key")" != 0 ] \
       || [ -n "$(find "$trusted_builder_runtime_key" -maxdepth 0 -perm /022 -print -quit)" ] \
-      || ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+      || ! node "$script_root/managed-kernel-upgrade-state.mjs" compare-builder-pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
       echo "installed trusted builder key differs from the independent input" >&2
       exit 1
     fi
@@ -526,6 +533,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$install_root/etc/chariox"
 fi
 rm -rf -- "$pending_release"
+record_image_preparation_phase image_install_publish
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
   if ! verify_selected_release "$published_release" "$expected_release_digest" "$trusted_public_key"; then
     echo "existing digest-named managed release is invalid; refusing to replace immutable release: $published_release" >&2
@@ -545,9 +553,7 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/usr/lib/chariox" \
     "$pending_release/etc" \
     "$pending_release/etc/systemd" \
-    "$pending_release/etc/systemd/system" \
-    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
-    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
+    "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
@@ -569,6 +575,9 @@ if [ ! -e "$published_release" ]; then
   # older shared-host releases omit the set and remain installable.
   if [ "$managed_provider_topology" = path1 ] \
     || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
+    install -d -o root -g root -m 0755 \
+      "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+      "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
@@ -642,6 +651,7 @@ restore_previous_current() {
 }
 
 begin_access_policy_transaction
+record_image_preparation_phase image_install_activate
 activate_access_policy || exit 1
 
 if ! atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"; then
@@ -671,3 +681,4 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
 fi
 
 access_policy_pending=0
+record_image_preparation_phase image_install_complete

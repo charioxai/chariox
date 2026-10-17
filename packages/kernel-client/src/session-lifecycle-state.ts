@@ -46,7 +46,7 @@ export type SessionLifecycleListSession = {
   attachment_ids?: string[]
 }
 
-export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
+export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort" | "account_profile"> & {
   readonly remote_execution?: AgentInstance["remote_execution"]
 }
 
@@ -216,6 +216,14 @@ function resolveAgentLaunchSelection<TAgent extends SessionLifecycleLaunchAgent>
     model: targetAgent.model?.trim() || sessionDefaults.model,
     effort: targetAgent.effort?.trim() || sessionDefaults.effort,
   }
+}
+
+/** MP-08: an existing agent relaunches with its own account, like its provider/model. */
+export function resolveAgentAccountProfile(
+  agent: SessionLifecycleLaunchAgent | null,
+  fallback: string,
+): string {
+  return agent?.account_profile?.trim() || fallback
 }
 
 export function resolveStoredAgentLaunch(

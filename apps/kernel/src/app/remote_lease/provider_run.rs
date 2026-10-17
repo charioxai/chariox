@@ -302,6 +302,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
         .with_agent_id(&leased_agent.backing_agent_id)
         .with_owner_user_id(lease.owner_user_id)
+        .with_leased_account_authority()
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions

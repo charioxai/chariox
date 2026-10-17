@@ -2037,7 +2037,7 @@ fn managed_materialization_requires_the_explicit_trusted_control_parent() {
 }
 
 #[test]
-fn path1_materializes_into_the_repository_root_around_its_chariox_home() {
+fn managed_bootstrap_materializes_into_the_repository_root_around_its_chariox_home() {
     let _lock = crate::env_lock::lock();
     let names = [
         crate::managed_bootstrap::MANAGED_PROVIDER_TOPOLOGY_ENV,
@@ -2098,7 +2098,11 @@ fn path1_materializes_into_the_repository_root_around_its_chariox_home() {
         explicit_control.expect("explicit control root"),
         Some(fs::canonicalize(control.join("managed-context-workspaces")).unwrap())
     );
-    assert_eq!(shared_host.expect("shared host without control root"), None);
+    assert_eq!(
+        shared_host.expect("shared host without explicit control root"),
+        Some(fs::canonicalize(workspaces).unwrap()),
+        "both managed placements use the kernel-owned publication control parent"
+    );
     fs::remove_dir_all(root).expect("remove test root");
 }
 

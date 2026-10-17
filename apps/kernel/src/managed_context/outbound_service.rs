@@ -1019,14 +1019,29 @@ fn prepare_managed_context_package_with_environment(
                 cloud_user_id,
             );
             let mut materializations = Vec::with_capacity(accounts.len());
+            let mut vaulted_credentials = Vec::new();
             let mut serialized_component_bytes = 2u64;
             for account in accounts {
+                // MP-08 / MP-10 / MP-11: a refreshable login transfers as files;
+                // otherwise a Vault setup token transfers sealed through the Vault.
                 let materialization = provider_account_profiles
                     .export_managed_context_materialization(
                         &owner_user_id,
                         &account.provider,
                         &account.account_profile,
                     )
+                    .or_else(|_| {
+                        let (materialization, credential) =
+                            super::vaulted_accounts::export_vaulted_account(
+                                config,
+                                provider_account_profiles,
+                                &owner_user_id,
+                                &account.provider,
+                                &account.account_profile,
+                            )?;
+                        vaulted_credentials.push(credential);
+                        Ok::<_, DaemonError>(materialization)
+                    })
                     .map_err(|_| {
                         outbound_service_error(
                             format!(
@@ -1042,7 +1057,22 @@ fn prepare_managed_context_package_with_environment(
                     materialization,
                 )?;
             }
-            ManagedContextPackageProviderAccounts::Selected { materializations }
+            let vaulted = super::vaulted_accounts::seal_vaulted_accounts(
+                config,
+                vaulted_credentials,
+                plan.kernel_context == ManagedContextKernelSelection::SourceKernel,
+                &plan.context_id,
+                &ticket.target.kernel_id,
+                &ticket.target.relay_public_key,
+            )
+            .map_err(|error| {
+                let unlock_and_retry = crate::secret::is_chariox_vault_locked_error(&error);
+                outbound_service_error(error.to_string(), unlock_and_retry)
+            })?;
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vaulted: vaulted.map(Box::new),
+            }
         }
     };
     let git_credentials = match &plan.git_credentials {

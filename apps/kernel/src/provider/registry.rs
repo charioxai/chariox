@@ -193,6 +193,7 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
         preflight_provider_working_directory(request)?;
+        super::opencode::warm_opencode_models_cache(&request.provider_account_env);
         let mut launch = plan_opencode_launch(Some(request))?;
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         launch.pty_target = None;
@@ -485,6 +486,76 @@ mod tests {
         assert_eq!(
             launch_result.structured_endpoint.as_deref(),
             Some(endpoint.as_str())
+        );
+    }
+
+    #[test]
+    fn opencode_adapter_refreshes_a_cold_account_models_cache_before_launch() {
+        // MP-08/MP-10: a fresh managed-guest account has no models cache; its
+        // server would serve the bundled snapshot that lacks newer models.
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-cold-models-{}",
+            std::process::id()
+        ));
+        let cache = root.join("cache");
+        fs::create_dir_all(&cache).expect("account cache root should exist");
+        let calls = root.join("calls");
+        let executable = root.join("opencode");
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\necho \"$* $XDG_DATA_HOME\" >> '{}'\n[ \"$*\" = 'models --refresh --pure' ] || exit 2\nmkdir -p \"$XDG_CACHE_HOME/opencode\" && echo '{{}}' > \"$XDG_CACHE_HOME/opencode/models.json\"\n",
+                calls.display()
+            ),
+        )
+        .expect("fixture executable should exist");
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("fixture executable should be executable");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", "43113");
+        let request = |session: &str| {
+            LaunchProviderRequest::new(
+                session,
+                "opencode",
+                "opencode",
+                "account-1",
+                "opencode/model",
+            )
+            .with_working_directory(PathBuf::from("/tmp"))
+            .with_provider_account_env(std::collections::BTreeMap::from([
+                ("XDG_CACHE_HOME".to_string(), cache.display().to_string()),
+                (
+                    "XDG_DATA_HOME".to_string(),
+                    root.join("account-data").display().to_string(),
+                ),
+            ]))
+        };
+        let adapter = ProviderRegistry::new();
+        let adapter = adapter
+            .resolve("opencode")
+            .expect("opencode adapter should exist");
+        let first = adapter.connect(&request("session-cold"));
+        let second = adapter.connect(&request("session-warm"));
+
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
+        let recorded = fs::read_to_string(&calls).unwrap_or_default();
+        let warmed = cache.join("opencode/models.json").is_file();
+        let _ = fs::remove_dir_all(&root);
+        first.expect("cold launch should resolve");
+        second.expect("warm launch should resolve");
+        assert!(
+            warmed,
+            "the account models cache should be filled before launch"
+        );
+        // Only the cold launch refreshes, and never with the account's data.
+        let scratch = cache.join("chariox-models-refresh/data");
+        assert_eq!(
+            recorded,
+            format!("models --refresh --pure {}\n", scratch.display())
         );
     }
 

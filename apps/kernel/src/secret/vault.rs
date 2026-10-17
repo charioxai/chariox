@@ -562,9 +562,6 @@ pub fn export_transferred_vault_snapshot(
     target_kernel_id: &str,
     target_public_key: &str,
 ) -> Result<TransferredVaultSnapshot, DaemonError> {
-    validate_transfer_binding(context_id, "context id")?;
-    validate_transfer_binding(source_kernel_id, "source kernel id")?;
-    validate_transfer_binding(target_kernel_id, "target kernel id")?;
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     let _read = vault_read_lock()?;
     let vault_bytes = read_bounded_regular_file(&path, MAX_TRANSFERRED_VAULT_BYTES)?;
@@ -573,7 +570,77 @@ pub fn export_transferred_vault_snapshot(
     validate_vault_file(&vault_file)?;
     let vault_key = unlocked_vault_key(&path)?;
     decrypt_vault_payload(&vault_file, vault_key.as_ref())?;
+    seal_transferred_vault(
+        vault_bytes,
+        vault_key.as_ref(),
+        context_id,
+        source_kernel_id,
+        source_private_key,
+        target_kernel_id,
+        target_public_key,
+    )
+}
 
+/// MP-08 / MP-10 / MP-11: a new Vault holding only the selected items of the
+/// unlocked source Vault, under a fresh key sealed to the target kernel exactly
+/// like a whole-Vault transfer. No other source secret leaves this kernel.
+pub fn export_selected_vault_snapshot(
+    path: impl AsRef<Path>,
+    items: &[(String, String)],
+    context_id: &str,
+    source_kernel_id: &str,
+    source_private_key: &str,
+    target_kernel_id: &str,
+    target_public_key: &str,
+) -> Result<TransferredVaultSnapshot, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let selected = {
+        let _read = vault_read_lock()?;
+        let source = read_vault_plaintext(&path, unlocked_vault_key(&path)?.as_ref())?;
+        let mut selected = VaultPlaintext::default();
+        for (service, key) in items {
+            let value = source
+                .secrets
+                .get(service)
+                .and_then(|entries| entries.get(key))
+                .ok_or_else(|| secret_error("a selected Vault item is missing".to_string()))?;
+            selected
+                .secrets
+                .entry(service.clone())
+                .or_default()
+                .insert(key.clone(), value.clone());
+        }
+        selected
+    };
+    let key = Zeroizing::new(random_bytes::<KEY_LEN>());
+    let vault_bytes = encode_vault_file(
+        key.as_ref(),
+        &selected,
+        VaultKdfProfile::default().new_kdf_config(),
+    )?;
+    seal_transferred_vault(
+        vault_bytes,
+        key.as_ref(),
+        context_id,
+        source_kernel_id,
+        source_private_key,
+        target_kernel_id,
+        target_public_key,
+    )
+}
+
+fn seal_transferred_vault(
+    vault_bytes: Vec<u8>,
+    vault_key: &[u8],
+    context_id: &str,
+    source_kernel_id: &str,
+    source_private_key: &str,
+    target_kernel_id: &str,
+    target_public_key: &str,
+) -> Result<TransferredVaultSnapshot, DaemonError> {
+    validate_transfer_binding(context_id, "context id")?;
+    validate_transfer_binding(source_kernel_id, "source kernel id")?;
+    validate_transfer_binding(target_kernel_id, "target kernel id")?;
     let source_public_key = relay_crypto::public_key_from_private_key_base64(source_private_key)?;
     let source_key_thumbprint = public_key_thumbprint(&source_public_key);
     let target_key_thumbprint = public_key_thumbprint(target_public_key);
@@ -591,7 +658,7 @@ pub fn export_transferred_vault_snapshot(
         target_public_key,
         TRANSFERRED_VAULT_KEY_PURPOSE,
         &aad,
-        vault_key.as_ref(),
+        vault_key,
     )?;
     Ok(TransferredVaultSnapshot {
         schema_version: TRANSFERRED_VAULT_SCHEMA_VERSION,
@@ -846,6 +913,44 @@ pub(crate) fn remove_installed_transferred_vault(
     sync_vault_parent_dir(&path)
 }
 
+/// MP-08 / MP-10 / MP-11: removes the transferred Vault installed by the
+/// import of `context_id`; a Vault with no envelope, or another context's, is
+/// not this import's and stays.
+pub(crate) fn remove_transferred_vault_for_context(
+    path: impl AsRef<Path>,
+    context_id: &str,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
+    if !envelope_path.exists() {
+        return Ok(());
+    }
+    let envelope_bytes =
+        read_bounded_regular_file(&envelope_path, MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES)?;
+    let envelope = serde_json::from_slice::<TransferredVaultKeyEnvelope>(&envelope_bytes).map_err(
+        |error| {
+            secret_error(format!(
+                "failed to parse transferred Vault envelope: {error}"
+            ))
+        },
+    )?;
+    if envelope.context_id != context_id {
+        return Ok(());
+    }
+    remove_installed_transferred_vault(
+        &path,
+        &TransferredVaultSourceBinding {
+            context_id: envelope.context_id,
+            source_kernel_id: envelope.source_kernel_id,
+            source_key_thumbprint: envelope.source_key_thumbprint,
+        },
+        target_kernel_id,
+        target_private_key,
+    )
+}
+
 fn restore_transferred_vault_unlock_bound(
     path: &Path,
     expected_source: Option<&TransferredVaultSourceBinding>,
@@ -969,42 +1074,7 @@ fn write_vault_file(
             ))
         })?;
     }
-    let nonce = random_bytes::<NONCE_LEN>();
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| {
-        secret_error(format!(
-            "failed to initialize Chariox vault cipher: {error}"
-        ))
-    })?;
-    let plaintext_bytes = serde_json::to_vec(plaintext).map_err(|error| {
-        secret_error(format!(
-            "failed to serialize Chariox vault plaintext: {error}"
-        ))
-    })?;
-    // MP-08/MP-11: refuse growth before replacing the owner's Vault; a file the
-    // readers reject cannot be recovered afterwards. Cheap early check first.
-    if plaintext_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES - AUTH_TAG_LEN as u64 {
-        return Err(secret_error(
-            "Chariox Vault ciphertext exceeds its size limit".to_string(),
-        ));
-    }
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
-        .map_err(|error| secret_error(format!("failed to encrypt Chariox vault: {error}")))?;
-    let file = EncryptedVaultFile {
-        version: VAULT_FILE_VERSION,
-        kdf,
-        cipher: VAULT_CIPHER.to_string(),
-        nonce: base64_encode(&nonce),
-        ciphertext: base64_encode(&ciphertext),
-    };
-    let serialized = serde_json::to_vec_pretty(&file)
-        .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
-    // Same bound as Vault transfer reads, including JSON and base64 expansion.
-    if serialized.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
-        return Err(secret_error(
-            "Chariox Vault file exceeds its size limit".to_string(),
-        ));
-    }
+    let serialized = encode_vault_file(key, plaintext, kdf)?;
     let tmp_path = vault_temp_path(path);
     let mut tmp_file = OpenOptions::new()
         .write(true)
@@ -1038,6 +1108,48 @@ fn write_vault_file(
     })?;
     sync_vault_parent_dir(path)?;
     Ok(())
+}
+
+fn encode_vault_file(
+    key: &[u8],
+    plaintext: &VaultPlaintext,
+    kdf: VaultKdfConfig,
+) -> Result<Vec<u8>, DaemonError> {
+    let nonce = random_bytes::<NONCE_LEN>();
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| {
+        secret_error(format!(
+            "failed to initialize Chariox vault cipher: {error}"
+        ))
+    })?;
+    let plaintext_bytes = serde_json::to_vec(plaintext).map_err(|error| {
+        secret_error(format!(
+            "failed to serialize Chariox vault plaintext: {error}"
+        ))
+    })?;
+    // MP-08/MP-11: reject unrecoverable growth before replacing the owner Vault.
+    if plaintext_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES - AUTH_TAG_LEN as u64 {
+        return Err(secret_error(
+            "Chariox Vault ciphertext exceeds its size limit".to_string(),
+        ));
+    }
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
+        .map_err(|error| secret_error(format!("failed to encrypt Chariox vault: {error}")))?;
+    let file = EncryptedVaultFile {
+        version: VAULT_FILE_VERSION,
+        kdf,
+        cipher: VAULT_CIPHER.to_string(),
+        nonce: base64_encode(&nonce),
+        ciphertext: base64_encode(&ciphertext),
+    };
+    let serialized = serde_json::to_vec_pretty(&file)
+        .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
+    if serialized.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "Chariox Vault file exceeds its size limit".to_string(),
+        ));
+    }
+    Ok(serialized)
 }
 
 /// Makes the last replacement of the vault file at `path` durable, by syncing

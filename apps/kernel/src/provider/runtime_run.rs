@@ -40,6 +40,8 @@ pub struct RuntimeProviderRun {
     endpoint_mode: AgentEndpointMode,
     #[serde(default, skip_serializing_if = "ProviderClientInterface::is_chariox")]
     client_interface: ProviderClientInterface,
+    #[serde(skip)]
+    leased_credential_authority: bool,
     process_label: String,
     pty_target: Option<String>,
     pty_program: Option<String>,
@@ -160,6 +162,7 @@ impl RuntimeProviderRun {
             state: ProviderRunState::Starting,
             endpoint_mode: launch_result.endpoint_mode,
             client_interface: request.client_interface,
+            leased_credential_authority: request.leased_credential_authority,
             process_label: launch_result.process_label,
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
@@ -238,6 +241,7 @@ impl RuntimeProviderRun {
             state: ProviderRunState::Starting,
             endpoint_mode: AgentEndpointMode::Managed,
             client_interface: ProviderClientInterface::Chariox,
+            leased_credential_authority: false,
             process_label: "inferred-control-capabilities".to_string(),
             pty_target: None,
             pty_program: None,
@@ -693,6 +697,25 @@ impl RuntimeProviderRun {
 
     pub fn touch_activity(&mut self) {
         self.last_activity_at_ms = unix_epoch_ms();
+    }
+
+    pub(crate) fn authenticates_leased_claude_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> bool {
+        self.leased_credential_authority
+            && crate::provider::canonical_provider_family(self.provider()) == Some("claude")
+            && crate::provider::canonical_provider_family(agent.provider()) == Some("claude")
+            && self.session_id() == agent.session_id()
+            && self.agent_instance_id() == Some(agent.id())
+            && self.owner_user_id() == agent.owner_user_id()
+            && (self.account_profile() == agent.provider_account_profile()
+                || crate::account_profile::provider_account_selection_for_run(self)
+                    == agent.provider_account_profile())
+            && matches!(
+                self.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            )
     }
 
     pub fn mark_running(&mut self) {

@@ -274,6 +274,43 @@ fn apply_assistant_message(
     }
 }
 
+// MP-05/MP-08/MP-10: execution errors carry their reason in `errors`, not
+// `result`; keep it (bounded) so the user and diagnostics see the cause.
+fn claude_result_failure(value: &Value, subtype: &str) -> String {
+    let text = |field: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    };
+    if let Some(reason) = text("error").or_else(|| text("result")) {
+        return reason.to_string();
+    }
+    let errors = value
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|error| !error.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default();
+    let mut failure = "Claude Code reported an error".to_string();
+    if !subtype.is_empty() {
+        failure.push_str(&format!(" ({subtype})"));
+    }
+    if !errors.is_empty() {
+        failure.push_str(": ");
+        failure.extend(errors.chars().take(2000));
+    }
+    failure
+}
+
 fn apply_result_message(
     state: &mut ClaudeRuntimeState,
     value: &Value,
@@ -296,14 +333,7 @@ fn apply_result_message(
         .unwrap_or(subtype != "success");
     if is_error {
         batch.explicit_provider_error = true;
-        batch.terminal_failure = Some(
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .or_else(|| value.get("result").and_then(Value::as_str))
-                .unwrap_or("Claude Code reported an error")
-                .to_string(),
-        );
+        batch.terminal_failure = Some(claude_result_failure(value, subtype));
     }
     let message_id = state
         .session_id

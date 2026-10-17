@@ -668,6 +668,120 @@ mod tests {
     }
 
     #[test]
+    fn mp08_vault_setup_token_claude_account_passes_preflight_only_with_an_open_vault() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-vaulted-preflight-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(&root).expect("test root");
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("provider-accounts.json"),
+        )
+        .expect("provider account registry");
+        let authenticated_claude = |label: &str| {
+            let profile = registry
+                .create_managed(owner, "claude", label)
+                .expect("Claude account");
+            registry
+                .update_observation(
+                    owner,
+                    "claude",
+                    &profile.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("observed Claude account")
+        };
+        let vaulted = authenticated_claude("Setup token");
+        let without_token = authenticated_claude("No token");
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            user_id: "cloud-user-1".to_string(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        crate::secret::unlock_chariox_encrypted_vault(
+            &config.user_config.credential_vault.path,
+            "test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("unlock Vault");
+        crate::provider::store_provider_account_credential(
+            &config,
+            owner,
+            "claude",
+            &vaulted.profile_id,
+            "sk-ant-oat01-preflight-canary",
+            false,
+        )
+        .expect("store setup token");
+        let cloud = config.cloud_relay.as_ref().expect("Cloud profile");
+        let selection = |profile_id: &str| ManagedEnvironmentProviderAccounts::Selected {
+            accounts: vec![ManagedEnvironmentProviderAccountSelection {
+                provider: "claude".to_string(),
+                account_profile: profile_id.to_string(),
+            }],
+        };
+
+        preflight_provider_account_exports(
+            &config,
+            cloud,
+            &registry,
+            &selection(&vaulted.profile_id),
+        )
+        .expect("a Vault setup token transfers through the Vault");
+        // MP-11: account observation and registration can outlive a Vault item.
+        // A namespace change leaves the exact selected service/key absent.
+        let mut missing_item_config = config.clone();
+        missing_item_config.user_config.credential_vault.service = "missing-service".into();
+        let missing_item = preflight_provider_account_exports(
+            &missing_item_config,
+            cloud,
+            &registry,
+            &selection(&vaulted.profile_id),
+        )
+        .expect_err("a registered handle without its exact Vault item fails before CREATE");
+        assert!(missing_item
+            .to_string()
+            .contains("missing from the selected Vault"));
+        assert!(!missing_item.to_string().contains("preflight-canary"));
+        let missing = preflight_provider_account_exports(
+            &config,
+            cloud,
+            &registry,
+            &selection(&without_token.profile_id),
+        )
+        .expect_err("an account without any credential still fails before create");
+        assert!(missing
+            .to_string()
+            .contains("has no transferable credentials"));
+        crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path)
+            .expect("lock Vault");
+        let locked = preflight_provider_account_exports(
+            &config,
+            cloud,
+            &registry,
+            &selection(&vaulted.profile_id),
+        )
+        .expect_err("a locked Vault fails before create");
+        assert!(locked
+            .to_string()
+            .contains("Chariox Vault, which is locked"));
+        assert!(!locked.to_string().contains("preflight-canary"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn managed_environment_create_preflights_selected_provider_exports() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-environment-preflight-{}-{}",

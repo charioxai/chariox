@@ -282,4 +282,10 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// Version 523 combines the landed 520/128 contract above with Path-1 Vault
+/// packages, lifecycle enrollment retention and update diagnostics (MP-07/08/11;
+/// coordinator allocation 2026-10-14, retained for round T).
+/// Version 547 combines the Path-1 523 contract with explicit notification
+/// retry/discard and uncertain-delivery projection (peer 155; coordinator W;
+/// MP-08/MP-10/MP-11).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 547;

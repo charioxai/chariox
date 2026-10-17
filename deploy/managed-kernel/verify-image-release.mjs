@@ -5,6 +5,8 @@ import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
 import { basename, join, relative, resolve, sep } from "node:path"
 
+import { verifyReleaseRootInventory } from "./release-root-inventory.mjs"
+
 import { parseUnitSections, verifyPath1ServicePolicy } from "./path1-service-policy.mjs"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
@@ -424,6 +426,10 @@ async function verifyImageRelease(
     seen.add(artifact.name)
     verifiedArtifactDigests.set(artifact.name, actualDigest)
   }
+
+  await verifyReleaseRootInventory(rootfs, manifest.artifacts, manifest.artifacts
+    .filter((artifact) => EXPECTED_ARTIFACTS.get(artifact.name).type === "tree")
+    .map((artifact) => artifact.path))
 
   if (selectedTopology === "path1") {
     await verifyPath1BuilderAttestation(

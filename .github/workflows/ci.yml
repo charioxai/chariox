@@ -25,8 +25,12 @@ jobs:
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Fetch MP-11 frozen inventory source
-        run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
+      - name: Fetch MP-03/MP-07/MP-11 frozen test sources
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            9334141d420f8a32393f206102c5b8b4a1b0b609 \
+            ece7e0fc621d413fea8a804caaf74772148ea0a0 \
+            a277240c7cdba6201dc49e104e18d537de37ffc0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -136,9 +140,10 @@ jobs:
           failed=0
           for test_file in \
             scripts/docker-admission-lock.test.py \
-            apps/kernel/slice-linux-docker/test_development_workspace_access.py
+            apps/kernel/slice-linux-docker/test_development_workspace_access.py \
+            deploy/managed-kernel/runtime-diagnostics.test.py
           do
-            sudo python3 -B "$test_file" || failed=1
+            sudo env "PATH=$PATH" python3 -B "$test_file" || failed=1
           done
           exit "$failed"
 

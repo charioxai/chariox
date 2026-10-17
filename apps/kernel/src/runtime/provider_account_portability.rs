@@ -43,18 +43,34 @@ pub(super) fn preflight_selection(
     };
     let owner = provider_account_authority_owner_user_id(config, runtime_owner);
     for account in accounts {
-        profiles
+        if profiles
             .export_managed_context_materialization(
                 &owner,
                 &account.provider,
                 &account.account_profile,
             )
-            .map_err(|_| {
-                error(format!(
-                    "selected {} provider account `{}` has no transferable credentials",
-                    account.provider, account.account_profile
-                ))
-            })?;
+            .is_ok()
+        {
+            continue;
+        }
+        let (_, credential) = crate::managed_context::vaulted_accounts::export_vaulted_account(
+            config,
+            profiles,
+            &owner,
+            &account.provider,
+            &account.account_profile,
+        )
+        .map_err(|_| {
+            error(format!(
+                "selected {} provider account `{}` has no transferable credentials",
+                account.provider, account.account_profile,
+            ))
+        })?;
+        crate::managed_context::vaulted_accounts::ensure_source_vault_open(
+            config,
+            &account.account_profile,
+            &credential,
+        )?;
     }
     Ok(())
 }

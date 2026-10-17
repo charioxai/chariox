@@ -3614,6 +3614,17 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
 
+### Held notification delivery — local 547 / relay peer 155 (MP-08 / MP-10 / MP-11)
+
+A notification injection whose send intent has no proven outcome is held by the kernel
+(never re-sent) until its deadline. Protocol 547 projects that hold on the queued item as
+`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
+`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh
+injection and may arrive twice), or discard with the existing `RemoveQueuedWorkflowPrompt`,
+which now also accepts a held item. At the deadline the kernel retires a held item with a
+notice naming the reason. TUI: `/workflow queue retry|remove <item>`. Relay peer 155 binds
+the embedded local response union to local 547 (coordinator allocation 547/155).
+
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
 Coordinator allocation for the main-merged owner-managed contract. Local 520
@@ -3649,3 +3660,89 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+### MP-08 / MP-11: managed-context package compatibility (round L)
+
+Coordinator-assigned local protocol 504 and relay peer 112 gate package schema 5.
+Vault-backed provider-account components use the schema-5 object form; schemas
+2/3/4 retain their previous contracts, including Git credentials from schema 4.
+A schema-4 package containing a Vault object is rejected. Arm admission rejects
+older peer generations before Begin or any credential-bearing package upload.
+Web/TUI feature minima remain unchanged because they use existing control RPCs.
+
+### MP-07: managed release update failure reason (round Q)
+
+Coordinator-assigned local protocol 515. Relay peer protocol stays 112: no peer
+message changed, and peer admission refuses peers older than its own version.
+A failed Cloud-authorized update now carries the machine's own reason. The root
+updater writes `/usr/lib/chariox/.managed-kernel-upgrade-failure` (root-owned,
+0644): `1`, the update id and the first failed step (`release_staging`,
+`release_extraction`, `release_verification`, `prior_update_recovery`,
+`protocol_transition`, `release_install`, `docker_admission`,
+`transaction_prepare`, `service_stop`, `activation_*`, `target_start`,
+`target_health_check`, `final_validation` or `interrupted`). A later failure of
+the same update keeps the first step. The kernel adds `failureReason` to its
+signed `release_update_poll` beside `failedUpdateId`: the recorded step, else
+its own `artifact_download_failed` or `update_unit_start_failed`, else
+`updater_reported_no_reason`. It sends the field only when the poll response
+that handed out the update carried `acceptsFailureReason: true`, because older
+Cloud rejects unknown poll fields. Cloud stores it as the update's
+`failureReason` next to `failureCode: machine_upgrade_failed`. The reporting
+kernel and updater are the source release, so updates from releases before
+round Q still report no reason.
+
+MP-01 / MP-08 / MP-11: provider replicas imported for an execution lease stay
+in that lease owner's registry namespace, including when the worker's configured
+Cloud owner has the same user id. Host-user aliases apply to ordinary host
+accounts. Lease launch authority is kernel-local (`serde(skip)`), assigned only
+after lease admission, and preserved for launch, prompt, usage and recovery,
+including app prompt dispatch, Claude Vault unlock guards and credential lookup.
+App dispatch derives lease authority from the authenticated backing-agent binding
+even when a fresh internal launch request does not carry the private launch bit.
+Prompt admission, queued advance and native run reuse apply the same account
+owner policy before authentication; host-only checks must not precede lease lookup.
+No serialized client or relay shape changes in this namespace correction.
+
+MP-08 / MP-11: an admitted Claude lease may reuse its source-authorized launch
+credential even though the receiver has no local Vault login for that replica.
+Kernel-private provenance survives consumption of the launch secret and is
+bound to the live run's exact session, agent, owner and account. Both launch and
+run provenance are serde-skipped: restoration or client JSON cannot claim it.
+Other accounts use normal registry authentication. This adds no serialized shape.
+
+### MP-07 / MP-08 / MP-10 / MP-11: merged Path-1 contract, local523 / peer131
+
+The coordinator allocated local daemon protocol523 and relay peer131 on
+2026-10-14 for the main491/101 and Path-1 candidate515/112 integration.
+The combined union retains kernel-owned enrollment and credential-free Cloud
+projections, client-owned human Cloud controls, workflow notifications and
+Environment operations alongside schema-5 Vault-backed account packages and
+capability-gated update failure diagnostics. Protocol snapshots and hashes
+bind the merged identity. Existing client feature minima remain unchanged.
+Signed release transition admission retains main487/490/491 and signed-R515,
+plus the prior reviewed predecessors. These source gates do not establish a
+signed-image live acceptance result or mirror-v2 support.
+
+### MP-07 / MP-08 / MP-10 / MP-11: round T landing reconciliation
+
+Round T retains the coordinator-allocated local523 / peer131 identity after
+rebasing onto main520 / peer128. The union includes main's same-machine direct
+carriers and owner-managed context receipt contract, plus Path-1 schema-5 Vault
+packages and update diagnostics. Managed lifecycle capability retention uses
+existing ownership enrollment and receipt validation; it adds no wire fields.
+Upgrade admission retains released main520 as well as signed R515 and S523.
+Existing feature minima remain unchanged. These source checks do not establish
+signed-image or live ordinary/managed acceptance.
+
+### MP-07 / MP-08 / MP-09 / MP-10 / MP-11: round W union, local 547 / peer 155
+
+Coordinator-allocated local protocol 547 and relay peer 155 combine the Path-1
+523/131 contract above with the held-notification retry/discard contract. The
+schema-5 target-bound Vault package, ordinary ownership and enrollment paths,
+and managed lifecycle evidence retain their existing authority. A managed
+placement does not select another provider, prompt, history or permission path.
+
+The shared transition policy admits signed T–V protocol 523 in both directions,
+alongside the existing released predecessors. Provisional notification protocol
+521 was never released and remains excluded. The Browser/Computer and peer
+notification snapshot hashes bind the combined 547/155 identity. Source and
+snapshot checks do not establish signed managed-machine acceptance.

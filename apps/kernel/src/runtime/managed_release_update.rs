@@ -20,13 +20,15 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::runtime::cloud_api_client::{post_cloud_json, post_cloud_to_file};
+use crate::runtime_diagnostics::{record, Event};
 
 use super::managed_kernel_quiescence::{hmac_signature, identity_values, QuiescenceBinding};
 
 #[path = "managed_release_update_evidence.rs"]
 mod evidence;
 use evidence::{
-    prepare_archive, read_evidence, settled_report, unit_settled, UpdateIdentity, UpdateReport,
+    failure_step, prepare_archive, read_evidence, settled_report, unit_settled, UpdateIdentity,
+    UpdateReport,
 };
 
 const POLL_ENDPOINT: &str = "/v1/managed-kernels/release-update/poll";
@@ -38,6 +40,7 @@ const STAGING_ROOT: &str = "/var/lib/chariox-release-update";
 const MAX_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const CURRENT_RELEASE: &str = "/usr/lib/chariox/current";
 const UPDATE_EVIDENCE: &str = "/usr/lib/chariox/.managed-kernel-upgrade-result";
+const UPDATE_FAILURE: &str = "/usr/lib/chariox/.managed-kernel-upgrade-failure";
 const UPDATE_TRANSACTION: &str = "/usr/lib/chariox/.managed-kernel-upgrade";
 const TERMINAL_TRANSACTION: &str = "/usr/lib/chariox/.managed-kernel-upgrade.terminal";
 const TRUSTED_BUILDER_PUBLIC_KEY: &str = "/etc/chariox/trusted-builder-public-key";
@@ -47,6 +50,10 @@ const TRUSTED_BUILDER_PUBLIC_KEY: &str = "/etc/chariox/trusted-builder-public-ke
 struct PollResponse {
     protocol_version: u8,
     update: Option<UpdateCommand>,
+    // MP-07: older Cloud rejects unknown poll fields, so a failure reason is
+    // sent only when the Cloud that handed out the update accepts it.
+    #[serde(default)]
+    accepts_failure_reason: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -59,13 +66,18 @@ struct UpdateCommand {
 
 /// The update this kernel last started, kept so a restarted kernel can tell a
 /// rollback from an update still running.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct UpdateAttempt {
     update_id: String,
     #[serde(default)]
     from_runtime_release_digest: Option<String>,
     target_runtime_release_digest: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    report_failure_reason: bool,
+    /// A failure this kernel saw before the root updater could record one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kernel_failure: Option<String>,
 }
 
 pub(crate) struct ManagedReleaseUpdateClient {
@@ -103,7 +115,9 @@ impl ManagedReleaseUpdateClient {
 
     pub(crate) async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         loop {
+            record(Event::UpdatePoll);
             if let Err(error) = self.poll_once().await {
+                record(Event::UpdatePollFailed);
                 crate::logging::warn_with_fields(
                     "managed_kernel.release_update",
                     "release update poll failed; retrying",
@@ -124,6 +138,7 @@ impl ManagedReleaseUpdateClient {
     async fn poll_once(&self) -> Result<(), DaemonError> {
         // systemd errors are not evidence that an update has settled.
         if !update_unit_settled()? {
+            record(Event::UpdateUnitRunning);
             return Ok(());
         }
         let running = running_release_digest(&self.receipt_path)?;
@@ -132,6 +147,7 @@ impl ManagedReleaseUpdateClient {
         // MP-07: after a stopped unit or reboot, the durable attempt owns
         // recovery. Waiting silently would strand both Cloud and the journal.
         if recovery_pending {
+            record(Event::UpdateRecovery);
             let attempt = attempt
                 .as_ref()
                 .ok_or_else(|| update_error("release recovery has no durable update attempt"))?;
@@ -166,7 +182,13 @@ impl ManagedReleaseUpdateClient {
             )
         });
         if report == Some(UpdateReport::Pending) {
+            record(Event::UpdatePending);
             return Ok(());
+        }
+        match report {
+            Some(UpdateReport::Applied) => record(Event::UpdateApplied),
+            Some(UpdateReport::Failed) => record(Event::UpdateFailed),
+            _ => {}
         }
         // Reclaim the persisted, settled attempt before polling. Cloud can
         // hand out a successor in that response; cleanup failure must not claim
@@ -178,21 +200,16 @@ impl ManagedReleaseUpdateClient {
         }
         let failed = attempt
             .as_ref()
-            .filter(|_| report == Some(UpdateReport::Failed))
-            .map(|attempt| attempt.update_id.clone());
+            .filter(|_| report == Some(UpdateReport::Failed));
         let mut values = identity_values(&self.binding);
-        values.insert("protocolVersion", json!(1));
-        values.insert("action", json!("release_update_poll"));
-        values.insert("runtimeReleaseDigest", json!(running));
-        if let Some(update_id) = &failed {
-            values.insert("failedUpdateId", json!(update_id));
-        }
+        values.extend(poll_fields(&running, failed, Path::new(UPDATE_FAILURE)));
         let response: PollResponse = post_cloud_json(
             self.binding.api_url.clone(),
             POLL_ENDPOINT,
             self.signed(values)?,
         )
         .await?;
+        record(Event::UpdateCloudAcknowledged);
         if response.protocol_version != 1 {
             return Err(update_error(
                 "Cloud returned an unsupported release update protocol",
@@ -215,15 +232,23 @@ impl ManagedReleaseUpdateClient {
         {
             return Ok(());
         }
-        self.start_update(update).await
+        self.start_update(update, response.accepts_failure_reason)
+            .await
     }
 
-    async fn start_update(&self, update: UpdateCommand) -> Result<(), DaemonError> {
+    async fn start_update(
+        &self,
+        update: UpdateCommand,
+        report_failure_reason: bool,
+    ) -> Result<(), DaemonError> {
+        record(Event::UpdateDownload);
         let archive = Path::new(DOWNLOAD_ROOT).join(format!("{}.tar.gz", update.update_id));
         let attempt = UpdateAttempt {
             update_id: update.update_id.clone(),
             from_runtime_release_digest: Some(update.from_runtime_release_digest.clone()),
             target_runtime_release_digest: update.target_runtime_release_digest.clone(),
+            report_failure_reason,
+            kernel_failure: None,
         };
         let bytes =
             serde_json::to_vec(&attempt).map_err(|error| update_error(error.to_string()))?;
@@ -249,23 +274,56 @@ impl ManagedReleaseUpdateClient {
             },
             |error| update_error(format!("record release update attempt: {error}")),
         )
-        .await?;
+        .await
+        .inspect_err(|_| self.record_kernel_failure(&attempt, "artifact_download_failed"))?;
+        record(Event::UpdateDownloaded);
         prepared.delegate();
         self.start_update_unit(&update, &archive)
+            .inspect_err(|_| self.record_kernel_failure(&attempt, "update_unit_start_failed"))
+    }
+
+    /// Best effort: an unreadable reason must not strand the failure report, so
+    /// replace the retained attempt atomically and only if it exists.
+    fn record_kernel_failure(&self, attempt: &UpdateAttempt, reason: &str) {
+        if !self.attempt_path.exists() {
+            return;
+        }
+        let attempt = UpdateAttempt {
+            kernel_failure: Some(reason.to_string()),
+            ..attempt.clone()
+        };
+        let temporary = self.attempt_path.with_extension("json.new");
+        let _ = serde_json::to_vec(&attempt)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&temporary, bytes))
+            .and_then(|()| std::fs::File::open(&temporary)?.sync_all())
+            .and_then(|()| std::fs::rename(&temporary, &self.attempt_path));
     }
 
     fn start_update_unit(&self, update: &UpdateCommand, archive: &Path) -> Result<(), DaemonError> {
         let tooling = std::fs::canonicalize(CURRENT_RELEASE)
             .map_err(|error| update_error(format!("resolve current release: {error}")))?;
-        let status = Command::new("sudo")
-            .args([
-                "-n",
-                "systemd-run",
-                "--unit",
-                UPDATE_UNIT,
-                "--collect",
-                "--quiet",
-            ])
+        record(Event::UpdateUnitStarting);
+        let mut command = Command::new("sudo");
+        command.args([
+            "-n",
+            "systemd-run",
+            "--unit",
+            UPDATE_UNIT,
+            "--collect",
+            "--quiet",
+            // Recovery must outlive a kernel outage after target activation.
+            "--property=Restart=on-failure",
+            "--property=RestartSec=2s",
+            "--property=StartLimitIntervalSec=60s",
+            "--property=StartLimitBurst=5",
+        ]);
+        if let Some(directory) = std::env::var_os("CHARIOX_RUNTIME_DIAGNOSTICS_DIR") {
+            let mut setting = std::ffi::OsString::from("CHARIOX_RUNTIME_DIAGNOSTICS_DIR=");
+            setting.push(directory);
+            command.arg("--setenv").arg(setting);
+        }
+        let status = command
             .args(["/bin/sh", "-c"])
             .arg(update_script(
                 &tooling,
@@ -282,6 +340,7 @@ impl ManagedReleaseUpdateClient {
                 "release update unit did not start: {status}"
             )));
         }
+        record(Event::UpdateUnitStarted);
         crate::logging::info_with_fields(
             "managed_kernel.release_update",
             "started Cloud-authorized release update",
@@ -329,12 +388,15 @@ fn update_script(
         "set -eu; pending() {{ [ -e '{authority_root}/.managed-kernel-upgrade' ] || [ -L '{authority_root}/.managed-kernel-upgrade' ] || \
          [ -e '{authority_root}/.managed-kernel-upgrade.terminal' ] || [ -L '{authority_root}/.managed-kernel-upgrade.terminal' ]; }}; \
          trap \"if ! pending; then python3 '{tooling}/release-update-storage.py' cleanup '{staging_root}' '{update_id}'; rm -f '{archive}'; fi\" EXIT; \
+         failed() {{ f='{authority_root}/.managed-kernel-upgrade-failure'; \
+         if [ \"$(sed -n 2p \"$f\" 2>/dev/null)\" != '{update_id}' ]; then rm -f \"$f.new\"; \
+         printf '1\\n%s\\n%s\\n' '{update_id}' \"$1\" > \"$f.new\" && chmod 0644 \"$f.new\" && mv -f \"$f.new\" \"$f\"; fi; exit 1; }}; \
          run_upgrade() {{ CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY=$1 CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' \
          CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
          sh '{tooling}/upgrade-image.sh' '{staging}/extracted/rootfs' '{from}' '{target}' '{release_key}'; }}; \
          if pending; then run_upgrade 1; else \
-         python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}'; \
-         python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}'; \
+         python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}' || failed release_staging; \
+         python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}' || failed release_extraction; \
          rm -f '{archive}'; TMPDIR='{staging}' run_upgrade 0; fi",
         staging = staging.display(),
         archive = archive.display(),
@@ -348,6 +410,39 @@ fn update_script(
         target = update.target_runtime_release_digest,
         release_key = release_key.display(),
     )
+}
+
+fn poll_fields(
+    running: &str,
+    failed: Option<&UpdateAttempt>,
+    failure_record: &Path,
+) -> BTreeMap<&'static str, Value> {
+    let mut values = BTreeMap::from([
+        ("protocolVersion", json!(1)),
+        ("action", json!("release_update_poll")),
+        ("runtimeReleaseDigest", json!(running)),
+    ]);
+    if let Some(attempt) = failed {
+        values.insert("failedUpdateId", json!(attempt.update_id));
+        if attempt.report_failure_reason {
+            values.insert(
+                "failureReason",
+                json!(failure_reason(attempt, failure_record)),
+            );
+        }
+    }
+    values
+}
+
+/// MP-07: the root updater's recorded step wins; otherwise this kernel's own
+/// observation; otherwise the updater exited without recording a step.
+fn failure_reason(attempt: &UpdateAttempt, failure_record: &Path) -> String {
+    read_evidence(failure_record)
+        .ok()
+        .flatten()
+        .and_then(|record| failure_step(&record, &attempt.update_id))
+        .or_else(|| attempt.kernel_failure.clone())
+        .unwrap_or_else(|| "updater_reported_no_reason".to_string())
 }
 
 fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
@@ -383,10 +478,9 @@ fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
 }
 
 fn running_release_digest(receipt_path: &Path) -> Result<String, DaemonError> {
-    let bytes = std::fs::read(receipt_path)
-        .map_err(|error| update_error(format!("read bootstrap receipt: {error}")))?;
-    let receipt: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| update_error(format!("decode bootstrap receipt: {error}")))?;
+    let receipt: Value =
+        crate::managed_bootstrap::control_state::read_optional(receipt_path, "bootstrap receipt")?
+            .ok_or_else(|| update_error("bootstrap receipt is missing"))?;
     receipt
         .get("runtimeReleaseDigest")
         .and_then(Value::as_str)
@@ -497,6 +591,8 @@ mod tests {
             update_id: "managed_release_update_0123abcd-0000-4000-8000-0123456789ab".into(),
             from_runtime_release_digest: Some(digest('a')),
             target_runtime_release_digest: digest('b'),
+            report_failure_reason: true,
+            kernel_failure: None,
         };
         let bytes = serde_json::to_vec(&attempt).expect("attempt");
         let result = prepare_archive(
@@ -535,6 +631,62 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_poll_reports_the_recorded_step_only_to_a_cloud_that_accepts_it() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-release-failure-reason-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir(&root).expect("scratch");
+        let record = root.join("failure");
+        let mut attempt = UpdateAttempt {
+            update_id: "managed_release_update_0123abcd-0000-4000-8000-0123456789ab".into(),
+            from_runtime_release_digest: Some(digest('a')),
+            target_runtime_release_digest: digest('b'),
+            report_failure_reason: false,
+            kernel_failure: None,
+        };
+        let keys = |failed: Option<&UpdateAttempt>| {
+            poll_fields(&digest('a'), failed, &record)
+                .into_keys()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(None),
+            ["action", "protocolVersion", "runtimeReleaseDigest"]
+        );
+        assert_eq!(
+            keys(Some(&attempt)),
+            [
+                "action",
+                "failedUpdateId",
+                "protocolVersion",
+                "runtimeReleaseDigest"
+            ],
+            "a Cloud that did not accept reasons rejects unknown poll fields"
+        );
+        let reason = |attempt: &UpdateAttempt| {
+            poll_fields(&digest('a'), Some(attempt), &record)["failureReason"].clone()
+        };
+        attempt.report_failure_reason = true;
+        assert_eq!(reason(&attempt), "updater_reported_no_reason");
+        attempt.kernel_failure = Some("artifact_download_failed".into());
+        assert_eq!(reason(&attempt), "artifact_download_failed");
+        std::fs::write(
+            &record,
+            format!("1\n{}\ntarget_health_check\n", attempt.update_id),
+        )
+        .expect("record");
+        if std::fs::metadata(&record).expect("record").uid() == 0 {
+            assert_eq!(reason(&attempt), "target_health_check");
+        }
+        std::fs::write(&record, "1\nmanaged_release_update_other\nservice_stop\n").expect("record");
+        assert_eq!(reason(&attempt), "artifact_download_failed");
+        std::fs::remove_dir_all(root).expect("known synthetic scratch");
+    }
+
+    #[test]
     fn the_update_runs_installed_tooling_and_retains_recovery_inputs_until_settled() {
         let root = std::env::temp_dir()
             .canonicalize()
@@ -545,7 +697,7 @@ mod tests {
                 crate::session::unix_epoch_ms()
             ));
         let tooling =
-            root.join("release/usr/lib/chariox/slice-build-context/deploy/managed-kernel");
+            root.join("releases/release/usr/lib/chariox/slice-build-context/deploy/managed-kernel");
         std::fs::create_dir_all(&tooling).expect("tooling");
         std::fs::write(
             tooling.join("extract-release.py"),
@@ -587,7 +739,7 @@ mod tests {
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(update_script(
-                    &root.join("release"),
+                    &root.join("releases/release"),
                     &archive,
                     &staging,
                     &update,
@@ -610,6 +762,24 @@ mod tests {
             "a truncated archive fails"
         );
         assert!(!root.join("invoked").exists());
+        // MP-07: the failed step reaches the kernel's report; a later failure
+        // of the same update (an automatic unit restart) keeps the first one.
+        let failure = root.join(".managed-kernel-upgrade-failure");
+        let recorded = format!("1\n{}\nrelease_extraction\n", update.update_id);
+        assert_eq!(
+            std::fs::read_to_string(&failure).expect("failure"),
+            recorded
+        );
+        assert_eq!(
+            failure_step(&recorded, &update.update_id).as_deref(),
+            Some("release_extraction")
+        );
+        assert!(!run(b"not an archive"));
+        assert_eq!(
+            std::fs::read_to_string(&failure).expect("failure"),
+            recorded
+        );
+        std::fs::remove_file(&failure).expect("reset failure record");
         assert!(run(&packed));
         let invoked = std::fs::read_to_string(root.join("invoked")).expect("invoked");
         assert_eq!(
@@ -622,7 +792,7 @@ mod tests {
                     .display(),
                 digest('a'),
                 digest('b'),
-                root.join("release/usr/lib/chariox/release-public-key")
+                root.join("releases/release/usr/lib/chariox/release-public-key")
                     .display()
             )
         );
@@ -649,10 +819,6 @@ mod tests {
                 .status()
                 .expect("root updater")
         };
-        // Use a release-layout path so the production wrapper sees the actual
-        // journal authority beside releases, independently of current.
-        std::fs::create_dir_all(root.join("releases")).unwrap();
-        std::fs::rename(root.join("release"), root.join("releases/release")).unwrap();
         assert!(!restart().success());
         assert!(
             !archive.exists(),

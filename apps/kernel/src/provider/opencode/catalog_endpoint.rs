@@ -49,6 +49,7 @@ pub(crate) fn ensure_opencode_account_endpoint(
         endpoints.remove(&key);
     }
 
+    super::warm_opencode_models_cache(&environment);
     let request = crate::provider::LaunchProviderRequest::new(
         "provider-account",
         "opencode",

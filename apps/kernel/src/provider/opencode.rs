@@ -12,6 +12,7 @@ use super::executable_resolution::ExecutableResolutionState;
 mod catalog_endpoint;
 mod discovery;
 mod mcp_config;
+mod models_cache;
 mod ports;
 
 pub use catalog_endpoint::opencode_catalog_endpoint;
@@ -23,6 +24,7 @@ pub(crate) use discovery::{
     apply_opencode_discovery_environment, isolate_opencode_discovery_configuration,
     OpenCodeDiscoveryConfigDirectory,
 };
+pub(crate) use models_cache::warm_opencode_models_cache;
 
 const OPENCODE_ENV_OVERRIDE: &str = "CHARIOX_OPENCODE_BIN";
 static OPENCODE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
