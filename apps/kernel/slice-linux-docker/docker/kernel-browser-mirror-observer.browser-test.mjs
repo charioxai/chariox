@@ -158,6 +158,18 @@ test('positional selectors restyle siblings when children come and go, not when 
   assert(attribute.reads < first.reads / 4, `${attribute.reads} of ${first.reads} property reads`);
 });
 
+test('a filtered reverse position restyles the siblings before the changed one', options, async () => {
+  const reverse = `${page}<style>#rv div{width:20px;height:10px}#rv .chosen:nth-last-child(1 of .chosen){color:#c00}</style><div id=rv><div class=chosen id=r1>a</div><div id=r2>b</div><div id=r3>c</div></div>`;
+  await matchesFreshRead(reverse, w => w.evaluate("r2.className='chosen'"));
+  await matchesFreshRead(reverse, async (w, settle) => { await w.evaluate("r2.className='chosen'"); await settle(); await w.evaluate("r2.className=''"); });
+});
+
+test('a control that becomes valid or invalid restyles the form and fieldset that style by validity', options, async () => {
+  const form = `${page}<style>form:invalid .status{color:#c00}form:valid .status{color:#0a0}fieldset:invalid .fs{color:#06c}</style><form id=vf><input id=vin required><span class=status>status</span><fieldset><input id=fin required><span class=fs>fs</span></fieldset></form>`;
+  await matchesFreshRead(form, w => w.evaluate("vin.value='x';fin.value='y'"));
+  await matchesFreshRead(form, async (w, settle) => { await w.evaluate("vin.value='x'"); await settle(); await w.evaluate("vin.value=''"); });
+});
+
 test('a text change re-evaluates only what it touched', options, async () => {
   const first = await open(page);
   const full = (await first.read()).reads;

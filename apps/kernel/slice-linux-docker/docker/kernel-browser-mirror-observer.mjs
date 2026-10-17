@@ -45,7 +45,7 @@ function installMirrorObserver(initialStyles = {}) {
     return selectors;
   };
   const scanSheets = () => {
-    const found={plain:true,adjacent:false,structural:false,hasSibling:false,has:[],subject:[[],[],[],[]],selectors:null,fonts:[]};
+    const found={plain:true,adjacent:false,structural:false,reverse:false,validity:false,hasSibling:false,has:[],subject:[[],[],[],[]],selectors:null,fonts:[]};
     let count=0;
     // A state inside :not() is dropped with the whole :not(): removing a constraint there would narrow the match.
     const withoutNegations=text=>{
@@ -87,6 +87,9 @@ function installMirrorObserver(initialStyles = {}) {
         if(rule.selectorText!==undefined){
           const plain=rule.selectorText.replaceAll(hasGroup,'');
           if(/[+~]|:nth-[\w-]+\([^)]*\bof\b/.test(plain))found.adjacent=found.structural=true;
+          // :nth-last-child(n of S) reads the S-matching siblings after the element, so a change also restyles those before it.
+          if(/:nth-last-[\w-]+\([^)]*\bof\b/.test(plain))found.reverse=true;
+          if(/:(?:user-)?(?:in)?valid\b/.test(plain))found.validity=true;
           else if(/:(?:first|last|only|nth)-|:empty/.test(plain))found.structural=true;
           if(/:(?:has|hover|active|focus|target)/.test(rule.selectorText))analyze(rule.selectorText);
         } else if(['CSSScopeRule','CSSStartingStyleRule'].includes(rule.constructor.name))found.plain=false;
@@ -183,7 +186,7 @@ function installMirrorObserver(initialStyles = {}) {
       const restyle=(node,deep,siblings)=>{
         while(node) {
           const host=node.getRootNode().host;
-          if(deep||host){for(let sibling=node;sibling;sibling=siblings?sibling.nextElementSibling:null)dirtyDeep.add(sibling);}
+          if(deep||host){for(let sibling=node;sibling;sibling=siblings?sibling.nextElementSibling:null)dirtyDeep.add(sibling);if(siblings&&sheets.reverse)for(let before=node.previousElementSibling;before;before=before.previousElementSibling)dirtyDeep.add(before);}
           else dirtySelf.add(node);
           node=host;deep=true;
         }
@@ -222,7 +225,11 @@ function installMirrorObserver(initialStyles = {}) {
         }
       });
       for(const node of [...animated,...lastAnimated])if(node?.isConnected)restyle(node,true,false);
-      for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true,sheets.adjacent);
+      for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was) {
+        mark(node,true,sheets.adjacent);
+        // :valid/:invalid also match the form and the fieldsets around a control, and their descendants inherit.
+        if(sheets.validity&&was.split(',')[6]!==String(node.validity?.valid)){if(node.form)mark(node.form,true,sheets.adjacent);for(let owner=node.parentElement?.closest('fieldset,form');owner;owner=owner.parentElement?.closest('fieldset,form'))mark(owner,true,sheets.adjacent);}
+      }
       quick=dirtyDeep.size+dirtySelf.size<=4096&&scanned<=2000;
     }
     if(!shaped||touchedAll)sheetGeneration++;
