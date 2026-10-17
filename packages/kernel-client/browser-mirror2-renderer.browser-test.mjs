@@ -1274,7 +1274,13 @@ test('MP-08/MP-10 an undelivered visible image stops holding the handover after 
   await page.evaluate(()=>window.r.holdForHandover());
   await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'element',tag:'img',attrs:{width:'20',height:'20'},res:'r1'}])),document_id:'new',sequence:2});
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'a fresh document waits for its visible image');
-  await page.waitForTimeout(3200);
+  // Other images still arriving keep the hold (GitHub: handing over mid-stream raced the kernel window).
+  const data=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==','base64');
+  await page.waitForTimeout(2500);
+  await apply(page,{...delta(3,[]),document_id:'new',resources:[{key:'r2',resource_id:createHash('sha256').update(data).digest('hex'),mime_type:'image/png',data_base64:data.toString('base64')}]});
+  await page.waitForTimeout(1000);
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'resources still arriving keep the image hold');
+  await page.waitForTimeout(2300);
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'the image never arrives: hand over without it');
  }finally{await page.close()}
 });

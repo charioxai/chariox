@@ -15,7 +15,7 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
-const IMAGE_HOLD_MS = 3000 // handover wait for a visible image's bytes (readyForHandover)
+const IMAGE_HOLD_MS = 3000 // resource-quiet time after which a missing visible image stops holding the handover
 const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
@@ -390,6 +390,7 @@ export class BrowserMirror2Renderer {
     const old = this.resources.get(resource.key); if (old?.startsWith('blob:')) URL.revokeObjectURL(old)
     const sprite = this.sprites.get(resource.key); if (sprite) URL.revokeObjectURL(sprite); this.sprites.delete(resource.key)
     // SVG stays an image: data: URLs have an opaque origin if ever opened top-level.
+    this.resourceAt = performance.now()
     this.resources.set(resource.key, resource.mime_type === 'image/svg+xml' ? `data:image/svg+xml;base64,${resource.data_base64}` : URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: resource.mime_type })))
   }
   // Slices of one resource arrive in order; the digest covers the whole.
@@ -620,6 +621,7 @@ export class BrowserMirror2Renderer {
   // MP-08/MP-10/MP-11: fixed reasons only, no node/resource identities.
   private handoverStage = ''
   private documentAt = 0
+  private resourceAt = 0
   private nativeFontFailures = new Set<string>()
   private nativeFontFailureKey = '[]'
   private fontRequirements = new Map<string, string[] | null>()
@@ -634,8 +636,9 @@ export class BrowserMirror2Renderer {
     const doc = this.doc, documentId = this.documentId, proofSequence = this.sequence
     if (!doc || !this.navigation.readyToPresent) { this.handoverDiagnostic('wait_content'); return false }
     if (this.slices.size) { this.handoverDiagnostic('wait_slices'); return false }
-    // An image the page never loads (failed or never fetched) holds the switch only briefly.
-    if (performance.now() - this.documentAt < IMAGE_HOLD_MS) for (const [id, record] of this.records) {
+    // An image the page never loads (failed or never fetched) holds the switch only until
+    // resources stop arriving for a while.
+    if (performance.now() - Math.max(this.documentAt, this.resourceAt) < IMAGE_HOLD_MS) for (const [id, record] of this.records) {
       if (!record.res || this.resources.has(record.res)) continue
       const element = this.dom.get(id) as Element | undefined
       const box = element?.nodeType === 1 ? element.getBoundingClientRect() : null
