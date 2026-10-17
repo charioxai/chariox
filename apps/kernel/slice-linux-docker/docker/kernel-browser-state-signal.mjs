@@ -15,6 +15,11 @@ export class StateSignal {
     });
   }
 }
-// CDP events after which a state read can differ: Tabs opening, closing, navigating or retitling, loads.
-const STATE_EVENTS = /^(Target\.(targetCreated|targetDestroyed|targetInfoChanged|detachedFromTarget)|Page\.(frameNavigated|navigatedWithinDocument|frameStartedLoading|frameStoppedLoading|loadEventFired)|Inspector\.detached|Chariox\.browserDisconnected)$/;
-export const stateChangingEvent = message => STATE_EVENTS.test(message?.method ?? '');
+// CDP events after which a state read can differ: a page Tab opening, closing, navigating or retitling.
+// Sub-frame navigations and other targets (workers, iframes) change nothing a state read reports.
+export function stateChangingEvent(message) {
+  const method = message?.method ?? '', params = message?.params;
+  if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') return params?.targetInfo?.type === 'page';
+  if (method === 'Page.frameNavigated') return !params?.frame?.parentId;
+  return ['Target.targetDestroyed', 'Target.detachedFromTarget', 'Inspector.detached', 'Chariox.browserDisconnected'].includes(method);
+}
