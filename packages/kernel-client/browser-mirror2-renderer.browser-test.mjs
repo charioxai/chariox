@@ -1266,6 +1266,19 @@ test('MP-08/MP-10/MP-11 native-held continuations defer repeated layout and reta
  }finally{await cdp.detach();await page.close()}
 });
 
+// MP-08/MP-10: a visible image the page never loads (DuckDuckGo results favicons) holds the
+// handover only briefly; the native preview must not stay up for the whole visit.
+test('MP-08/MP-10 an undelivered visible image stops holding the handover after a bound',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));
+  await page.evaluate(()=>window.r.holdForHandover());
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'element',tag:'img',attrs:{width:'20',height:'20'},res:'r1'}])),document_id:'new',sequence:2});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'a fresh document waits for its visible image');
+  await page.waitForTimeout(3200);
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'the image never arrives: hand over without it');
+ }finally{await page.close()}
+});
+
 // MP-08/MP-10/MP-11: diagnose an actual held-page seam without logging content.
 test('MP-08/MP-10/MP-11 handover reports a visible resource blocker without exposing its identity',async()=>{
  const page=await viewer();try{

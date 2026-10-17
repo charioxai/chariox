@@ -15,6 +15,7 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
+const IMAGE_HOLD_MS = 3000 // handover wait for a visible image's bytes (readyForHandover)
 const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
 const DELETIONS: Record<string, string[]> = {
   deleteContentBackward: ['Backspace'], deleteContentForward: ['Delete'], deleteWordBackward: ['Ctrl+Backspace'], deleteWordForward: ['Ctrl+Delete'],
@@ -618,6 +619,7 @@ export class BrowserMirror2Renderer {
   handover(focus = false): void { this.navigation.release(); this.setInteractive(true, focus); this.navigationPaint() }
   // MP-08/MP-10/MP-11: fixed reasons only, no node/resource identities.
   private handoverStage = ''
+  private documentAt = 0
   private nativeFontFailures = new Set<string>()
   private nativeFontFailureKey = '[]'
   private fontRequirements = new Map<string, string[] | null>()
@@ -632,7 +634,8 @@ export class BrowserMirror2Renderer {
     const doc = this.doc, documentId = this.documentId, proofSequence = this.sequence
     if (!doc || !this.navigation.readyToPresent) { this.handoverDiagnostic('wait_content'); return false }
     if (this.slices.size) { this.handoverDiagnostic('wait_slices'); return false }
-    for (const [id, record] of this.records) {
+    // An image the page never loads (failed or never fetched) holds the switch only briefly.
+    if (performance.now() - this.documentAt < IMAGE_HOLD_MS) for (const [id, record] of this.records) {
       if (!record.res || this.resources.has(record.res)) continue
       const element = this.dom.get(id) as Element | undefined
       const box = element?.nodeType === 1 ? element.getBoundingClientRect() : null
@@ -746,6 +749,7 @@ export class BrowserMirror2Renderer {
       mark('apply_present')
       this.navigationPaint()
       this.frame.inert = !this.interactive
+      if (packet.document_id !== this.documentId) this.documentAt = performance.now()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
       this.kernelFocus = packet.focused
