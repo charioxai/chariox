@@ -211,7 +211,11 @@ export { losslessRegion } from './kernel-browser-pixels.mjs';
 export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
 
 export class DisplayStream {
-  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {} } = {}) {
+  // L3 stage 2b is parked: every lease end costs a key frame (adoptLease invalidates the
+  // codec chain) and a retire storm ends leases about twice a second on real pages, so
+  // leased frames ran ~26 % larger with no CPU gain. Production never passes `leases`.
+  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {}, leases = false } = {}) {
+    this.leases = leases;
     this.pixels=new PixelWorker();Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
     this.sequence = 0; this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null;
     this.refillAt = now(); this.tokens = 0;
@@ -448,7 +452,7 @@ export class DisplayStream {
     if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
-    if(offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
+    if(this.leases&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
       const {key,sequence,native_packet,...template}=packet;
       packet[directLease]=()=>{
         if(!offer.current()||!currentBinding())return null;

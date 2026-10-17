@@ -64,10 +64,10 @@ test('MP-11 every retire event writes the retire pipe synchronously and spends t
  assert.deepEqual(killed,['SIGKILL']);assert.equal(d.closed,true);
 });
 
-function stream(kind){
+function stream(kind,leases=true){
  const retired=[];
  const encoder={close:async()=>{},nativeSession:'motion',nativeRetireState:e=>retired.push(e)};
- const s=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder,now:()=>0,wait:async()=>{}});
+ const s=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder,now:()=>0,wait:async()=>{},leases});
  if(kind)s.regionTarget={kind};
  return {s,retired};
 }
@@ -120,4 +120,12 @@ test('L3 a retire storm neither re-arms nor grants until the retires have been q
  assert.ok(r.bridge.arm(record),'quiet long enough: the next frame arms again');
  r.bridge.ended(r.bridge.auto.generation);
  assert.equal(r.bridge.arm(record),null,'a refused grant counts as a retire');
+});
+
+test('L3 Node offers no lease unless leases are enabled (parked: every lease end costs a key frame)',async()=>{
+ const {s}=stream(undefined,false);const granted=[];
+ try{
+  const first=await s.frame(source(offer(granted),true,true),'d',0);
+  assert.equal(first[directLease],undefined);assert.deepEqual(granted,[]);
+ }finally{await s.close()}
 });
