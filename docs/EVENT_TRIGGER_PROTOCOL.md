@@ -302,6 +302,11 @@ Management protocol version 4 adds the reusable-connection lifecycle contract:
   returns a fresh inspection;
 - `POST /v1/connections/test-event` asks the provider adapter to construct an authentic
   test occurrence and sends it through the normal AEGS-to-AEDS delivery path;
+- `POST /v1/events/query` lists the webhooks the generator stored for an owner (delivery
+  ID, event type, filter metadata, received/published times, status, attempts, last
+  error; never the prompt or reply context) and `POST /v1/events/replay` publishes one
+  of them to AEDS again with a fresh attempt budget. AEDS dedupes on the occurrence ID,
+  so replaying an event it already holds changes nothing;
 - existing authorization, connection query, resource paging, reconnect, revoke, and
   subscription-reconcile endpoints remain the corresponding begin-install,
   installation-status, resource-discovery, reconnect, disconnect, and reconcile
