@@ -41,6 +41,9 @@ const DEFLATE_MIN_BYTES = 512;
 // first snapshot waits for its first contentful paint (bounded), so viewers keep the
 // previous page instead of a white, half-parsed one.
 const PAINT_HOLD_MS = 2500;
+// A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
+// (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
+const BUSY_RENDERER_MS = 25_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
@@ -162,38 +165,38 @@ export class Mirror2 {
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? ops : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
-  async world(tab, stream) {
+  async world(tab, stream, patience) {
     const targetAt = timestamp();
     const cached = this.host.browser.currentPageFrame?.(tab.target_id);
     const { connection, sessionId } = cached ?? await this.host.browser.resolvePageTarget(tab.target_id);
-    const frameTree = cached ? { frame: cached.frame } : (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
+    const frameTree = cached ? { frame: cached.frame } : (await connection.send('Page.getFrameTree', {}, sessionId, { timeoutMs: patience?.() })).frameTree;
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
     this.host.timing?.('mirror2_world_target', targetAt);
     const installAt = timestamp();
     const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
-      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId);
+      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId, { timeoutMs: patience?.() });
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
     this.host.timing?.('mirror2_world_install', installAt);
     const out = { connection, sessionId, contextId: world.contextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
     const cssAt = timestamp();
-    await this.watchCss(out, frameTree.frame.id, stream.id);
+    await this.watchCss(out, frameTree.frame.id, stream.id, patience);
     this.host.timing?.('mirror2_world_css', cssAt);
     return out;
   }
-  async watchCss(world, frameId, streamId) {
-    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000");
+  async watchCss(world, frameId, streamId, patience) {
+    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000", false, patience?.());
     world.holdInitialPaint = large;
     const cssAt = timestamp();
     // Activation re-reads sheet owners; ordinary pages need not await resource
     // bodies in DOM.enable/CSS.enable before their first sanitized snapshot.
     this.css.watch(world, frameId, streamId).then(() => this.host.timing?.('mirror2_css_ready', cssAt), () => { world.cssFailed = true; });
   }
-  async evaluate(world, expression, awaitPromise = false) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
+  async evaluate(world, expression, awaitPromise = false, timeoutMs) {
+    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
@@ -221,8 +224,8 @@ export class Mirror2 {
   // Registered Vault targets are marked by node identity in the observer's world.
   // Fields the kernel filled from the Vault, by node identity: top-level refs
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
-  async protectTargets(world, tab, policy, prefix = '') {
-    await this.evaluate(world, `${world.ref}.resetTargets()`);
+  async protectTargets(world, tab, policy, prefix = '', patience) {
+    await this.evaluate(world, `${world.ref}.resetTargets()`, false, patience?.());
     for (const target of policy.targets) {
       if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
       if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;
@@ -292,9 +295,32 @@ export class Mirror2 {
   }
   // Credits that arrived before this point stop waiting (their hurry count is older).
   hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
-  async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
+  // The viewer keeps its native preview of a document until the DOM mirror can be built. This reset only says "still preparing".
+  previewPacket(stream, command, scope, tabId, documentId, started) {
+    if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
+    const sequence = ++stream.issued;
+    stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
+    const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
+      document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
+      snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tabId) ?? 1,
+      scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
+    this.remember(stream, sequence, packet, true);
+    this.host.timing?.('mirror2_navigation_preview', started);
+    return packet;
+  }
+  // A renderer that stays busy past the bounded wait is not an observer verdict: while a native preview covers the document
+  // the viewer is told to keep waiting (the credit stays on this subscription) instead of being sent to a video fallback.
+  async packet(stream, command, scope, signal, deadline, hurry) {
+    try { return await this.build(stream, command, scope, signal, deadline, hurry); }
+    catch (error) {
+      if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
+      return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
+    }
+  }
+  async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
+    const patience = () => Math.max(1000, BUSY_RENDERER_MS - (timestamp() - started));
     this.service.require(command.subscription_id, scope, command.generation);
     // MP-08/MP-10: between packets the page session's navigation events keep the document current, so an
     // unchanged document reuses its world without renderer round trips (a busy page answers those only after
@@ -306,18 +332,9 @@ export class Mirror2 {
     // It is an ordinary protected display, never a raster in the mirror packet.
     const previousDocument = stream.document_id ?? stream.initialDocument;
     if (stream.navigationPreview && previousDocument && stream.previewDocument !== tab.document_id && previousDocument !== tab.document_id) {
-      if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
       stream.previewDocument = tab.document_id;
       this.regions.retireStream(stream);
-      const sequence = ++stream.issued;
-      stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
-      const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation,
-        document_id: tab.document_id, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
-        snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1,
-        scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
-      this.remember(stream, sequence, packet, true);
-      this.host.timing?.('mirror2_navigation_preview', started);
-      return packet;
+      return this.previewPacket(stream, command, scope, tab.tab_id, tab.document_id, started);
     }
     if(stream.navigationPreview&&stream.previewDocument===tab.document_id&&stream.document_id!==tab.document_id&&stream.previewWaitedDocument!==tab.document_id){
       const previewAt=timestamp(),document=tab.document_id;
@@ -327,7 +344,7 @@ export class Mirror2 {
       stream.previewWaitedDocument=document;this.host.timing?.('mirror2_preview_wait',previewAt);
     }
     const browser = this.host.browser;
-    const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
+    const world = kept?.world ?? await this.world(tab, stream, patience), policy = this.host.protection;
     stream.world = world;
     if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');
     mark('world');
@@ -343,7 +360,8 @@ export class Mirror2 {
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
-    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    // A document the native preview already covers needs no hold: the viewer keeps the preview until its own handover gate.
+    if (stream.previewDocument !== tab.document_id && (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint)) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
@@ -368,9 +386,9 @@ export class Mirror2 {
         stream.resetAt = stream.issued + 1;
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
-        await this.protectTargets(world, tab, policy);
+        await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
+        const snap = await this.evaluate(world, `${world.ref}.snapshot()`, false, patience());
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -443,6 +461,9 @@ export class Mirror2 {
       }
     } catch (error) {
       assertDocument();
+      // A renderer that does not answer is busy, not an observer verdict: no video fallback and no further renderer fence.
+      // Whatever it was asked may still run, so the next credit rebuilds the snapshot.
+      if (error?.code === 'browser_cdp_timeout') { stream.resetAt = stream.issued + 1; throw error; }
       await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
       // Over-budget/unavailable DOM: the client shows the protected video path.
       fallback = error.mirrorReason ?? 'observer_unavailable';

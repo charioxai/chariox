@@ -718,3 +718,23 @@ test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view)
  assert.equal(handoff.reset,true);assert.equal(handoff.document_id,'D1');
  assert(!handoff.nodes&&!handoff.root&&!handoff.tiles,'the handoff carries no partial DOM or stills');
 });
+
+test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',previewWaitedDocument:'new',issued:6,document_id:'old',resetAt:7};
+ const host={generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let busy=true;
+ mirror.world=async()=>{if(busy)throw Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});throw Error('observer reached')};
+ const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');
+ assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'new');assert.equal(packet.reset,true);assert.equal(packet.sequence,7);
+ const again=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:7},'scope');
+ assert.equal(again.sequence,8,'each busy round is one more waiting reset on the same subscription');
+ busy=false;
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:8},'scope'),/observer reached/);
+});
+
+test('MP-08/MP-10/MP-11 a busy renderer without a native preview still surfaces its timeout',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',issued:6,document_id:'old',resetAt:7};
+ const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
+ mirror.world=async()=>{throw Object.assign(Error('timed out'),{code:'browser_cdp_timeout'})};
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),error=>error.code==='browser_cdp_timeout');
+});
