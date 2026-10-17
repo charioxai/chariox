@@ -740,3 +740,79 @@ async fn review976r3_unavailable_room_preserves_current_context_without_replay()
 async fn review976r3_unavailable_room_preserves_workflow_instructions_without_replay() {
     assert_home_handoff_scenario(false, false, false, false, Some(false), true).await;
 }
+
+#[tokio::test]
+async fn a_profile_change_on_a_recreated_lease_replays_home_history_again() {
+    // The worker builds a provider switch's handoff from its own history,
+    // which on a recreated lease starts at the refresh. The home replays.
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("rearm-workspace", "rearm-worktree"))
+        .unwrap();
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
+        worker_machine_id: "rearm-machine".into(),
+        execution_lease_id: "recreated-lease".into(),
+        leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.into(),
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION),
+    };
+    app.agents.bind_remote_execution(agent.id(), binding.clone()).unwrap();
+    app.append_history_entry(
+        session.id(),
+        crate::history::SessionHistoryEntry::user_prompt(
+            session.id(),
+            "home-attachment",
+            agent.id(),
+            "earlier accepted task",
+        ),
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let history = &runtime.owned.operational_history_store;
+    history
+        .mark_remote_lease_context_pending(session.id(), agent.id(), &binding)
+        .unwrap();
+    let context = |prompt_id: &str| {
+        let current = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+        runtime
+            .owned
+            .remote_prompt_hidden_context(
+                &current,
+                CANCELLATION_GUARD_LEASED_AGENT_ID,
+                prompt_id,
+                "existing context",
+                false,
+                false,
+            )
+            .unwrap()
+    };
+    assert!(context("first").contains("earlier accepted task"));
+    history
+        .clear_remote_lease_context_if_replayed(
+            session.id(),
+            agent.id(),
+            CANCELLATION_GUARD_WORKER_ID,
+            CANCELLATION_GUARD_LEASED_AGENT_ID,
+            "first",
+        )
+        .unwrap();
+    assert_eq!(context("second"), "existing context");
+    runtime
+        .owned
+        .commit_remote_agent_profile_update(
+            session.id(),
+            agent.id(),
+            agent.provider().to_string(),
+            agent.provider_account_profile().to_string(),
+            Some("switched-model".into()),
+            None,
+        )
+        .unwrap();
+    assert!(
+        context("third").contains("earlier accepted task"),
+        "the switched provider session must receive the home conversation"
+    );
+}

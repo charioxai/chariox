@@ -12,6 +12,11 @@ pub(super) fn migrate(connection: &rusqlite::Connection) -> Result<(), DaemonErr
         session_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         worker_kernel_id TEXT NOT NULL, execution_lease_id TEXT NOT NULL,
         leased_agent_id TEXT NOT NULL, replay_prompt_id TEXT, PRIMARY KEY (session_id, agent_id)
+    );
+    CREATE TABLE IF NOT EXISTS remote_lease_recreated (
+        session_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+        worker_kernel_id TEXT NOT NULL, execution_lease_id TEXT NOT NULL,
+        leased_agent_id TEXT NOT NULL, PRIMARY KEY (session_id, agent_id)
     )",
         )
         .map_err(|error| history_error("migrate remote lease context", error))?;
@@ -53,6 +58,53 @@ impl OperationalHistoryStore {
                 ],
             )
             .map_err(|error| history_error("mark remote lease context", error))?;
+        connection
+            .execute(
+                "INSERT INTO remote_lease_recreated (session_id, agent_id, worker_kernel_id, execution_lease_id, leased_agent_id) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT (session_id, agent_id) DO UPDATE SET
+            worker_kernel_id = excluded.worker_kernel_id,
+            execution_lease_id = excluded.execution_lease_id,
+            leased_agent_id = excluded.leased_agent_id",
+                params![
+                    session_id,
+                    agent_id,
+                    binding.worker_kernel_id,
+                    binding.execution_lease_id,
+                    binding.leased_agent_id
+                ],
+            )
+            .map_err(|error| history_error("mark remote lease context", error))?;
+        Ok(())
+    }
+
+    /// A recreated lease's worker history starts at its recreation, so every
+    /// new provider session on it needs the home conversation again.
+    pub(crate) fn rearm_recreated_remote_lease_context(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        binding: &RemoteAgentBinding,
+    ) -> Result<(), DaemonError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| history_error("rearm remote lease context", "history lock poisoned"))?;
+        connection
+            .execute(
+                "INSERT INTO remote_lease_context_pending (session_id, agent_id, worker_kernel_id, execution_lease_id, leased_agent_id)
+            SELECT session_id, agent_id, worker_kernel_id, execution_lease_id, leased_agent_id FROM remote_lease_recreated
+            WHERE session_id = ?1 AND agent_id = ?2 AND worker_kernel_id = ?3
+            AND execution_lease_id = ?4 AND leased_agent_id = ?5
+            ON CONFLICT (session_id, agent_id) DO UPDATE SET replay_prompt_id = NULL",
+                params![
+                    session_id,
+                    agent_id,
+                    binding.worker_kernel_id,
+                    binding.execution_lease_id,
+                    binding.leased_agent_id
+                ],
+            )
+            .map_err(|error| history_error("rearm remote lease context", error))?;
         Ok(())
     }
 

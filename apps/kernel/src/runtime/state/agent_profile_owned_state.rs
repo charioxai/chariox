@@ -384,6 +384,14 @@ impl KernelRuntimeOwnedState {
             }
         }
         let source_account = self.agent_profile_source_account(&agent);
+        if let Some(binding) = agent.remote_execution().filter(|_| {
+            agent.provider() != provider
+                || source_account != account_profile
+                || agent.model() != model.as_deref()
+        }) {
+            self.operational_history_store
+                .rearm_recreated_remote_lease_context(session_id, agent_id, binding)?;
+        }
         let resume_state = agent.provider_resume_state().after_profile_change(
             agent.provider(),
             &source_account,

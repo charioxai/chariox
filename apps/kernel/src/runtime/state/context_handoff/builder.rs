@@ -18,7 +18,8 @@ const RECENT_TAIL_TURNS: usize = 3;
 const MAX_RECENT_ASSISTANT_BYTES: usize = 3_000;
 const HANDOFF_OPEN: &str = "<chariox_context_handoff>";
 const HANDOFF_CLOSE: &str = "</chariox_context_handoff>";
-const HANDOFF_PREAMBLE: &str = "Kernel history after a provider switch: background, not a new request. Decode prior bodies' JSON escapes to recover exact lines and spacing. Copy named values and proposals verbatim from original turns; only explicit user changes revise them.";
+const HANDOFF_LEAD: &str = "Kernel history after a provider switch: background, not a new request.";
+const HANDOFF_COPY_RULES: &str = "Decode prior bodies' JSON escapes to recover exact lines and spacing. Copy named values and proposals verbatim from original turns; only explicit user changes revise them.";
 const BRIEF_HEADER: &str =
     "Handoff brief (written by a model from the conversation; turn excerpts below may be shortened):\n";
 const FACTS_HEADER: &str = "Recorded by the Chariox kernel:\n";
@@ -168,9 +169,16 @@ impl AgentConversation {
     /// turns give way first, then the facts, the latest turn's details and the
     /// brief; `None` when not even the frame fits.
     pub(super) fn render(&self, max_bytes: usize) -> Option<String> {
+        self.render_framed(
+            max_bytes,
+            &format!("{HANDOFF_OPEN}\n{HANDOFF_LEAD} {HANDOFF_COPY_RULES}\n\n"),
+        )
+    }
+
+    fn render_framed(&self, max_bytes: usize, open: &str) -> Option<String> {
         let (brief, facts) = (self.brief.as_deref(), self.facts.render(max_bytes));
         let (latest, prior) = self.turns.split_last()?;
-        let mut packet = format!("{HANDOFF_OPEN}\n{HANDOFF_PREAMBLE}\n\n");
+        let mut packet = open.to_string();
         let mut room = max_bytes.checked_sub(packet.len() + HANDOFF_CLOSE.len())?;
         let section = |header: &str, text: String, room: &mut usize| {
             if !text.is_empty() {
@@ -221,134 +229,20 @@ impl AgentConversation {
     }
 }
 
-// MP-08 / MP-10 / MP-11: additive bounded rendering for recreated leases.
-// Keep the main branch's local profile-switch builder contract unchanged.
+// MP-08 / MP-10 / MP-11: a recreated worker lease receives the same packet a
+// provider switch carries, in the frame the worker's native fitter recognizes.
 pub(super) fn build_recreated_lease_context(
     events: &[HistoryEvent],
     prompt_id: &str,
     max_bytes: usize,
 ) -> Option<String> {
-    let mut sorted = events.to_vec();
-    sorted.sort_by_key(|event| event.sequence);
-    let mut turns = collect_turns(&sorted);
-    if turns
-        .last()
-        .is_some_and(|turn| turn.prompt_id.as_deref() == Some(prompt_id))
-    {
-        if turns.last().is_some_and(|turn| turn.has_provider_attempt) {
-            turns.last_mut()?.user_prompt.clear();
-        } else {
-            turns.pop();
-        }
-    }
-    let latest = turns.pop()?;
-    const OPEN: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
-    const CLOSE: &str = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
-    const LATEST: &str = "Latest turn:\n";
-    const PRIOR: &str = "Prior turns:\n";
-    let mut room = max_bytes.checked_sub(OPEN.len() + CLOSE.len() + LATEST.len())?;
-    let latest_text = format_recreated_latest_turn(&latest, room.min(6_500));
-    if latest_text.trim().is_empty() {
-        return None;
-    }
-    room -= latest_text.len();
-    let prior_text = format_recreated_prior_turns(&turns, room.saturating_sub(PRIOR.len() + 2));
-    let mut packet = OPEN.to_string();
-    if !prior_text.is_empty() {
-        packet.push_str(PRIOR);
-        packet.push_str(&prior_text);
-        packet.push_str("\n\n");
-    }
-    packet.push_str(LATEST);
-    packet.push_str(&latest_text);
-    packet.push_str(CLOSE);
-    Some(packet)
-}
-
-fn format_recreated_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
-    let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
-        return String::new();
-    };
-    let users = turns
-        .iter()
-        .map(|turn| {
-            format!(
-                "- User: {}",
-                single_line(&truncate_bytes(&turn.user_prompt, 1_000))
-            )
-        })
-        .collect::<Vec<_>>();
-    let answers = turns
-        .iter()
-        .map(|turn| {
-            // MP-08 / MP-10 / MP-11: a title and its explanation remain separate
-            // lines; flattening them can change an assistant-only fact.
-            let answer = truncate_bytes(&turn.assistant_outputs.join("\n"), 600)
-                .lines()
-                .map(single_line)
-                .collect::<Vec<_>>()
-                .join("\n    ");
-            (!answer.is_empty()).then(|| format!("  Assistant: {answer}"))
-        })
-        .collect::<Vec<_>>();
-    let mut first = turns.len();
-    while first > 0 && users[first - 1].len() < room {
-        first -= 1;
-        room -= users[first].len() + 1;
-    }
-    let mut answered_from = turns.len();
-    while answered_from > first {
-        let cost = answers[answered_from - 1]
-            .as_ref()
-            .map_or(0, |answer| answer.len() + 1);
-        if cost > room {
-            break;
-        }
-        answered_from -= 1;
-        room -= cost;
-    }
-
-    let mut lines = Vec::new();
-    if first > 0 {
-        lines.push(omitted_turns_line(first));
-    }
-    for (index, (user, answer)) in users.into_iter().zip(answers).enumerate().skip(first) {
-        lines.push(user);
-        lines.extend(answer.filter(|_| index >= answered_from));
-    }
-    lines.join("\n")
-}
-
-fn format_recreated_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
-    let mut lines = Vec::new();
-    if turn.user_prompt.is_empty() {
-        lines.push("- Interrupted attempt of the current request:".to_string());
-    } else {
-        lines.push(format!(
-            "- User: {}",
-            truncate_bytes(turn.user_prompt.trim(), 1_500)
-        ));
-    }
-    let assistant = truncate_bytes(&turn.assistant_outputs.join("\n"), 1_500 * 2);
-    if !assistant.trim().is_empty() {
-        lines.push(format!("- Assistant output: {}", assistant.trim()));
-    }
-    let details = truncate_bytes(
-        &turn
-            .latest_details
-            .iter()
-            .map(|(_, line)| line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        1_500 * 2,
+    let open = format!(
+        "{}{HANDOFF_COPY_RULES}\n\n",
+        crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN
     );
-    if !details.trim().is_empty() {
-        lines.push(format!(
-            "- Latest-turn tool/status/error details:\n{}",
-            details.trim()
-        ));
-    }
-    truncate_bytes(&lines.join("\n"), max_bytes)
+    AgentConversation::from_events(events)
+        .before_prompt(prompt_id)
+        .render_framed(max_bytes, &open)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1492,5 +1386,29 @@ mod tests {
         assert!(packet.contains("amber-kestrel"));
         assert!(packet.contains("assistant fact: native continuity"));
         assert!(packet.len() <= 24_000);
+    }
+
+    #[test]
+    fn recreated_lease_keeps_every_record_a_provider_switch_keeps() {
+        // A worker restart must not shorten what the next provider reads: the
+        // records past an early turn's excerpt survive as in a provider switch.
+        let seed = format!("{}blocked: Mac executor unavailable", "Audit seed line. ".repeat(80));
+        let answer = format!("{}proposal: one binding refresh", "Reviewed. ".repeat(90));
+        let mut events = vec![
+            user_event(1, "session", "agent", &seed),
+            output_event(2, "session", "agent", "old-run", &answer),
+        ];
+        for index in 0..6 {
+            events.push(user_event(3 + index * 2, "session", "agent", &format!("Step {index}")));
+            events.push(output_event(4 + index * 2, "session", "agent", "old-run", "Done."));
+        }
+        let packet = build_recreated_lease_context(&events, "current", 24_000).unwrap();
+        let switch = AgentConversation::from_events(&events).render(24_000).unwrap();
+        for record in ["blocked: Mac executor unavailable", "proposal: one binding refresh"] {
+            assert!(switch.contains(record));
+            assert!(packet.contains(record), "{record} lost after lease recreation");
+        }
+        assert!(packet.starts_with(crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN));
+        assert!(packet.ends_with(crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE));
     }
 }
