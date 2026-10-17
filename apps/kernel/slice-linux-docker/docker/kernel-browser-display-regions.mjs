@@ -7,6 +7,7 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {NativeWindowRegionCapture} from './kernel-browser-window-region.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {inputHostTab} from './kernel-browser-input.mjs';
+import {markDispatched} from './kernel-browser-input-queue.mjs';
 
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
@@ -143,6 +144,6 @@ export async function regionInput(host,command,scope,signal) {
    dispatched=true;
    host.inputEpochs.set(tab.tab_id,(host.inputEpochs.get(tab.tab_id)??0)+1);host.inputChangedAt.set(tab.tab_id,performance.now());stream.regionSource.wake();return beginDispatch();
   }}))); }
- catch(error){if(dispatched||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
+ catch(error){if(dispatched)markDispatched(error);if(dispatched||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
  return host.observe(await host.reconcile(),null,scope);
 }

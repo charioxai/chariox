@@ -360,6 +360,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-input-queue.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-macos.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-observer.mjs \

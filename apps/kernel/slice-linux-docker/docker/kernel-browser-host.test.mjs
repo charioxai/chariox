@@ -1895,3 +1895,27 @@ test("MP-08/MP-10 a Tab's own read uses the document the page session named and 
   assert.deepEqual([live.document_id, calls], ["LIVE", ["Page.getFrameTree", "Target.getTargetInfo"]]);
   assert.deepEqual(saved, ["HOME", "LIVE"]);
 });
+
+test('MP-08/MP-10/MP-11 viewer input waits in order while the busy renderer cannot answer the fences',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;
+ let busy=true;const before=connection.beforeSend;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Runtime.evaluate')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const text=input=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
+ const first=await host.request(text({kind:'text',text:'a'}));
+ const second=await host.request(text({kind:'text',text:'b'}));
+ assert.ok(first&&second,'a busy renderer is not an error for the person');
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0,'nothing reaches the page before the fences pass');
+ busy=false;
+ for(let n=0;n<200&&sent.filter(x=>x.method==='Input.insertText').length<2;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a','b']);
+ connection.beforeSend=before;
+}));
+
+test('MP-08/MP-10/MP-11 viewer input that may have been dispatched is never parked or replayed',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let attempts=0;connection.beforeSend=async(method)=>{if(method==='Input.insertText'){attempts++;throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})}};
+ await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}}),error=>error.code==='browser_cdp_timeout');
+ await new Promise(r=>setTimeout(r,50));
+ assert.equal(attempts,1);
+}));

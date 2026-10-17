@@ -26,6 +26,7 @@ import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
+import { BusyInputQueue, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
 import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
@@ -80,6 +81,7 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
+    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.observe(this.tabState(), null, command.observed_by ?? "adapter"), { event: name => this.timing(`busy_${name}`, timestamp()) });
     this.chromium = chromium;
     // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
     this.chromeWindows = new ChromeWindows(this,{inventory:(display,pid,isCurrent)=>nativeWindowInventory({display,pid,isCurrent})});
@@ -614,7 +616,12 @@ export class KernelBrowserHost {
     for (const id of observed.keys()) if (!this.tabs.has(id)) observed.delete(id);
     return result;
   }
-  async request(command, { signal, inputGuard, nativeDisplay } = {}) {
+  // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
+  request(command, options) {
+    return command.op === "input" && !command._agent_input && !command.focused_agent
+      ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options);
+  }
+  async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
@@ -800,6 +807,7 @@ export class KernelBrowserHost {
         this.timing('cdp_input', at);
       }
       catch (error) {
+        if (dispatched) markDispatched(error);
         if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.

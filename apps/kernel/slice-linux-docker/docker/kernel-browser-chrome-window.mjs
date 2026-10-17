@@ -7,6 +7,7 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {markDispatched} from './kernel-browser-input-queue.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
 // the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
@@ -543,7 +544,7 @@ export class InputArbiter {
     const dispatched = async action => {
       let done;
       const finishUi = ['browser_chrome', 'browser_auxiliary'].includes(source?.surface) ? this.windows.uiInput?.() : null;
-      try { onDispatch?.(); done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      try { onDispatch?.(); done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw markDispatched(error); }
       finally { finishUi?.(); }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
