@@ -53,7 +53,7 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
   }
   // The full app takes ~100 ms of synchronous mounting. Draw the kernel's bundled history first,
   // read-only, then mount; nothing here waits on anything the attach has not already delivered.
-  const history = !cached && session && result.bootstrap.deferred?.historyIsBundled ? await result.bootstrap.deferred.attachedHistory : null
+  const history = session && result.bootstrap.deferred?.historyIsBundled ? await result.bootstrap.deferred.attachedHistory : null
   if (disposed) return
   if (history && session && history.sessionId === session.id) {
    const entries = history.historyEntries.filter(entry => !entry.hidden).slice(-previewEntryLimit)
@@ -70,7 +70,7 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
-   <Show when={props.view.cached()} fallback={<Show when={preview()} fallback={<text content={failure()??'Connecting…'} />}>{value=><CachedTranscript view={value()} requests={value().requests}/>}</Show>}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>
+   <Show when={preview()} fallback={<Show when={props.view.cached()} fallback={<text content={failure()??'Connecting…'} />}>{view=><CachedTranscript view={view()} title="Reconnecting — previous view"/>}</Show>}>{value=><CachedTranscript view={value()} requests={value().requests}/>}</Show>
   </box></Show>
  </box>
 }

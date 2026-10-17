@@ -64,3 +64,33 @@ test("a history that is not bundled in the attach reply is not waited for", asyn
     assert.equal(mounted, true)
   } finally { harness.renderer.destroy(); view.finish() }
 })
+
+test("fresh attach history replaces a stale cached view before the full app mounts", async () => {
+  mounted = false
+  const cachedView = { scope: { owner: "o", kernel: "k" }, sessionId: "s3", agentId: "agent-1", alias: "demo", sequence: 1, savedAt: 1, entries: [entry(0, "assistant", "CACHED_STALE_ROW")] }
+  const view = { cached: () => cachedView, finish() {}, onClientReady() {} }
+  const session = { id: "s3", alias: "demo", agents: [{ id: "agent-1" }] }
+  const pending = Promise.resolve({
+    kind: "ready",
+    bootstrap: {
+      binding: { session },
+      client: { requestStats: () => ({ count: 1, kinds: {}, timeline: [] }) },
+      deferred: {
+        historyIsBundled: true,
+        attachedHistory: Promise.resolve({ sessionId: "s3", visibleAgentId: "agent-1", agentEntries: {}, historyEntries: [entry(0, "assistant", "FRESH_KERNEL_ROW")], promptHistoryEntries: [], nextHistoryCursor: null }),
+      },
+    },
+  })
+  const harness = await testRender(() => createComponent(CliCachedStartup, { pending: pending as never, view: view as never }), { width: 80, height: 20, useThread: false })
+  const frames: Array<{ mounted: boolean; text: string }> = []
+  harness.renderer.addPostProcessFn(() => { frames.push({ mounted, text: harness.captureCharFrame() }) })
+  try {
+    for (let attempt = 0; attempt < 40 && !frames.some(frame => frame.text.includes("FRESH_KERNEL_ROW")); attempt++) {
+      await harness.renderOnce()
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const firstShown = frames.findIndex(frame => frame.text.includes("FRESH_KERNEL_ROW"))
+    assert.ok(firstShown > 0, "the fresh attach history was never drawn")
+    assert.equal(frames[firstShown - 1]!.mounted, false, "the app mounted before the fresh history frame")
+  } finally { harness.renderer.destroy() }
+})
