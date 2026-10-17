@@ -21,6 +21,21 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let timing = if matches!(
+            &request,
+            RelayPeerRequest::RoomSharedDisplay {
+                command: crate::transport::room_shared_display::RoomDisplayCommand::Resume {}
+                    | crate::transport::room_shared_display::RoomDisplayCommand::ResumeAttach {},
+                ..
+            }
+        ) {
+            super::room_shared_display::timing::ResumeTiming::start()
+        } else {
+            None
+        };
+        if let Some(timing) = &timing {
+            timing.mark("peer_entered");
+        }
         // All Room display/observation routes share worker revocation admission.
         let slice_id = match &request {
             RelayPeerRequest::RoomBrowserController {
@@ -37,8 +52,16 @@ impl KernelRuntimeState {
         if let Some(slice_id) = slice_id {
             self.settle_slice_observation_revocations(slice_id).await?;
         }
-        self.send_room_slice_peer_request_unchecked(config, target, request, timeout)
-            .await
+        if let Some(timing) = &timing {
+            timing.mark("revocations_ready");
+        }
+        let result = self
+            .send_room_slice_peer_request_unchecked(config, target, request, timeout)
+            .await;
+        if let Some(timing) = &timing {
+            timing.mark("relay_returned");
+        }
+        result
     }
 
     pub(super) async fn send_room_slice_peer_request_unchecked(

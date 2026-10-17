@@ -1,6 +1,7 @@
 //! MP-08/MP-10/MP-11: home owns leases; worker owns the exact Room producer.
 #[cfg(test)]
 mod admission_tests;
+pub(super) mod timing;
 mod worker;
 use super::*;
 use crate::runtime::command::KernelCaller;
@@ -358,8 +359,22 @@ impl KernelRuntimeState {
         generation: u64,
         command: RoomDisplayCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        let timing = if matches!(
+            &command,
+            RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
+        ) {
+            timing::ResumeTiming::start()
+        } else {
+            None
+        };
+        if let Some(timing) = &timing {
+            timing.mark("entered");
+        }
         let lease = self.home_display_lease(id)?;
         let mut lease = lease.lock().await;
+        if let Some(timing) = &timing {
+            timing.mark("lease_acquired");
+        }
         if lease.binding.generation != generation || lease.used.elapsed() >= Duration::from_secs(60)
         {
             return Err(error());
@@ -378,16 +393,21 @@ impl KernelRuntimeState {
             )
             .await?;
         guard.release_queue();
+        if let Some(timing) = &timing {
+            timing.mark("admitted");
+        }
         if matches!(
             command,
             RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
         ) {
             let attach = matches!(command, RoomDisplayCommand::ResumeAttach {});
-            return serde_json::to_value(
-                self.resume_room_display(&mut lease, id, &slice, attach)
-                    .await?,
-            )
-            .map_err(|_| error());
+            let resumed = self
+                .resume_room_display(&mut lease, id, &slice, attach)
+                .await;
+            if let Some(timing) = &timing {
+                timing.mark("peer_returned");
+            }
+            return serde_json::to_value(resumed?).map_err(|_| error());
         }
         let close = matches!(command, RoomDisplayCommand::Close {});
         let result = self
