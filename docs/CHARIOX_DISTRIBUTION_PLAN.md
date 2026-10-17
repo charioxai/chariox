@@ -29,6 +29,24 @@ codesigned runtime inventory (#681).
 | Signed App runtime | native artifact, launcher, sandbox, SDK bundle | `runtime/` |
 | Linux installer | `deploy/local-linux`, `deploy/release-bundle/install.sh` | `deploy/`, `install.sh` |
 | Slice build context | Committed runtime source roots and Dockerfile inputs | `share/chariox/slice-build-context/` |
+| Slice image (Linux) | The image built from that context: `docker save` archive, gzip, and `slice-image.json` | `share/chariox/slice-image/` |
+
+**The slice image (Linux).** A first slice start used to compile the kernel and relay and
+install the apt, Node and Selkies stages on the user's machine (about 30 minutes). The
+`slice-image` release job now builds the image from the exported slice build context with
+`provision-linux-docker-slice.sh build-image`, and `scripts/slice-image-archive.mjs export`
+writes `chariox-slice-linux.tar.gz` and `slice-image.json` (runtime-source and protocol
+labels, root filesystem layer digests, archive size and SHA-256). `release-bundle.mjs
+assemble --slice-image` puts both in the signed manifest, so `install.sh` verifies them like
+every other file and installs them to `/usr/lib/chariox/slice-image`, beside the build
+context. The provisioner finds `../slice-image` next to its context, checks the descriptor
+against the context's runtime-source revision and protocol, verifies the archive digest,
+runs `docker load`, checks the loaded layers against the descriptor and tags the image. A
+release install never falls back to a local build: a missing, foreign or altered image
+fails with the step to take. Source and development checkouts have no `slice-image`
+directory and keep building locally. Where the archive is hosted (inside the bundle, or a
+registry or download that the signed descriptor still pins by digest) does not change the
+provisioner.
 
 **The CLI/TUI executable.** `compile.mjs` embeds:
 - the Bun runtime;
@@ -57,6 +75,7 @@ chariox-<version>-<platform>/
   libexec/             chariox-app-runtime-install, chariox-app-storage (Linux)
   runtime/             the signed App runtime release, unchanged
   share/chariox/slice-build-context/  committed inputs used to build slice images
+  share/chariox/slice-image/          Linux only: prebuilt slice image archive and descriptor
   deploy/              Linux only: local-linux/ installer and the units it installs
   install.sh           Linux only: checked root install step
   LICENSE

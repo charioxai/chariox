@@ -122,7 +122,7 @@ for user in "${users[@]}"; do args+=(--user "$user"); done
 "$stage/deploy/local-linux/install-root.sh" "${args[@]}" --bin "$stage/libexec" --runtime "$stage/runtime" \
   --runtime-key "$runtime_key" --runtime-digest "$runtime_digest" "${dry_run[@]}"
 
-# install_tree SOURCE DESTINATION: replaces DESTINATION with SOURCE, root-owned, in one rename.
+# install_tree SOURCE DESTINATION: replaces DESTINATION with the staged, already verified SOURCE, in one rename.
 install_tree() {
   local source=$1 destination=$2
   if [[ ${#dry_run[@]} -gt 0 ]]; then
@@ -133,7 +133,7 @@ install_tree() {
     say "install $destination"
     install -d -m 0755 -o 0 -g 0 /usr/lib/chariox
     rm -rf -- "$destination.chariox-new" "$destination.chariox-old"
-    cp -R -- "$source" "$destination.chariox-new"
+    mv -- "$source" "$destination.chariox-new" # the staged copy is disposable; the slice image is too large to copy again
     if [[ -e "$destination" || -L "$destination" ]]; then mv -- "$destination" "$destination.chariox-old"; fi
     mv -- "$destination.chariox-new" "$destination"
     rm -rf -- "$destination.chariox-old"
