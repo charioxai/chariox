@@ -651,6 +651,24 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
 });
 
+test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight do not reset again', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,resetAt:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=after=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms:0},'scope');
+ const first=await credit(0);await credit(first.sequence);
+ stream.resetAt=stream.issued+1;const reset=await credit(2);assert.equal(reset.reset,true);
+ // The large reset is still crossing the link: the viewer's credits keep naming the base before it.
+ for(let i=0;i<12;i++)assert.notEqual((await credit(reset.sequence-1)).reset,true,`credit ${i} rebuilt the page while its reset was in flight`);
+ assert.equal(snapshots,2,'no reset storm');
+ assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
+});
+
 test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view) hands the page to video on the next quiet packet', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
