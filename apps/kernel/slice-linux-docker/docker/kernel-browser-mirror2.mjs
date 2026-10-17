@@ -238,7 +238,7 @@ export class Mirror2 {
    * for its first credit; that credit takes the packet in flight instead of starting one. */
   begin(stream, scope, generation) {
     const early = this.next(stream, { subscription_id: stream.id, generation, after_sequence: 0, wait_ms: 0 }, scope);
-    stream.early = early;
+    stream.early = early; stream.earlyPolicy = this.host.protection;
     early.catch(() => { if (stream.early === early) stream.early = null; });
   }
   async next(stream, command, scope, { signal } = {}) {
@@ -263,6 +263,8 @@ export class Mirror2 {
     const resend = command.resend === true && command.after_sequence > 0;
     const lost = this.lost(stream, command, scope, resend);
     if (lost) return lost;
+    // MP-11: a packet built before a protection change never reaches the viewer.
+    if (stream.early && stream.earlyPolicy !== this.host.protection) stream.early = null;
     if (stream.early && command.after_sequence === 0 && command.resend === undefined) {
       const run = stream.early; stream.early = null;
       if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); }

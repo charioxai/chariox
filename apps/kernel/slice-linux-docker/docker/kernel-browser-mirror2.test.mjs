@@ -609,3 +609,21 @@ for(const reply of ['evicted','delta','rejected'])test('MP-08/MP-10/MP-11 naviga
  assert(!calls.includes('Page.getFrameTree'),'the ordered navigation event already proves retirement; no renderer query');
  assert.equal(refused?.code,'stale_document_reference');
 });
+
+test('MP-11 #1016 review 2: a completed early packet is retired when protection changes before the first credit', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const service={streams:new Map([['s',stream]]),require:()=>stream};
+ const mirror=new Mirror2({host,...service});let field='old secret',snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ mirror.begin(stream,'scope',1);
+ await stream.early;assert.equal(snapshots,1,'the early packet was really built');
+ host.protection={targets:[],values:['old secret']};stream.policy=null;stream.resources.clear();field='[protected]';
+ const packet=await mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:0,wait_ms:0},'scope');
+ assert.equal(snapshots,2,'the first credit after a protection change builds under the new policy');
+ assert(!JSON.stringify(packet).includes('old secret'),'no pre-update form data reaches the viewer');
+});
