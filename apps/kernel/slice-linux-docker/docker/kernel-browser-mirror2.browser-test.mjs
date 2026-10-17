@@ -1451,3 +1451,21 @@ test("GATE-bytes: a first paint sends only the used rules of large sheets; their
     for (let i = 0; i < 8 && !(later.includes("a-unused-1999") && later.includes("b-unused-1999")); i++) later += JSON.stringify(await next(1000));
     assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
   }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
+
+// Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
+test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
+  '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {
+    const first = await next(); assert(!first.fallback); assert(first.nodes.length < 4096);
+    const moved = elements(first).find(([, , attrs]) => attrs.id === 'moved')?.[0]; assert(moved, 'the paragraph is in the prefix');
+    await evaluate("document.querySelector('#destination').append(document.querySelector('#moved'));true");
+    let section = null, restored = false;
+    for (let n = 0; n < 300 && !restored; n++) {
+      const packet = await next(200); assert.notEqual(packet.reset, true);
+      for (const op of packet.ops) {
+        if (op.op !== 'children') continue;
+        let id = 0; for (const row of op.nodes) { id += row[0]; if (row[2] === 'section' && row[3]?.id === 'destination') section = `n${id}`; }
+        if (section && op.id === section && (op.children.includes(moved) || op.nodes.some(row => row[2] === 0 && row[3] === 'Move me'))) restored = true;
+      }
+    }
+    assert(section, 'the continuation reaches the section'); assert(restored, 'the moved paragraph is mirrored under its new parent');
+  }));

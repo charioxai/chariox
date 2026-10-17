@@ -394,7 +394,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           if (nodes.get(id) !== node || kindOf.get(id) !== kind) return;
           if (seen.has(child)) continue;
           seen.add(child); more = true;
-          if (child.parentNode !== node || mirrored(child) || node.nodeType === 9 && child.nodeType !== 1) continue;
+          if (child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
+          // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
+          const existing = mirrored(child);
+          if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
           yield* serializeTree(child, id, depth + 1);
         }
       }
