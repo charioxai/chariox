@@ -363,7 +363,8 @@ impl BrowserControllerProcessStdioBackend {
         }
         // L3: native workers this controller spawns hand whole frames straight to the pump.
         let direct_frames = match &display_packets {
-            Some(packets) => Some(display_frames::DirectFrames::listen(packets.clone())?),
+            // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
+            Some(packets) => display_frames::DirectFrames::listen(packets.clone()).ok(),
             None => None,
         };
         if let Some(frames) = &direct_frames {

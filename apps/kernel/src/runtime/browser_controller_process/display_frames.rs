@@ -21,6 +21,9 @@ pub(crate) struct DirectFrames {
     packets: Arc<DisplayPackets>,
     controller: AtomicU32,
     links: Mutex<HashMap<String, Arc<Link>>>,
+    accept: Mutex<Option<std::thread::JoinHandle<()>>>,
+    #[cfg(test)]
+    listener: i32,
 }
 
 pub(crate) struct Link {
@@ -52,7 +55,12 @@ pub(crate) enum Next {
 }
 
 impl DirectFrames {
+    /// Linux only: admission needs the peer's credentials. Elsewhere there is no
+    /// channel and Node publishes every frame.
     pub(super) fn listen(packets: Arc<DisplayPackets>) -> Result<Arc<Self>, String> {
+        if !cfg!(target_os = "linux") {
+            return Err("MP-11: native frame channel unavailable".into());
+        }
         let path = packets.root().join("frames.sock");
         let listener = UnixListener::bind(&path).map_err(|_| "MP-11: native frame channel")?;
         let frames = Arc::new(Self {
@@ -60,9 +68,12 @@ impl DirectFrames {
             packets,
             controller: AtomicU32::new(0),
             links: Mutex::new(HashMap::new()),
+            accept: Mutex::new(None),
+            #[cfg(test)]
+            listener: std::os::fd::AsRawFd::as_raw_fd(&listener),
         });
         let weak = Arc::downgrade(&frames);
-        std::thread::spawn(move || {
+        let accept = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Some(frames) = weak.upgrade() else { return };
                 if let Ok(stream) = stream {
@@ -70,6 +81,7 @@ impl DirectFrames {
                 }
             }
         });
+        *frames.accept.lock().unwrap_or_else(|e| e.into_inner()) = Some(accept);
         Ok(frames)
     }
 
@@ -324,12 +336,24 @@ impl Link {
 }
 
 impl Drop for DirectFrames {
+    /// Wake the accept loop (it then finds no channel and closes the listener) and join it.
     fn drop(&mut self) {
+        let _ = UnixStream::connect(&self.path);
         let _ = std::fs::remove_file(&self.path);
+        let accept = self.accept.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(accept) = accept.filter(|a| a.thread().id() != std::thread::current().id()) {
+            let _ = accept.join();
+        }
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn peer_parent(_: &UnixStream) -> Option<u32> {
+    None
+}
+
 /// MP-11: the connecting process's parent, from the kernel's own socket credentials.
+#[cfg(target_os = "linux")]
 fn peer_parent(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
     let mut credentials = libc::ucred {
@@ -367,6 +391,19 @@ mod tests {
         let packets = Arc::new(DisplayPackets::create().unwrap());
         let frames = DirectFrames::listen(packets.clone()).unwrap();
         (frames, packets)
+    }
+
+    // A stopped controller leaves no listener thread or socket descriptor behind.
+    #[test]
+    fn dropping_the_channel_closes_its_listener() {
+        let socket = |fd: i32| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
+        for _ in 0..3 {
+            let (frames, _packets) = channel();
+            let (fd, open) = (frames.listener, socket(frames.listener));
+            assert!(open.as_ref().is_some_and(|l| l.to_string_lossy().starts_with("socket:")));
+            drop(frames);
+            assert_ne!(socket(fd), open, "the listener's socket is closed (its fd may be reused)");
+        }
     }
 
     fn connect(frames: &DirectFrames, token: &str) -> UnixStream {
