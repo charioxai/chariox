@@ -8,7 +8,7 @@ function installMirrorObserver(initialStyles = {}) {
   // MP-10: what changed between two reads. A node whose style inputs did not change keeps its previous
   // style instead of enumerating ~360 computed properties again (that was most of a read).
   const touchedAttributes = new Set(), touchedContent = new Set(), styleCache = new WeakMap(), epochs = new WeakMap();
-  let sheetGeneration = 0, touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set()], wasAnimated = new Set(), controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
+  let sheetGeneration = 0, touchedAll = false, roots = [document], hot = [new Set(),new Set(),new Set(),new Set()], wasAnimated = new Set(), controls = new Map(), tiles = new Set(), sheetKey = '', sheets = null, fullAt = -Infinity;
   const touch = records => {
     for(const record of records) {
       if(touchedAttributes.size+touchedContent.size>4096){touchedAll=true;return;}
@@ -20,43 +20,64 @@ function installMirrorObserver(initialStyles = {}) {
   };
   // Stylesheets are read once per shape: a sheet added, removed, disabled or given a rule, or a new viewport.
   // `plain` = cached styles can be trusted (every sheet readable, no @scope/@starting-style); `structural` = some selector reaches siblings, so a change also restyles the siblings after
-  // it; `has` = compounds that host a :has() (a change below them restyles them; `hasSibling`: or beside them); `reach[hover, active, focus]` =
-  // compounds that carry that state in front of a descendant or sibling (the user-agent rules for those states,
-  // and selectors ending in the state, only ever restyle the element itself).
+  // it; `has` = compounds that host a :has() (a change below them restyles them; `hasSibling`: or beside them); `subject[hover, active, focus]` =
+  // compounds that carry that state in some author selector: when such an element changes state it is restyled with
+  // its subtree (descendants inherit from it). Other elements are restyled for the user-agent's own state rules only.
   const sheetShape = () => {
     let key=`${innerWidth}x${innerHeight}@${devicePixelRatio}`;
     for(const root of roots){key+='|';try{for(const sheet of [...root.styleSheets,...root.adoptedStyleSheets])key+=`${sheet.disabled?'-':''}${sheet.cssRules.length},`;}catch{key+='?';}}
     return key;
   };
-  const states=[/:hover/g,/:active/g,/:(?:focus(?:-within|-visible)?|target)\b/g], hasGroup=/:has\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g;
-  // The compounds of every selector in a list (top-level combinators only).
+  const states=[/:hover/g,/:active/g,/:(?:focus-visible|focus(?!-within)|target)\b/g,/:focus-within/g], hasGroup=/:has\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g;
+  // The compounds of every selector in a list (top-level combinators only), each with the combinator before it.
   const compoundsOf = text => {
-    const selectors=[[]];let current='',depth=0,bracket=0,quote='';
-    const flush=()=>{if(current)selectors.at(-1).push(current);current='';};
+    const selectors=[[]];let current='',separator='',depth=0,bracket=0,quote='';
+    const flush=()=>{if(current)selectors.at(-1).push({text:current,separator});if(current)separator='';current='';};
     for(const c of text) {
       if(quote){current+=c;if(c===quote)quote='';continue;}
       if(c==='"'||c==="'"){quote=c;current+=c;continue;}
       if(c==='(')depth++;else if(c===')')depth--;else if(c==='[')bracket++;else if(c===']')bracket--;
-      if(!depth&&!bracket&&c===','){flush();selectors.push([]);}
-      else if(!depth&&!bracket&&/[\s>+~]/.test(c))flush();
+      if(!depth&&!bracket&&c===','){flush();selectors.push([]);separator='';}
+      else if(!depth&&!bracket&&/[\s>+~]/.test(c)){flush();separator+=c;}
       else current+=c;
     }
     flush();
     return selectors;
   };
   const scanSheets = () => {
-    const found={plain:true,structural:false,hasSibling:false,has:[],reach:[[],[],[]],selectors:null,fonts:[]};
+    const found={plain:true,structural:false,hasSibling:false,has:[],subject:[[],[],[],[]],selectors:null,fonts:[]};
     let count=0;
+    // A state inside :not() is dropped with the whole :not(): removing a constraint there would narrow the match.
+    const withoutNegations=text=>{
+      let out='',at=0;
+      for(let open=text.indexOf(':not(');open>=0;open=text.indexOf(':not(',at)) {
+        let depth=0,end=open+4;
+        do{depth+=text[end]==='('?1:text[end]===')'?-1:0;end++;}while(depth>0&&end<text.length);
+        out+=text.slice(at,open)+(/:(?:hover|active|focus|target)/.test(text.slice(open,end))?'':text.slice(open,end));
+        at=end;
+      }
+      return out+text.slice(at);
+    };
+    const tidy=text=>{for(let pass=0;pass<4;pass++)text=text.replaceAll(/\(\s*,\s*/g,'(').replaceAll(/\s*,\s*(?=\))/g,'').replaceAll(/,\s*,/g,',').replaceAll(/:[\w-]+\(\s*\)/g,'');return text;};
     const analyze=text=>{
       if(/:has\(\s*[+~]/.test(text))found.hasSibling=true;
-      for(const compounds of compoundsOf(text))compounds.forEach((compound,index)=>{
-        // Whatever is inside parentheses (:not(:hover), :is(...)) cannot be told apart from the compound: all of it.
+      const bare=/:(?:hover|active|focus(?:-within|-visible)?|target)\b/g;
+      for(const compounds of compoundsOf(text))compounds.forEach(({text:raw},index)=>{
+        // States inside a :has() argument are covered by restyling the :has() host. Whatever is inside other parentheses
+        // (:is(a:hover), :not(:hover)) cannot be told apart from the compound: all of it.
+        const compound=raw.replaceAll(hasGroup,'');
         const top=compound.replaceAll(/\([^()]*\)/g,'').replaceAll(/\([^()]*\)/g,'');
-        const base=compound.replaceAll(hasGroup,'').replace(/:(?:hover|active|focus(?:-within|-visible)?|target)\b/g,'')||'*';
-        if(/:has\(/.test(compound))found.has.push(/:has\b/.test(top)?base:'*');
+        // The elements that can carry the state or host the :has(): the selector up to this compound, state removed.
+        const clean=part=>tidy(withoutNegations(part.replaceAll(hasGroup,'')).replaceAll(bare,''))||'*';
+        const base=compounds.slice(0,index+1).map(({text:part,separator})=>separator+clean(part)).join('').trim();
+        if(/:has\(/.test(raw))found.has.push(/:has\b/.test(raw.replaceAll(/\([^()]*\)/g,'').replaceAll(/\([^()]*\)/g,''))?base:'*');
         states.forEach((state,kind)=>{
-          const nested=compound.match(state)?.length!==top.match(state)?.length;
-          if(compound.match(state)&&(nested||index<compounds.length-1))found.reach[kind].push(nested?'*':base);
+          if(!compound.match(state))return;
+          // The state sits in a functional pseudo-class: the element is still this compound's, unless the group reaches
+          // another element through a combinator.
+          if(compound.match(state).length===(top.match(state)?.length??0))return found.subject[kind].push(base);
+          const reaches=(compound.match(/\([^()]*\)/g)??[]).some(group=>group.match(state)&&group.slice(1,-1).split(',').some(alternative=>/[>+~]|\S\s+\S/.test(alternative.trim())));
+          found.subject[kind].push(reaches?'*':base);
         });
       });
     };
@@ -76,7 +97,7 @@ function installMirrorObserver(initialStyles = {}) {
     const parses=base=>{try{document.createDocumentFragment().querySelector(base);return true;}catch{return false;}};
     const valid=base=>{if(parses(base))return base;const wide=base.replaceAll(/:[\w-]+\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g,'').replaceAll(/:[\w-]+\(\)/g,'')||'*';return parses(wide)?wide:'*';};
     const list=bases=>bases.length?[...new Set(bases.map(valid))].join(','):null;
-    found.has=list(found.has);found.reach=found.reach.map(list);
+    found.has=list(found.has);found.subject=found.subject.map(list);
     // MP-08/MP-10/MP-11: exact same-read CSS sharing for plain leaf paragraphs.
     // Same parent, tag, raw attributes, box size and complete selector match set
     // imply the same author cascade + inheritance. Uninspectable/grouped/nested/
@@ -139,13 +160,16 @@ function installMirrorObserver(initialStyles = {}) {
     // previous read, provided the sheets, the viewport and the node's box are unchanged and nothing animates.
     const now=performance.now(),lastFull=fullAt,key=sheetShape(),shaped=key===sheetKey;fullAt=-Infinity;
     if(!shaped){sheets=scanSheets();sheetKey=key;}
-    const hovered=new Set(),pressed=new Set(),focusing=new Set(),dirtyDeep=new Set(),dirtySelf=new Set();
+    const hovered=new Set(),pressed=new Set(),focusing=new Set(),within=new Set(),dirtyDeep=new Set(),dirtySelf=new Set();
     for(const root of roots) {
       for(const node of pointer.get(root)?.hover??[])if(node.isConnected)hovered.add(node);
       for(const node of pointer.get(root)?.active??[])if(node.isConnected)pressed.add(node);
-      try{for(const node of root.querySelectorAll(':focus,:focus-within,:focus-visible,:target'))focusing.add(node);}catch{}
+      try{
+        for(const node of root.querySelectorAll(':focus,:focus-visible,:target'))focusing.add(node);
+        if(sheets.subject[3])for(const node of root.querySelectorAll(':focus-within'))within.add(node);
+      }catch{}
     }
-    const hotNow=[hovered,pressed,focusing];
+    const hotNow=[hovered,pressed,focusing,within];
     for(const tile of tiles)if([...touchedAttributes,...touchedContent].some(node=>tile.contains(node)))epochs.set(tile,(epochs.get(tile)??0)+1);
     // Whatever animates is restyled every read (and once more when it stops); an animation without an element target is unknowable.
     const animations=roots.flatMap(root=>root.getAnimations()).filter(animation=>!animation.effect||animation.effect.getKeyframes().some(frame=>Object.keys(frame).some(key=>!['offset','easing','composite','computedOffset'].includes(key)))),animated=new Set(animations.map(animation=>animation.effect?.target));
@@ -170,13 +194,25 @@ function installMirrorObserver(initialStyles = {}) {
         // :has(+ x) / :has(~ x): the hosts are preceding siblings of the changed node or of one of its ancestors.
         if(sheets.hasSibling)for(let ancestor=node;ancestor;ancestor=ancestor.parentElement)for(let before=ancestor.previousElementSibling;before;before=before.previousElementSibling)if(++scanned<=2000&&before.matches(sheets.has))restyle(before,true);
       };
-      // Reached = something below or after the node can depend on its state.
-      const reaches=(kind,node)=>{try{return Boolean(sheets.reach[kind])&&node.matches(sheets.reach[kind]);}catch{return true;}};
+      // What a node changing state restyles: 2 = itself and its subtree (an author rule uses the state on it, or the
+      // user-agent colours a pressed link), 1 = itself (the user-agent's rules for focus, and for form controls),
+      // 0 = nothing (ancestors of the pointer that no rule asks about).
+      const uaControls = 'input,select,textarea,button,summary,option,optgroup,details,video,audio,label,fieldset';
+      const effect=(kind,node)=>{
+        try{
+          if(sheets.subject[kind]&&node.matches(sheets.subject[kind]))return 2;
+          if(kind===2)return 1;
+          if(kind===3)return 0;
+          return kind===1&&node.matches('a,area')?2:node.matches(uaControls)?1:0;
+        }catch{return 2;}
+      };
       for(const node of touchedAttributes)if(node.isConnected)mark(node,true);
       for(const node of touchedContent)if(node.isConnected)mark(node,sheets.structural);
       hotNow.forEach((now,kind)=>{
-        for(const node of now)if(!hot[kind].has(node))mark(node,reaches(kind,node));
-        for(const node of hot[kind])if(!now.has(node)&&node.isConnected)mark(node,reaches(kind,node));
+        for(const node of [...now].filter(node=>!hot[kind].has(node)).concat([...hot[kind]].filter(node=>!now.has(node)&&node.isConnected))) {
+          const reach=effect(kind,node);
+          if(reach)mark(node,reach===2);
+        }
       });
       for(const node of [...animated,...lastAnimated])if(node?.isConnected)restyle(node,true,false);
       for(const [node,was] of controls)if(node.isConnected&&controlState(node)!==was)mark(node,true);

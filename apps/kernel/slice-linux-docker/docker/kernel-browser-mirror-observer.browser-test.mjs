@@ -219,6 +219,22 @@ test('animated elements are restyled each read, everything else keeps its style'
   await matchesFreshRead(animated, async (w, settle) => { await w.evaluate('document.getAnimations()[0].currentTime=60000'); await settle(); await w.evaluate('document.getAnimations()[0].cancel()'); });
 });
 
+test('an author rule on the hovered element reaches the descendants that inherit from it', options, async () => {
+  const inherit = `${page}<style>.row2:hover{color:#c00}.row2:active{color:#0a0}</style><div class=row2 id=row2 style="padding:10px">r<span id=kid>kid</span><span id=kid2>kid2</span></div><a href="#x" id=lnk><span id=lnks>link</span></a>`;
+  const view = w => w.evaluate("row2.scrollIntoView({block:'center'})");
+  await matchesFreshRead(inherit, async w => { await view(w); await w.hover('#kid'); });
+  await matchesFreshRead(inherit, async (w, settle) => { await view(w); await w.hover('#kid'); await settle(); await w.move(700, 500); });
+  await matchesFreshRead(inherit, async (w, settle) => { await view(w); await w.hover('#kid'); await w.press('#kid', 'mousePressed'); await settle(); await w.press('#kid', 'mouseReleased'); });
+  // The user-agent colours a pressed link, and its descendants inherit it.
+  await matchesFreshRead(inherit, async w => { await view(w); await w.press('#lnks', 'mousePressed'); });
+});
+
+test('focus-within on an ancestor restyles it and what inherits from it', options, async () => {
+  const within = `${page}<style>.fw:focus-within{color:#c00}</style><div class=fw id=fw><input id=fwi><span id=fws>fws</span></div>`;
+  await matchesFreshRead(within, w => w.evaluate('fwi.focus()'));
+  await matchesFreshRead(within, async (w, settle) => { await w.evaluate('fwi.focus()'); await settle(); await w.evaluate('fwi.blur()'); });
+});
+
 test('hover reaches a subtree only where an author selector puts :hover in front of descendants', options, async () => {
   const menu = `${page}<style>.menu{padding:0 0 30px}.menu:hover .sub{color:#c00}.menu:hover{outline:1px solid #c00}</style><div class=menu id=menu>m<span class=sub id=sub>s</span></div>`;
   const first = await (await open(menu)).read();
