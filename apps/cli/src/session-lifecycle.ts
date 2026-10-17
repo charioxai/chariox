@@ -126,11 +126,39 @@ type SessionLifecycleDeps = {
   ) => void
 }
 
+type SessionReference = Pick<RuntimeSession, "id"> & Partial<RuntimeSession>
+
+// MP-08 / MP-10 OWNER-24: session selection is one state machine. Starting a
+// selection takes the view and the selection guard at once and supersedes every
+// older selection. Each async step of a selection applies only while its
+// generation is current, and kernel attachment changes run one selection at a time.
+type SelectionState =
+  | { kind: "idle" }
+  | { kind: "switching" | "restoring"; generation: number }
+
+export type SessionSelection = {
+  current: () => boolean
+  attach: (session: SessionReference, createdSession?: boolean, launch?: LaunchSelection) => Promise<void>
+  settle: () => Promise<void>
+}
+
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
-  let pendingAttachment: RuntimeAttachment | null = null
-  // Advances whenever the view changes owner, so a slower restore can tell it
-  // has been superseded and must not apply its state.
+  let selection: SelectionState = { kind: "idle" }
   let selectionGeneration = 0
+  // The previous attachment, moved aside while a selection loads: shown again
+  // if the selection fails, detached by the selection that replaces it.
+  let retained: RuntimeAttachment | null = null
+  let kernelWork: Promise<unknown> = Promise.resolve()
+  const serialized = <T>(work: () => Promise<T>) => {
+    const result = kernelWork.then(work)
+    kernelWork = result.catch(() => {})
+    return result
+  }
+  const supersedeSelection = () => {
+    selectionGeneration += 1
+    selection = { kind: "idle" }
+  }
+  const isSessionSelecting = () => selection.kind !== "idle"
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
@@ -162,7 +190,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   const transitionToNoSession = async (message = "No session attached.") => {
-    selectionGeneration += 1
+    supersedeSelection()
     const nextDetachedState = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
       waitingRoomState: deps.waitingRoomState(),
@@ -206,28 +234,39 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.requestRender()
   }
 
-  // A switch moves the live attachment aside while the new view loads; cleanup
-  // and later selections must still see it.
-  const currentAttachment = () => deps.attachmentState() ?? pendingAttachment
+  // Cleanup must still see an attachment a pending selection moved aside.
+  const currentAttachment = () => deps.attachmentState() ?? retained
+
+  // A removed attachment is already detached. Keep real transport and
+  // admission failures visible instead of preventing the next selection.
+  const detachAttachment = async (attachment: RuntimeAttachment) => {
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      if (!formatError(error).includes(`attachment \`${attachment.id}\` was not found`)) {
+        throw error
+      }
+    }
+  }
+
+  const detachQuietly = async (attachment: RuntimeAttachment, message: string) => {
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      deps.logWarning?.(message, { attachment_id: attachment.id, error: formatError(error) })
+    }
+  }
 
   const detachCurrentAttachment = async () => {
     const attachment = currentAttachment()
     if (!attachment) {
       return
     }
-    try {
-      await deps.detachAttachment(attachment.id)
-    } catch (error) {
-      // A removed attachment is already detached. Keep real transport and
-      // admission failures visible instead of preventing the next selection.
-      if (!formatError(error).includes(`attachment \`${attachment.id}\` was not found`)) {
-        throw error
-      }
-    }
+    await detachAttachment(attachment)
     if (deps.attachmentState()?.id === attachment.id) {
       deps.setAttachmentState(null)
     }
-    if (pendingAttachment?.id === attachment.id) pendingAttachment = null
+    if (retained?.id === attachment.id) retained = null
   }
 
   const rollbackAttachedSession = async (
@@ -251,19 +290,17 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     return true
   }
 
-  // The previous attachment survived a failed selection: show it again.
-  const restorePendingAttachment = async (generation: number) => {
-    const attachment = pendingAttachment
+  // Restoring: the previous attachment survived a failed selection; show it again.
+  const restoreRetained = async (current: () => boolean) => {
+    const attachment = retained
     if (!attachment) return
-    // The attachment stays pending until restored, so a newer selection still
-    // detaches it; this restore then only has to stop applying state.
-    const superseded = () => generation !== selectionGeneration
     try {
       const session = await deps.getSessionState(attachment.session_id)
-      if (superseded()) return
+      if (!current()) return
+      retained = null
       applyAttachedState(session, attachment, false)
       const run = session.active_provider_run_id ? await deps.tryGetProviderRun(session.active_provider_run_id) : null
-      if (superseded()) return
+      if (!current()) return
       deps.setProviderRunState(run)
       if (run) {
         deps.syncCliProviderSelection({
@@ -274,43 +311,38 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
       deps.bumpHistoryLoadGeneration()
       const hydrated = await deps.hydrateAttachedSessionBinding(session.id, attachment.id, session)
-      if (superseded()) return
+      if (!current()) return
       applyAttachedState(hydrated, attachment, false)
-      pendingAttachment = null
       await deps.syncKernelEventSubscription?.()
     } catch (error) {
-      if (superseded()) return
-      pendingAttachment = null
-      try {
-        await deps.detachAttachment(attachment.id)
-      } catch (detachError) {
-        deps.logWarning?.("failed to detach the previous session after restore failed", {
-          attachment_id: attachment.id,
-          error: formatError(detachError),
-        })
-      }
-      if (superseded()) return
+      if (!current()) return
+      // Take it out of the view first, so no newer selection detaches it again.
+      if (retained?.id === attachment.id) retained = null
+      if (deps.attachmentState()?.id === attachment.id) deps.setAttachmentState(null)
+      await detachQuietly(attachment, "failed to detach the previous session after restore failed")
+      if (!current()) return
       await transitionToNoSession(`Could not restore the previous session: ${formatError(error)}`)
     }
-    if (superseded()) return
-    deps.setSessionHydratingState(false)
-    deps.requestRender()
   }
 
-  // Selecting a session hands the view to its placeholder at once. The returned
-  // settle callback runs when the selection ends, and undoes it on failure.
-  const prepareSessionSelection = (session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) => {
-    const previous = currentAttachment()
-    if (previous?.session_id === session.id) return
-    const generation = ++selectionGeneration
-    // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
-    // Move display ownership now, with no attachment or launch authority.
+  // Switching: hand the view to the selected session's placeholder at once.
+  const beginSessionSelection = (session: SessionReference): SessionSelection | null => {
+    const shown = deps.attachmentState()
+    if (shown?.session_id === session.id) return null
+    const previous = shown ?? retained
+    selectionGeneration += 1
+    const generation = selectionGeneration
+    const current = () => generation === selectionGeneration
+    selection = { kind: "switching", generation }
+    // The old attachment may take seconds to detach: move display ownership
+    // now, with no attachment or launch authority.
+    if (shown) retained = shown
     if (previous) {
-      pendingAttachment ??= previous
+      const label = `Loading session ${session.alias?.trim() || session.id}…`
       const pending = deps.deriveDetachedCliTransitionState({
         cliOptions: deps.cliOptions,
         waitingRoomState: deps.waitingRoomState(),
-        message: `Loading session ${session.alias?.trim() || session.id}…`,
+        message: label,
       })
       deps.setAttachmentState(null)
       deps.setProviderRunState(null)
@@ -329,226 +361,266 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       deps.setStreamingAgentId(null)
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
-      deps.setStatusLine(`Loading session ${session.alias?.trim() || session.id}…`)
+      deps.setStatusLine(label)
     }
-    // Hydrating also tells prompt submission that a selection is pending.
+    deps.clearPendingPromptAttachments()
+    deps.bumpHistoryLoadGeneration()
     deps.setSessionHydratingState(true)
     if (previous) {
       deps.updateSessionChrome()
       deps.requestRender()
     }
-    return async () => {
-      if (generation !== selectionGeneration || deps.attachmentState()) return
-      if (pendingAttachment) {
-        await restorePendingAttachment(generation)
-      } else if (previous) {
-        await transitionToNoSession("Could not open the selected session.")
-      } else {
+    return {
+      current,
+      attach: (target, createdSession = false, launch) => serialized(async () => {
+        if (!current()) return
+        try {
+          await attachSelected(current, target, createdSession, launch)
+        } catch (error) {
+          if (current()) throw error
+        }
+      }),
+      // Ends the selection: a selection that left nothing attached restores the
+      // previous attachment, or falls back to the waiting room.
+      settle: () => serialized(async () => {
+        if (!current()) return
+        if (!deps.attachmentState() && retained) {
+          selection = { kind: "restoring", generation }
+          await restoreRetained(current)
+        } else if (!deps.attachmentState() && previous) {
+          await transitionToNoSession("Could not open the selected session.")
+        }
+        if (!current()) return
+        selection = { kind: "idle" }
         deps.setSessionHydratingState(false)
-      }
+        deps.requestRender()
+      }),
     }
   }
 
   const attachBinding = async (
-    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+    session: SessionReference,
+    createdSession: boolean,
+    launch?: LaunchSelection,
+  ) => {
+    const selected = beginSessionSelection(session)
+    if (!selected) return
+    try {
+      await selected.attach(session, createdSession, launch)
+    } finally {
+      await selected.settle()
+    }
+  }
+
+  const attachSelected = async (
+    current: () => boolean,
+    session: SessionReference,
     createdSession: boolean,
     launch: LaunchSelection = { provider: deps.cliOptions.provider ?? "opencode", model: deps.cliOptions.model, effort: deps.cliOptions.effort },
   ) => {
-    const previousAttachment = currentAttachment()
-    if (deps.attachmentState()?.session_id === session.id) {
-      return
+    // Selecting the session that was moved aside just restores it on settle.
+    if (retained?.session_id === session.id) return
+    const previous = retained
+    if (previous) {
+      await detachAttachment(previous)
+      if (retained?.id === previous.id) retained = null
+      if (!current()) return
     }
-    const settleSelection = prepareSessionSelection(session)
-    deps.clearPendingPromptAttachments()
-    deps.bumpHistoryLoadGeneration()
-    let sessionHydratingCleared = false
-    const clearSessionHydrating = () => {
-      if (sessionHydratingCleared) {
-        return
-      }
-      sessionHydratingCleared = true
-      deps.setSessionHydratingState(false)
+    const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
+    // Until the view holds it, the attachment belongs to this selection alone.
+    const disposeUnshown = async () => {
+      if (deps.attachmentState()?.id === attachment.id || retained?.id === attachment.id) return
+      await detachQuietly(attachment, "failed to detach a superseded session attachment")
     }
-    deps.setSessionHydratingState(true)
     try {
-      if (previousAttachment) {
-        try {
-          await deps.detachAttachment(previousAttachment.id)
-        } catch (error) {
-          if (!formatError(error).includes(`attachment \`${previousAttachment.id}\` was not found`)) throw error
-        }
-      }
-      if (pendingAttachment?.id === previousAttachment?.id) pendingAttachment = null
-      const attachment = await deps.attachToSession(session.id, deps.cliOptions.clientId)
+      await attachShown(current, session, attachment, createdSession, launch)
+    } catch (error) {
+      await disposeUnshown()
+      throw error
+    }
+    if (!current()) await disposeUnshown()
+  }
 
-      const provisionalSession = isCompleteSessionSnapshot(session)
-        ? session
-        : null
-      if (provisionalSession) {
-        applyAttachedState(provisionalSession, attachment, createdSession)
-      }
+  const attachShown = async (
+    current: () => boolean,
+    session: SessionReference,
+    attachment: RuntimeAttachment,
+    createdSession: boolean,
+    launch: LaunchSelection,
+  ) => {
+    if (!current()) return
 
-      let attachedSession = await deps.getSessionState(session.id)
+    const provisionalSession = isCompleteSessionSnapshot(session)
+      ? session
+      : null
+    if (provisionalSession) {
+      applyAttachedState(provisionalSession, attachment, createdSession)
+    }
 
-      applyAttachedState(attachedSession, attachment, createdSession)
+    let attachedSession = await deps.getSessionState(session.id)
+    if (!current()) return
 
-      try {
-        await deps.primeAttachedSessionBinding?.(attachedSession)
-      } catch (error) {
-        deps.logWarning?.("failed to prime attached session view", {
+    applyAttachedState(attachedSession, attachment, createdSession)
+
+    try {
+      await deps.primeAttachedSessionBinding?.(attachedSession)
+    } catch (error) {
+      deps.logWarning?.("failed to prime attached session view", {
+        session_id: session.id,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+    }
+    if (!current()) return
+    deps.setSessionHydratingState(false)
+
+    try {
+      await deps.syncKernelEventSubscription?.()
+    } catch (error) {
+      deps.logWarning?.("failed to synchronize kernel event subscription after attach", {
+        session_id: session.id,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+    }
+
+    if (!current()) return
+    let postHydrationStatusLine: string | null = null
+    const providerSettlement = await settleAttachProviderRun(
+      attachedSession,
+      launch,
+      deps.cliOptions.accountProfile,
+      createdSession,
+      {
+        launchProviderRun: deps.launchProviderRun,
+        getSessionState: deps.getSessionState,
+        tryGetProviderRun: deps.tryGetProviderRun,
+      },
+    )
+    attachedSession = providerSettlement.session
+    if (!current()) return
+    switch (providerSettlement.action) {
+      case "launched": {
+        deps.cliOptions.provider = providerSettlement.launch.provider
+        deps.cliOptions.model = providerSettlement.launch.model
+        deps.cliOptions.effort = providerSettlement.launch.effort
+        const run = providerSettlement.providerRun
+        deps.logAttachedProviderRun?.("launched", run, {
           session_id: session.id,
-          attachment_id: attachment.id,
-          error: formatError(error),
+          requested_model: providerSettlement.launch.model,
+          requested_variant: providerSettlement.launch.effort,
         })
+        deps.setProviderRunState(run)
+        deps.syncCliProviderSelection({
+          provider: run.provider,
+          model: run.model,
+          effort: run.variant ?? providerSettlement.launch.effort,
+        })
+        break
       }
-      clearSessionHydrating()
-
-      try {
-        await deps.syncKernelEventSubscription?.()
-      } catch (error) {
-        deps.logWarning?.("failed to synchronize kernel event subscription after attach", {
+      case "loaded": {
+        const run = providerSettlement.providerRun
+        deps.logAttachedProviderRun?.("loaded", run, {
           session_id: session.id,
-          attachment_id: attachment.id,
-          error: formatError(error),
+          requested_model: deps.cliOptions.model,
         })
-      }
-
-      let postHydrationStatusLine: string | null = null
-      const providerSettlement = await settleAttachProviderRun(
-        attachedSession,
-        launch,
-        deps.cliOptions.accountProfile,
-        createdSession,
-        {
-          launchProviderRun: deps.launchProviderRun,
-          getSessionState: deps.getSessionState,
-          tryGetProviderRun: deps.tryGetProviderRun,
-        },
-      )
-      attachedSession = providerSettlement.session
-      switch (providerSettlement.action) {
-        case "launched": {
-          deps.cliOptions.provider = providerSettlement.launch.provider
-          deps.cliOptions.model = providerSettlement.launch.model
-          deps.cliOptions.effort = providerSettlement.launch.effort
-          const run = providerSettlement.providerRun
-          deps.logAttachedProviderRun?.("launched", run, {
-            session_id: session.id,
-            requested_model: providerSettlement.launch.model,
-            requested_variant: providerSettlement.launch.effort,
-          })
-          deps.setProviderRunState(run)
+        deps.setProviderRunState(run)
+        if (run) {
           deps.syncCliProviderSelection({
             provider: run.provider,
             model: run.model,
-            effort: run.variant ?? providerSettlement.launch.effort,
+            effort: run.variant ?? deps.cliOptions.effort,
           })
-          break
         }
-        case "loaded": {
-          const run = providerSettlement.providerRun
-          deps.logAttachedProviderRun?.("loaded", run, {
+        break
+      }
+      case "skipped":
+        deps.cliOptions.provider = providerSettlement.launch.provider
+        deps.cliOptions.model = providerSettlement.launch.model
+        deps.cliOptions.effort = providerSettlement.launch.effort
+        if (providerSettlement.recoveredRemotePlacement) {
+          deps.logWarning?.("recovered attach-time provider launch after agent moved remote", {
             session_id: session.id,
-            requested_model: deps.cliOptions.model,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+            worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
           })
-          deps.setProviderRunState(run)
-          if (run) {
-            deps.syncCliProviderSelection({
-              provider: run.provider,
-              model: run.model,
-              effort: run.variant ?? deps.cliOptions.effort,
-            })
-          }
-          break
+        } else if (providerSettlement.reason === "no_visible_agents") {
+          deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+        } else if (providerSettlement.reason === "missing_focused_agent") {
+          deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
+            session_id: session.id,
+            focused_agent_id: attachedSession.focused_agent_id,
+          })
+        } else if (providerSettlement.reason === "remote_backed_agent") {
+          deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
+            session_id: session.id,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+            worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+          })
+        } else if (providerSettlement.reason === "credential_vault_locked") {
+          deps.logWarning?.("skipping attach-time provider launch because the credential vault is locked", {
+            session_id: session.id,
+            agent_id: providerSettlement.targetAgent?.id ?? null,
+          })
+          postHydrationStatusLine = "Chariox vault locked. Run /credential vault manage."
+          deps.setStatusLine(postHydrationStatusLine)
         }
-        case "skipped":
-          deps.cliOptions.provider = providerSettlement.launch.provider
-          deps.cliOptions.model = providerSettlement.launch.model
-          deps.cliOptions.effort = providerSettlement.launch.effort
-          if (providerSettlement.recoveredRemotePlacement) {
-            deps.logWarning?.("recovered attach-time provider launch after agent moved remote", {
-              session_id: session.id,
-              agent_id: providerSettlement.targetAgent?.id ?? null,
-              worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-            })
-          } else if (providerSettlement.reason === "no_visible_agents") {
-            deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
-              session_id: session.id,
-              focused_agent_id: attachedSession.focused_agent_id,
-            })
-          } else if (providerSettlement.reason === "missing_focused_agent") {
-            deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
-              session_id: session.id,
-              focused_agent_id: attachedSession.focused_agent_id,
-            })
-          } else if (providerSettlement.reason === "remote_backed_agent") {
-            deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
-              session_id: session.id,
-              agent_id: providerSettlement.targetAgent?.id ?? null,
-              worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-            })
-          } else if (providerSettlement.reason === "credential_vault_locked") {
-            deps.logWarning?.("skipping attach-time provider launch because the credential vault is locked", {
-              session_id: session.id,
-              agent_id: providerSettlement.targetAgent?.id ?? null,
-            })
-            postHydrationStatusLine = "Chariox vault locked. Run /credential vault manage."
-            deps.setStatusLine(postHydrationStatusLine)
-          }
-          deps.setProviderRunState(null)
-          break
-        default: {
-          const exhaustive: never = providerSettlement
-          throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
-        }
+        deps.setProviderRunState(null)
+        break
+      default: {
+        const exhaustive: never = providerSettlement
+        throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
       }
-
-      try {
-        deps.setProviderCatalogState(await deps.getProviderCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh provider catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
-      try {
-        deps.setTerminalCommandCatalogState(await deps.getTerminalCommandCatalog())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh terminal command catalog after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
-
-      deps.reconcileWaitingRoom(deps.waitingRoomState())
-
-      let hydratedSession = attachedSession
-      try {
-        hydratedSession = await deps.hydrateAttachedSessionBinding(
-          session.id,
-          attachment.id,
-          attachedSession,
-        )
-      } catch (error) {
-        deps.logWarning?.("failed to hydrate attached session after attach", {
-          session_id: session.id,
-          attachment_id: attachment.id,
-          error: formatError(error),
-        })
-      }
-
-      applyAttachedState(hydratedSession, attachment, createdSession)
-      if (postHydrationStatusLine) {
-        deps.setStatusLine(postHydrationStatusLine)
-      }
-
-      await refreshAttachedSessionRow(hydratedSession)
-
-      deps.scheduleShortViewportHistoryCheck()
-    } finally {
-      clearSessionHydrating()
-      await settleSelection?.()
     }
+
+    try {
+      deps.setProviderCatalogState(await deps.getProviderCatalog())
+    } catch (error) {
+      deps.logWarning?.("failed to refresh provider catalog after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+    try {
+      deps.setTerminalCommandCatalogState(await deps.getTerminalCommandCatalog())
+    } catch (error) {
+      deps.logWarning?.("failed to refresh terminal command catalog after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
+    }
+
+    if (!current()) return
+    deps.reconcileWaitingRoom(deps.waitingRoomState())
+
+    let hydratedSession = attachedSession
+    try {
+      hydratedSession = await deps.hydrateAttachedSessionBinding(
+        session.id,
+        attachment.id,
+        attachedSession,
+      )
+    } catch (error) {
+      deps.logWarning?.("failed to hydrate attached session after attach", {
+        session_id: session.id,
+        attachment_id: attachment.id,
+        error: formatError(error),
+      })
+    }
+
+    if (!current()) return
+    applyAttachedState(hydratedSession, attachment, createdSession)
+    if (postHydrationStatusLine) {
+      deps.setStatusLine(postHydrationStatusLine)
+    }
+
+    await refreshAttachedSessionRow(hydratedSession)
+    if (!current()) return
+
+    deps.scheduleShortViewportHistoryCheck()
   }
 
   const refreshAttachedSessionRow = async (session: RuntimeSession) => {
@@ -574,7 +646,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     currentAttachment,
     detachCurrentAttachment,
     rollbackAttachedSession,
-    prepareSessionSelection,
+    beginSessionSelection,
+    isSessionSelecting,
     attachBinding,
   }
 }

@@ -46,7 +46,7 @@ export type CliInputRoutingCompositionDeps = {
   appLogger: any
   formatError: AnyFn
   isAttached: AnyFn
-  sessionHydrating: AnyFn
+  isSessionSelecting: AnyFn
   sessionState: AnyFn
   recordPromptAreaHistoryEntry: AnyFn
   promptTextController: {
@@ -459,7 +459,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
     isAttached: deps.isAttached,
-    isSessionSelecting: deps.sessionHydrating,
+    isSessionSelecting: deps.isSessionSelecting,
     startSessionFromWaitingRoomDefaults: async () => {
       if (pendingProjectRenameId) {
         const projectId = pendingProjectRenameId

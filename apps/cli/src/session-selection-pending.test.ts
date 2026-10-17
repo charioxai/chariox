@@ -13,7 +13,6 @@ type Attachment = { id: string; session_id: string }
 // stateful view, so the pending window is observed the way the TUI observes it.
 function selectionHarness(overrides: Record<string, unknown> = {}, handlerOverrides: Record<string, unknown> = {}) {
   let attachment: Attachment | null = { id: "att-a", session_id: "session-a" }
-  let hydrating = false
   const detached: string[] = []
   const starts: string[] = []
   const flashes: string[] = []
@@ -22,7 +21,6 @@ function selectionHarness(overrides: Record<string, unknown> = {}, handlerOverri
   const { deps } = createBaseDeps({
     attachmentState: () => attachment,
     setAttachmentState: (next: Attachment | null) => { attachment = next },
-    setSessionHydratingState: (next: boolean) => { hydrating = next },
     detachAttachment: async (id: string) => { detached.push(id) },
     attachToSession: async (sessionId: string) => ({ id: `att-${sessionId}`, session_id: sessionId }),
     getSessionState: async (sessionId: string) => sessionId === "session-a" ? sessionA : sessionB,
@@ -31,14 +29,14 @@ function selectionHarness(overrides: Record<string, unknown> = {}, handlerOverri
   })
   const lifecycle = createSessionLifecycleController(deps as never)
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    prepareSessionSelection: (reference: string) => lifecycle.prepareSessionSelection({ id: reference }),
+    beginSessionSelection: (reference: string) => lifecycle.beginSessionSelection({ id: reference }),
     attachBinding: lifecycle.attachBinding,
     resolveSession: async () => sessionB,
     ...handlerOverrides,
   }))
   const bootstrap = createWaitingRoomPromptBootstrapController({
     isAttached: () => attachment !== null,
-    isSessionSelecting: () => hydrating,
+    isSessionSelecting: lifecycle.isSessionSelecting,
     startSessionFromWaitingRoomDefaults: async () => { starts.push("created") },
     flashFooter: message => { flashes.push(message) },
   })
@@ -133,9 +131,13 @@ test("MP-08 / MP-10 OWNER-24 a stale rollback cannot restore the previous sessio
   const failed = h.attach("missing")
   failed.catch(() => {})
   await new Promise(resolve => setImmediate(resolve))
-  await h.attach("session-b")
-  assert.equal(h.attachment()?.session_id, "session-b")
+  // Kernel work runs one selection at a time: the newer one shows its
+  // placeholder now and attaches once the superseded restore unwinds.
+  const next = h.attach("session-b")
+  assert.equal(h.attachment(), null)
+  assert.equal(await h.bootstrap.bootstrap(), "handled")
   releaseRollback()
+  await next
   await assert.rejects(failed, /unknown session/)
   assert.equal(h.attachment()?.session_id, "session-b", "the superseded rollback must not reapply the previous session")
   assert.deepEqual(h.detached, ["att-a"], "the previous attachment is disposed exactly once")
@@ -175,7 +177,7 @@ const generationOutcomes: Array<{
       const next = h.attach("b")
       await tick()
       first.release()
-      await assert.rejects(failed, /unknown session/)
+      await failed // a superseded lookup failure is not reported
       assert.equal(h.attachment(), null, "the stale failure must not restore the previous session")
       assert.equal(await h.bootstrap.bootstrap(), "handled", "the newer selection still blocks bootstrap")
       second.release()
@@ -203,9 +205,10 @@ const generationOutcomes: Array<{
       failed.catch(() => {})
       await tick()
       await tick()
-      await h.attach("session-b")
-      assert.equal(h.attachment()?.session_id, "session-b")
+      const next = h.attach("session-b")
+      await tick()
       cleanup.release()
+      await next
       await assert.rejects(failed, /unknown session/)
       assert.equal(h.attachment()?.session_id, "session-b", "the stale cleanup must not clear the newer view")
     },
@@ -231,6 +234,62 @@ const generationOutcomes: Array<{
     },
   },
 ]
+
+generationOutcomes.push(
+  {
+    name: "Enter while a failed detach restores the previous session starts nothing",
+    run: async () => {
+      const restore = gate()
+      const sessionA = makeSession({ id: "session-a", agents: [] })
+      const h = selectionHarness({
+        detachAttachment: async () => { throw new Error("permission denied") },
+        getSessionState: async (sessionId: string) => {
+          if (sessionId === "session-a") await restore.promise
+          return sessionId === "session-a" ? sessionA : makeSession({ id: sessionId, agents: [] })
+        },
+      })
+      const failed = h.attach("session-b")
+      failed.catch(() => {})
+      await tick()
+      await tick()
+      assert.equal(h.attachment(), null, "the restore is still loading")
+      assert.equal(await h.bootstrap.bootstrap(), "handled")
+      assert.deepEqual(h.starts, [])
+      restore.release()
+      await assert.rejects(failed, /permission denied/)
+      assert.equal(h.attachment()?.id, "att-a")
+      assert.equal(h.lifecycle.isSessionSelecting(), false)
+    },
+  },
+  {
+    name: "an older attach failing while a newer lookup is pending keeps the guard",
+    run: async () => {
+      const attach = gate()
+      const lookup = gate()
+      const h = selectionHarness(
+        { attachToSession: async () => { await attach.promise; throw new Error("attach refused") } },
+        { resolveSession: async (reference: string) => {
+          if (reference === "c") await lookup.promise
+          return makeSession({ id: `session-${reference}`, agents: [] })
+        } },
+      )
+      const older = h.attach("b")
+      older.catch(() => {})
+      await tick()
+      const newer = h.attach("c")
+      await tick()
+      attach.release()
+      await older
+      assert.equal(h.attachment(), null)
+      assert.equal(await h.bootstrap.bootstrap(), "handled", "the newer lookup still owns the selection")
+      assert.deepEqual(h.starts, [])
+      lookup.release()
+      await assert.rejects(newer, /attach refused/)
+      assert.equal(h.attachment(), null, "the older switch already detached att-a, so the waiting room shows")
+      assert.equal(h.lifecycle.isSessionSelecting(), false)
+    },
+  },
+)
 
 for (const outcome of generationOutcomes) {
   test(`MP-08 / MP-10 OWNER-24 generation rule: ${outcome.name}`, outcome.run)

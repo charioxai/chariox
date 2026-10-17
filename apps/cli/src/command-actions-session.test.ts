@@ -13,7 +13,7 @@ test("MP-08 / MP-10 OWNER-24 a session command selects its placeholder before re
   const pending = new Promise<void>(resolve => { release = resolve })
   const selected: string[] = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    ...{ prepareSessionSelection: (reference: string) => { selected.push(reference) } },
+    ...{ beginSessionSelection: (reference: string) => { selected.push(reference); return null } },
     resolveSession: async () => { await pending; return { id: "next-session", alias: null } },
   }))
   const joining = handlers.handleSessionCommand({ kind: "session", raw: "/session attach next", action: "attach", args: ["next"], value: "next" })
@@ -313,7 +313,7 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
 test("MP-08 / MP-10 OWNER-24 failed reference lookup settles its selected placeholder", async () => {
   let settled = false
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    ...{ prepareSessionSelection: () => () => { settled = true } },
+    ...{ beginSessionSelection: () => ({ current: () => true, attach: async () => {}, settle: async () => { settled = true } }) },
     resolveSession: async () => { throw new Error("unknown session") },
   }))
   await assert.rejects(handlers.handleSessionCommand({ kind: "session", raw: "/session attach missing", action: "attach", args: ["missing"], value: "missing" }), /unknown session/)

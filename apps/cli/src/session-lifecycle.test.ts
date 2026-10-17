@@ -30,18 +30,23 @@ test("attachBinding is a no-op when already attached to the target session", asy
   assert.deepEqual(calls, [])
 })
 
-test("MP-08 / MP-10 OWNER-24 resolving the current alias reattaches a prepared placeholder", async () => {
+test("MP-08 / MP-10 OWNER-24 resolving the current alias restores the moved-aside attachment", async () => {
   let attachment: { id: string; session_id: string } | null = { id: "old", session_id: "session-1" }
   const { deps } = createBaseDeps({
     attachmentState: () => attachment,
     setAttachmentState: (value: typeof attachment) => { attachment = value },
-    detachAttachment: async () => {},
+    detachAttachment: async () => { throw new Error("entered kernel detach") },
     attachToSession: async () => { throw new Error("entered kernel attach") },
+    getSessionState: async () => ({ id: "session-1", agents: [], active_provider_run_id: null }),
+    hydrateAttachedSessionBinding: async (_id: string, _att: string, session: unknown) => session,
   })
   const controller = createSessionLifecycleController(deps as never)
-  controller.prepareSessionSelection({ id: "current-alias" })
+  const selection = controller.beginSessionSelection({ id: "current-alias" })!
   assert.equal(attachment, null)
-  await assert.rejects(controller.attachBinding({ id: "session-1" }, false), /entered kernel attach/)
+  await selection.attach({ id: "session-1" })
+  await selection.settle()
+  assert.equal((attachment as { id: string } | null)?.id, "old")
+  assert.equal(controller.isSessionSelecting(), false)
 })
 
 test("session switching clears an attachment the kernel already removed", async () => {
@@ -252,7 +257,6 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   await controller.attachBinding({ id: "session-2" }, false)
 
   assert.deepEqual(events, [
-    "setSessionHydratingState",
     "clearPendingPromptAttachments",
     "bumpHistoryLoadGeneration",
     "setSessionHydratingState",
@@ -1229,9 +1233,11 @@ test("attachBinding adopts the attached session response layout immediately", as
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
 })
 
-test("MP-08 / MP-10 OWNER-24 pending selection is hydrating before reference lookup", () => {
+test("MP-08 / MP-10 OWNER-24 pending selection is hydrating and guarded before reference lookup", () => {
   let hydrating = false
   const { deps } = createBaseDeps({ setSessionHydratingState: (value: boolean) => { hydrating = value } })
-  createSessionLifecycleController(deps as never).prepareSessionSelection({ id: "next" })
+  const controller = createSessionLifecycleController(deps as never)
+  controller.beginSessionSelection({ id: "next" })
   assert.equal(hydrating, true, "the selected placeholder must not render a waiting room")
+  assert.equal(controller.isSessionSelecting(), true)
 })
