@@ -95,6 +95,7 @@ export class MirrorFrames {
     child.documentId = loaderId;
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
     const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
+    delete snap.full_pending; // a child frame sends its sheets whole
     await this.mirror.markClosedHosts(child, snap);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
   }
@@ -143,7 +144,7 @@ export class MirrorFrames {
         let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
         if (raw.resync) throw new Error('resync');
-        delete raw.closed_candidates; // Controller-private discovery signal never enters the strict rebased delta schema.
+        delete raw.closed_candidates; delete raw.full_pending; // Controller-private discovery signal never enters the strict rebased delta schema.
         const delta = rebaseDelta(raw, entry.slot);
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
         out.ops.push(...delta.ops, ...await this.sheetOps(entry.child, entry.slot, raw.sheets)); out.changed.push(...delta.changed); out.resources.push(...delta.resources);

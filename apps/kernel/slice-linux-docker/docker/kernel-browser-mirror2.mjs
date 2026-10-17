@@ -23,6 +23,8 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
 // explicit viewer recovery credit resends history, preserving its original bytes.
 const HISTORY_BYTES = 8 * 1024 * 1024;
+// GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
+const FIRST_PAINT_SHEET = 32 * 1024;
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
@@ -130,11 +132,12 @@ export function encodeMirrorRecords(records, contextParent) {
 
 // A large stylesheet text travels once per snapshot epoch (pages repeat the same
 // sheet across shadow roots/links); records and ops reference it by digest.
+export const sheetDigest = text => createHash('sha256').update(text).digest('hex').slice(0, 24);
 export function dedupeMirrorSheets(packet, sent) {
   const sheets = {};
   const ref = text => {
     if (typeof text !== 'string' || text.length < 2048) return null;
-    const digest = createHash('sha256').update(text).digest('hex').slice(0, 24);
+    const digest = sheetDigest(text);
     if (!sent.has(digest)) { sent.add(digest); sheets[digest] = text; }
     return digest;
   };
@@ -369,7 +372,12 @@ export class Mirror2 {
         await this.markClosedHosts(world, snap);
         // Sheets this CSSOM cannot read come through CDP.
         const sheetsAt = timestamp();
-        const sheetOps = await this.sheetOps(world, snap.sheets);
+        const sheetOps = await this.sheetOps(world, snap.sheets, true);
+        // A pruned sheet's full text follows on a quiet packet; a viewer that retains it gets it by reference now.
+        const known = new Set(command.known_sheets ?? []);
+        stream.deferredSheets = [];
+        for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
+        stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
         this.host.timing?.('mirror2_sheets', sheetsAt);
         const framesAt = timestamp();
         // Cross-origin frames: child DOM under the owner, or an opaque region.
@@ -382,6 +390,7 @@ export class Mirror2 {
     };
     const processDelta = async delta => {
       assertDocument();
+      if (Number.isInteger(delta.full_pending)) stream.fullPending = delta.full_pending;
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
       if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
         delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
@@ -420,7 +429,7 @@ export class Mirror2 {
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
-      while (!reset && !resources.length && this.empty(stream, source) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
+      while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
         assertNotCancelled(signal);
@@ -440,6 +449,16 @@ export class Mirror2 {
     mark('observe_resources');
     assertDocument();
     const sheets = await this.sheetOps(world, source?.sheets);
+    // A pruned first-paint sheet's full text follows without viewer input, once the page is quiet (or after 1 s).
+    if (!reset && !fallback) {
+      const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
+      stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
+      if (!resources.length && this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) {
+        let full = stream.deferredSheets.shift();
+        if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
+        if (full && !replaced.has(full.id)) sheets.push({ op: 'css', id: full.id, css: full.css });
+      }
+    }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
@@ -539,6 +558,7 @@ export class Mirror2 {
   }
   // A packet's resource budget; smaller within a second of viewer input.
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
+  sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
   refinePending(stream) { for (const entry of stream.resources.values()) if (entry.previewed && !entry.sent) return true; return false; }
   merge(a, b) { return { ...b, ops: [...(a.ops ?? []), ...(b.ops ?? [])], sheets: [...(a.sheets ?? []), ...(b.sheets ?? [])], resources: [...(a.resources ?? []), ...(b.resources ?? [])], changed: [...(a.changed ?? []), ...(b.changed ?? [])] }; }
@@ -662,10 +682,16 @@ export class Mirror2 {
     } finally { await world.connection.send('IO.close', { handle: resource.stream }, world.sessionId).catch(() => {}); }
     return Buffer.concat(chunks);
   }
-  async sheetOps(world, sheets = []) {
+  // `firstPaint` (a reset): a large sheet travels as the rules the document uses now, its full text as `full`.
+  async sheetOps(world, sheets = [], firstPaint = false) {
     const ops = [];
     for (let at = 0; at < sheets.length; at += 4) {
-      const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => { const text = await this.crossOriginSheet(world, sheet.url).catch(() => null); return text === null ? [] : [{ op: 'css', id: sheet.id, css: text }]; }));
+      const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
+        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(() => null);
+        if (text === null) return [];
+        const [css, used] = Array.isArray(text) ? text : [text, null];
+        return [typeof used === 'string' && used.length < css.length ? { op: 'css', id: sheet.id, css: used, full: css } : { op: 'css', id: sheet.id, css }];
+      }));
       ops.push(...batch.flat());
     }
     return ops;
@@ -675,7 +701,7 @@ export class Mirror2 {
   // A constructed sheet drops @import: imports the page already loaded are read
   // the same way (depth-first, bounded), each under its conditions and sanitized
   // against its own URL, after the importing sheet's leading layer statements.
-  async crossOriginSheet(world, url) {
+  async crossOriginSheet(world, url, usedBy = null) {
     let frameOf;
     const frames = async () => {
       if (!frameOf) {
@@ -706,7 +732,7 @@ export class Mirror2 {
       return true;
     };
     if (!await read(url, '', '', 0)) return null;
-    return this.evaluate(world, `(sheets=>{const parse=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return out};let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return out})(${JSON.stringify(sheets)})`);
+    return this.evaluate(world, `(sheets=>{const parse=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return out};let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return ${usedBy === null ? 'out' : `out.length<${FIRST_PAINT_SHEET}?out:[out,${world.ref}.usedCss(${JSON.stringify(usedBy)},out)]`}})(${JSON.stringify(sheets)})`);
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed

@@ -1247,7 +1247,7 @@ test('MP-10 M2: continuations finish the full DOM with bounded ordinary children
 // BROWSER-UX-09 / GATE-bytes (browserux r20, typed github.com): the page hydrates while the bounded
 // snapshot continues. Each restart re-sent the whole head CSS (3 x 362 KB on an 8 Mbit/s link).
 test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a restarted snapshot', () => mirrored(
-  '<style>.marker-once{color:#123456}' + '.pad{margin:1px}'.repeat(6000) + '</style><h1>Viewport first</h1><main id="m"><p>kept</p><p id="gone">removed later</p>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>'
+  '<style>h1:not(.marker-once){color:#123456}' + '.pad{margin:1px}'.repeat(6000) + '</style><h1 class="pad">Viewport first</h1><main id="m"><p>kept</p><p id="gone">removed later</p>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>'
   + '<script>let n=0;window.tick=setInterval(()=>{document.querySelector("h1").append(" t"+(n++))},15)</script>', async ({next,evaluate,host,subscription_id}) => {
     const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
     const [main]=elements(first).find(([,,attrs])=>attrs.id==='m'),[gone]=elements(first).find(([,,attrs])=>attrs.id==='gone');
@@ -1375,7 +1375,7 @@ test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<i
 // r9 hosted drill (GitHub): the site's head style sheets filled the first 128 KiB, so the reset reached the
 // viewer without a body and painted a white page until later credits. The head precedes the viewport.
 test('MP-08/MP-10 M2: large head style sheets do not push the visible viewport out of the reset',()=>mirrored(
- '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style><style>'+'.d{margin:1px}\n'.repeat(8000)+'</style></head><body><h1>Visible heading</h1>'+'<p>content</p>'.repeat(200)+'</body>',async({next})=>{
+ '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style><style>'+'.d{margin:1px}\n'.repeat(8000)+'</style></head><body><h1 class="c d">Visible heading</h1>'+'<p>content</p>'.repeat(200)+'</body>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(JSON.stringify(first).length>128*1024,'the fixture head alone exceeds the prefix bound');
  assert(texts(first).has('Visible heading'),'the viewport content travels with the head');
@@ -1422,7 +1422,7 @@ test('MP-10 M2: an ordinary document between four and eight MiB includes its des
 // MP-08/MP-10/MP-11: exercise the actual controller encoder, not only the observer.
 test('MP-10 protocol539 completion follows the final initial continuation and compacts unchanged headers', () => mirrored(
   '<header hidden>'+('<span>hidden prefix</span>').repeat(12000)+'</header><p>Final viewport</p>', async ({ next }) => {
-    const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-mirror2-completion-539.json', import.meta.url), 'utf8'))
+    const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-mirror2-completion-550.json', import.meta.url), 'utf8'))
     const first = await next(); assert.equal(first.reset, true)
     assert.equal(first.snapshot_complete, fixture.reset_header.snapshot_complete)
     let complete = first.snapshot_complete, drains = 0
@@ -1435,3 +1435,19 @@ test('MP-10 protocol539 completion follows the final initial continuation and co
     const idle = await next()
     assert.equal(Object.hasOwn(idle, 'snapshot_complete'), false, 'unchanged completion inherits its base')
   }))
+
+// GATE-bytes / BROWSER-UX-09 (typed github.com: 363 KB of deflated CSS in the first paint): a first paint carries the
+// rules the document uses; each large sheet's full text follows on a quiet packet (readable and cross-origin sheets).
+const bulkCss = prefix => `p.used{color:rgb(1, 2, 3)}@media (min-width: 1px){p.used{margin:0}.${prefix}-unused-0{color:red}}` + Array.from({ length: 2000 }, (_, i) => `.${prefix}-unused-${i}{color:rgb(${i % 250}, 1, 2);padding:${i}px}`).join("");
+test("GATE-bytes: a first paint sends only the used rules of large sheets; their full text follows", () => mirrored(
+  '<link rel="stylesheet" href="/a.css"><link rel="stylesheet" href="http://localhost:PORT/b.css"><p class="used">text</p>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const reset = await next(0, true), first = JSON.stringify(reset);
+    assert.equal(reset.reset, true);
+    assert(first.includes("rgb(1, 2, 3)") && first.includes("@media"), "the used rule and its group reach the first paint");
+    assert(!first.includes("a-unused-1999") && !first.includes("b-unused-1999"), "unused rules wait");
+    assert(first.length < 16 * 1024, `first paint ${first.length} bytes`);
+    let later = "";
+    for (let i = 0; i < 8 && !(later.includes("a-unused-1999") && later.includes("b-unused-1999")); i++) later += JSON.stringify(await next(1000));
+    assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
+  }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));

@@ -160,13 +160,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
-    const sheetText = (sheet, base, depth = 0, clean = null) => {
+    const sheetText = (sheet, base, depth = 0, clean = null, keep = null) => {
       let out = '', chunk = '';
       const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
       for (const rule of sheet.cssRules) {
         if (rule.type === 3) { // @import: inline the imported sheet when readable, under its layer and conditions.
           if (depth < 8 && rule.styleSheet) {
-            let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean); } catch { inner = ''; }
+            let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean, keep); } catch { inner = ''; }
             const media = rule.media?.mediaText, layer = rule.layerName, supports = rule.supportsText;
             if (media) inner = `@media ${media}{${inner}}`;
             if (supports) inner = `@supports (${supports}){${inner}}`;
@@ -175,10 +175,30 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           }
           continue;
         }
-        chunk += rule.cssText + '\n';
+        chunk += keep ? pruned(rule, keep) : rule.cssText + '\n';
       }
       flush();
       return out;
+    };
+    // GATE-bytes: a first paint carries only the style rules some node under the sheet's root matches now
+    // (state pseudo-classes and pseudo-elements ignored; an unparseable selector is kept); every other rule
+    // (@font-face, @keyframes, ...) stays. The kernel asks for the full text once the page is quiet.
+    const DYNAMIC = /::?(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|-webkit-[\w-]+|-moz-[\w-]+)|:(?:hover|active|focus-visible|focus-within|focus|visited|target)(?![\w-])/g;
+    const usedBy = root => selector => { const plain = selector.replace(DYNAMIC, ''); if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true; try { return root.querySelector(plain) !== null; } catch { return true; } };
+    const pruned = (rule, keep) => {
+      if (rule instanceof CSSStyleRule) return keep(rule.selectorText) ? rule.cssText + '\n' : '';
+      if (!(rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule || rule instanceof CSSContainerRule || rule instanceof CSSLayerBlockRule)) return rule.cssText + '\n';
+      let inner = ''; for (const child of rule.cssRules) inner += pruned(child, keep);
+      // A layer block keeps its place in the layer order.
+      return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
+    };
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(), prunedRecords = new Map();
+    const firstPaintCss = (node, sheet, base, text) => {
+      const root = node.getRootNode?.();
+      // Only the top document: the kernel asks the top world for full sheets.
+      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || typeof root?.querySelector !== 'function') return text;
+      const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
+      return used.length < text.length ? used : text;
     };
     const css = (sheet, base) => sheetText(sheet, base, 0, (text, at) => sanitizeMirrorCss(text, at, resource));
     const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
@@ -362,6 +382,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
+      if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); prunedRecords.set(record.id, { record, node, sheet }); record.css = used; } }
     };
     // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
     // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
@@ -530,9 +551,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
+      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
-    const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
+    // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
+    const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
+    const take = () => {
+      // The walk ran while the page could still change: prune again against the document this reply describes.
+      for (const [id, { record, node, sheet }] of prunedRecords) { const full = fullSheets.get(id); if (full === undefined) continue; record.css = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, full); if (record.css === full) fullSheets.delete(id); }
+      prunedRecords.clear();
+      const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets };
+    };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = () => {
@@ -542,7 +570,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // local id range without walking the previous (possibly huge) document.
       ids = new WeakMap(); serial = 0;
       reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
-      pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
+      pendingSheets = []; fullSheets.clear(); prunedRecords.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
       progressive = document.getElementsByTagName('*').length > 10000;
@@ -1013,6 +1041,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
     const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
+    // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
+    const usedCss = (id, text) => {
+      const root = nodes.get(id)?.getRootNode?.();
+      if (window !== window.top || document.readyState === 'loading' || typeof root?.querySelector !== 'function') return null;
+      const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
+      const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
+      return out;
+    };
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
@@ -1074,6 +1110,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }
