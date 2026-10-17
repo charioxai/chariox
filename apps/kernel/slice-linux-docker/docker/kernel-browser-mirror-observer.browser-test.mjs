@@ -134,6 +134,20 @@ for (const [name, act] of [
   if (name.startsWith('an animation')) assert(Object.values(after.packet.tile_states).some(state => state.startsWith('~')));
 });
 
+for (const [name, markup, act] of [
+  ['an existing-rule gradient edited through the CSSOM', '<style>#gb span{display:block;width:20px;height:10px;background-image:linear-gradient(red,red)}</style><button id=gb style="width:100px;height:30px"><span></span></button>', "document.styleSheets[document.styleSheets.length-1].cssRules[0].style.backgroundImage='linear-gradient(blue,blue)'"],
+  ['an SVG fill edited through the CSSOM', '<style>#gs rect{fill:red}</style><svg id=gs width=20 height=20><rect width=20 height=20></rect></svg>', "document.styleSheets[document.styleSheets.length-1].cssRules[0].style.fill='blue'"],
+  ['a descendant beyond the sampled ones', '<button id=gl style="width:100px;height:30px">' + '<i></i>'.repeat(70) + '</button>', "document.querySelector('#gl').lastChild.style.cssText=''"],
+]) test(`tile state changes for ${name}`, options, async () => {
+  const s = await open(page + markup);
+  await s.evaluate("document.body.lastElementChild.scrollIntoView({block:'center'})");
+  const before = await s.read();
+  await s.evaluate(act);
+  const after = await s.read();
+  const states = Object.values(after.packet.tile_states);
+  assert(states.length && (after.states !== before.states || states.some(state => state.startsWith('~'))));
+});
+
 test('positional selectors restyle siblings when children come and go, not when an attribute changes', options, async () => {
   const positional = `${page}<style>#list li:first-child{color:#c00}#list li:last-child{color:#06c}#list li:nth-child(2){color:#0a0}</style>`;
   const first = await (await open(positional)).read();

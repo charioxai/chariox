@@ -230,19 +230,26 @@ function installMirrorObserver(initialStyles = {}) {
     // Its subtree is not visited: a mutation below it (counted per tile), a stylesheet change, an animation inside it
     // and its pseudo-element content all repaint it without changing its record.
     const tileDamage = node => `${epochs.get(node)??0}.${sheetGeneration}`, animatedInside = node => animations.some(animation=>animation.effect?.target&&node.contains(animation.effect.target));
+    // Every paint input of a descendant that no DOM mutation reports (CSSOM edits of existing rules, SVG paint, pseudo-elements).
+    // A subtree too large to sample completely cannot be proven unchanged and is recaptured every read ('~').
+    const paintProps=['color','backgroundColor','backgroundImage','opacity','visibility','display','borderTopColor','textDecorationColor','fill','stroke','boxShadow','filter','transform'];
+    const subtreePaint = node => {
+      const all=node.querySelectorAll('*'),sampled=[...all].slice(0,64),paint=(element,pseudo)=>{const c=getComputedStyle(element,pseudo);return (pseudo?[c.content,...paintProps.slice(0,3)]:paintProps).map(p=>c[p]).join();};
+      return {exact:all.length<=64,state:sampled.map(child=>[paint(child),paint(child,'::before'),paint(child,'::after')].join('/')).join(';')};
+    };
     const nativeTile = (record,node) => {
-      const secret=node.localName==='input'&&node.type==='password',text=node.textContent;
+      const secret=node.localName==='input'&&node.type==='password',text=node.textContent,sub=subtreePaint(node);
       nextTiles.add(node);
-      tileStates[record.id]=(animatedInside(node)?'~':'')+`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}|${tileDamage(node)}|${[...node.querySelectorAll('*')].slice(0,32).map(child=>{const c=getComputedStyle(child);return [c.color,c.backgroundColor,c.opacity,c.visibility,c.display,c.borderTopColor,c.textDecorationColor].join()}).join(';')}|${['::before','::after'].map(pseudo=>getComputedStyle(node,pseudo).content).join('|')}`;
+      tileStates[record.id]=(animatedInside(node)||!sub.exact?'~':'')+`${+hovered.has(node)}${+pressed.has(node)}`+[':focus',':focus-visible',':disabled',':checked',':indeterminate'].map(s=>node.matches(s)?1:0).join('')+`|${secret?`${node.value.length},${node.selectionStart},${node.selectionEnd}`:''}|${node.childElementCount},${text.length},${text.slice(0,256)}|${tileDamage(node)}|${sub.state}|${['::before','::after'].map(pseudo=>getComputedStyle(node,pseudo).content).join('|')}`;
       record.kind='tile';record.reason='native_control';return done(record);
     };
     // Private to the kernel: what an opaque tile's pixels depend on that the isolated world can observe.
     // '=' states are exact (a video's playback state, a subtree's mutation epoch, hover/focus); '~' states
     // cover pixels nothing here can see change (canvas drawing, plugin and cross-origin frame content).
     const opaqueTile = (record,node,tag) => {
-      const exact=['video','audio','svg'].includes(tag)||record.reason==='unsupported_pseudo';
+      const sub=tag==='svg'?subtreePaint(node):{exact:true,state:''},exact=['video','audio','svg'].includes(tag)||record.reason==='unsupported_pseudo';
       nextTiles.add(node);
-      tileStates[record.id]=`${exact&&!animatedInside(node)?'=':'~'}${+hovered.has(node)}${+node.matches(':focus')}|${tileDamage(node)}|${tag==='video'||tag==='audio'?`${node.currentTime}|${+node.paused}${+node.ended}${+node.seeking}|${node.readyState}|${node.videoWidth}x${node.videoHeight}|${node.currentSrc}`:tag==='canvas'?`${node.width}x${node.height}`:''}`;
+      tileStates[record.id]=`${exact&&sub.exact&&!animatedInside(node)?'=':'~'}${+hovered.has(node)}${+node.matches(':focus')}|${tileDamage(node)}|${sub.state}|${tag==='video'||tag==='audio'?`${node.currentTime}|${+node.paused}${+node.ended}${+node.seeking}|${node.readyState}|${node.videoWidth}x${node.videoHeight}|${node.currentSrc}`:tag==='canvas'?`${node.width}x${node.height}`:''}`;
     };
     const serializedRecords=new Map();
     let wireSize=0;const done=record=>{const serialized=JSON.stringify(record);serializedRecords.set(record.id,serialized);wireSize+=serialized.length;if(wireSize>3*1024*1024)throw new Error('mirror snapshot bounds');return record.id;};
