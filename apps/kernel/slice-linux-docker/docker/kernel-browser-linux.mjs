@@ -25,7 +25,8 @@ export function launchEnvironment(environment, uid = process.getuid?.()) {
 // of an App's storage mount keeps its loop device busy after the storage helper
 // releases it (stop fails, the App stays Failed). So the namespace starts from a
 // fresh tmpfs root that rbinds every top-level tree except the App storage root
-// and pivots into it; the old root, with all inherited copies, is detached.
+// and pivots into it (cwd too, or it would pin the old tree); the old root, with all
+// inherited copies, is detached.
 const script = [
   'set -e; launcher=$1; layer=$2; temporary=$3; uid=$4; gid=$5; storage=$6; shift 6',
   'pivot=/usr/sbin/pivot_root; [ -x "$pivot" ] || pivot=/usr/bin/pivot_root; new=$temporary/.root; mkdir "$new"; /usr/bin/mount -t tmpfs tmpfs "$new"; /usr/bin/mount --make-unbindable "$new"',
@@ -35,7 +36,7 @@ const script = [
   '  mkdir "$2${e#"$1"}"',
   '  case $storage in "$e"/*) copy "$e" "$2${e#"$1"}";; *) /usr/bin/mount --rbind "$e" "$2${e#"$1"}";; esac',
   'done; }',
-  'copy "" "$new"; mkdir "$new/.old"; "$pivot" "$new" "$new/.old"; /usr/bin/umount -l /.old; rmdir /.old; rmdir "$temporary/.root" || :',
+  'copy "" "$new"; mkdir "$new/.old"; "$pivot" "$new" "$new/.old"; cd /; /usr/bin/umount -l /.old; rmdir /.old; rmdir "$temporary/.root" || :',
   '/usr/bin/mount -t overlay overlay -o "lowerdir=$layer:/etc" /etc; /usr/bin/mount --bind "$temporary" /tmp; export TMPDIR=/tmp; exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"',
 ].join("\n");
 // Host App storage root (packages/app-runtime storage_linux.rs); never part of the browser's view.

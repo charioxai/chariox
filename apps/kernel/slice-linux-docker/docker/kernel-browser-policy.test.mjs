@@ -89,16 +89,17 @@ test("MP-11 the kernel browser namespace never inherits App storage mounts", { s
     const storage = path.join(root, "storage"), temporary = path.join(root, "private"), layer = path.join(root, "layer");
     for (const dir of [path.join(storage, "u-1/i-a/data"), temporary, layer]) await mkdir(dir, { recursive: true });
     const probe = path.join(temporary, "probe.sh");
-    await writeFile(probe, `#!/bin/sh\ncat /proc/self/mountinfo; echo "PWD-TMP=$TMPDIR"; echo hi > /tmp/inside && echo wrote\n`);
+    await writeFile(probe, `#!/bin/sh\ncat /proc/self/mountinfo; echo "CWD=$(readlink /proc/self/cwd)"; echo hi > /tmp/inside && echo wrote\n`);
     await chmod(probe, 0o755);
     const launch = policyLaunch(layer, temporary, "/tmp/probe.sh", [], 1000, 1000, namespaceLauncher(), storage);
     // The outer namespace plays the host: it owns a mount under the storage root, as the helper does.
     const outer = 'mkdir -p "$1/u-1/i-a/data"; mount -t tmpfs host-storage "$1/u-1/i-a/data"; shift; exec "$@"';
-    const run = spawnSync(namespaceLauncher(), ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", outer, "sh", storage, launch.command, ...launch.args], { encoding: "utf8", timeout: 30000 });
+    const run = spawnSync(namespaceLauncher(), ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", outer, "sh", storage, launch.command, ...launch.args], { encoding: "utf8", timeout: 30000, cwd: root });
     assert.equal(run.status, 0, run.stderr);
     assert.doesNotMatch(run.stdout, new RegExp(storage), "no App storage mount in the browser namespace");
     assert.match(run.stdout, / \/tmp /, "the private temporary directory is /tmp");
     assert.match(run.stdout, /overlay.* \/etc|\/etc .*overlay/, "the policy overlay is on /etc");
+    assert.match(run.stdout, /^CWD=\/$/m, "the old root is not pinned by the browser's working directory");
     assert.match(run.stdout, /wrote/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
