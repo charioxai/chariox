@@ -108,3 +108,35 @@ test("MP-08 / MP-10 OWNER-24 cleanup sees the attachment retained during a pendi
   await switching
   assert.equal(h.lifecycle.currentAttachment()?.id, "att-session-b")
 })
+
+test("MP-08 / MP-10 OWNER-24 a stale rollback cannot restore the previous session over a newer selection", async () => {
+  let releaseRollback!: () => void
+  const rollbackGate = new Promise<void>(resolve => { releaseRollback = resolve })
+  const sessionA = makeSession({ id: "session-a", agents: [] })
+  const sessionB = makeSession({ id: "session-b", agents: [] })
+  let lookups = 0
+  const h = selectionHarness(
+    {
+      getSessionState: async (sessionId: string) => {
+        if (sessionId !== "session-a") return sessionB
+        await rollbackGate
+        return sessionA
+      },
+    },
+    {
+      resolveSession: async () => {
+        if (lookups++ === 0) throw new Error("unknown session")
+        return sessionB
+      },
+    },
+  )
+  const failed = h.attach("missing")
+  failed.catch(() => {})
+  await new Promise(resolve => setImmediate(resolve))
+  await h.attach("session-b")
+  assert.equal(h.attachment()?.session_id, "session-b")
+  releaseRollback()
+  await assert.rejects(failed, /unknown session/)
+  assert.equal(h.attachment()?.session_id, "session-b", "the superseded rollback must not reapply the previous session")
+  assert.deepEqual(h.detached, ["att-a"], "the previous attachment is disposed exactly once")
+})

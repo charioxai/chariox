@@ -128,6 +128,9 @@ type SessionLifecycleDeps = {
 
 export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   let pendingAttachment: RuntimeAttachment | null = null
+  // Advances whenever the view changes owner, so a slower restore can tell it
+  // has been superseded and must not apply its state.
+  let selectionGeneration = 0
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
   const applyAttachedState = (session: RuntimeSession, attachment: RuntimeAttachment, createdSession: boolean) => {
@@ -159,6 +162,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   }
 
   const transitionToNoSession = async (message = "No session attached.") => {
+    selectionGeneration += 1
     const nextDetachedState = deps.deriveDetachedCliTransitionState({
       cliOptions: deps.cliOptions,
       waitingRoomState: deps.waitingRoomState(),
@@ -251,11 +255,16 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   const restorePendingAttachment = async () => {
     const attachment = pendingAttachment
     if (!attachment) return
-    pendingAttachment = null
+    // The attachment stays pending until restored, so a newer selection still
+    // detaches it; this restore then only has to stop applying state.
+    const generation = selectionGeneration
+    const superseded = () => generation !== selectionGeneration
     try {
       const session = await deps.getSessionState(attachment.session_id)
+      if (superseded()) return
       applyAttachedState(session, attachment, false)
       const run = session.active_provider_run_id ? await deps.tryGetProviderRun(session.active_provider_run_id) : null
+      if (superseded()) return
       deps.setProviderRunState(run)
       if (run) {
         deps.syncCliProviderSelection({
@@ -265,13 +274,14 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
       deps.bumpHistoryLoadGeneration()
-      applyAttachedState(
-        await deps.hydrateAttachedSessionBinding(session.id, attachment.id, session),
-        attachment,
-        false,
-      )
+      const hydrated = await deps.hydrateAttachedSessionBinding(session.id, attachment.id, session)
+      if (superseded()) return
+      applyAttachedState(hydrated, attachment, false)
+      pendingAttachment = null
       await deps.syncKernelEventSubscription?.()
     } catch (error) {
+      if (superseded()) return
+      pendingAttachment = null
       try {
         await deps.detachAttachment(attachment.id)
       } catch (detachError) {
@@ -282,6 +292,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
       await transitionToNoSession(`Could not restore the previous session: ${formatError(error)}`)
     }
+    if (superseded()) return
     deps.setSessionHydratingState(false)
     deps.requestRender()
   }
@@ -291,6 +302,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   const prepareSessionSelection = (session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) => {
     const previous = currentAttachment()
     if (previous?.session_id === session.id) return
+    selectionGeneration += 1
     // MP-08 / MP-10 OWNER-24: the old attachment may take seconds to detach.
     // Move display ownership now, with no attachment or launch authority.
     if (previous) {
