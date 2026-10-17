@@ -44,9 +44,10 @@ against the context's runtime-source revision and protocol, verifies the archive
 runs `docker load`, checks the loaded layers against the descriptor and tags the image. A
 release install never falls back to a local build: a missing, foreign or altered image
 fails with the step to take. Source and development checkouts have no `slice-image`
-directory and keep building locally. Where the archive is hosted (inside the bundle, or a
-registry or download that the signed descriptor still pins by digest) does not change the
-provisioner.
+directory and keep building locally. The archive always travels inside the signed release
+bundle: there is no registry or download path. The macOS bundle carries a linux/arm64 image
+(built on a native arm64 runner) for Docker Desktop on Apple Silicon, and the macOS package
+installs it to `/usr/local/share/chariox/slice-image`, beside the build context.
 
 **The CLI/TUI executable.** `compile.mjs` embeds:
 - the Bun runtime;
