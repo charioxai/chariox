@@ -10,7 +10,8 @@ import { Mirror2Navigation } from './browser-mirror2-navigation.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
-export const browserMirror2MinimumProtocolVersion = 539
+/** MP-08/MP-10/MP-11: protocol 550 versions the v2 wire (preview, fonts, sheets, flush, completion). */
+export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
@@ -925,19 +926,13 @@ type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'fram
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
 export async function attachBrowserMirror2(transport: Mirror2Transport, container: HTMLElement, binding: Binding, handlers: { failure(error: unknown): void; preparing?(packet: Mirror2Packet): void; prepareReset?(packet: Mirror2Packet): boolean; inputFailure?(error: unknown): void; packet?(packet: Mirror2Packet): void; presented?(packet: Mirror2Packet): void; timing?(sample:Mirror2Timing):void; diagnostic?(stage:string,error:unknown,sequence?:number):void }, { credits = CREDIT_WINDOW, waitMs = 2000, failingMs = FAILING_MS, preserveFrameOnFailure=false, renderer: createRenderer = (container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): Renderer => new BrowserMirror2Renderer(container, send) } = {}) {
-  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 539')
+  if (!Number.isInteger(transport.protocolVersion) || transport.protocolVersion < browserMirror2MinimumProtocolVersion) throw Error('MP-08: DOM mirror v2 requires protocol 550')
   const request = async (command: unknown, onWritten?:()=>void): Promise<any> => { const response = await transport.request({ KernelBrowser: { command } },onWritten?{onWritten}:undefined) as { KernelBrowser?: { result?: unknown } }; if (!response.KernelBrowser?.result) throw Error('MP-08: invalid mirror response'); return response.KernelBrowser.result }
   const releaseHold = transport.prioritize?.() ?? (() => {})
   let priorityReleased = false
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
   const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(handlers.preparing ? {navigation_preview:true} : {}) }
-  const subscribed = await request(subscribe).catch(error => {
-    // A typed legacy kernel refused this field before creating a subscription.
-    // Omit only that unsupported opt-in; every other refusal remains terminal.
-    if (!(error instanceof Error) || !error.message.includes('unknown field `font_requirements`')) throw error
-    const { font_requirements: _unsupported, ...legacy } = subscribe
-    return request(legacy)
-  }).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
+  const subscribed = await request(subscribe).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0
   const buffered = new Map<number, Mirror2WirePacket>()

@@ -195,12 +195,12 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
 }
 
 #[test]
-fn browser_mirror2_sheet_cache_539_shape_is_pinned() {
-    // MP-08/MP-10/MP-11: additive extension of mirror's unreleased 539/147 allocation.
-    let snapshot = include_str!("browser-mirror2-sheet-cache-539.json");
+fn browser_mirror2_sheet_cache_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (known sheets).
+    let snapshot = include_str!("browser-mirror2-sheet-cache-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
-        "1062180e6696d05e280a1916c8f08bb6088ae8713e636db26ef06fe7bafc43eb"
+        "ce5ca5b3be62a51eabb9e61b14e469b42d4b465d279183be08da6a1d76eb371f"
     );
     let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
@@ -217,12 +217,12 @@ fn browser_mirror2_sheet_cache_539_shape_is_pinned() {
 }
 
 #[test]
-fn browser_mirror2_navigation_539_shape_is_pinned() {
-    // MP-08/MP-10/MP-11: same unreleased mirror allocation, negotiated preview + causal drain.
-    let snapshot = include_str!("browser-mirror2-navigation-539.json");
+fn browser_mirror2_navigation_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (preview + causal drain).
+    let snapshot = include_str!("browser-mirror2-navigation-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
-        "01ec5e7e5494bcee432b57eb6da42070a4f847bdf93d5567dac7d886b2debe98"
+        "d60d4494662ee29a1f7c52cb34aab7437da27c4d89042cb749d52fd1a45f88e8"
     );
     let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
@@ -239,12 +239,12 @@ fn browser_mirror2_navigation_539_shape_is_pinned() {
 }
 
 #[test]
-fn browser_mirror2_native_font_failures_539_shape_is_pinned() {
-    // MP-08/MP-10/MP-11: coordinator's additive unreleased539/147 allocation.
-    let bytes = include_bytes!("browser-mirror2-font-failures-539.json");
+fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font failures).
+    let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "05e083db6ddd9b6bec797c4d823edb58e0fa76dd06938276d9c9fc8969e53b8f"
+        "3ee560fc0d49d61b7944b969e75fd48092592bf327ca403122c7fcd8d9e3efb6"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -260,12 +260,12 @@ fn browser_mirror2_native_font_failures_539_shape_is_pinned() {
 }
 
 #[test]
-fn browser_mirror2_document_font_requirements_539_shape_is_pinned() {
-    // MP-08/MP-10/MP-11: additive extension of the coordinator's unreleased539.
-    let bytes = include_bytes!("browser-mirror2-font-requirements-539.json");
+fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font requirements).
+    let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "6c6357ebf7c2ac09f3f25f1d4344072e987aeeb5597d8766a4c3b8c19a2fc4f6"
+        "8a42cf6ff5fa10169223b91508e58ef9252d6820063b61a685fef7208d8fc3f6"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

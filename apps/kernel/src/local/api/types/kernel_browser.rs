@@ -37,10 +37,10 @@ pub enum KernelBrowserCommand {
         device_scale_factor: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wire: Option<u32>,
-        /// Protocol 539/147: allow protected native video during mirror preparation.
+        /// Protocol 550/158: allow protected native video during mirror preparation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         navigation_preview: Option<bool>,
-        /// MP-08/MP-10/MP-11: additive unreleased539 native document font proof.
+        /// MP-08/MP-10/MP-11: protocol 550 native document font proof.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_requirements: Option<bool>,
     },
@@ -52,7 +52,7 @@ pub enum KernelBrowserCommand {
         after_sequence: u64,
         #[serde(default)]
         drift_nodes: Vec<String>,
-        /// Protocol 539/147 (unreleased mirror allocation): immutable sheet digests
+        /// Protocol 550/158: immutable sheet digests
         /// the viewer retains for this subscription (<= 128, each 24 hex chars).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         known_sheets: Vec<String>,

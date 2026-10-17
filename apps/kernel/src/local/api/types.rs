@@ -329,4 +329,6 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated536 captures only the visible page on the owned desktop.
 /// MP-08/MP-10/MP-11: allocated 540 keeps the omnibox list's `chrome_window.auxiliary`
 /// entry (visible height 0) while the address bar has the person's keys.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 540;
+/// MP-08/MP-10/MP-11: allocated 550 versions the mirror v2 wire extensions (navigation preview,
+/// font requirements, known sheets, flush, snapshot completion); clients require it for mirror v2.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 550;

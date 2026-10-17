@@ -4162,7 +4162,7 @@ retire with their document/frame or reset, and packet changes during hashing,
 font loading or image decoding invalidate the handover proof. No name, source
 URL, page text, credential or new input/protection authority is added. Older
 kernels without this operation retain the conservative failure-metadata path.
-The protocol/hash fixture is `browser-mirror2-font-requirements-539.json`.
+The protocol/hash fixture is `browser-mirror2-font-requirements-550.json`.
 
 MP-08 / MP-10 / MP-11: the coordinator-authorized additive extension of mirror's
 unreleased 539/147 allocation (current union 540/148) adds
@@ -4178,7 +4178,7 @@ kernel descriptor may use the same fallback. Missing metadata is conservative.
 An explicit empty array clears prior failures; unchanged lists inherit through
 the existing compact/deflated delta. Native font completion/failure wakes the
 existing mirror credit. No font name, URL, credential or input authority is
-added. The snapshot/hash fixture is `browser-mirror2-font-failures-539.json`.
+added. The snapshot/hash fixture is `browser-mirror2-font-failures-550.json`.
 
 The mirror v2 packet header adds `snapshot_complete?: boolean`. The kernel emits
 `true` only when the main document's initial serializer has drained and its
@@ -4201,7 +4201,7 @@ before completion; the serializer and opaque relay
 chunk transport remain bounded and keep their existing input/band interleaving.
 The field does not relax observation protection, frame admission or input fences.
 
-The frozen header fixture `browser-mirror2-completion-539.json` is hash-pinned by
+The frozen header fixture `browser-mirror2-completion-550.json` is hash-pinned by
 `mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash`; real-Chromium observer,
 controller, compact-header and renderer drills cover pending prefixes, completion
 wakes (including between credits), completed empty pages and pre-539 rejection.
@@ -4223,7 +4223,7 @@ could still refer to it. Additional definitions use ordinary per-document delive
 Every resolved CSS use passes the existing sandbox/CSS validation. Closing the
 renderer discards both dictionaries. This extends mirror's own unreleased
 539/147 allocation additively, as allocated by the coordinator; no new protocol
-number or client floor is introduced. `browser-mirror2-sheet-cache-539.json` pins
+number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
 the request extension and its hash, including legacy omission/round-trip coverage.
 
 MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
@@ -4271,6 +4271,14 @@ registration response, so the kernel's push pump grants the first frame at
 registration (as a 535 resume does) instead of after the viewer's first
 `display_ack` — one round trip less per stream open. Kernels report it only on
 the kernel-private `display_attach` reply; the relay sees nothing new.
+
+MP-08 / MP-10 / MP-11: allocated 550/158 versions the mirror v2 wire contract
+that 539/540 kernels shipped unversioned: `mirror_subscribe`
+`navigation_preview`/`font_requirements`, `mirror_next` `known_sheets`/`flush`,
+explicit `snapshot_complete` and the font packets. No shape changes; the
+`browser-mirror2-*-550.json` fixtures pin them. Clients require 550 for mirror v2
+(`browserMirror2MinimumProtocolVersion`) and send every field without a schema
+retry; older kernels keep the legacy mirror.
 
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing

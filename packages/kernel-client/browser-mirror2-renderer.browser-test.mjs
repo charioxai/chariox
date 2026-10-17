@@ -1121,7 +1121,7 @@ test('MP-10 completed empty paint notifies the attached consumer without another
  const page=await viewer();try{
   await page.evaluate(async packet=>{
    window.r.close();window.paintNotifications=[];let first=true;
-   window.attached=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+   window.attached=await Mirror2.attachBrowserMirror2({protocolVersion:550,request:async request=>{
     const command=request.KernelBrowser.command;
     if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
     if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
@@ -1140,7 +1140,7 @@ test('MP-10 a credit refused for a retired document is not resent', async()=>{
  const page=await viewer();try{
   const credits=await page.evaluate(async packet=>{
    window.r.close();const credits=[];let refused=false;
-   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:550,request:async request=>{
     const command=request.KernelBrowser.command;
     if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
     if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
@@ -1160,7 +1160,7 @@ for(const preserveFrame of [false,true])test(`MP-11 closed empty attachment neve
  const page=await viewer();try{
   await page.evaluate(async({packet,preserveFrame})=>{
    window.r.close();window.presented=[];let first=true;
-   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:539,request:async request=>{
+   const mirror=await Mirror2.attachBrowserMirror2({protocolVersion:550,request:async request=>{
     const command=request.KernelBrowser.command;
     if(command.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
     if(command.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};

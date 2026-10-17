@@ -499,9 +499,9 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 
 // MP-08/MP-10/MP-11: opaque mirror bodies are carried by the ordinary kernel response.
 #[test]
-fn mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash() {
-    let bytes = include_bytes!("browser-mirror2-completion-539.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "f4a92a67c5c789d2e904e054d575ecb70c1c8ab3d1cf107bda0c2e7200dbe165");
+fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
+    let bytes = include_bytes!("browser-mirror2-completion-550.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "d5576f87d081908e4d9ad6a95c52e9781a137739e7194e4815475c535eb950d0");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);

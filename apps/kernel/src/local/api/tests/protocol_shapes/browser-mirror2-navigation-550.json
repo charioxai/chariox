@@ -1,5 +1,5 @@
 {
-  "protocol_version": 539,
+  "protocol_version": 550,
   "relay_peer_version": 147,
   "commands": [
     {
