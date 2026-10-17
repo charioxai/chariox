@@ -1919,3 +1919,15 @@ test('MP-08/MP-10/MP-11 viewer input that may have been dispatched is never park
  await new Promise(r=>setTimeout(r,50));
  assert.equal(attempts,1);
 }));
+
+test('MP-08/MP-10/MP-11 a parked wheel burst replays as one scroll',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ for(let n=0;n<5;n++)await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}});
+ busy=false;
+ for(let n=0;n<200&&!sent.some(x=>x.method==='Input.dispatchMouseEvent');n++)await new Promise(r=>setTimeout(r,5));
+ await new Promise(r=>setTimeout(r,30));
+ const wheels=sent.filter(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseWheel');
+ assert.equal(wheels.length,1);assert.equal(wheels[0].params.deltaY,600);
+}));

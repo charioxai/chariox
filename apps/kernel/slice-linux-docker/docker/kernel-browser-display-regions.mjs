@@ -105,7 +105,9 @@ function inputStream(host,command,scope) {
 // The ordinary Rust actor ledger still admits every resulting input action.
 export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await stream.regionCurrent())refuse();
+ // MP-11: this only names the stream's own tab/document. A visible page needs no renderer read for that (a parsing
+ // page answers late); the input that follows runs the fresh regionCurrent, input guard and final fences.
+ if(!await (stream.regionTarget.kind==='visible_page'&&stream.regionFrameCurrent?stream.regionFrameCurrent():stream.regionCurrent()))refuse();
  if(['region','visible_page'].includes(stream.regionTarget.kind))return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
  // This window epoch is kernel-issued private adapter data, not an extra
