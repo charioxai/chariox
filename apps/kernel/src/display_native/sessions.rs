@@ -49,6 +49,10 @@ pub(super) struct Encode {
     /// MP-08/MP-10: measured CPU contention fallback (reduced motion geometry).
     #[serde(default)]
     pub reduced: bool,
+    /// MP-11: the host proved this capture holds no protected region. Only
+    /// then may the codec skip the decode of delta packets; absent = unknown.
+    #[serde(default)]
+    pub unprotected: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +91,7 @@ pub(super) struct EncodeJob {
     regions: Vec<Rect>,
     resets: u32,
     started: f64,
+    unprotected: bool,
 }
 pub(super) enum EncodeOutcome {
     Dropped,
@@ -295,6 +300,9 @@ impl Sessions {
             return Err("MP-11: native bitrate".into());
         }
         let regions = raster::regions(&q.regions, w, h)?;
+        if q.unprotected && !q.regions.is_empty() {
+            return Err("MP-11: native unprotected claim with masks".into());
+        }
         let mut resets = if q.reset == true {
             255
         } else if q.reset == false {
@@ -394,12 +402,14 @@ impl Sessions {
             regions,
             resets,
             started,
+            unprotected: q.unprotected,
         })
     }
     /// Run x264 for a begun job (no lock held); returns owned row packets.
     pub fn run_encode(job: &EncodeJob, pixels: *const u8) -> Result<EncodeOutcome, String> {
         let mut results = [RowResult::default(); 8];
         let count = unsafe {
+            ffi::cx_codec_unprotected(job.codec.0, job.unprotected as i32);
             ffi::cx_codec_encode(
                 job.codec.0,
                 pixels,
@@ -726,6 +736,16 @@ mod protection_tests {
         // Return the codec as finish_encode does after x264.
         sessions.sessions.get_mut("motion").unwrap().codec = Some(job.codec);
         job.resets
+    }
+    #[test]
+    fn mp11_unprotected_claim_with_masks_is_refused_and_absent_means_unknown() {
+        let field = json!([{"x":10.,"y":10.,"width":20.,"height":8.}]);
+        let claim = |regions: Value| -> Encode {
+            serde_json::from_value(json!({"id":1,"encoder":"motion","serial":1,"bitrate":8000000,"reset":false,"regions":regions,"unprotected":true})).unwrap()
+        };
+        let mut sessions = Sessions::new(800, 600, std::env::temp_dir());
+        assert!(sessions.begin_encode(&claim(field)).is_err());
+        assert!(!encode(json!([]), true).unprotected, "absent = unknown");
     }
     #[test]
     fn mp11_aligned_stripe_boundary_keeps_damage_and_protection_in_the_encoded_row() {

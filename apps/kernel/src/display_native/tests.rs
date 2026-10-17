@@ -1075,3 +1075,97 @@ fn mp08_openh264_slice_threads_follow_frame_size_not_core_count() {
     assert_eq!(threads(2560, 1600, 1), 1, "a single core never slices");
     assert_eq!(threads(2560, 1600, 0), 1);
 }
+/// MP-11: encode `frames` where each delta draws a new black square on white
+/// and report (guard decodes per frame, repair bounds covering the last frame).
+fn guard_decodes(rows: i32, unprotected: bool, regions: &[Rect]) -> Option<(Vec<u64>, [i32; 4])> {
+    let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, rows, 0) });
+    assert!(!codec.0.is_null());
+    if unsafe { ffi::cx_codec_openh264(codec.0) } != 1 {
+        return None; // x264 rows keep no guard decoder for unprotected frames
+    }
+    let mut raw = vec![255; 128 * 128 * 4];
+    let (mut decodes, mut last) = (Vec::new(), 0);
+    for n in 0..4 {
+        if n > 0 {
+            for y in 0..16 * n {
+                for x in 0..16 {
+                    raw[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3].fill(0);
+                }
+            }
+        }
+        let mut output = [RowResult::default(); 8];
+        let count = unsafe {
+            ffi::cx_codec_unprotected(codec.0, unprotected as i32);
+            ffi::cx_codec_encode(
+                codec.0,
+                raw.as_ptr(),
+                if n == 0 { 255 } else { 0 },
+                regions.as_ptr(),
+                regions.len(),
+                output.as_mut_ptr(),
+            )
+        };
+        assert!(count > 0);
+        let total = unsafe { ffi::cx_codec_guard_decodes(codec.0) };
+        decodes.push(total - last);
+        last = total;
+    }
+    let mut bounds = [0; 4];
+    unsafe {
+        ffi::cx_codec_repair_bounds(
+            codec.0,
+            raw.as_ptr(),
+            std::ptr::null(),
+            255,
+            0,
+            0,
+            128,
+            128,
+            bounds.as_mut_ptr(),
+        );
+    }
+    Some((decodes, bounds))
+}
+#[test]
+fn mp11_guard_decode_is_skipped_only_for_proven_unprotected_delta_frames() {
+    let field = [Rect {
+        left: 36,
+        top: 20,
+        right: 70,
+        bottom: 48,
+    }];
+    for rows in [1, 8] {
+        let Some((unprotected, bounds)) = guard_decodes(rows, true, &[]) else {
+            return;
+        };
+        assert!(
+            unprotected[0] > 0,
+            "the IDR always resynchronises the decoder"
+        );
+        assert_eq!(
+            &unprotected[1..],
+            [0, 0, 0],
+            "proven unprotected deltas skip the decode"
+        );
+        assert!(
+            bounds[0] < bounds[2],
+            "a skipped decode certifies no pixel as exact"
+        );
+        let (unknown, bounds) = guard_decodes(rows, false, &[]).unwrap();
+        assert!(
+            unknown.iter().all(|n| *n > 0),
+            "unknown state decodes every packet"
+        );
+        assert!(bounds[0] >= bounds[2], "decoded white and black stay exact");
+        let (protected, _) = guard_decodes(rows, false, &field).unwrap();
+        assert!(
+            protected.iter().all(|n| *n > 0),
+            "protected frames decode every packet"
+        );
+        let (claimed, _) = guard_decodes(rows, true, &field).unwrap();
+        assert!(
+            claimed.iter().all(|n| *n > 0),
+            "an unprotected claim cannot override masks"
+        );
+    }
+}

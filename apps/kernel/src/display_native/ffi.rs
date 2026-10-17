@@ -156,6 +156,8 @@ extern "C" {
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_openh264(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
+    pub(super) fn cx_codec_unprotected(c: *mut c_void, unprotected: i32);
+    pub(super) fn cx_codec_guard_decodes(c: *mut c_void) -> u64;
     pub(super) fn cx_codec_rate(c: *mut c_void, bitrate: i32) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_codec_close(c: *mut c_void);
