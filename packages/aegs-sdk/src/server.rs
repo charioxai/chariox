@@ -2102,12 +2102,16 @@ mod mp11_delivery_http_tests {
         server: Arc<AegsServer>,
         delivery_id: Option<&'static str>,
     ) -> (u16, serde_json::Value) {
+        post_signed_webhook_at(server, "/webhooks/github/connection", delivery_id).await
+    }
+    async fn post_signed_webhook_at(
+        server: Arc<AegsServer>,
+        path: &'static str,
+        delivery_id: Option<&'static str>,
+    ) -> (u16, serde_json::Value) {
         use hmac::Mac;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/webhooks/github/connection",
-            listener.local_addr().unwrap()
-        );
+        let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let serving = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             http1::Builder::new()
@@ -2155,12 +2159,8 @@ mod mp11_delivery_http_tests {
         serving.await.unwrap();
         response
     }
-    fn subscribed_server(publisher: &PublisherFixture) -> (Arc<AegsServer>, AegsStore) {
-        let store = AegsStore::open(":memory:").unwrap();
-        store
-            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
-            .unwrap();
-        let claim = crate::SubscriptionClaim {
+    fn subscription_claim() -> crate::SubscriptionClaim {
+        crate::SubscriptionClaim {
             binding_id: "binding".into(),
             generator_id: "dev.chariox.github".into(),
             connection_id: "connection".into(),
@@ -2171,9 +2171,28 @@ mod mp11_delivery_http_tests {
             filter: serde_json::Value::Null,
             revision: 1,
             active: true,
-        };
+        }
+    }
+    fn subscribed_server(publisher: &PublisherFixture) -> (Arc<AegsServer>, AegsStore) {
+        subscribed_server_reconciled_by(publisher, "owner")
+    }
+    /// The kernel reconciles subscriptions under its own id, not the connection owner's.
+    fn subscribed_server_reconciled_by(
+        publisher: &PublisherFixture,
+        reconciler: &str,
+    ) -> (Arc<AegsServer>, AegsStore) {
+        let store = AegsStore::open(":memory:").unwrap();
         store
-            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = subscription_claim();
+        store
+            .reconcile_scoped(
+                reconciler,
+                Some(&["owner".to_string()]),
+                &claim.generator_id,
+                std::slice::from_ref(&claim),
+            )
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: claim.generator_id.clone(),
@@ -2458,6 +2477,103 @@ mod mp11_delivery_http_tests {
     }
 
     #[tokio::test]
+    async fn unrouted_webhook_belongs_to_the_connection_owner_not_the_reconciling_kernel() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, _) = subscribed_server_reconciled_by(&publisher, "kernel-1");
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        post_signed_webhook_at(server.clone(), "/webhooks/github", Some("delivery-5")).await;
+
+        let query = |owner| {
+            serde_json::json!({
+                "generator_id": "dev.chariox.github", "owner_id": owner, "limit": 10
+            })
+        };
+        let (_, page) = management_post(&server, "/v1/events/query", "owner", query("owner")).await;
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
+        let (_, page) =
+            management_post(&server, "/v1/events/query", "kernel-1", query("kernel-1")).await;
+        assert!(page["events"].as_array().unwrap().is_empty());
+
+        let replay = |owner| {
+            serde_json::json!({
+                "generator_id": "dev.chariox.github", "owner_id": owner, "delivery_id": "delivery-5"
+            })
+        };
+        let (status, _) =
+            management_post(&server, "/v1/events/replay", "kernel-1", replay("kernel-1")).await;
+        assert_eq!(status, 404);
+        let (status, replayed) =
+            management_post(&server, "/v1/events/replay", "owner", replay("owner")).await;
+        assert_eq!(status, 200);
+        assert_eq!(replayed["event"]["status"], "published");
+    }
+
+    #[tokio::test]
+    async fn retry_keeps_the_authorization_selected_when_the_webhook_arrived() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(1, Ordering::SeqCst);
+        let (server, store) = subscribed_server(&publisher);
+        let (_, body) = post_signed_webhook(server.clone(), Some("delivery-6")).await;
+        assert_eq!(body["status"], "pending");
+
+        // The connection is reauthorized and reconciled before the retry runs.
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 2)
+            .unwrap();
+        let claim = subscription_claim();
+        store
+            .reconcile_scoped(
+                "owner",
+                Some(&["owner".to_string()]),
+                &claim.generator_id,
+                std::slice::from_ref(&claim),
+            )
+            .unwrap();
+        server
+            .deliver_due_inbox(now_ms() + 60 * 60_000)
+            .await
+            .unwrap();
+
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+        let entry = store.inbox_event("delivery-6").unwrap().unwrap();
+        assert_eq!(entry.status, crate::InboxStatus::Unmatched);
+    }
+
+    #[tokio::test]
+    async fn stalled_aeds_does_not_stall_the_retry_worker() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            publisher: server
+                .publisher
+                .clone()
+                .with_request_timeout(Duration::from_millis(200)),
+            ..(*server).clone()
+        });
+        for delivery in ["first", "second"] {
+            store
+                .record_inbox_event(delivery, None, &event(), now_ms())
+                .unwrap();
+        }
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            server.deliver_due_inbox(now_ms() + 1_000),
+        )
+        .await
+        .expect("the retry worker finished its pass")
+        .unwrap();
+        for delivery in ["first", "second"] {
+            let entry = store.inbox_event(delivery).unwrap().unwrap();
+            assert_eq!(entry.attempts, 1);
+            assert!(entry.last_error.is_some(), "{delivery} records the failure");
+        }
+    }
+
+    #[tokio::test]
     async fn mp11_review_oauth_completion_survives_blocked_webhook_publisher() {
         let publisher = PublisherFixture::with_blocked_publication(true);
         let store = AegsStore::open(":memory:").unwrap();
@@ -2477,7 +2593,7 @@ mod mp11_delivery_http_tests {
             active: true,
         };
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         store
             .create_authorization(crate::store::CreateAuthorizationRequest {

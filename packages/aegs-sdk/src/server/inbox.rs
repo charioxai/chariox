@@ -15,6 +15,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
 use super::{enforce_management_owner, error, json, read_body, AegsServer};
+use crate::store::SelectedInterest;
 use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
 const RETRY_WORKER_INTERVAL: Duration = Duration::from_secs(2);
@@ -36,30 +37,48 @@ pub(super) enum InboxAttempt {
 }
 
 impl AegsServer {
-    /// Publishes `normalized` once per matching trigger interest. AEDS dedupes on the occurrence
-    /// id, so repeating a partly published event is safe.
+    /// Publishes `normalized` once per matching trigger interest, selected under the current
+    /// authorization.
     pub(super) async fn publish_to_matching(
         &self,
         normalized: &NormalizedEvent,
         connection_id: Option<&str>,
     ) -> Result<Vec<PublishEventResponse>, String> {
-        let subscriptions = self
+        let selected = self.select_interests(normalized, connection_id).await?;
+        self.publish_selected(normalized, selected).await
+    }
+
+    async fn select_interests(
+        &self,
+        normalized: &NormalizedEvent,
+        connection_id: Option<&str>,
+    ) -> Result<Vec<SelectedInterest>, String> {
+        Ok(self
             .store
             .matching_for_delivery(
                 &self.producer_id,
                 &normalized.event_type,
                 &normalized.connection_scope,
             )
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|(subscription, _)| {
+                connection_id.is_none_or(|value| subscription.connection_id == value)
+                    && metadata_matches_filter(&normalized.metadata, &subscription.filter)
+            })
+            .collect())
+    }
+
+    /// AEDS dedupes on the occurrence id, so repeating a partly published event is safe. An
+    /// interest whose authorization changed since it was selected is skipped.
+    async fn publish_selected(
+        &self,
+        normalized: &NormalizedEvent,
+        selected: Vec<SelectedInterest>,
+    ) -> Result<Vec<PublishEventResponse>, String> {
         let mut interest_keys = HashSet::new();
         let mut responses = Vec::new();
-        for (subscription, generation) in subscriptions {
-            if connection_id.is_some_and(|value| subscription.connection_id != value) {
-                continue;
-            }
-            if !metadata_matches_filter(&normalized.metadata, &subscription.filter) {
-                continue;
-            }
+        for (subscription, generation) in selected {
             if !interest_keys.insert(subscription.event_interest_key.clone()) {
                 continue;
             }
@@ -104,10 +123,21 @@ impl AegsServer {
         let Some(entry) = self.store.claim_inbox_attempt(delivery_id, claimed_at_ms)? else {
             return Ok(InboxAttempt::NotRun);
         };
-        match self
-            .publish_to_matching(&entry.event, entry.route_connection_id.as_deref())
-            .await
-        {
+        let published = async {
+            let selected = match entry.selected {
+                Some(selected) => selected,
+                None => {
+                    let selected = self
+                        .select_interests(&entry.event, entry.route_connection_id.as_deref())
+                        .await?;
+                    self.store.select_inbox_interests(delivery_id, &selected)?;
+                    selected
+                }
+            };
+            self.publish_selected(&entry.event, selected).await
+        }
+        .await;
+        match published {
             Ok(responses) => {
                 self.store
                     .finish_inbox_publication(delivery_id, responses.len(), now_ms())?;

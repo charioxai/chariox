@@ -6,7 +6,11 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
 use super::AegsStore;
-use crate::NormalizedEvent;
+use crate::{NormalizedEvent, SubscriptionClaim};
+
+/// A trigger interest that was eligible for an event, with the connection generation that
+/// authorized it.
+pub type SelectedInterest = (SubscriptionClaim, Option<i64>);
 
 /// Publication attempts one stored event gets before it needs an explicit replay.
 const MAX_PUBLICATION_ATTEMPTS: u32 = 8;
@@ -57,6 +61,9 @@ pub struct InboxEntry {
     /// The connection named by the webhook URL, when the provider routes per connection.
     pub route_connection_id: Option<String>,
     pub event: NormalizedEvent,
+    /// The interests chosen on the first publication attempt. Automatic retries publish to
+    /// these only, so a connection reauthorized in between cannot revive the old event.
+    pub selected: Option<Vec<SelectedInterest>>,
     pub received_at_ms: u64,
     pub status: InboxStatus,
     pub attempts: u32,
@@ -96,6 +103,21 @@ impl AegsStore {
             )
             .map_err(|error| error.to_string())?;
         Ok(inserted == 1)
+    }
+
+    pub fn select_inbox_interests(
+        &self,
+        delivery_id: &str,
+        selected: &[SelectedInterest],
+    ) -> Result<(), String> {
+        let selected_json = serde_json::to_string(selected).map_err(|error| error.to_string())?;
+        self.lock()?
+            .execute(
+                "UPDATE webhook_inbox SET selected_json = ?2 WHERE delivery_id = ?1",
+                params![delivery_id, selected_json],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub fn has_inbox_event(&self, delivery_id: &str) -> Result<bool, String> {
@@ -218,14 +240,16 @@ impl AegsStore {
         Ok(status)
     }
 
-    /// Makes a stored event publishable again with a fresh attempt budget and no backoff.
+    /// Makes a stored event publishable again with a fresh attempt budget and no backoff. The
+    /// owner asked for it, so the interests are selected again under the current authorization.
     /// Returns `false` when no such entry exists.
     pub fn requeue_inbox_event(&self, delivery_id: &str, now_ms: u64) -> Result<bool, String> {
         let connection = self.lock()?;
         let changed = connection
             .execute(
                 "UPDATE webhook_inbox
-                 SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL
+                 SET status = 'pending', attempts = 0, next_attempt_at_ms = ?2, last_error = NULL,
+                     selected_json = NULL
                  WHERE delivery_id = ?1",
                 params![delivery_id, now_ms as i64],
             )
@@ -295,14 +319,20 @@ fn retry_delay_ms(attempts: u32) -> u64 {
         .min(MAX_RETRY_DELAY_MS)
 }
 
-/// An event belongs to an owner when its webhook route or its connection scope matches one of
-/// the owner's connections or trigger subscriptions (`?1` is the owner id).
-const OWNED_BY: &str = "(route_connection_id IN
-         (SELECT connection_id FROM connections WHERE owner_id = ?1)
-     OR connection_scope IN (SELECT connection_scope FROM subscriptions WHERE owner_id = ?1))";
+/// An event belongs to the owner of the connection that received it: the connection named by
+/// the webhook URL, or else the connections whose trigger subscriptions watch the event's scope
+/// (`?1` is the owner id). Subscriptions are reconciled under the kernel's id, so their own
+/// `owner_id` says nothing about who owns the event.
+const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
+     THEN route_connection_id IN (SELECT connection_id FROM connections WHERE owner_id = ?1)
+     ELSE connection_scope IN
+         (SELECT s.connection_scope FROM subscriptions s
+          JOIN connections c ON c.connection_id = s.connection_id
+          WHERE c.owner_id = ?1)
+     END)";
 
 const INBOX_COLUMNS: &str =
-    "delivery_id, route_connection_id, event_json, received_at_ms, status, \
+    "delivery_id, route_connection_id, event_json, selected_json, received_at_ms, status, \
      attempts, next_attempt_at_ms, published_at_ms, publication_count, last_error";
 
 fn inbox_entry(
@@ -322,7 +352,8 @@ fn inbox_entry(
 
 fn read_entry(row: &Row<'_>) -> rusqlite::Result<Result<InboxEntry, String>> {
     let event_json: String = row.get(2)?;
-    let status: String = row.get(4)?;
+    let selected_json: Option<String> = row.get(3)?;
+    let status: String = row.get(5)?;
     let entry = InboxEntry {
         delivery_id: row.get(0)?,
         route_connection_id: row.get(1)?,
@@ -330,16 +361,28 @@ fn read_entry(row: &Row<'_>) -> rusqlite::Result<Result<InboxEntry, String>> {
             Ok(event) => event,
             Err(error) => return Ok(Err(format!("stored webhook event is unreadable: {error}"))),
         },
-        received_at_ms: row.get::<_, i64>(3)? as u64,
+        selected: match selected_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+        {
+            Ok(selected) => selected,
+            Err(error) => {
+                return Ok(Err(format!(
+                    "stored webhook selection is unreadable: {error}"
+                )))
+            }
+        },
+        received_at_ms: row.get::<_, i64>(4)? as u64,
         status: match InboxStatus::parse(&status) {
             Ok(status) => status,
             Err(error) => return Ok(Err(error)),
         },
-        attempts: row.get(5)?,
-        next_attempt_at_ms: row.get::<_, i64>(6)? as u64,
-        published_at_ms: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-        publication_count: row.get(8)?,
-        last_error: row.get(9)?,
+        attempts: row.get(6)?,
+        next_attempt_at_ms: row.get::<_, i64>(7)? as u64,
+        published_at_ms: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+        publication_count: row.get(9)?,
+        last_error: row.get(10)?,
     };
     Ok(Ok(entry))
 }
@@ -431,5 +474,47 @@ mod tests {
         assert!(store.has_inbox_event("pending").unwrap());
         assert!(store.has_inbox_event("recent").unwrap());
         assert!(!store.has_inbox_event("old").unwrap());
+    }
+
+    #[test]
+    fn routed_event_belongs_to_the_routed_connections_owner_even_when_scopes_are_shared() {
+        let store = AegsStore::open(":memory:").unwrap();
+        for (connection, owner) in [("c-a", "owner-a"), ("c-b", "owner-b")] {
+            store
+                .upsert_ready_connection(connection, owner, "github", &serde_json::Value::Null, 1)
+                .unwrap();
+            let claim = SubscriptionClaim {
+                binding_id: format!("binding-{connection}"),
+                generator_id: "dev.chariox.github".into(),
+                connection_id: connection.into(),
+                connection_scope: "scope".into(),
+                event_interest_key: format!("interest-{connection}"),
+                event_type: "pull_request.synchronize".into(),
+                event_type_version: 1,
+                filter: serde_json::Value::Null,
+                revision: 1,
+                active: true,
+            };
+            store
+                .reconcile("kernel", &claim.generator_id, std::slice::from_ref(&claim))
+                .unwrap();
+        }
+        store
+            .record_inbox_event("routed", Some("c-a"), &event(), 1)
+            .unwrap();
+        store
+            .record_inbox_event("unrouted", None, &event(), 2)
+            .unwrap();
+        let ids = |owner| {
+            store
+                .inbox_events_for_owner(owner, 10)
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.delivery_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("owner-a"), vec!["unrouted", "routed"]);
+        assert_eq!(ids("owner-b"), vec!["unrouted"]);
+        assert!(ids("kernel").is_empty());
     }
 }
