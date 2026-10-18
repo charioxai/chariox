@@ -579,8 +579,9 @@ export class InputArbiter {
           } else pageFocused = read;
         }
         await slowStep(this.host, 'key_claim_proof', currentProof());
-        if (!pageFocused) return;
-        this.chromeFocus = null;
+        // A late read that found the page focused ended this claim while the proof ran: the field is fenced below.
+        if (!pageFocused && this.chromeFocus === claim) return;
+        if (this.chromeFocus === claim) this.chromeFocus = null;
       }
       evaluate ??= await slowStep(this.host, 'key_world', focusWorld());
       const {result} = await slowStep(this.host, 'key_sensitive', evaluate(sensitiveFocusExpression(false)));

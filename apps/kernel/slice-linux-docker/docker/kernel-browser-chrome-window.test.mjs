@@ -778,6 +778,27 @@ for (const late of ['escape', 'page focused when the read lands']) test(`MP-11 a
  assert.deepEqual(sent,[],'no key reaches the page field through a stale UI exemption');
 });
 
+// MP-11 (#1016 @80d272f96 P1): a key already waiting for its final proof when the late read lands on a page-focused field
+// loses its Chrome-UI exemption too: it is fenced (text and modifier chord alike), not dispatched.
+for (const next of [{kind:'text',text:'x'},{kind:'key',key:'a',modifiers:2}]) test(`MP-11 a late focus read revokes the exemption of a key awaiting its final proof (${next.kind})`, async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ let release,reads=0,calls=0,armedAt=-1,reached,hold;const gate=new Promise(resolve=>{release=resolve;});const held=new Promise(resolve=>{reached=resolve;});const open=new Promise(resolve=>{hold=resolve;});
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:true}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>{if(armedAt>=0&&++calls===armedAt){reached();await open;}return tab.target_id;}},browser:{
+  inputCapture:{physicalFocus:async()=>{if(!reads++){await gate;return true;}return true;}},resolvePageTarget:async()=>({connection,sessionId:'s'}),
+  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});
+ await send({kind:'text',text:'a'}); // the read exceeds its bound; the record stands for it
+ sent.length=0;armedAt=3; // key_active, key_proof, then the final claim proof of the next key
+ const pending=send(next).then(()=>null,error=>error);
+ await held;release();await new Promise(resolve=>setTimeout(resolve,10)); // the late read lands while the key waits
+ hold();
+ assert.equal((await pending)?.code,'user_domain_sensitive_requires_focus');
+ assert.deepEqual(sent,[],'no key reaches the page field through a revoked UI exemption');
+});
+
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
 for (const physical of [false,true]) test(`MP-11 a document retired during physical focus verification is refused (${physical})`,async()=>{
  const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
