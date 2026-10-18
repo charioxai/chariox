@@ -791,3 +791,31 @@ test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, a
 test('MP-08/MP-10 a busy page answers a reset credit before the kernel gives up on the controller request (RED 4: local_transport_error)',()=>{
  assert.ok(BUSY_RENDERER_MS+5000<=KERNEL_CONTROLLER_DEADLINE_MS,'patience plus the floors of later calls and queue wait stays inside the controller deadline');
 });
+
+// r55 (RED 4): a credit is bounded as a whole. Calls that make their own default 5 s waits (resources, frames, sheets)
+// could stack inside one credit past the controller's 20 s and hold every later credit of the subscription behind them.
+test('MP-08/MP-10/MP-11 one overall deadline per credit: a call that never answers ends the credit as a busy renderer, and the abandoned build issues nothing', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ let release; const hang = new Promise(resolve => { release = resolve; });
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ mirror.sheetOps = () => hang.then(() => []);
+ const unhandled = []; const note = reason => unhandled.push(reason); process.on('unhandledRejection', note);
+ try {
+  const started = performance.now();
+  await assert.rejects(mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry), error => error.code === 'browser_cdp_timeout');
+  assert.ok(performance.now() - started < 500, 'the credit ends at its deadline');
+  assert.equal(stream.resetAt, stream.issued + 1, 'the next credit rebuilds');
+  release(); await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(stream.issued, 0, 'the abandoned build never issues a packet');
+  assert.deepEqual(unhandled, []);
+ } finally { process.off('unhandledRejection', note); }
+});
+
+test('MP-08/MP-10/MP-11 a credit that answers in time is not touched by the deadline', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry);
+ assert.equal(packet.reset, true);
+});

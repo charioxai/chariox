@@ -563,7 +563,7 @@ export class InputArbiter {
       let evaluate;
       if (ownsUiFocus) {
         const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') { await currentProof(); return; }
+        if (typeof capture?.physicalFocus !== 'function') { await slowStep(this.host, 'key_claim_proof', currentProof()); return; }
         let pageFocused = false;
         if (!claim.unread) {
           const read = await within(FOCUS_READ_MS, async () => {
@@ -572,7 +572,7 @@ export class InputArbiter {
           });
           if (read === timedOut) claim.unread = true; else pageFocused = read;
         }
-        await currentProof();
+        await slowStep(this.host, 'key_claim_proof', currentProof());
         if (!pageFocused) return;
         this.chromeFocus = null;
       }
@@ -586,7 +586,7 @@ export class InputArbiter {
     const dispatched = async action => {
       let done;
       const finishUi = ['browser_chrome', 'browser_auxiliary'].includes(source?.surface) ? this.windows.uiInput?.() : null;
-      try { onDispatch?.(); done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw markDispatched(error); }
+      try { onDispatch?.(); done = await slowStep(this.host, 'native_action', action()); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw markDispatched(error); }
       finally { finishUi?.(); }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};

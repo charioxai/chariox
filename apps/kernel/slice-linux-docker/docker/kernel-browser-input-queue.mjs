@@ -44,7 +44,7 @@ export class BusyInputQueue {
     if (queue.entries.length >= this.limit) throw cause ?? Object.assign(Error('MP-08: busy page input queue full'), { code: 'browser_cdp_timeout' });
     const abort = new AbortController();
     queue.entries.push({ command, options: { ...options, signal: abort.signal }, abort, expires: Date.now() + this.ttlMs });
-    this.event('input_parked');
+    this.event('input_parked', cause);
     if (!queue.draining) { queue.draining = true; void this.drain(queue); }
     return this.reply(command, options);
   }

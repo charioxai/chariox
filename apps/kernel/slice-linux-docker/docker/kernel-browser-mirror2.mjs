@@ -48,6 +48,9 @@ const PAINT_HOLD_MS = 2500;
 export const KERNEL_CONTROLLER_DEADLINE_MS = 20_000;
 export const BUSY_RENDERER_MS = 14_000;
 const CREDIT_PATIENCE_MS = 6_500;
+// One credit as a whole ends this long after its long poll and its busy-renderer wait: calls that make their own
+// default waits (resource bytes, frames, sheets) cannot stack past the controller's 20 s.
+const CREDIT_SLACK_MS = 3_000;
 // A hung renderer still ends: the one snapshot in flight is abandoned after this.
 const SNAPSHOT_MS = 120_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
@@ -328,11 +331,23 @@ export class Mirror2 {
   // A renderer that stays busy past the bounded wait is not an observer verdict: while a native preview covers the document
   // the viewer is told to keep waiting (the credit stays on this subscription) instead of being sent to a video fallback.
   async packet(stream, command, scope, signal, deadline, hurry) {
-    try { return await this.build(stream, command, scope, signal, deadline, hurry); }
+    try { return await this.withinDeadline(stream, signal, deadline, limit => this.build(stream, command, scope, limit, deadline, hurry)); }
     catch (error) {
       if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
       return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
     } finally { if (stream.world) stream.world.patience = null; }
+  }
+  // A credit that outlasts its deadline ends as a busy renderer; the abandoned build stops at its next checkpoint
+  // (it may still hold a renderer call) and issues nothing, so the next credit rebuilds.
+  async withinDeadline(stream, signal, deadline, run) {
+    const limit = new AbortController(), ms = Math.max(0, (deadline ?? Date.now()) - Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS);
+    let timer;
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => { limit.abort(); reject(Object.assign(new Error(`browser CDP method credit timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })); }, ms); });
+    const running = run(signal ? AbortSignal.any([signal, limit.signal]) : limit.signal);
+    running.catch(() => {});
+    try { return await Promise.race([running, expired]); }
+    catch (error) { if (limit.signal.aborted && !signal?.aborted) stream.resetAt = Math.max(stream.resetAt ?? 0, stream.issued + 1); throw error; }
+    finally { clearTimeout(timer); }
   }
   async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
@@ -481,6 +496,7 @@ export class Mirror2 {
         if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
       }
     } catch (error) {
+      assertNotCancelled(signal);
       assertDocument();
       // A renderer that does not answer is busy, not an observer verdict: no video fallback and no further renderer fence.
       // Whatever it was asked may still run, so the next credit rebuilds the snapshot.
