@@ -92,3 +92,24 @@ while its reply is withheld; check host-terminal state before retrying. Executor
 a value-free error because parser/provider diagnostics can echo secrets. Exact
 constant refusal, expiry and revocation diagnostics remain available.
 This preserves normal workspace/history authority and is not a file sandbox.
+
+## MP-08 / MP-10 / MP-11: remembered proof across clients
+
+The kernel owns the critical-approval remember window for an owner. A new web
+client or TUI may approve an ordinary critical decision without retyping a
+passkey while that window is live. The client sends the owner's chosen answer
+without proof first. Only a kernel `PASSKEY_REQUIRED` response opens trusted
+passkey entry. An empty field in an already-open ordinary approval popup also
+asks the kernel to check its window; no client-local timer decides permission.
+New sudo windows, access grants and lifetime extensions still need fresh proof.
+Remembering proof never chooses an action or grants a new sudo task.
+
+Required live drill `kernel-access-meta/KA-REMEMBER-WEB-TUI`: use a lane-owned
+identity, the real hosted web and TUI, and an ordinary critical action. Open a
+five-minute remember window in web, approve another action in a fresh TUI with
+no extra passkey entry, then repeat with TUI opening the window and a fresh web
+client approving. Cover web DPR1 and DPR2. Verify that expiry or passkey rotation
+makes the next proof-free answer require trusted entry and leaves the decision
+pending. Verify fresh sudo and access/extension decisions still need proof.
+Record baseline failure, fixed behavior, recordings and exact source identities.
+Source and component tests alone do not accept this row.
