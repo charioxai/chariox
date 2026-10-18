@@ -1,7 +1,7 @@
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
-import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
+import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -692,7 +692,10 @@ export class KernelBrowserHost {
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
-    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.())return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));
+    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
+      try{return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));}
+      catch(error){const png=pngFallbackCommand(error,command);if(!png)throw error;this.timing('native_visible_page_png_fallback',timestamp());command=png;}
+    }
     if(command.op==='display_subscribe'&&command.target) {
       const {subscribeRegion}=await import('./kernel-browser-display-regions.mjs');
       return this.initialPush(command,await subscribeRegion(this,command,scope,signal));

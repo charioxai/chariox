@@ -323,3 +323,12 @@ test('MP-11 visible-page subscribe closes the layout observer when the display i
  for(let n=0;n<20;n++)await new Promise(resolve=>setImmediate(resolve));
  assert.equal(listeners,0);assert.ok(sent.includes('Runtime.removeBinding'));assert.equal(host.displays.size,0);
 });
+
+// r41: a refused pixel attestation degrades the subscription to the CDP display; other refusals pass through.
+test('MP-11 an attestation refusal serves the page from the CDP display, any other refusal propagates',async()=>{
+ const {pngFallbackCommand}=await import('./kernel-browser-page-display.mjs');
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033','chariox-video-dependencies-v1','chariox-relay-binary-v96'],bitrate:8_000_000,device_scale_factor:2};
+ const png=pngFallbackCommand(Error('native attestation RGB differed'),command);
+ assert.deepEqual(png.codecs,['png','chariox-video-dependencies-v1','chariox-relay-binary-v96']);assert.equal(png.tab_id,'t');
+ for(const message of ['MP-11: visible page binding retired','native attestation retired','Capture protection unavailable','stale_document_reference'])assert.equal(pngFallbackCommand(Error(message),command),null,message);
+});

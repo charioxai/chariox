@@ -7,6 +7,7 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
+import {nativeRefusalReason} from './kernel-browser-native.mjs';
 import {observeLayout} from './kernel-browser-layout-observer.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
@@ -24,6 +25,13 @@ export function nativeInputDocumentTarget(host,command,scope,nativeDisplay){
 // 5 s timeout). The layout read only narrows the crop inside the native page rect, so this target's last read under
 // the same emulated metrics and window binding stands in while the renderer is busy; a later read that differs
 // fails the current check and retires the display.
+// r41: a native start refused for want of a pixel match (an animating page while a Vault fill is tracked)
+// serves this subscription from the CDP display (protected PNG captures, no native window) instead of
+// leaving the viewer on stale pixels; the next document subscribes to native again.
+export function pngFallbackCommand(error,command){
+ if(nativeRefusalReason(error)!=='attestation_mismatch')return null;
+ return {...command,codecs:command.codecs.filter(c=>c==='png'||c.startsWith('chariox-'))};
+}
 const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
