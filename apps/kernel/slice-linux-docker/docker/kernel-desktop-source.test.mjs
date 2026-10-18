@@ -227,3 +227,19 @@ test('MP-08/MP-11 a reveal that changes the adopted measurement publishes nothin
   await f.source.gate.step();
   assert.equal(f.source.gate.protectionSerial,2,'the new region is adopted after two equal measurements');
 });
+test('MP-08/MP-11 a new source with a tracked fill measures while it waits for its first frame',async()=>{
+  for(const native of [true,false]){
+    const f=fillFixture();let steps=0;
+    f.source.native=native?f.source.native:null;
+    f.source.startNative=f.source.startHelper=async()=>{};
+    // Frames stay withheld at serial 0: only an adopted measurement lets the first one through.
+    f.source.gate={protectionSerial:0,protection:null,step:async()=>{
+      const started=Date.now();steps++;f.source.gate.protectionSerial=1;
+      f.source.offer(f.frame(1),1,started-5);return {started,verified:1,changed:false};
+    }};
+    try{
+      await f.source.start();
+      assert.equal(steps>=1,true);assert.equal(f.published.length,1,'the first frame is the one the adopted measurement covers');
+    }finally{await f.source.close()}
+  }
+});
