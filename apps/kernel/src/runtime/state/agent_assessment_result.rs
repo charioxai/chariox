@@ -330,6 +330,17 @@ fn fence_private_assessment(
             registration_ids.dedup();
         }
     }
+    // The kernel's own denial or timeout wins over an "achieved" claim.
+    if matches!(value, Assessment::Achieved { .. })
+        && matches!(
+            fact,
+            Some(ProtectedFact::ApprovalDenied | ProtectedFact::ApprovalTimedOut)
+        )
+    {
+        *value = Assessment::Blocked {
+            reason: public.into(),
+        };
+    }
     true
 }
 
@@ -380,8 +391,11 @@ mod tests {
         assert!(class(waiting, Some(ApprovalDenied)).contains("approval denied"));
         assert!(class(cont, Some(FieldNotFound)).contains("protected field not found"));
         assert!(class(achieved, Some(Submitted)).contains("[protected task: completed]"));
-        assert!(class(achieved, Some(ApprovalDenied)).contains("[protected task: approval denied]"));
-        assert!(class(achieved, Some(ApprovalTimedOut)).contains("[protected task: timed out]"));
+        let denied = class(achieved, Some(ApprovalDenied));
+        assert!(denied.contains("blocked") && denied.contains("[protected task: approval denied]"));
+        let timed_out = class(achieved, Some(ApprovalTimedOut));
+        assert!(timed_out.contains("blocked") && timed_out.contains("[protected task: timed out]"));
+        assert!(!denied.contains("PRIVATE") && !timed_out.contains("PRIVATE"));
         for fact in [FieldNotFound, Failed] {
             let out = class(achieved, Some(fact));
             assert!(out.contains("[protected completion details withheld]"), "{out}");

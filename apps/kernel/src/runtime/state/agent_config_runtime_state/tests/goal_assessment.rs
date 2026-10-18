@@ -636,9 +636,16 @@ async fn mp11_protected_achieved_against_failed_step_shows_kernel_fact_or_withho
         (FieldNotFound, "[protected completion details withheld]"),
         (Failed, "[protected completion details withheld]"),
     ] {
-        let (_, receipt) = settle_protected_check(raw, Some(fact)).await;
+        let (state, receipt) = settle_protected_check(raw, Some(fact)).await;
         assert!(receipt.contains(text), "{fact:?}: {receipt}");
         assert!(!receipt.contains("[protected task: completed]") && !receipt.contains("PRIVATE_"));
+        // A kernel denial or timeout settles the task as blocked, not done.
+        let kernel_failure = matches!(fact, ApprovalDenied | ApprovalTimedOut);
+        assert_eq!(
+            state == crate::durable_state::agent_lifecycle::ExecutionState::Done,
+            !kernel_failure,
+            "{fact:?}"
+        );
     }
 }
 
