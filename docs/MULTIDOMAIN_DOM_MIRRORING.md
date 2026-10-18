@@ -382,6 +382,19 @@ The private immutable attestation receipt and `native_region_attestation`
 diagnostic contain area/count fields only (excluded/page/proof/protected/ring
 pixels and media box count), never pixels, content, identifiers or secret values.
 
+MP-08/MP-10/MP-11 (r41): the exact-RGB attestation of a whole-page native video
+display exists so Vault masks line up on the stream. It is required only while a
+kernel-known protected target exists (a policy target or a recorded Vault fill,
+any tab or frame). Without one the owned window is admitted by identity and
+sample geometry (live owned window, active Tab, expected sample size), so a
+continuously animating page (a full-viewport canvas or video) gets native video
+at once. A source admitted that way retires before its next publication when a
+protected target appears; its next start attests exactly. If that exact
+attestation is refused, the subscription is served from the kernel's CDP display
+(protected PNG captures, no native window) instead of ending in a viewer error;
+the next document subscribes to native again. Native frames reach only display
+subscribers; the model's observations remain protected CDP captures.
+
 MP-08/MP-10/MP-11: a mirror's retained input-capture lease emulates page focus
 to keep its renderer awake. Native Chrome text admission must not confuse that
 logical state with the page physically owning the keys. After a kernel-observed
