@@ -1,6 +1,6 @@
-//! MP-08 / MP-10 / MP-11 A04: an objective is not a blanket host grant.
-//! Unknown privileged operations need explicit fresh owner authorization of
-//! their exact typed parameters. Extend changes time, never this envelope.
+//! MP-08 / MP-10 / MP-11 S02: consent covers the task session once.
+//! New host resources still require explicit scope authorization.
+//! Extend changes time, never this envelope.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -20,6 +20,7 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
         if inventory(request)
+            || self.sudo_task_session_covers(id, request)
             || self
                 .owned
                 .sudo_scopes
@@ -32,6 +33,30 @@ impl KernelRuntimeState {
         } else {
             Err(error("this typed operation is outside the owner-approved sudo scope; request fresh owner authorization through chariox_kernel_request"))
         }
+    }
+
+    /// The initial owner sheet names this resource boundary. Matching by
+    /// session, rather than hashing each parameter set, lets the bound task
+    /// do its already-authorized work. Keep this explicit: a request carrying
+    /// a session id can also change host state, identities or capabilities.
+    fn sudo_task_session_covers(&self, id: &str, request: &LocalDaemonRequest) -> bool {
+        let session = match request {
+            LocalDaemonRequest::GetSessionState(r) => &r.session_id,
+            LocalDaemonRequest::ListAgents(r) => &r.session_id,
+            LocalDaemonRequest::AliasSession(r) => &r.session_id,
+            LocalDaemonRequest::AliasAgent(r) => &r.session_id,
+            LocalDaemonRequest::DestroyAgent(r) => &r.session_id,
+            LocalDaemonRequest::FocusAgent(r) => &r.session_id,
+            LocalDaemonRequest::CycleAgentFocus(r) => &r.session_id,
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(r) => &r.session_id,
+            _ => return false,
+        };
+        self.owned
+            .sudo_turns
+            .lock()
+            .expect("access state poisoned")
+            .get(id)
+            .is_some_and(|turn| &turn.session_id == session)
     }
 
     pub(super) fn check_sudo_creator_scope(

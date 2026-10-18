@@ -39,10 +39,14 @@ exhaustion, a refresh failure or an unanswered vault popup returns a typed
 kernel-access error saying "provider catalog refresh failed", ends the window
 as `refused_or_cancelled` and releases the held work.
 
-The initial window permits owner session inventory. Additional typed operations
-require a fresh owner passkey in an operation-scope popup showing their exact
-parameters. That approval binds a digest to the original work and window;
-changed parameters or targets require a new approval. Scope is not inferred
+MP-08 / MP-10 / MP-11 S02: the initial owner sheet authorizes routine work
+inside the task's session for the chosen window: session state, agent inventory,
+session naming, focus and directly-created agent naming/removal. These operations
+reuse task consent, including changed parameters, with no additional popup.
+Every use still checks the live task, run, creator rules and original deadline.
+Other session targets and unclassified host operations require a fresh owner
+passkey in an operation-scope popup showing their exact parameters. That added
+approval binds a digest to the original work and window. Scope is not inferred
 from natural-language similarity or a delegate's result. Extend renews only
 time. Destructive agent/workflow operations retain the immutable direct-creator
 fences even under sudo. Raw credential values and full kernel configuration
@@ -167,3 +171,17 @@ while its reply is withheld; check host-terminal state before retrying. Executor
 a value-free error because parser/provider diagnostics can echo secrets. Exact
 constant refusal, expiry and revocation diagnostics remain available.
 This preserves normal workspace/history authority and is not a file sandbox.
+
+
+## MP-08 / MP-10 / MP-11: task consent drill (S02)
+
+Required live scenario `kernel-sudo/S02`: use a lane-created identity, the real
+built web and TUI, hosted WSS and an official provider. Approve one `/sudo`
+task to rename its own session three times. All three exact typed operations,
+including their different alias parameters, must complete with zero additional
+permission prompts. A harmless rename of another session must still open scope
+consent and refusal must leave that session unchanged. Capture both clients at
+DPR1 and DPR2 and record source/binary identities, the resolved provider model,
+all consent counts and cleanup. The baseline must show the repeated prompt.
+This session-resource drill does not establish unclassified host-operation,
+provider-native tool approval, managed-worker, or full MP-11 acceptance.

@@ -42,6 +42,8 @@ mod remote_command_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod task_scope_tests;
+#[cfg(test)]
 mod vault_tests;
 #[cfg(test)]
 mod window_tests;
