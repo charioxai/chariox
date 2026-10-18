@@ -34,6 +34,10 @@ struct Config {
     /// L3: Node's synchronous retire pipe is fd 3; state records need it.
     #[serde(default)]
     retires: bool,
+    /// O1: a root consumer already reads the owned desktop, so a browser window capture is
+    /// redirected Automatic from the start (otherwise Manual: no blit onto the root).
+    #[serde(default)]
+    root_presented: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,6 +95,15 @@ mod region_tests {
         ));
         // The worker's own bound owner is the only inventory owner.
         assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
+    }
+    // O1: the root-consumer request names only its reply id.
+    #[test]
+    fn o1_root_request_carries_only_its_id() {
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"root":{"id":5}}"#),
+            Ok(Command::Root { .. })
+        ));
+        assert!(serde_json::from_str::<Command>(r#"{"root":{"id":5,"window":1}}"#).is_err());
     }
     // L3: the worker auto-encodes only under a current, unexpired record.
     #[test]
@@ -265,6 +278,15 @@ enum Command {
     Plans {
         plans: bool,
     },
+    /// O1: a root consumer attached; the reply says the window now composites onto the root.
+    Root {
+        root: RootQuery,
+    },
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootQuery {
+    id: u64,
 }
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -555,6 +577,7 @@ pub(super) fn run() -> Result<(), String> {
     super::probe_codec()?;
     // MP-08/MP-10: a viewer at the other density resizes the window just
     // before this start; X applies it asynchronously. Wait up to one second.
+    unsafe { ffi::cx_capture_set_root_presented(i32::from(config.root_presented)) };
     let mut capture = Capture(std::ptr::null_mut());
     for attempt in 0..20 {
         if attempt > 0 {
@@ -994,6 +1017,10 @@ pub(super) fn run() -> Result<(), String> {
                 }
                 // A failed read refuses this request only; the capture keeps running.
                 // The walk runs on its own thread: it never blocks readbacks or encodes.
+                Command::Root { root: q } => {
+                    let presented = unsafe { ffi::cx_capture_present_root(capture.0) } != 0;
+                    reply(q.id, json!({ "presented": presented }))?;
+                }
                 Command::Windows { windows: q } => match &*inventory.get_or_insert_with(|| super::inventory::Inventory::start(owner).ok()) {
                     Some(inventory) => inventory.ask(q.id),
                     None => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { desktopApplication } from './desktop-applications.mjs';
+import { newRoot } from './kernel-browser-root-present.mjs';
 import { processIdentity, settleOwned, descendants, observedDescendants } from './linux-owned-process.mjs';
 const readyDesktops = new WeakSet();
 export const ownsDesktopDisplay = desktop => readyDesktops.has(desktop) && Boolean(desktop.binding()) &&
@@ -179,7 +180,7 @@ export class LinuxOwnedDesktop {
       await delay(100);
       const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
       if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env) });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env), root: newRoot() });
       readyDesktops.add(this);
       return this.current;
     } catch (error) { await this.stop(); throw error; }

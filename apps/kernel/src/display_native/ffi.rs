@@ -121,6 +121,8 @@ extern "C" {
         modifiers: i32,
     ) -> i32;
     pub(super) fn cx_capture_plans(c: *mut c_void, enabled: i32);
+    pub(super) fn cx_capture_set_root_presented(presented: i32);
+    pub(super) fn cx_capture_present_root(c: *mut c_void) -> i32;
     pub(super) fn cx_webp_lossless(
         bgrx: *const u8,
         stride: i32,
