@@ -124,6 +124,42 @@ pub(super) fn exists(path: &Path) -> Result<bool, DaemonError> {
     }
 }
 
+/// True when the control directory holds nothing but the receipt and its grant
+/// binding. The root helper lists the root-private directory; callers get only
+/// the verdict.
+pub(super) fn directory_is_clean(receipt: &Path) -> Result<bool, DaemonError> {
+    match helper("residue", receipt, None)?.as_slice() {
+        b"clean" => Ok(true),
+        b"residue" => Ok(false),
+        _ => Err(error("control directory verdict is invalid")),
+    }
+}
+
+fn root_directory_is_clean(receipt: &Path) -> Result<bool, DaemonError> {
+    if !super::control_ownership::prepare(receipt)? {
+        return Err(error("legacy control transition is still pending"));
+    }
+    validate_parent(receipt)?;
+    only_receipt_and_grant_binding(receipt)
+}
+
+fn only_receipt_and_grant_binding(receipt: &Path) -> Result<bool, DaemonError> {
+    let parent = receipt
+        .parent()
+        .ok_or_else(|| error("missing control parent"))?;
+    for entry in
+        fs::read_dir(parent).map_err(|_| error("control directory could not be inspected"))?
+    {
+        let name = entry
+            .map_err(|_| error("control directory could not be inspected"))?
+            .file_name();
+        if Some(name.as_os_str()) != receipt.file_name() && name != "bootstrap-grant-binding.json" {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn persist(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(error("control state is too large"));
@@ -231,6 +267,13 @@ pub fn run(action: &str, path: &Path) -> Result<(), DaemonError> {
                 b"pending"
             })
             .map_err(|_| error("control transition output failed")),
+        "residue" => std::io::stdout()
+            .write_all(if root_directory_is_clean(path)? {
+                b"clean"
+            } else {
+                b"residue"
+            })
+            .map_err(|_| error("control output failed")),
         "read" => std::io::stdout()
             .write_all(&read_root(path)?)
             .map_err(|_| error("control output failed")),
@@ -362,6 +405,28 @@ mod tests {
         assert!(requires_helper(Some("2"), Some(1000)));
         assert!(requires_helper(Some("2"), None));
         assert!(requires_helper(Some("3"), Some(1000)));
+    }
+
+    #[test]
+    fn root_directory_verdict_accepts_only_the_receipt_and_its_grant_binding() {
+        let root = std::env::temp_dir().join(format!("chariox-residue-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let receipt = root.join("bootstrap-receipt.json");
+        fs::write(&receipt, b"{}").unwrap();
+        fs::write(root.join("bootstrap-grant-binding.json"), b"{}").unwrap();
+        assert!(only_receipt_and_grant_binding(&receipt).unwrap());
+        for residue in ["previous-kernel-state.json", "release-override.json"] {
+            fs::write(root.join(residue), b"{}").unwrap();
+            assert!(
+                !only_receipt_and_grant_binding(&receipt).unwrap(),
+                "{residue}"
+            );
+            fs::remove_file(root.join(residue)).unwrap();
+        }
+        fs::create_dir(root.join("disposable-worker")).unwrap();
+        assert!(!only_receipt_and_grant_binding(&receipt).unwrap());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
