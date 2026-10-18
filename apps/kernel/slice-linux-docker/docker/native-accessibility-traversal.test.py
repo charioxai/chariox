@@ -240,7 +240,7 @@ class TraversalTest(unittest.TestCase):
 
     def foreground(self, pid=200, name='Writer'):
         window = types.SimpleNamespace(get_attributes=lambda: types.SimpleNamespace(map_state=2),
-            get_full_property=lambda atom, kind: types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
+            get_full_property=lambda atom, kind: None if atom=='_GTK_FRAME_EXTENTS' else types.SimpleNamespace(value=[pid] if atom=='_NET_WM_PID' else name.encode()))
         root = types.SimpleNamespace(id=1,get_full_property=lambda atom, kind: types.SimpleNamespace(value=[9]),query_tree=lambda:types.SimpleNamespace(children=[]),translate_coords=lambda *args:types.SimpleNamespace(x=100,y=80))
         window.id=9
         window.query_tree=lambda:types.SimpleNamespace(parent=root)
@@ -266,18 +266,13 @@ class TraversalTest(unittest.TestCase):
 
     def test_mp08_mp11_kernel_browser_window_reveals_all_but_proven_protected_regions(self):
         self.foreground(pid=200, name='Chromium')
-        class Document(Node):
-            def queryComponent(self):
-                return types.SimpleNamespace(getExtents=lambda coords: types.SimpleNamespace(x=100, y=120, width=300, height=160))
-            def queryDocument(self):
-                return types.SimpleNamespace(getAttributeValue=lambda key: 'https://example.test/' if key == 'URI' else '')
-        self.desktop = Node('Desktop', 'desktop', [Node('Chromium', 'application', [Node('Chromium', 'frame', [Document('Page', 'document web')])])])
-        page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'viewport': [300, 160], 'dpr': 1, 'zoom': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
+        self.desktop = Node('Desktop', 'desktop', [Node('Chromium', 'application', [Node('Chromium', 'frame')])])
+        page = {'url': 'https://example.test/', 'window': [100, 80, 300, 200], 'native': [300, 160], 'viewport': [300, 160], 'dpr': 1, 'zoom': 1, 'regions': [[10, 10, 20, 20]], 'chrome': False}
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
         self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
-        # Unmeasured, moved/resized or navigated windows have no fill placement.
-        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'url': 'https://other.test/'}]}]:
+        # Unmeasured, moved/resized windows and disagreeing native sizes have no fill placement.
+        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'native': [300, 100]}]}, {'pages': [{**page, 'native': None}]}]:
             self.assertEqual(snapshot(protection)['masks'], [])
             self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
         # Browser accessibility content remains withheld from the structured tree.

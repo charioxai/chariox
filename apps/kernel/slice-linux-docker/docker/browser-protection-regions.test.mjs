@@ -1,7 +1,7 @@
 // MP-08/MP-11: unchanged-capture fence regression.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ProtectionGate,measureBrowserProtection,awaitPresented} from './browser-protection-regions.mjs';
+import {ProtectionGate,activeBrowserPage,measureBrowserProtection,awaitPresented} from './browser-protection-regions.mjs';
 
 for (const result of [true,false,'failure']) {
   test(`MP-08/MP-11: presentation session settles on ${result}`, async () => {
@@ -67,4 +67,32 @@ test('MP-11 no recorded fill targets means no generic password or echo scan', as
   }};
   assert.deepEqual((await measurePageProtection(connection,'s','t',{targets:[],values:['registered']})).regions,[]);
   assert(calls.every(m=>!m.startsWith('DOM.')));
+});
+
+const placementConnection=(url='https://example.test/a')=>({async send(method,params) {
+  if(method==='Target.getTargets')return {targetInfos:[{targetId:'t',type:'page',url}]};
+  if(method==='Target.getTargetInfo')return {targetInfo:{targetId:params.targetId,url}};
+  if(method==='Browser.getWindowForTarget')return {windowId:3,bounds:{left:40,top:30,width:900,height:700,windowState:'normal'}};
+  if(method==='Target.attachToTarget')return {sessionId:'s'};
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'l',url}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+  if(method==='Runtime.evaluate')return {result:{value:{visible:true,dpr:1,width:892,height:553}}};
+  if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
+  return {};
+}});
+test('MP-11 every measured page carries the extension native Tab size that places it on X11, none when unavailable',async()=>{
+  const browser={browserGeneration:1,fillTargets:new Map([['k',{target_id:'other',browser_generation:1}]]),async ensureConnection(){return placementConnection()},
+    nativeViewport:async target=>({target_id:target,width:892,height:553})};
+  const policy={unknown:false,targets:[],values:[]};
+  assert.deepEqual((await measureBrowserProtection(browser,policy)).pages.map(p=>[p.window,p.native,p.viewport]),[[[40,30,900,700],[892,553],[892,553]]]);
+  delete browser.nativeViewport;
+  assert.equal((await measureBrowserProtection(browser,policy)).pages[0].native,null);
+  browser.nativeViewport=async()=>null;
+  assert.equal((await measureBrowserProtection(browser,policy)).pages[0].native,null);
+});
+test('MP-11 the hit-test page is the active Tab from CDP and the extension, never an accessibility tree',async()=>{
+  const browser={async ensureConnection(){return placementConnection()},nativeViewport:async target=>{assert.equal(target,undefined);return {target_id:'t',width:892,height:553};}};
+  assert.deepEqual(await activeBrowserPage(browser),{url:'https://example.test/a',window:[40,30,900,700],native:[892,553]});
+  assert.equal(await activeBrowserPage({...browser,nativeViewport:async()=>null}),null);
+  assert.equal(await activeBrowserPage({ensureConnection:browser.ensureConnection}),null);
 });

@@ -147,6 +147,20 @@ test('MP-08/MP-10/MP-11 each native agent mutation carries the current browser p
 });
 
 
+test('MP-11 an agent click carries the CDP-placed active page for the X11 hit test, other inputs do not',async()=>{
+ const sent=[],page={url:'https://example.test/',window:[0,0,900,700],native:[892,553]},requests=[];
+ const browser={nativeViewport:async()=>({target_id:'t',width:892,height:553}),async ensureConnection(){return {async send(method){requests.push(method);return method==='Target.getTargetInfo'?{targetInfo:{url:page.url}}:{bounds:{left:0,top:0,width:900,height:700}};}};}};
+ const scoped={...binding,ownedProcesses:async()=>[{pid:300,started:'2'}],browser:()=>browser};
+ const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{sent.push(request);return {applied:true}}});
+ await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:10,y:10}},{});
+ assert.deepEqual(sent[0].browser_page,page);
+ await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'key',key:'CTRL+s'}},{});
+ assert.equal(Object.hasOwn(sent[1],'browser_page'),false);
+ scoped.browser=()=>({nativeViewport:async()=>{throw Error('extension gone');}});
+ await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:10,y:10}},{});
+ assert.equal(sent[2].browser_page,null,'an unplaceable page is browser UI to the helper');
+});
+
 test('MP-11 R1 agent pointer holds require the same human admission as keyboard holds',async()=>{
   let calls=0;
   const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
