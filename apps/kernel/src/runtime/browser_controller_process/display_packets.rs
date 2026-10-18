@@ -130,6 +130,21 @@ impl DisplayPackets {
         Err("MP-10: native packet path requires Unix".into())
     }
 
+    /// L3: unlink a packet the kernel refused without reading it.
+    pub(super) fn discard(&self, name: &str) {
+        if name.len() != 37
+            || !name.ends_with(".json")
+            || !name.bytes().take(32).all(|b| b.is_ascii_hexdigit())
+        {
+            return;
+        }
+        #[cfg(unix)]
+        if let Ok(name) = std::ffi::CString::new(name) {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) };
+        }
+    }
+
     pub(super) fn root(&self) -> &std::path::Path {
         &self.root
     }

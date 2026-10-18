@@ -380,12 +380,14 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-readback.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-tab-state.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-state-signal.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-viewport.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs \

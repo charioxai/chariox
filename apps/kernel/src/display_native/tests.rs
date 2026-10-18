@@ -968,3 +968,219 @@ fn mp08_native_codec_prefers_runtime_openh264_and_keeps_x264_optional() {
         assert_eq!(unsafe { ffi::cx_codec_openh264(codec.0) } == 1, !x264);
     }
 }
+
+/// Scalar definition of the rate model's input: gradient activity of the 16x16 luma blocks that differ
+/// from the previous input, and the previous luma those blocks leave behind.
+fn reference_activity(
+    y: &[u8],
+    stride: usize,
+    previous: &mut [u8],
+    compare: bool,
+    width: usize,
+    height: usize,
+) -> (f64, i32) {
+    let (mut total, mut changed) = (0f64, 0);
+    for my in 0..height / 16 {
+        for mx in 0..width / 16 {
+            let at = |buffer: usize, row: usize| (my * 16 + row) * buffer + mx * 16;
+            let differs = !compare
+                || (0..16).any(|r| y[at(stride, r)..][..16] != previous[at(width, r)..][..16]);
+            if !differs {
+                continue;
+            }
+            let mut sum = 64i32;
+            for r in 0..16 {
+                let row = &y[at(stride, r)..][..16];
+                for x in 1..16 {
+                    sum += (row[x] as i32 - row[x - 1] as i32).abs();
+                }
+                if r > 0 {
+                    let above = &y[at(stride, r - 1)..][..16];
+                    for x in 0..16 {
+                        sum += (row[x] as i32 - above[x] as i32).abs();
+                    }
+                }
+            }
+            total += sum as f64;
+            changed += 1;
+            for r in 0..16 {
+                let (from, to) = (at(stride, r), at(width, r));
+                previous[to..to + 16].copy_from_slice(&y[from..from + 16]);
+            }
+        }
+    }
+    (total, changed)
+}
+
+#[test]
+fn mp08_openh264_activity_pass_matches_the_scalar_definition_and_keeps_the_previous_luma() {
+    // Deterministic pseudo-random scroll-like frames: some blocks repeat, some shift, some change.
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for (width, height, stride) in [(64usize, 48usize, 64usize), (1264, 708, 1280), (48, 40, 48)] {
+        let mut previous_c = vec![0u8; width * height];
+        let mut previous_ref = vec![0u8; width * height];
+        let mut frame = vec![0u8; stride * height];
+        for n in 0..6 {
+            for (index, value) in frame.iter_mut().enumerate() {
+                // Rows past the macroblock grid and the stride padding stay constant: never read.
+                let block_row = index / stride / 16;
+                if n == 0 || (block_row + n) % 3 != 0 {
+                    *value = (next() >> 24) as u8;
+                }
+            }
+            let compare = n > 0;
+            let (expected, expected_changed) =
+                reference_activity(&frame, stride, &mut previous_ref, compare, width, height);
+            let mut changed = 0i32;
+            let got = unsafe {
+                ffi::cx_openh264_activity(
+                    frame.as_ptr(),
+                    stride as i32,
+                    previous_c.as_mut_ptr(),
+                    compare as i32,
+                    width as i32,
+                    height as i32,
+                    &mut changed,
+                )
+            };
+            assert_eq!(got, expected, "{width}x{height} frame {n}");
+            assert_eq!(changed, expected_changed, "{width}x{height} frame {n}");
+            // The covered luma area of `previous` matches; unchanged blocks keep the earlier copy.
+            let covered = |buffer: &[u8]| -> Vec<u8> {
+                (0..height / 16 * 16)
+                    .flat_map(|row| buffer[row * width..][..width / 16 * 16].to_vec())
+                    .collect()
+            };
+            assert_eq!(covered(&previous_c), covered(&previous_ref));
+        }
+    }
+}
+
+#[test]
+fn mp08_openh264_slice_threads_follow_frame_size_not_core_count() {
+    let threads = |w, h, limit| unsafe { ffi::cx_openh264_slice_threads(w, h, limit) };
+    // Quiet-host measurement: sliced threads only add CPU below ~3 MP and never shorten these frames.
+    for (w, h) in [(1264, 708), (1280, 720), (1280, 800), (1920, 1080)] {
+        assert_eq!(threads(w, h, 4), 1, "{w}x{h}");
+    }
+    for (w, h) in [(2528, 1416), (2560, 1600)] {
+        assert_eq!(threads(w, h, 4), 2, "{w}x{h}");
+    }
+    assert_eq!(threads(2560, 1600, 1), 1, "a single core never slices");
+    assert_eq!(threads(2560, 1600, 0), 1);
+}
+/// MP-11: encode `frames` where each delta draws a new black square on white
+/// and report (guard decodes per frame, repair bounds covering the last frame).
+fn guard_decodes(rows: i32, unprotected: bool, regions: &[Rect]) -> Option<(Vec<u64>, [i32; 4])> {
+    let codec = Codec(unsafe { ffi::cx_codec_open(128, 128, 8000000, rows, 0) });
+    assert!(!codec.0.is_null());
+    if unsafe { ffi::cx_codec_openh264(codec.0) } != 1 {
+        return None; // x264 rows keep no guard decoder for unprotected frames
+    }
+    let mut raw = vec![255; 128 * 128 * 4];
+    let (mut decodes, mut last) = (Vec::new(), 0);
+    for n in 0..4 {
+        if n > 0 {
+            for y in 0..16 * n {
+                for x in 0..16 {
+                    raw[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3].fill(0);
+                }
+            }
+        }
+        let mut output = [RowResult::default(); 8];
+        let count = unsafe {
+            ffi::cx_codec_unprotected(codec.0, unprotected as i32);
+            ffi::cx_codec_encode(
+                codec.0,
+                raw.as_ptr(),
+                if n == 0 { 255 } else { 0 },
+                regions.as_ptr(),
+                regions.len(),
+                output.as_mut_ptr(),
+            )
+        };
+        assert!(count > 0);
+        let total = unsafe { ffi::cx_codec_guard_decodes(codec.0) };
+        decodes.push(total - last);
+        last = total;
+    }
+    let mut bounds = [0; 4];
+    unsafe {
+        ffi::cx_codec_repair_bounds(
+            codec.0,
+            raw.as_ptr(),
+            std::ptr::null(),
+            255,
+            0,
+            0,
+            128,
+            128,
+            bounds.as_mut_ptr(),
+        );
+    }
+    Some((decodes, bounds))
+}
+#[test]
+fn mp11_guard_decode_is_skipped_only_for_proven_unprotected_delta_frames() {
+    let field = [Rect {
+        left: 36,
+        top: 20,
+        right: 70,
+        bottom: 48,
+    }];
+    for rows in [1, 8] {
+        let Some((unprotected, bounds)) = guard_decodes(rows, true, &[]) else {
+            return;
+        };
+        assert!(
+            unprotected[0] > 0,
+            "the IDR always resynchronises the decoder"
+        );
+        assert_eq!(
+            &unprotected[1..],
+            [0, 0, 0],
+            "proven unprotected deltas skip the decode"
+        );
+        assert!(
+            bounds[0] < bounds[2],
+            "a skipped decode certifies no pixel as exact"
+        );
+        let (unknown, bounds) = guard_decodes(rows, false, &[]).unwrap();
+        assert!(
+            unknown.iter().all(|n| *n > 0),
+            "unknown state decodes every packet"
+        );
+        assert!(bounds[0] >= bounds[2], "decoded white and black stay exact");
+        let (protected, _) = guard_decodes(rows, false, &field).unwrap();
+        assert!(
+            protected.iter().all(|n| *n > 0),
+            "protected frames decode every packet"
+        );
+        let (claimed, _) = guard_decodes(rows, true, &field).unwrap();
+        assert!(
+            claimed.iter().all(|n| *n > 0),
+            "an unprotected claim cannot override masks"
+        );
+    }
+}
+#[test]
+fn mp11_held_readback_blocks_instead_of_spinning_on_damage() {
+    use std::time::Duration;
+    // Two leased frames in flight, new damage, a free slot: the readback is held
+    // until credit arrives, so the poll must sleep (credit and retire fds wake it).
+    for elapsed in [Duration::ZERO, Duration::from_millis(5)] {
+        let wait = super::worker::poll_timeout(true, true, true, true, elapsed);
+        assert!(wait >= 1, "MP-11: a held readback polls with {wait}ms");
+    }
+    assert_eq!(
+        super::worker::poll_timeout(true, true, false, true, Duration::from_millis(5)),
+        0,
+        "an unheld dirty readback still goes at once"
+    );
+}
