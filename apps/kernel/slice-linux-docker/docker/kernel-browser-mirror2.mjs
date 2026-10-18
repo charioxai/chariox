@@ -302,7 +302,9 @@ export class Mirror2 {
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
-    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
+    // The credit's own clock starts here: waiting behind an earlier credit of the subscription spends it too.
+    const hard = arrival + Math.min(wait + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), KERNEL_CONTROLLER_DEADLINE_MS - 1000);
+    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard));
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
@@ -330,8 +332,8 @@ export class Mirror2 {
   }
   // A renderer that stays busy past the bounded wait is not an observer verdict: while a native preview covers the document
   // the viewer is told to keep waiting (the credit stays on this subscription) instead of being sent to a video fallback.
-  async packet(stream, command, scope, signal, deadline, hurry) {
-    try { return await this.withinDeadline(stream, signal, deadline, limit => this.build(stream, command, scope, limit, deadline, hurry)); }
+  async packet(stream, command, scope, signal, deadline, hurry, hard) {
+    try { return await this.withinDeadline(stream, signal, hard ?? (deadline ?? Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), limit => this.build(stream, command, scope, limit, deadline, hurry)); }
     catch (error) {
       if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
       return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
@@ -339,8 +341,8 @@ export class Mirror2 {
   }
   // A credit that outlasts its deadline ends as a busy renderer; the abandoned build stops at its next checkpoint
   // (it may still hold a renderer call) and issues nothing, so the next credit rebuilds.
-  async withinDeadline(stream, signal, deadline, run) {
-    const limit = new AbortController(), ms = Math.max(0, (deadline ?? Date.now()) - Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS);
+  async withinDeadline(stream, signal, end, run) {
+    const limit = new AbortController(), ms = Math.max(0, end - Date.now());
     let timer;
     const expired = new Promise((_, reject) => { timer = setTimeout(() => { limit.abort(); reject(Object.assign(new Error(`browser CDP method credit timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })); }, ms); });
     const running = run(signal ? AbortSignal.any([signal, limit.signal]) : limit.signal);

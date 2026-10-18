@@ -819,3 +819,15 @@ test('MP-08/MP-10/MP-11 a credit that answers in time is not touched by the dead
  const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry);
  assert.equal(packet.reset, true);
 });
+
+test('MP-08/MP-10/MP-11 a credit queued behind a stuck one spends its own deadline from its arrival, not from its turn', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 100; mirror.creditSlackMs = 50;
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ mirror.sheetOps = () => new Promise(() => {});
+ const credit = () => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope').catch(error => error);
+ const started = performance.now();
+ const [first, second] = await Promise.all([credit(), credit()]);
+ assert.equal(first.code, 'browser_cdp_timeout'); assert.equal(second.code, 'browser_cdp_timeout');
+ assert.ok(performance.now() - started < 250, `the queued credit ends with the first one's deadline, not a full deadline later: ${Math.round(performance.now() - started)} ms`);
+});
