@@ -8,6 +8,19 @@ spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).wi
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class ClipboardTests(unittest.TestCase):
+    def test_mp11_visible_password_dots_are_safe_selection_bytes_but_values_and_unknown_sources_are_not(self):
+        import tempfile
+        cases=[('●'*26,'password text',False,('private-value',),True),('•'*26,'password text',False,('private-value',),True),('●'*26,'text',False,('private-value',),False),('●'*26,'password text',True,('private-value',),False),('●•','password text',False,('private-value',),False),('●'*26,'password text',False,('●'*26,),False)]
+        for text,role,browser,values,allowed in cases:
+            with self.subTest(role=role,browser=browser,allowed=allowed):
+                p,t,a,o,c=self.setup();p['browser']=browser;t['nodes']=[{'pid':77,'protected':True,'role':role,'states':['showing']}]
+                c.get_selection_owner.side_effect=lambda selection:o if selection=='PRIMARY' else None
+                replies=lambda args,**kw:SimpleNamespace(stdout=b'123' if 'TIMESTAMP' in args else text.encode(),returncode=0)
+                with tempfile.TemporaryDirectory() as root,patch.dict('os.environ',{'XDG_RUNTIME_DIR':root}),patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',side_effect=replies):
+                    if allowed:m.input_admission([p],a,values=values)()
+                    else:
+                        with self.assertRaises(ValueError):m.input_admission([p],a,values=values)()
+
     def test_mp11_public_primary_can_clear_during_typing_but_private_replacement_is_refused(self):
         import tempfile
         p,t,a,o,c=self.setup();t['nodes']=[{'pid':77,'protected':False,'name':'Username','text':'public','states':['showing']},{'pid':77,'protected':True}]

@@ -132,7 +132,14 @@ def public_selection(connection,processes,tree,accessibility,selection,values):
     previous=proofs.get(selection,{})
     cached=previous.get('source')==list(source) and previous.get('policy')==policy and digest in [previous.get('initial'),previous.get('current')]
     variants=tuple(protected_variants(values))
-    public=not data or any(data in str(node.get(field,'')).encode() and not any(secret in str(node.get(field,'')).encode() for secret in variants) for node in tree.get('nodes',[]) if node.get('pid')==identity[1] and not node.get('protected') and 'showing' in node.get('states',[]) for field in ['name','text'])
+    # GTK may retain a PRIMARY selection containing only the password dots
+    # already visible on screen. These bytes cannot reveal the Vault value;
+    # selection_snapshot still rejects any actual known secret first.
+    try:
+        mask=data.decode('utf-8')
+        visible_dots=bool(mask) and len(set(mask))==1 and mask[0] in ('●','•') and any(node.get('pid')==identity[1] and node.get('protected') and node.get('role')=='password text' and 'showing' in node.get('states',[]) for node in tree.get('nodes',[]))
+    except UnicodeDecodeError:visible_dots=False
+    public=visible_dots or not data or any(data in str(node.get(field,'')).encode() and not any(secret in str(node.get(field,'')).encode() for secret in variants) for node in tree.get('nodes',[]) if node.get('pid')==identity[1] and not node.get('protected') and 'showing' in node.get('states',[]) for field in ['name','text'])
     if not cached and not public:return None
     if not cached and path is not None:
         initial=previous.get('initial') if previous.get('source')==list(source) and previous.get('policy')==policy else digest
