@@ -44,6 +44,25 @@ pub(super) fn validate_auth_result(value: &serde_json::Value) -> Result<(), Daem
     })
 }
 
+// MP-08/MP-10/MP-11: report only proof metadata, never provider result text.
+pub(super) fn verification_metadata(value: &serde_json::Value) -> String {
+    let type_is_result = value.get("type").and_then(serde_json::Value::as_str) == Some("result");
+    let subtype_is_success =
+        value.get("subtype").and_then(serde_json::Value::as_str) == Some("success");
+    let is_error_false = value.get("is_error").and_then(serde_json::Value::as_bool) == Some(false);
+    let marker_matches = value
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| text.trim() == AUTH_MARKER);
+    let output_tokens = value
+        .get("usage")
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "unreported".into());
+    format!("type_is_result={type_is_result}; subtype_is_success={subtype_is_success}; is_error_false={is_error_false}; marker_matches={marker_matches}; output_tokens={output_tokens}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

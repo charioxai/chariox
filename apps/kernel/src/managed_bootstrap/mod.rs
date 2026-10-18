@@ -1,9 +1,14 @@
 mod cloud;
+mod lifecycle_credential;
+pub(crate) use lifecycle_credential::managed_lifecycle_credential_is_bound;
 mod context_plan;
+mod control_ownership;
+pub mod control_state;
 mod data_volume_observation;
 mod freshness;
 mod provider_path;
 mod release;
+mod release_recovery;
 mod state;
 mod supervisor;
 pub mod worker;
@@ -204,6 +209,23 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
 fn confirmed_managed_kernel_registration_with_receipt_fallback(
     default_receipt_path: std::path::PathBuf,
 ) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    let Some(receipt) = managed_kernel_receipt_from_env(default_receipt_path)? else {
+        return Ok(None);
+    };
+    if receipt.status != BootstrapReceiptStatus::Confirmed {
+        return Ok(None);
+    }
+    Ok(Some(ConfirmedManagedKernelRegistration {
+        environment_id: receipt.environment_id,
+        machine_id: receipt.machine_id,
+        kernel_id: receipt.kernel_id,
+        context_plan: receipt.context_plan,
+    }))
+}
+
+fn managed_kernel_receipt_from_env(
+    default_receipt_path: std::path::PathBuf,
+) -> Result<Option<BootstrapReceipt>, DaemonError> {
     // MP-08: a co-resident managed receipt must not select an ordinary kernel.
     // Explicit managed configuration retains the fail-closed bootstrap checks.
     if std::env::var_os(MANAGED_PROVIDER_TOPOLOGY_ENV).is_none()
@@ -221,7 +243,7 @@ fn confirmed_managed_kernel_registration_with_receipt_fallback(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or(default_receipt_path);
-    if !receipt_path.exists() {
+    if !control_state::exists(&receipt_path)? {
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
@@ -231,15 +253,7 @@ fn confirmed_managed_kernel_registration_with_receipt_fallback(
     let BootstrapReceiptDocument::ManagedEnvironment(receipt) = receipt else {
         return Ok(None);
     };
-    if receipt.status != BootstrapReceiptStatus::Confirmed {
-        return Ok(None);
-    }
-    Ok(Some(ConfirmedManagedKernelRegistration {
-        environment_id: receipt.environment_id,
-        machine_id: receipt.machine_id,
-        kernel_id: receipt.kernel_id,
-        context_plan: receipt.context_plan,
-    }))
+    Ok(Some(receipt))
 }
 
 pub(crate) fn authoritative_managed_release_evidence_from_env(
@@ -254,7 +268,7 @@ pub(crate) fn authoritative_managed_release_evidence_from_env(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
-    if !receipt_path.exists() {
+    if !control_state::exists(&receipt_path)? {
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
@@ -332,7 +346,9 @@ fn prepare_managed_kernel_with_documents(
     receipt: Option<BootstrapReceipt>,
     envelope: Option<ManagedBootstrapEnvelope>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
+    if control_state::exists(&state::disposable_worker_release_override_path(
+        &config.receipt_path,
+    )?)? {
         return Err(bootstrap_error(
             "disposable worker release override has no matching worker receipt",
         ));
@@ -348,13 +364,8 @@ fn prepare_managed_kernel_with_documents(
         .ok_or_else(|| {
             bootstrap_error("managed bootstrap envelope and receipt are both missing")
         })?;
-    let release = verify_release(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        expected_digest,
-        &config.kernel_binary,
-    )?;
+    let release =
+        verify_configured_release(config, expected_digest, release_recovery::recover_pending)?;
     let identity =
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
     let confirmation = match (receipt, envelope) {
@@ -378,6 +389,25 @@ fn prepare_managed_kernel_with_documents(
         release,
         confirmation,
     })
+}
+
+fn verify_configured_release(
+    config: &BootstrapConfig,
+    expected_digest: &str,
+    recover: impl FnOnce() -> Result<bool, DaemonError>,
+) -> Result<VerifiedRelease, DaemonError> {
+    release_recovery::verify_or_recover(
+        || {
+            verify_release(
+                &config.manifest_path,
+                &config.signature_path,
+                &config.public_key_path,
+                expected_digest,
+                &config.kernel_binary,
+            )
+        },
+        recover,
+    )
 }
 
 #[cfg(test)]

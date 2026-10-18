@@ -1990,4 +1990,75 @@ mod receipt_tests {
             );
         }
     }
+
+    // MP-08 / MP-10: a user-authorized notification retry arrives under a fresh steer ID, so the
+    // worker's unresolved Dispatching receipt for the earlier attempt does not block it while the
+    // earlier attempt itself is still never replayed.
+    #[test]
+    fn a_fresh_steer_id_is_not_blocked_by_an_unresolved_dispatching_receipt() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("worker should boot");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel-retry",
+                "home-session-retry",
+                "home-agent-retry",
+                false,
+                "user-retry",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let target = "home-prompt-retry";
+        let (run_id, _) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "active target\n", Vec::new())
+            .expect("worker should accept the active prompt");
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some(target.to_string());
+
+        let prepare = |app: &mut crate::app::DaemonApp, steer_id: &str| {
+            RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
+                &leased_agent.id,
+                steer_id,
+                target,
+                "payload\n",
+                "",
+                Vec::new(),
+                None,
+            )
+        };
+        assert!(prepare(&mut app, "notification-1")
+            .expect("first attempt prepares")
+            .1
+            .is_some());
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .reserve_leased_prompt_steer(&leased_agent.id, "notification-1", target, &run_id)
+            .unwrap());
+        assert!(
+            prepare(&mut app, "notification-1").is_err(),
+            "the uncertain attempt is never replayed"
+        );
+        assert!(
+            prepare(&mut app, "notification-1-retry1")
+                .expect("the retry has its own steer ID")
+                .1
+                .is_some(),
+            "a user-authorized retry must dispatch under a fresh steer ID"
+        );
+    }
 }

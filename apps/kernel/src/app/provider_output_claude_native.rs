@@ -30,7 +30,8 @@ use attachments::{
     format_claude_native_attachment_prompt_suffix, join_claude_context,
 };
 use permission::{
-    append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
+    acknowledge_claude_headless_prompt, append_claude_headless_debug,
+    claude_headless_accepted_prompt, claude_headless_bypass_confirmation_visible,
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
     claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_denied,
     claude_headless_workspace_trust_interaction_id,
@@ -222,7 +223,7 @@ fn acknowledge_claude_headless_dispatch_from_hook_events(
                 observed_prompt,
             )
         {
-            write_claude_native_marker(context_file, &format!("accepted:{dispatch_prompt_id}"));
+            acknowledge_claude_headless_prompt(context_file, dispatch_prompt_id);
             return;
         }
     }
@@ -264,7 +265,7 @@ fn acknowledge_claude_headless_steering_enqueue(
     if enqueued_prompts.iter().any(|prompt| {
         claude_headless_dispatch_matches_prompt(context_file, dispatch_prompt_id, prompt)
     }) {
-        write_claude_native_marker(context_file, &format!("accepted:{dispatch_prompt_id}"));
+        acknowledge_claude_headless_prompt(context_file, dispatch_prompt_id);
     }
 }
 
@@ -322,8 +323,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             None
         };
         for input in take_claude_permission_inputs(context_file) {
-            self.app
-                .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
+            if !input.is_empty() {
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
+            }
             if resolving_permission {
                 write_claude_native_marker(
                     context_file,
@@ -421,9 +424,31 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;
                 let marker = claude_native_marker(context_file);
-                if let Some(dispatch_prompt_id) =
-                    marker.as_deref().and_then(claude_native_dispatch_prompt_id)
-                {
+                let dispatch_prompt_id = marker
+                    .as_deref()
+                    .and_then(claude_native_dispatch_prompt_id)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        // A permission may reach the pump before this hook.
+                        // Recover only the exact submitted text and current
+                        // hook origin, never an unrelated native user prompt.
+                        if provider_run.provider() != "claude-headless"
+                            || !active_prompt.as_ref().is_some_and(|active| {
+                                event.get("native_prompt_id").and_then(Value::as_str)
+                                    == Some(active.id())
+                            })
+                        {
+                            return None;
+                        }
+                        let retry = read_claude_headless_submit_retry(context_file);
+                        claude_headless_dispatch_matches_prompt(
+                            context_file,
+                            &retry.prompt_id,
+                            prompt,
+                        )
+                        .then_some(retry.prompt_id)
+                    });
+                if let Some(dispatch_prompt_id) = dispatch_prompt_id.as_deref() {
                     // Idle submissions acknowledge through UserPromptSubmit.
                     // A busy Claude run records steering as a native queue
                     // enqueue instead, but some versions also emit this hook;
@@ -442,10 +467,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             prompt,
                         );
                     if matches_managed_dispatch {
-                        write_claude_native_marker(
-                            context_file,
-                            &format!("accepted:{dispatch_prompt_id}"),
-                        );
+                        acknowledge_claude_headless_prompt(context_file, dispatch_prompt_id);
                         self.consume_accepted_failed_request_context(
                             session_id,
                             &agent_id,
@@ -584,8 +606,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
             return Ok(());
         };
+        let account_owner = crate::account_profile::provider_account_authority_for_run(
+            &self.app.config,
+            &self.app.provider_account_profiles,
+            provider_run,
+        )?;
         self.app.provider_account_profiles.update_usage(
-            provider_run.owner_user_id(),
+            &account_owner,
             provider_run.provider(),
             provider_run.account_profile(),
             snapshot,
@@ -1112,7 +1139,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         write_claude_hook_permission_tombstone(context_file, event);
         clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
-            interaction_id,
+            interaction_id.clone(),
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
@@ -1150,8 +1177,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
         let request_id = request_id.to_string();
-        std::thread::spawn(
-            move || match bridge.request_blocking(&session_id, interaction) {
+        std::thread::spawn(move || {
+            let responded = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution) => {
                     let allowed = resolution.reply.as_deref() == Some("allow")
                         || resolution.choice_id.as_deref() == Some("allow_once");
@@ -1166,7 +1193,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         } else {
                             "Denied through Chariox."
                         },
-                    );
+                    )
                 }
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -1183,10 +1210,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         &request_id,
                         false,
                         "Chariox permission bridge failed.",
-                    );
+                    )
                 }
-            },
-        );
+            };
+            if responded {
+                // MP-08 / MP-10 / MP-11: hook replies travel as JSON, not
+                // keystrokes. The existing exact-interaction mailbox lets the
+                // normal bridge release this wait without clearing a newer
+                // permission or sending approval keys into the composer.
+                write_claude_permission_input(&context_file, &interaction_id, &[]);
+            }
+        });
         Ok(())
     }
 
@@ -1207,6 +1241,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
+        // Check before attempting any PTY write: Stop may have cleared the
+        // transient marker after the provider already accepted this prompt.
+        if provider_run.provider() == "claude-headless"
+            && claude_headless_accepted_prompt(context_file).as_deref()
+                == Some(dispatch.prompt_id.as_str())
+        {
+            self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
+            return Ok(ClaudeNativeDispatchAttempt::Completed);
+        }
         if let Some(message) = claude_workspace_trust_failure(context_file) {
             return Err(DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
@@ -1301,7 +1344,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         } else {
             format!("injected:{}", prompt.id)
         };
-        if marker.as_deref() == Some(completed_marker.as_str()) {
+        if marker.as_deref() == Some(completed_marker.as_str())
+            || (provider_run.provider() == "claude-headless"
+                && claude_headless_accepted_prompt(context_file).as_deref() == Some(prompt.id))
+        {
             self.consume_accepted_failed_request_context(session_id, &agent_id, context_file)?;
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
@@ -1331,10 +1377,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         agent_id: &str,
         context_file: &str,
     ) -> Result<(), DaemonError> {
-        let Some(marker) = claude_native_marker(context_file) else {
-            return Ok(());
-        };
-        let Some(prompt_id) = marker.strip_prefix("accepted:") else {
+        let accepted_prompt = claude_headless_accepted_prompt(context_file).or_else(|| {
+            claude_native_marker(context_file)
+                .and_then(|marker| marker.strip_prefix("accepted:").map(str::to_owned))
+        });
+        let Some(prompt_id) = accepted_prompt.as_deref() else {
             return Ok(());
         };
         if self

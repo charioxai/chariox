@@ -154,3 +154,26 @@ fn quiet_active_claude_tool_survives_the_native_stall_guard() {
         "the guard remains active after the tool has settled"
     );
 }
+
+// MP-05/MP-08/MP-10: an execution error without `error`/`result` text keeps
+// Claude's own reason instead of a generic failure.
+#[test]
+fn mp05_mp08_claude_result_error_keeps_the_reported_reason() {
+    let batch = drain(vec![json!({
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": true,
+        "errors": ["No conversation found with session ID: fixture"],
+    })]);
+    assert_eq!(
+        batch.terminal_failure.as_deref(),
+        Some("Claude Code reported an error (error_during_execution): No conversation found with session ID: fixture")
+    );
+    let batch = drain(vec![
+        json!({"type": "result", "subtype": "error_max_turns", "is_error": true, "result": ""}),
+    ]);
+    assert_eq!(
+        batch.terminal_failure.as_deref(),
+        Some("Claude Code reported an error (error_max_turns)")
+    );
+}

@@ -539,11 +539,7 @@ impl KernelRuntimeState {
             );
         }
         if let Some(usage) = poll_result.account_usage.clone() {
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_owner_user_id(
-                    &owned.config_projection.snapshot(),
-                    provider_run.owner_user_id(),
-                );
+            let account_owner_user_id = owned.provider_account_owner_for_run(&provider_run)?;
             owned.provider_account_profiles.update_usage(
                 &account_owner_user_id,
                 provider_run.provider(),

@@ -1,3 +1,5 @@
+export const appAutomationInjectionMinimumProtocolVersion = 491
+export const appAutomationInjectionCapability = "app_automation_injection_v1"
 export const appHostActionMinimumProtocolVersion = 409
 export const appFileRevokeMinimumProtocolVersion = 394
 export const appDataSnapshotRestoreMinimumProtocolVersion = 410

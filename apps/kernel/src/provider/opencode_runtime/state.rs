@@ -133,6 +133,28 @@ impl OpenCodeRuntimeState {
             .is_some_and(|submitted_at| submitted_at.elapsed() >= duration)
     }
 
+    pub(super) fn active_prompt_has_assistant(&self) -> bool {
+        let Some(active_user_message_id) = self.active_user_message_id.as_deref() else {
+            return false;
+        };
+        self.message_parent_ids
+            .iter()
+            .any(|(message_id, parent_id)| {
+                parent_id.as_deref() == Some(active_user_message_id)
+                    && self
+                        .message_roles
+                        .get(message_id)
+                        .is_some_and(|role| role == "assistant")
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn backdate_active_prompt_for_tests(&mut self, by: Duration) {
+        self.active_prompt_submitted_at = self
+            .active_prompt_submitted_at
+            .and_then(|submitted_at| submitted_at.checked_sub(by));
+    }
+
     pub(in crate::provider) fn baseline_existing_messages(&mut self, messages: &[OpenCodeMessage]) {
         self.preexisting_message_ids = messages
             .iter()

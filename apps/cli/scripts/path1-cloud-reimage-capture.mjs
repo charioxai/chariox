@@ -134,9 +134,11 @@ export async function capturePath1CloudReimage({ client, requestContract, bindin
   requireValue(validId(receipt.oldRelayRealmId) && validId(receipt.newRelayRealmId),
     "Cloud receipt lacks relay realm identities")
   const sharedRealm = receipt.oldRelayRealmId === receipt.newRelayRealmId
+  // Only a per-generation realm is retired; the account home realm stays active.
+  const generationRealm = /^realm_managed_env_.+_g[1-9][0-9]*$/.test(receipt.oldRelayRealmId)
   requireValue(sharedRealm
     ? receipt.residueChecks?.cloudOldRelayRealmDisabled === false
-    : receipt.residueChecks?.cloudOldRelayRealmDisabled === true && binding.sharedControllerTargetId === undefined,
+    : receipt.residueChecks?.cloudOldRelayRealmDisabled === generationRealm && binding.sharedControllerTargetId === undefined,
   "Cloud receipt has incomplete realm retirement evidence")
   requireValue(/^[1-9][0-9]{0,17}$/.test(receipt.resourceObservation?.rebuildActionId)
     && validId(receipt.providerServerId) && validId(receipt.providerImageId), "Cloud receipt lacks the provider rebuild binding")

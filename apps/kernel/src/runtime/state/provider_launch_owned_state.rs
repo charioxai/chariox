@@ -154,6 +154,22 @@ impl KernelRuntimeOwnedState {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
+            // MP-01/MP-08: native reuse derives authority from the admitted run,
+            // including internal requests which do not carry the private lease bit.
+            if request
+                .agent_id
+                .as_deref()
+                .and_then(|id| {
+                    self.provider_run_projection
+                        .get_for_agent(&request.session_id, id)
+                })
+                .is_some_and(|run| {
+                    self.provider_run_projection
+                        .is_leased_provider_run(run.id())
+                })
+            {
+                request = request.with_leased_account_authority();
+            }
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_for_launch(
                     &config,
@@ -369,6 +385,253 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn mp11_leased_account_authority_is_not_a_serialized_client_input() {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session", "codex", "codex", "profile", "default",
+        )
+        .with_leased_account_authority();
+        let mut value = serde_json::to_value(&request).unwrap();
+        assert!(value.get("leased_account_authority").is_none());
+        value["leased_account_authority"] = serde_json::json!(true);
+        value["leased_credential_authority"] = serde_json::json!(true);
+        let decoded: crate::provider::LaunchProviderRequest =
+            serde_json::from_value(value).unwrap();
+        assert!(!decoded.leased_account_authority);
+        assert!(!decoded.leased_credential_authority);
+    }
+
+    #[tokio::test]
+    async fn mp01_leased_launch_preserves_the_remote_account_namespace() {
+        assert_leased_account_namespace("codex", LeasePreparationCheck::Runtime).await;
+    }
+
+    #[tokio::test]
+    async fn mp08_leased_claude_vault_guard_preserves_account_namespace() {
+        assert_leased_account_namespace("claude", LeasePreparationCheck::VaultGuard).await;
+    }
+
+    #[tokio::test]
+    async fn mp01_leased_app_prompt_dispatch_preserves_account_namespace() {
+        assert_leased_account_namespace("codex", LeasePreparationCheck::AppDispatch).await;
+    }
+
+    #[tokio::test]
+    async fn mp01_leased_prompt_reuse_preserves_account_namespace() {
+        assert_leased_account_namespace("codex", LeasePreparationCheck::PromptReuse).await;
+    }
+
+    #[tokio::test]
+    async fn mp08_leased_vault_credential_authenticates_native_run_reuse() {
+        assert_leased_account_namespace("claude", LeasePreparationCheck::DelegatedCredentialReuse)
+            .await;
+    }
+
+    enum LeasePreparationCheck {
+        Runtime,
+        VaultGuard,
+        AppDispatch,
+        PromptReuse,
+        DelegatedCredentialReuse,
+    }
+
+    async fn assert_leased_account_namespace(provider: &str, check: LeasePreparationCheck) {
+        let vaulted_guard = matches!(check, LeasePreparationCheck::VaultGuard);
+        let app_dispatch = matches!(check, LeasePreparationCheck::AppDispatch);
+        crate::test_support::isolated_env_test!();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        if vaulted_guard {
+            config.user_config.credential_vault.backend =
+                crate::config::CredentialVaultBackend::CharioxEncrypted;
+        }
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".into(),
+            email: "fixture@example.test".into(),
+            account_id: "account".into(),
+            user_id: "cloud-owner".into(),
+            account_slug: "fixture".into(),
+            realm_id: "realm".into(),
+            relay_url: "ws://127.0.0.1:1".into(),
+            issuer_id: "issuer".into(),
+            client_id: None,
+            client_alias: None,
+            machine_id: None,
+            machine_alias: None,
+            machine_credential: None,
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: None,
+        });
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("cloud-owner", provider, "Leased account")
+            .unwrap();
+        let expected = registry
+            .resolve_environment("cloud-owner", provider, &profile.profile_id)
+            .unwrap();
+        let request = {
+            let mut leases = crate::app::RemoteLeaseRuntime::new(&mut app);
+            let lease = leases
+                .create_execution_lease("home", "session", "agent", false, "cloud-owner")
+                .unwrap();
+            let agent = leases
+                .create_leased_agent(
+                    &lease.id,
+                    provider,
+                    &profile.profile_id,
+                    Some("default".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            leases
+                .prepare_leased_native_provider_launch(
+                    &agent.id,
+                    provider,
+                    provider,
+                    &profile.profile_id,
+                    "default",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    Some(Vec::new()),
+                    crate::extension::RemoteExtensionManifest::default(),
+                )
+                .unwrap()
+        };
+        if matches!(
+            check,
+            LeasePreparationCheck::PromptReuse | LeasePreparationCheck::DelegatedCredentialReuse
+        ) {
+            let request = if matches!(check, LeasePreparationCheck::DelegatedCredentialReuse) {
+                let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+                environment.insert(
+                    crate::provider::CLAUDE_OAUTH_TOKEN_ENV,
+                    zeroize::Zeroizing::new("synthetic-remote-setup-token".into()),
+                );
+                request.with_provider_credential_env(environment)
+            } else {
+                crate::test_support::authenticate_provider_account(
+                    &registry,
+                    "cloud-owner",
+                    provider,
+                    &profile.profile_id,
+                )
+                .unwrap();
+                request
+            };
+            let mut request = request;
+            let _consumed_secret = std::mem::take(&mut request.provider_credential_env);
+            let mut run = crate::provider::RuntimeProviderRun::new(
+                "native-lease-turn-reuse",
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "test-native-lease".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: Default::default(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: None,
+                    structured_endpoint: None,
+                },
+            );
+            run.mark_running();
+            if matches!(check, LeasePreparationCheck::DelegatedCredentialReuse) {
+                let agent = app
+                    .agents
+                    .get_agent(request.agent_id.as_deref().unwrap())
+                    .unwrap();
+                assert!(run.authenticates_leased_claude_agent(&agent));
+                // MP-08/MP-11: main retains a selected alias while the live
+                // leased run holds the concrete profile and delegated credential.
+                let mut selected = request.clone();
+                crate::account_profile::bind_provider_account_authority(
+                    &mut selected,
+                    "cloud-owner".into(),
+                    "default".into(),
+                );
+                let mut alias_run = run.clone();
+                alias_run.resolved_provider_account = selected.resolved_provider_account;
+                let mut alias_agent = agent.clone();
+                alias_agent.set_account_profile(Some("default".into()));
+                assert!(alias_run.authenticates_leased_claude_agent(&alias_agent));
+                alias_agent.set_account_profile(Some("another-account".into()));
+                assert!(!alias_run.authenticates_leased_claude_agent(&alias_agent));
+                let mut value = serde_json::to_value(&run).unwrap();
+                assert!(value.get("leased_credential_authority").is_none());
+                value["leased_credential_authority"] = serde_json::json!(true);
+                let restored: crate::provider::RuntimeProviderRun =
+                    serde_json::from_value(value).unwrap();
+                assert!(!restored.authenticates_leased_claude_agent(&agent));
+                let mut ended = run.clone();
+                ended.mark_ended();
+                assert!(!ended.authenticates_leased_claude_agent(&agent));
+                let mut different = request.clone();
+                different.account_profile = "other-profile".into();
+                let other = crate::provider::RuntimeProviderRun::new(
+                    "other-credential-profile",
+                    &different,
+                    crate::provider::ProviderLaunchResult {
+                        endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                        process_label: "test-other-profile".into(),
+                        pty_target: None,
+                        pty_program: None,
+                        pty_args: Vec::new(),
+                        pty_env: Default::default(),
+                        pty_env_remove: Vec::new(),
+                        working_directory: None,
+                        structured_endpoint: None,
+                    },
+                );
+                assert!(!other.authenticates_leased_claude_agent(&agent));
+            }
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.mark_leased_provider_run(run.id());
+            let reused = app
+                .ensure_prompt_provider_run_for_agent(
+                    &request.session_id,
+                    request.agent_id.as_deref().unwrap(),
+                )
+                .expect("prompt reuse must authenticate its lease owner, not the host alias");
+            assert_eq!(reused, run.id());
+            return;
+        }
+        let request = if app_dispatch {
+            let mut request = request;
+            // A normal prompt dispatch derives authority from its trusted backing agent.
+            request.leased_account_authority = false;
+            app.prepare_app_provider_launch_request(request, "leased app prompt dispatch")
+                .expect("app launch preparation must preserve its admitted lease namespace")
+        } else {
+            request
+        };
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prepared = if vaulted_guard {
+            runtime
+                .prepare_provider_launch_request_with_vault(request, "leased Vault guard")
+                .await
+        } else {
+            runtime
+                .owned
+                .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".into())
+        }
+        .expect("leased profile must stay in its lease-owner namespace");
+        assert_eq!(prepared.provider_account_env, expected);
+    }
 
     #[tokio::test]
     async fn mp08_mp11_refused_delegated_grant_preserves_kernel_enrollment() {
@@ -1517,6 +1780,9 @@ mod tests {
     async fn vaulted_claude_launch_waits_for_chariox_unlock_interaction() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        // MP-08/MP-10: this policy fixture needs executable admission only,
+        // and must not depend on a host login or run a real provider turn.
+        std::env::set_var("CHARIOX_CLAUDE_BIN", "/bin/true");
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-vaulted-claude-launch-{}-{}",
             std::process::id(),

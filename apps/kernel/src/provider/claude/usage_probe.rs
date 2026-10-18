@@ -107,7 +107,10 @@ pub(super) fn verify_claude_account_credential_with_timeout(
         &[
             "Reply with exactly CHARIOX_AUTH_OK.",
             "--model",
-            "haiku",
+            // MP-08/MP-10: pinned older CLIs resolve `haiku` to 4.5, which
+            // refuses the proof marker. Keep the proof strict and request the
+            // current small model explicitly through the official CLI.
+            "claude-haiku-5-5",
             "--max-turns",
             "1",
             "--system-prompt",
@@ -175,8 +178,9 @@ pub(super) fn verify_claude_account_credential_with_timeout(
             .and_then(serde_json::Value::as_u64)
             .map(|count| count.to_string())
             .unwrap_or_else(|| "unreported".into());
+        let proof = super::auth_probe::verification_metadata(&result);
         Err(ClaudeCredentialCheckError::Inconclusive(format!(
-            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn})"
+            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn}; {proof})"
         )))
     }
 }
@@ -853,6 +857,72 @@ process.stdout.write(JSON.stringify({
                 assert!(message.contains("turns=1; valid_single_turn=false"));
                 assert!(!message.contains("synthetic-private-provider-detail"));
             }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: model selection must not depend on a pinned CLI's alias.
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_uses_explicit_current_haiku_model() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+            "num_turns":1, "result":"CHARIOX_AUTH_OK", "usage":{"output_tokens":7}});
+        fs::write(&executable, format!("#!/bin/sh\nprevious=\nfound=0\nfor value do\n  if [ \"$previous\" = --model ]; then [ \"$value\" = claude-haiku-5-5 ] || exit 17; found=1; fi\n  previous=$value\ndone\n[ \"$found\" = 1 ] || exit 18\nprintf '%s\\n' '{result}'\n")).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        verify_claude_account_credential_with_timeout(
+            &executable,
+            &environment,
+            Duration::from_secs(2),
+        )
+        .expect("MP-08/MP-10 pinned older CLIs must not resolve an obsolete haiku alias");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: classify a completed but invalid proof without provider text.
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_diagnostic_distinguishes_marker_and_usage_without_provider_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        for (reply, output_tokens, marker_matches) in [
+            ("synthetic-private-account-detail", 7, false),
+            ("CHARIOX_AUTH_OK", 0, true),
+        ] {
+            let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+                "num_turns":1, "result":reply, "usage":{"output_tokens":output_tokens}});
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{result}'\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let error = verify_claude_account_credential_with_timeout(
+                &executable,
+                &environment,
+                Duration::from_secs(2),
+            )
+            .expect_err("invalid proof must remain inconclusive");
+            assert!(matches!(error, ClaudeCredentialCheckError::Inconclusive(_)));
+            let message = error.into_daemon_error().to_string();
+            assert!(!message.contains("synthetic-private-account-detail"));
+            assert!(!message.contains("CHARIOX_AUTH_OK"));
+            assert!(message.contains("type_is_result=true"));
+            assert!(message.contains("subtype_is_success=true"));
+            assert!(message.contains("is_error_false=true"));
+            assert!(message.contains(&format!("marker_matches={marker_matches}")));
+            assert!(message.contains(&format!("output_tokens={output_tokens}")));
         }
         fs::remove_dir_all(root).unwrap();
     }

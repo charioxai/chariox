@@ -7,6 +7,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::ManagedProviderTopology;
 use crate::error::DaemonError;
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -15,16 +16,18 @@ const MAX_SIGNATURE_BYTES: u64 = 1024;
 const MAX_ATTESTATION_BYTES: u64 = 16 * 1024;
 const MAX_SERVICE_UNIT_BYTES: u64 = 32 * 1024;
 const MANAGED_BOOTSTRAP_PATH: &str = "/usr/local/bin/chariox-managed-bootstrap";
-const MANAGED_BOOTSTRAP_SERVICE_PATH: &str =
-    "/etc/systemd/system/chariox-managed-bootstrap.service";
-const RETIRED_SERVICE_NAMES: &[&str] = &[
-    "chariox-disposable-worker-bootstrap.service",
-    "chariox-kernel.service",
-    "chariox-relay.service",
-];
+const RETIRED_SERVICE_NAMES: &[&str] = &["chariox-kernel.service", "chariox-relay.service"];
 const BUILD_ATTESTATION_PATH: &str = "/usr/lib/chariox/build-attestation.json";
 const BUILD_ATTESTATION_SIGNATURE_PATH: &str = "/usr/lib/chariox/build-attestation.sig";
 const BUILDER_PUBLIC_KEY_PATH: &str = "/usr/lib/chariox/builder-public-key";
+const APP_RELEASE_ARTIFACTS: [(&str, &str); 3] = [
+    ("chariox-app-package", "/usr/local/bin/chariox-app-package"),
+    ("chariox-app-storage", "/usr/libexec/chariox-app-storage"),
+    (
+        "chariox-app-storage.service",
+        "/etc/systemd/system/chariox-app-storage.service",
+    ),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VerifiedRelease {
@@ -292,29 +295,70 @@ pub(super) fn verify_release_evidence(
         .map_err(|_| release_error("build attestation signature is invalid"))?;
     let attestation: BuildAttestation = serde_json::from_slice(&attestation_bytes)
         .map_err(|_| release_error("build attestation is invalid"))?;
+    // MP-09/MP-11: current releases attest App binaries too; legacy releases have no App set.
+    let has_apps = manifest.artifacts.iter().any(|artifact| {
+        APP_RELEASE_ARTIFACTS
+            .iter()
+            .any(|(name, _)| artifact.name == *name)
+    });
+    let expected_artifacts: &[&str] = if has_apps {
+        &[
+            "chariox-kernel",
+            "chariox-managed-bootstrap",
+            "chariox-relay",
+            "chariox-app-package",
+            "chariox-app-storage",
+        ]
+    } else {
+        &[
+            "chariox-kernel",
+            "chariox-managed-bootstrap",
+            "chariox-relay",
+        ]
+    };
     if attestation.schema_version != 1
         || !is_git_object_id(&attestation.source_commit)
         || !is_git_object_id(&attestation.source_tree)
         || attestation.source_commit != source_commit
         || attestation.source_tree != source_tree
         || attestation.target != expected_release_target()
-        || attestation.artifacts.len() != 3
     {
         return Err(release_error(
             "build attestation source identity or target is invalid",
         ));
     }
-    for (artifact, expected_name) in attestation.artifacts.iter().zip([
-        "chariox-kernel",
-        "chariox-managed-bootstrap",
-        "chariox-relay",
-    ]) {
-        if artifact.name != expected_name {
+    if attestation.artifacts.len() != expected_artifacts.len() {
+        return Err(release_error(
+            "build attestation artifact set does not match the signed release",
+        ));
+    }
+    for (artifact, expected_name) in attestation.artifacts.iter().zip(expected_artifacts) {
+        if artifact.name != *expected_name {
             return Err(release_error(
                 "build attestation artifact order or identity is invalid",
             ));
         }
         validate_digest(&artifact.sha256)?;
+    }
+    if has_apps {
+        // All three App artifacts are required and pinned by the release manifest;
+        // its two binaries must also match the independently signed build attestation.
+        for (index, (name, path)) in APP_RELEASE_ARTIFACTS.iter().enumerate() {
+            read_pinned_release_artifact(&manifest, name, path, &active_release_path)?;
+            if index < 2
+                && manifest
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.name == *name)
+                    .is_none_or(|artifact| {
+                        artifact.sha256 != attestation.artifacts[3 + index].sha256
+                    })
+            {
+                return Err(release_error(
+                    "build attestation App artifact does not match the signed release",
+                ));
+            }
+        }
     }
     let kernel_artifact = &attestation.artifacts[0];
     let manifest_kernel = manifest
@@ -359,10 +403,18 @@ pub(super) fn verify_release_evidence(
     })
 }
 
+pub(super) fn managed_bootstrap_service_name(topology: ManagedProviderTopology) -> &'static str {
+    match topology {
+        ManagedProviderTopology::Path1 => "chariox-path1-managed-bootstrap.service",
+        ManagedProviderTopology::SharedHost => "chariox-managed-bootstrap.service",
+    }
+}
+
 pub(super) fn verify_managed_bootstrap_service_binding(
     release: &VerifiedReleaseEvidence,
     service_unit_path: &Path,
     service_wants_path: &Path,
+    topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let manifest_path = release
         .active_release_path
@@ -371,10 +423,12 @@ pub(super) fn verify_managed_bootstrap_service_binding(
         read_bounded_regular_file(&manifest_path, MAX_MANIFEST_BYTES, "release manifest")?;
     let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|_| release_error("release manifest is invalid"))?;
+    let service_name = managed_bootstrap_service_name(topology);
+    let service_path = format!("/etc/systemd/system/{service_name}");
     let service = read_pinned_release_artifact(
         &manifest,
-        "chariox-managed-bootstrap.service",
-        MANAGED_BOOTSTRAP_SERVICE_PATH,
+        service_name,
+        &service_path,
         &release.active_release_path,
     )?;
     let service_bytes = read_bounded_regular_file(
@@ -403,14 +457,49 @@ pub(super) fn verify_managed_bootstrap_service_binding(
     let wants_dir = service_wants_path
         .parent()
         .ok_or_else(|| release_error("managed bootstrap wants path has no directory"))?;
+    let other_topology = match topology {
+        ManagedProviderTopology::Path1 => ManagedProviderTopology::SharedHost,
+        ManagedProviderTopology::SharedHost => ManagedProviderTopology::Path1,
+    };
+    // MP-07/MP-09/MP-11: the production installer publishes dormant signed
+    // facades for both home topologies and the disposable-worker role. Presence
+    // alone is not stale state; another enabled bootstrap is still forbidden.
+    for name in [
+        managed_bootstrap_service_name(other_topology),
+        "chariox-disposable-worker-bootstrap.service",
+    ] {
+        if service_entry_exists(&wants_dir.join(name))? {
+            return Err(release_error(
+                "conflicting Chariox bootstrap service is enabled",
+            ));
+        }
+        let facade = service_dir.join(name);
+        if service_entry_exists(&facade)? {
+            let signed = read_pinned_release_artifact(
+                &manifest,
+                name,
+                &format!("/etc/systemd/system/{name}"),
+                &release.active_release_path,
+            )?;
+            require_release_symlink(&facade, &signed)?;
+        }
+    }
     for name in RETIRED_SERVICE_NAMES {
         for path in [service_dir.join(name), wants_dir.join(name)] {
-            if fs::symlink_metadata(&path).is_ok() {
+            if service_entry_exists(&path)? {
                 return Err(release_error("retired Chariox service residue is present"));
             }
         }
     }
     Ok(())
+}
+
+fn service_entry_exists(path: &Path) -> Result<bool, DaemonError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(release_io_error("managed bootstrap service binding", error)),
+    }
 }
 
 fn require_release_symlink(path: &Path, expected: &Path) -> Result<(), DaemonError> {

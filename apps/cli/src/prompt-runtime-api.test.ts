@@ -73,7 +73,7 @@ test("submitPromptWithRecovery merges projected agent activity into returned ses
   assert.equal(result.targetAgentId, "agent-1")
 })
 
-test("submitPromptWithRecovery recovers with the stored provider for the prompt target", async () => {
+test("submitPromptWithRecovery recovers with the stored provider and account for the prompt target", async () => {
   const requests: Record<string, unknown>[] = []
   let submitAttempts = 0
   const client = {
@@ -130,7 +130,7 @@ test("submitPromptWithRecovery recovers with the stored provider for the prompt 
       focused_agent_id: "agent-a",
       agents: [
         agent("agent-a", { provider: "codex", model: "codex/gpt-5", effort: "medium" }),
-        agent("agent-b", { provider: "claude", model: "claude/sonnet-4.6", effort: "high" }),
+        agent("agent-b", { provider: "claude", model: "claude/sonnet-4.6", effort: "high", account_profile: "claude-work" }),
       ],
     }),
     {
@@ -148,7 +148,7 @@ test("submitPromptWithRecovery recovers with the stored provider for the prompt 
       agent_id: "agent-b",
       adapter_key: "claude",
       provider: "claude",
-      account_profile: "default",
+      account_profile: "claude-work",
       model: "sonnet-4.6",
       variant: "high",
       structured_endpoint: null,

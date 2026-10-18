@@ -116,9 +116,8 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_variant: run.variant().map(str::to_string),
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
-            // A requested --session-id is not yet a resumable conversation.
-            // Only a restored ID or Claude's native init confirms one.
             session_id: run.resume_state().claude_session_id().map(str::to_string),
+            requested_session_id: session_id,
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
@@ -481,9 +480,13 @@ fn restart_claude_runtime(
         state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
-    if let Some(session_id) = resume_session_id {
-        args.extend(["--resume".to_string(), session_id.to_string()]);
-    }
+    // MP-05/MP-08: only native init or restored history makes an ID resumable.
+    // A first utility turn still restarts with the same private requested ID.
+    let (flag, session_id) = match resume_session_id {
+        Some(session_id) => ("--resume", session_id),
+        None => ("--session-id", state.requested_session_id.as_str()),
+    };
+    args.extend([flag.to_string(), session_id.to_string()]);
     let env = run.pty_env().clone();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
@@ -652,6 +655,7 @@ mod tests {
                 active_execution_mode: AgentExecutionMode::Build,
                 active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
+                requested_session_id: new_claude_session_id(),
                 active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
@@ -788,7 +792,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let contents = std::fs::read_to_string(path).unwrap_or_default();
-            if contents.lines().count() >= expected {
+            if contents.ends_with('\n') && contents.lines().count() >= expected {
                 return contents;
             }
             assert!(
@@ -879,6 +883,119 @@ cat >/dev/null
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    fn drain_claude_turn(
+        run: &RuntimeProviderRun,
+        state: &mut ClaudeRuntimeState,
+    ) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let batch = super::drain_claude_events(run, state).expect("Claude events drain");
+            if batch.terminal_failure.is_some() || batch.prompt_completed {
+                return batch.terminal_failure;
+            }
+        }
+        panic!("Claude fixture turn did not settle");
+    }
+
+    /// MP-05/MP-08: Claude persists a session only after its first user
+    /// message, and `--resume` of an unpersisted id fails at once. A
+    /// read-only setup utility that is a fresh agent's first prompt must not
+    /// resume the session it never started.
+    #[cfg(unix)]
+    #[test]
+    fn plan_utility_as_first_prompt_restarts_without_resuming_an_unstarted_session() {
+        let worktree = crate::test_support::TestWorktree::new("claude-unstarted-resume");
+        let trace = worktree.path().join("argv.log");
+        let store = worktree.path().join("sessions");
+        std::fs::create_dir_all(&store).unwrap();
+        // Emulates Claude Code 2.1.212/2.1.292: `--resume` of an id without a
+        // transcript reports error_during_execution and exits 1.
+        let script = r#"
+id=""; resume=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --resume) resume="$2"; id="$2"; shift ;;
+    --session-id) id="$2"; shift ;;
+  esac
+  shift
+done
+printf 'launch %s %s\n' "${resume:+resume}" "$id" >> "$CLAUDE_TEST_TRACE"
+if [ -n "$resume" ] && [ ! -f "$CLAUDE_TEST_STORE/$resume" ]; then
+  printf '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: %s"],"session_id":"%s"}\n' "$resume" "$resume"
+  exit 1
+fi
+while IFS= read -r line; do
+  : > "$CLAUDE_TEST_STORE/$id"
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"%s"}\n' "$id"
+done
+"#;
+        let request = LaunchProviderRequest::new("room", "claude", "claude", "default", "haiku")
+            .with_execution_mode(AgentExecutionMode::Build)
+            .with_permission_level(AgentPermissionLevel::Required);
+        let run = RuntimeProviderRun::new(
+            "provider-run-unstarted-resume",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    script.to_string(),
+                    "claude".to_string(),
+                    "-p".to_string(),
+                    "--permission-mode".to_string(),
+                    "default".to_string(),
+                ],
+                pty_env: BTreeMap::from([
+                    ("CLAUDE_TEST_TRACE".to_string(), trace.display().to_string()),
+                    ("CLAUDE_TEST_STORE".to_string(), store.display().to_string()),
+                ]),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding =
+            initialize_claude_runtime(&run).expect("fixture Claude child should start");
+        assert!(
+            binding.state.session_id().is_none(),
+            "requested ID is not confirmed history"
+        );
+        let session_id = binding.state.requested_session_id.clone();
+        let _ = wait_for_trace_lines(&trace, 1);
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "read-only discovery",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+
+        // Setup utility path: plan + required + read-only discovery restarts.
+        let mut utility_run = run.clone();
+        utility_run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
+        utility_run.set_read_only_discovery(true);
+        submit_claude_prompt(&utility_run, &mut binding.state, &envelope).unwrap();
+        assert_eq!(drain_claude_turn(&utility_run, &mut binding.state), None);
+
+        // The ordinary follow-up restarts again and now resumes the transcript.
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        assert_eq!(drain_claude_turn(&run, &mut binding.state), None);
+        let launches = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(
+            launches.lines().collect::<Vec<_>>(),
+            [
+                format!("launch  {session_id}"),
+                format!("launch  {session_id}"),
+                format!("launch resume {session_id}"),
+            ]
+        );
+        drop(binding);
     }
 
     #[cfg(unix)]

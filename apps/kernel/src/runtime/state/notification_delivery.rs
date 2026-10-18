@@ -9,8 +9,23 @@ struct Injection {
     run_id: String,
 }
 
+/// A send intent without an outcome for this long is shown to the user as uncertain.
+const UNCONFIRMED_SEND_NOTICE_AFTER_MS: u64 = 10_000;
+
+fn utc_label(epoch_ms: u64) -> String {
+    i64::try_from(epoch_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || epoch_ms.to_string(),
+            |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
+        )
+}
+
 impl KernelRuntimeState {
     pub(super) async fn deliver_pending_notification_injections(&self) {
+        self.owned
+            .hold_unconfirmed_notification_sends(crate::session::unix_epoch_ms());
         let candidates: Vec<_> = self
             .owned
             .session_store
@@ -45,6 +60,21 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            // A permission can arrive while this sender waits for the provider
+            // lane. Do not persist a send intent or start native ACK timing
+            // until that exact target agent can receive input.
+            if self
+                .owned
+                .session_store
+                .get_session(&session)
+                .is_ok_and(|snapshot| {
+                    snapshot.active_interactions().iter().any(|interaction| {
+                        interaction.agent_id() == Some(dispatch.agent_id.as_str())
+                    })
+                })
+            {
+                continue;
+            }
             if injection
                 .queued
                 .notification_expired_at(crate::session::unix_epoch_ms())
@@ -157,7 +187,12 @@ impl KernelRuntimeOwnedState {
                 self.durable_state_store.persist_workflow_runtime_transition(&after, "notification_inject_expired")?;
                 sessions.restore_session(after);
                 drop(sessions);
-                self.record_notice(session_id, None, self.attachment_store.list_session_attachment_ids(session_id), "notification_inject_expired");
+                let notice = if queued.delivery_uncertain_until_ms().is_some() {
+                    format!("Notification {id} expired: its delivery to the running agent was never confirmed, so it was discarded and not re-sent.")
+                } else {
+                    "notification_inject_expired".to_string()
+                };
+                self.record_notice(session_id, None, self.attachment_store.list_session_attachment_ids(session_id), notice);
                 return Ok(None);
             }
             if queued.publication_invocation().and_then(|i| i.caller.get("notification_steer"))
@@ -197,6 +232,19 @@ impl KernelRuntimeOwnedState {
                 let runs: Vec<_> = before.workflow_runs().iter().filter(|r|
                     r.workflow_id() == queued.workflow_id()
                         && !r.status().is_terminal()).collect();
+                // Waiting for the target's user is not an uncertain provider
+                // send. Leave this durable item untouched so other agents can
+                // progress, and reconsider the same active turn after approval.
+                if runs.len() == 1
+                    && runs[0].status() == crate::session::WorkflowRunStatus::Running
+                    && runs[0].node_runs().first().is_some_and(|entry| {
+                        before.active_interactions().iter().any(|interaction| {
+                            interaction.agent_id() == Some(entry.agent_id())
+                        })
+                    })
+                {
+                    return Ok(None);
+                }
                 let target = (runs.len() == 1).then(|| runs[0]).and_then(|run| {
                     if run.endpoint_id() != queued.endpoint_id() || run.status() != crate::session::WorkflowRunStatus::Running { return None }
                     let entry = run.node_runs().first()?;
@@ -219,7 +267,7 @@ impl KernelRuntimeOwnedState {
                     item.notification_invocation_mut().unwrap().caller["notification_steer"] = serde_json::json!({"prompt_id":active.id(),"provider_run_id":provider_run_id});
                     let dispatch = crate::app::KernelPromptDispatch {
                         session_id: session_id.into(), provider_run_id, agent_id: active.target_agent_id().into(),
-                        prompt_id: id.into(), target_active_prompt_id: Some(active.id().into()),
+                        prompt_id: attempt_prompt_id(&queued), target_active_prompt_id: Some(active.id().into()),
                         source_attachment_id: active.source_attachment_id().into(), prompt: queued.prompt().unwrap_or_default().into(),
                         hidden_system_context: String::new(), attachments: vec![], prompt_origin: active.prompt_origin(),
                         external_provider: None, external_provider_session_id: None, external_provider_turn_id: None, steering: true,
@@ -241,6 +289,176 @@ impl KernelRuntimeOwnedState {
                 self.record_notice(session_id, None, self.attachment_store.list_session_attachment_ids(session_id), reason);
             }
             Ok(result)
+        })
+    }
+
+    /// Surface sends whose outcome the kernel cannot prove. The item stays held (never
+    /// re-sent) until its deadline; the user may retry or discard it meanwhile.
+    pub(super) fn hold_unconfirmed_notification_sends(&self, now: u64) {
+        let mut due = Vec::new();
+        let mut already_held = Vec::new();
+        for session in self.session_store.read().list_sessions() {
+            for item in session
+                .workflow_queued_prompts()
+                .iter()
+                .filter(|item| item.notification_send_unconfirmed())
+            {
+                let key = (session.id().to_owned(), item.id().to_owned());
+                if item.delivery_uncertain_until_ms().is_some() {
+                    already_held.push(key);
+                } else if now.saturating_sub(item.updated_at_ms())
+                    >= UNCONFIRMED_SEND_NOTICE_AFTER_MS
+                {
+                    due.push(key);
+                }
+            }
+        }
+        for (session_id, id) in due {
+            if let Err(error) = self.hold_unconfirmed_notification_send(&session_id, &id) {
+                crate::logging::warn_with_fields(
+                    "daemon.notification_delivery",
+                    "failed to record an uncertain notification send",
+                    serde_json::json!({"session_id": session_id, "prompt_id": id, "error": error.to_string()}),
+                );
+            }
+        }
+        for (session_id, id) in already_held {
+            if let Err(error) = self.retire_held_notification_with_settled_receipt(&session_id, &id)
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.notification_delivery",
+                    "failed to retire a held notification whose receipt settled",
+                    serde_json::json!({"session_id": session_id, "prompt_id": id, "error": error.to_string()}),
+                );
+            }
+        }
+    }
+
+    /// A held item whose receipt is already delivered, failed or expired (for example a record
+    /// restored from before its delivery landed) can never be confirmed: retire it instead of
+    /// showing a ghost the user cannot act on.
+    fn retire_held_notification_with_settled_receipt(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let mut sessions = self.session_store.write();
+                let mut after = sessions.get_session(session_id)?;
+                let Some(held) = after
+                    .workflow_queued_prompts()
+                    .iter()
+                    .find(|item| item.id() == id && item.notification_send_unconfirmed())
+                    .cloned()
+                else {
+                    return Ok(());
+                };
+                if self
+                    .durable_state_store
+                    .notification_queue_is_owned(&after, &held)?
+                {
+                    return Ok(());
+                }
+                after.notification_prompt_mut(id).unwrap().mark_cancelled();
+                self.durable_state_store
+                    .persist_workflow_runtime_transition(
+                        &after,
+                        "notification_inject_stale_held_retired",
+                    )?;
+                sessions.restore_session(after);
+                Ok(())
+            })
+    }
+
+    fn hold_unconfirmed_notification_send(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let mut after = sessions.get_session(session_id)?;
+            let Some(item) = after.notification_prompt_mut(id) else { return Ok(()) };
+            let Some(deadline_ms) = item.notification_deadline_ms() else { return Ok(()) };
+            if !item.notification_send_unconfirmed() || item.delivery_uncertain_until_ms().is_some() {
+                return Ok(());
+            }
+            let held = item.clone();
+            if !self.durable_state_store.notification_queue_is_owned(&after, &held)? {
+                return Ok(());
+            }
+            after.notification_prompt_mut(id).unwrap().set_delivery_uncertain_until(deadline_ms);
+            self.durable_state_store.persist_workflow_runtime_transition(&after, "notification_inject_held")?;
+            sessions.restore_session(after);
+            drop(sessions);
+            self.record_notice(
+                session_id,
+                None,
+                self.attachment_store.list_session_attachment_ids(session_id),
+                format!(
+                    "Notification {id}: delivery to the running agent is uncertain, so it is held (not re-sent) until {}. Retry now with `/workflow queue retry {id}` (it may then arrive twice) or discard it with `/workflow queue remove {id}`.",
+                    utc_label(deadline_ms)
+                ),
+            );
+            Ok(())
+        })
+    }
+
+    /// The user's decision on a held notification: retry re-admits it for a fresh injection,
+    /// discard retires it. `None` means the item is not a held notification.
+    pub(super) fn resolve_held_notification_delivery(
+        &self,
+        session_id: &str,
+        queue_item_ref: &str,
+        retry: bool,
+    ) -> Result<Option<WorkflowQueuedPrompt>, DaemonError> {
+        self.durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let id = sessions.resolve_queued_workflow_prompt_ref(session_id, queue_item_ref)?;
+            let mut after = sessions.get_session(session_id)?;
+            let Some(held) = after
+                .workflow_queued_prompts()
+                .iter()
+                .find(|item| item.id() == id && item.notification_send_unconfirmed())
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            if !self.durable_state_store.notification_queue_is_owned(&after, &held)? {
+                return Ok(None);
+            }
+            let item = after.notification_prompt_mut(&id).unwrap();
+            if retry {
+                item.mark_queued_for_retry();
+                if let Some(caller) = item.notification_invocation_mut().and_then(|i| i.caller.as_object_mut()) {
+                    caller.remove("notification_steer");
+                    // The worker refuses to replay the uncertain attempt's steer ID, so an explicit
+                    // retry is a new attempt with its own ID.
+                    let attempt = caller.get("notification_retry").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                    caller.insert("notification_retry".into(), serde_json::json!(attempt + 1));
+                }
+            } else {
+                item.mark_cancelled();
+            }
+            let resolved = item.clone();
+            self.durable_state_store.persist_workflow_runtime_transition(
+                &after,
+                if retry { "notification_inject_retry_requested" } else { "notification_inject_discarded" },
+            )?;
+            sessions.restore_session(after);
+            drop(sessions);
+            self.record_notice(
+                session_id,
+                None,
+                self.attachment_store.list_session_attachment_ids(session_id),
+                if retry {
+                    format!("Notification {id} is being retried now; it may arrive twice if the first send had landed.")
+                } else {
+                    format!("Notification {id} was discarded and will not be delivered.")
+                },
+            );
+            Ok(Some(resolved))
         })
     }
 
@@ -343,6 +561,27 @@ struct RemoteInjectionIdentity {
     target_home_prompt_id: String,
     worker_provider_run_id: String,
 }
+/// The steer ID of the item's current send attempt: the queue ID, or a fresh one after each
+/// explicit user retry so the worker's receipt for an earlier uncertain attempt cannot block it.
+fn attempt_prompt_id(item: &WorkflowQueuedPrompt) -> String {
+    let retry = item
+        .publication_invocation()
+        .and_then(|i| i.caller.get("notification_retry"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    match retry {
+        0 => item.id().to_owned(),
+        n => format!("{}-retry{n}", item.id()),
+    }
+}
+/// True for the item's current or any earlier attempt ID.
+fn is_attempt_of(item: &WorkflowQueuedPrompt, prompt_id: &str) -> bool {
+    prompt_id == item.id()
+        || prompt_id
+            .strip_prefix(item.id())
+            .and_then(|rest| rest.strip_prefix("-retry"))
+            .is_some_and(|n| n.parse::<u64>().is_ok())
+}
 fn notification_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "notification injection",
@@ -389,7 +628,7 @@ impl KernelRuntimeState {
             super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
                 self,
                 &identity.agent_id,
-                id,
+                &attempt_prompt_id(item),
                 &identity.worker_kernel_id,
                 &identity.worker_machine_id,
                 &identity.leased_agent_id,
@@ -441,7 +680,7 @@ impl KernelRuntimeOwnedState {
             || binding.worker_machine_id != identity.worker_machine_id
             || binding.leased_agent_id != identity.leased_agent_id
             || binding.execution_lease_id != identity.execution_lease_id
-            || receipt.home_prompt_id != id
+            || receipt.home_prompt_id != attempt_prompt_id(item)
             || receipt.target_home_prompt_id.as_deref()
                 != Some(identity.target_home_prompt_id.as_str())
             || receipt.worker_provider_run_id != identity.worker_provider_run_id
@@ -471,7 +710,7 @@ impl KernelRuntimeOwnedState {
                 &identity.target_home_prompt_id,
                 source_attachment,
                 &identity.agent_id,
-                id,
+                &attempt_prompt_id(item),
                 item.prompt().unwrap_or_default(),
                 &[],
             )?;
@@ -500,7 +739,7 @@ pub(crate) fn finish_structured_notification_submit(
     let Some(item) = snapshot
         .workflow_queued_prompts()
         .iter()
-        .find(|q| q.id() == finished.prompt_id)
+        .find(|q| is_attempt_of(q, &finished.prompt_id))
     else {
         return Ok(false);
     };
@@ -512,6 +751,10 @@ pub(crate) fn finish_structured_notification_submit(
     };
     if saved.get("submit_epoch").is_none() {
         return Ok(false);
+    }
+    if attempt_prompt_id(item) != finished.prompt_id {
+        // A superseded attempt's late result says nothing about the current one.
+        return Ok(true);
     }
     if saved
         .get("provider_run_id")
@@ -546,7 +789,7 @@ pub(crate) fn finish_structured_notification_submit(
             store,
             sessions,
             &finished.session_id,
-            &finished.prompt_id,
+            item.id(),
             item.workflow_run_id()
                 .ok_or_else(|| notification_error("injection run missing"))?,
             accepted,

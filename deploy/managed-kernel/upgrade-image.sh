@@ -64,6 +64,7 @@ fi
 transaction_root=$chariox_root/.managed-kernel-upgrade
 terminal_transaction=$chariox_root/.managed-kernel-upgrade.terminal
 update_result_path=$chariox_root/.managed-kernel-upgrade-result
+update_failure_path=$chariox_root/.managed-kernel-upgrade-failure
 managed_release_update_id=${CHARIOX_MANAGED_RELEASE_UPDATE_ID:-}
 health_host=${CHARIOX_MANAGED_UPGRADE_HEALTH_HOST:-127.0.0.1}
 health_port=${CHARIOX_MANAGED_UPGRADE_HEALTH_PORT:-43118}
@@ -87,6 +88,27 @@ cleanup() {
     rm -rf -- "$pending_transaction"
   fi
   rm -rf -- "$staging_root"
+}
+
+# MP-07/MP-10: a helper may exit under set -e, bypassing its caller's
+# explicit failure branch. Recover while staged trust inputs still exist.
+finish() {
+  finish_status=$?
+  trap - EXIT
+  if [ "$finish_status" -ne 0 ] && [ "$transaction_active" -eq 1 ] \
+    && [ "$rolling_back" -eq 0 ]; then
+    # Isolate helpers that use exit on an invalid authority. Preserve the
+    # durable journal on failed recovery; never turn a failure into success.
+    record_diagnostic_phase update_unexpected_exit
+    if ! (recover_transaction); then
+      echo "managed kernel exit recovery remains pending" >&2
+    fi
+  fi
+  if [ "$finish_status" -ne 0 ] && ! publish_update_failure "$update_step"; then
+    echo "managed kernel upgrade failure reason publication failed" >&2
+  fi
+  cleanup
+  exit "$finish_status"
 }
 
 path_exists() {
@@ -133,7 +155,17 @@ select_supervisor_service() {
   fi
 }
 
-assert_path1_units_have_no_dropins() {
+# An interrupted activation has already switched the release links, so systemd's
+# loaded units are stale because of this transaction itself. Its rollback reloads
+# systemd and re-checks the drop-ins before it starts anything.
+activation_relinked() {
+  [ -d "$transaction_root" ] && [ ! -L "$transaction_root" ] || return 1
+  case $(sed -n '1p' "$transaction_root/phase" 2>/dev/null) in stopped|activated) ;; *) return 1 ;; esac
+  relinked_target=$(sed -n '1p' "$transaction_root/target-current" 2>/dev/null)
+  [ -n "$relinked_target" ] && [ "$(readlink "$current_link" 2>/dev/null)" = "$relinked_target" ]
+}
+
+assert_path1_service_overrides() {
   [ "$managed_provider_topology" = path1 ] || return 0
   path1_preflight_failure=0
   path1_drop_in_failure=0
@@ -147,9 +179,11 @@ assert_path1_units_have_no_dropins() {
     case "$need_daemon_reload" in
       no) ;;
       yes)
-        echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
-        path1_preflight_failure=1
-        path1_drop_in_failure=1
+        if ! activation_relinked; then
+          echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
+          path1_preflight_failure=1
+          path1_drop_in_failure=1
+        fi
         ;;
       *)
         echo "could not verify systemd reload state for Path-1 service $unit" >&2
@@ -163,7 +197,10 @@ assert_path1_units_have_no_dropins() {
       path1_drop_in_failure=1
       continue
     }
-    if [ -n "$drop_in_paths" ]; then
+    # MP-07/MP-10/MP-11: admit only the exact root-owned observation setting
+    # installed by the signed campaign installer; reject every other override.
+    if [ -n "$drop_in_paths" ] && ! node "$script_root/path1-campaign-diagnostics-policy.mjs" \
+      "$install_root" "$unit" "$drop_in_paths"; then
       path1_drop_in_failure=1
       path1_preflight_failure=1
       echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
@@ -486,8 +523,19 @@ remove_release_override() {
   node "$script_root/managed-kernel-upgrade-state.mjs" remove-state-file "$release_override_path"
 }
 
+# MP-07/MP-10/MP-11: observation failure never changes release settlement.
+record_diagnostic_phase() {
+  if [ -n "${CHARIOX_RUNTIME_DIAGNOSTICS_DIR:-}" ]; then
+    if ! python3 "$script_root/runtime-diagnostics.py" event \
+      --directory "$CHARIOX_RUNTIME_DIAGNOSTICS_DIR" --event "$1" >/dev/null 2>&1; then
+      echo "managed kernel upgrade diagnostic event publication failed" >&2
+    fi
+  fi
+}
+
 write_phase() {
-  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
+  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase" || return $?
+  record_diagnostic_phase "$1"
 }
 
 plan_home_migration() {
@@ -573,6 +621,24 @@ await rename(temporary, destination)
 const parent = await open(dirname(destination), "r")
 try { await parent.sync() } finally { await parent.close() }
 NODE
+}
+
+# MP-07: keep the first failed step of a Cloud update for the kernel's failure
+# report. Automatic unit restarts must not replace the original cause.
+publish_update_failure() {
+  case "$managed_release_update_id" in managed_release_update_*) ;; *) return 0 ;; esac
+  if [ -f "$update_failure_path" ] && [ ! -L "$update_failure_path" ] \
+    && [ "$(sed -n 2p "$update_failure_path")" = "$managed_release_update_id" ]; then
+    return 0
+  fi
+  rm -f -- "$update_failure_path.new" || return 1
+  (umask 022; printf '1\n%s\n%s\n' "$managed_release_update_id" "$1" > "$update_failure_path.new") || return 1
+  mv -f -- "$update_failure_path.new" "$update_failure_path"
+}
+
+begin_step() {
+  update_step=$1
+  record_diagnostic_phase "${1}_start"
 }
 
 discard_terminal_transaction() {
@@ -690,6 +756,9 @@ rollback_transaction() {
     no) remove_release_override || return 1 ;;
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
+  if [ "$managed_provider_topology" = path1 ]; then
+    node "$script_root/managed-control-ownership.mjs" restore "$receipt_path" "$transaction_root" || return 1
+  fi
   prepare_managed_app_release_switch "$chariox_root/$previous_target" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
@@ -698,7 +767,7 @@ rollback_transaction() {
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
-  assert_path1_units_have_no_dropins || return 1
+  assert_path1_service_overrides || return 1
   start_path1_runtime_services || return 1
   start_managed_app_storage || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
@@ -828,12 +897,15 @@ terminate() {
       rollback_transaction
     fi
   fi
+  publish_update_failure interrupted
   cleanup
+  case "$$" in ''|0|1|*[!0-9]*) exit 1 ;; esac
   kill -s "$signal" "$$"
   exit 1
 }
 
-trap cleanup EXIT
+update_step=release_verification
+trap finish EXIT
 trap 'terminate HUP' HUP
 trap 'terminate INT' INT
 trap 'terminate TERM' TERM
@@ -909,7 +981,7 @@ fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
 select_supervisor_service
-assert_path1_units_have_no_dropins
+assert_path1_service_overrides
 if [ "$recover_only" -eq 1 ]; then
   for recovery_journal in "$transaction_root" "$terminal_transaction"; do
     if path_exists "$recovery_journal"; then
@@ -919,10 +991,19 @@ if [ "$recover_only" -eq 1 ]; then
     fi
   done
 fi
+if [ "$recover_only" -eq 1 ]; then update_step=interrupted; else update_step=prior_update_recovery; fi
 recover_transaction
 # A replay settles the original journal and publishes its terminal evidence;
 # it must not silently start the failed target again under the same update ID.
-if [ "$recover_only" -eq 1 ]; then exit 0; fi
+if [ "$recover_only" -eq 1 ]; then
+  if [ "$(sed -n 2p "$update_result_path" 2>/dev/null)" = "$managed_release_update_id" ] \
+    && [ "$(sed -n 8p "$update_result_path")" = rolled_back ] \
+    && ! publish_update_failure interrupted; then
+    echo "managed kernel upgrade failure reason publication failed" >&2
+  fi
+  exit 0
+fi
+update_step=release_verification
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
@@ -962,7 +1043,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   require_root_owned_ancestor_chain "$trusted_builder_runtime_key" "trusted builder runtime key"
   if path_exists "$trusted_builder_runtime_key"; then
     require_root_owned_private_regular_file "$trusted_builder_runtime_key" "trusted builder runtime key"
-    if ! cmp -s "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
+    if ! compare_builder_pins "$trusted_builder_public_key" "$trusted_builder_runtime_key"; then
       echo "installed trusted builder key differs from the independent input" >&2
       exit 1
     fi
@@ -971,6 +1052,7 @@ if [ "$managed_provider_topology" = path1 ]; then
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$install_root/etc/chariox"
 fi
 
+update_step=protocol_transition
 current_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel")
 target_protocol=$(protocol_version "$image_root/usr/local/bin/chariox-kernel")
 node "$script_root/managed-kernel-upgrade-state.mjs" validate-protocol-transition \
@@ -986,6 +1068,7 @@ if [ "$current_protocol" -ge 410 ] && [ "$target_protocol" -lt 410 ]; then
   fi
 fi
 
+update_step=release_install
 release_name=${expected_new_digest#sha256:}
 published_release=$releases_root/$release_name
 if [ -e "$published_release" ] || [ -L "$published_release" ]; then
@@ -998,9 +1081,7 @@ else
   install -d -o root -g root -m 0755 \
     "$pending_release/usr/local/bin" \
     "$pending_release/usr/lib/chariox" \
-    "$pending_release/etc/systemd/system" \
-    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
-    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
+    "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   # The verified image carries the whole App set or, if built before Apps, none of it.
@@ -1016,7 +1097,11 @@ else
   for unit in chariox-managed-bootstrap.service chariox-rootless-docker.service chariox-slice-broker.service; do
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
-  if [ "$managed_provider_topology" = path1 ]; then
+  if [ "$managed_provider_topology" = path1 ] \
+    || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
+    install -d -o root -g root -m 0755 \
+      "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+      "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
@@ -1037,6 +1122,7 @@ else
   pending_release=
 fi
 
+update_step=docker_admission
 # Provision before supervisor namespace setup, including upgrades from PrivateTmp hosts.
 . "$script_root/docker-admission-install.sh"
 install_docker_admission_artifacts "$published_release" "$install_root" || {
@@ -1044,6 +1130,7 @@ install_docker_admission_artifacts "$published_release" "$install_root" || {
   exit 1
 }
 
+update_step=transaction_prepare
 pending_transaction=$chariox_root/.managed-kernel-upgrade.pending
 if [ -e "$pending_transaction" ] || [ -L "$pending_transaction" ]; then
   if [ -L "$pending_transaction" ] || [ ! -d "$pending_transaction" ]; then
@@ -1054,6 +1141,24 @@ if [ -e "$pending_transaction" ] || [ -L "$pending_transaction" ]; then
 fi
 install -d -o root -g root -m 0700 "$pending_transaction"
 journal_builder_pins "$pending_transaction"
+if [ "$managed_provider_topology" = path1 ]; then
+  node "$script_root/managed-control-ownership.mjs" snapshot "$receipt_path" "$pending_transaction"
+  target_unit=$image_root/etc/systemd/system/$service_name
+  require_regular_file "$target_unit"
+  # The binary was already verified against the independent signed release pin.
+  # H/I reject this query with exit 2; helper-capable releases return version 1.
+  if grep -q '^StateDirectory=' "$target_unit"; then
+    # systemd re-owns a declared StateDirectory for the service user on start.
+    printf '%s\n' legacy > "$pending_transaction/target-control-access"
+  elif control_version=$(timeout 10s "$image_root/usr/local/bin/chariox-managed-bootstrap" --print-control-state-version 2>/dev/null); then
+    [ "$control_version" = 1 ] || { echo "target control-state capability is invalid" >&2; exit 1; }
+    printf '%s\n' private > "$pending_transaction/target-control-access"
+  else
+    control_status=$?
+    [ "$control_status" -eq 2 ] || { echo "target control-state capability could not be checked" >&2; exit 1; }
+    printf '%s\n' legacy > "$pending_transaction/target-control-access"
+  fi
+fi
 cp -P "$receipt_path" "$pending_transaction/previous-receipt.json"
 chmod 0600 "$pending_transaction/previous-receipt.json"
 if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
@@ -1103,7 +1208,9 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
   "$pending_transaction" "$transaction_root"
 pending_transaction=
 transaction_active=1
+record_diagnostic_phase prepared
 
+update_step=service_stop
 if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
     echo "managed kernel or Path-1 storage services could not be stopped; restored previous managed kernel release" >&2
@@ -1113,6 +1220,15 @@ if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   exit 1
 fi
 write_phase stopped
+update_step=activation_control_ownership
+if [ "$managed_provider_topology" = path1 ]; then
+  case "$(read_single_line "$transaction_root/target-control-access")" in
+    private) node "$script_root/managed-control-ownership.mjs" apply "$receipt_path" "$transaction_root" ;;
+    legacy) node "$script_root/managed-control-ownership.mjs" apply-legacy "$receipt_path" "$transaction_root" "$(id -u chariox)" "$(id -g chariox)" ;;
+    *) echo "target control-state access journal is invalid" >&2; exit 1 ;;
+  esac
+fi
+begin_step activation_builder_pin
 if ! activate_builder_pin "$transaction_root" target; then
   if rollback_transaction; then
     echo "managed builder pin activation failed; restored previous managed kernel release" >&2
@@ -1121,6 +1237,7 @@ if ! activate_builder_pin "$transaction_root" target; then
   fi
   exit 1
 fi
+begin_step activation_home_migration
 if ! resume_home_migration; then
   if rollback_transaction; then
     echo "managed kernel home migration failed; restored previous managed kernel release" >&2
@@ -1129,30 +1246,39 @@ if ! resume_home_migration; then
   fi
   exit 1
 fi
+begin_step activation_receipt
 if ! atomic_receipt "$transaction_root/target-receipt.json"; then
   activation_failed=1
 elif [ -f "$transaction_root/target-release-override.json" ]; then
+  begin_step activation_release_override
   atomic_release_override "$transaction_root/target-release-override.json" || activation_failed=1
 else
+  begin_step activation_release_override
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  begin_step activation_app_prepare
   prepare_managed_app_release_switch "$published_release" || activation_failed=1
   if [ "${activation_failed:-0}" -eq 0 ]; then
+    begin_step activation_current_link
     atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
   fi
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  begin_step activation_data_volume_links
   sync_path1_data_volume_unit_links || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  begin_step activation_app_storage
   sync_managed_app_storage || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  begin_step activation_slice_facade
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
     || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
+  begin_step activation_slice_facade_check
   verify_signed_slice_build_context_facade || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -ne 0 ]; then
@@ -1164,13 +1290,14 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
   exit 1
 fi
 write_phase activated
+update_step=target_start
 if ! systemctl daemon-reload \
-  || ! assert_path1_units_have_no_dropins \
+  || ! assert_path1_service_overrides \
   || ! start_path1_runtime_services \
   || ! start_managed_app_storage \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
-  || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
+  || ! { update_step=target_health_check && check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; }; then
   if [ "${path1_drop_in_failure:-0}" -eq 1 ]; then
     if rollback_transaction; then
       echo "Path-1 systemd drop-ins blocked activation; restored previous managed kernel release" >&2
@@ -1184,6 +1311,7 @@ if ! systemctl daemon-reload \
   fi
   exit 1
 fi
+update_step=final_validation
 if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
   "$receipt_path" "$transaction_root/target-receipt.json" "$expected_new_digest" \
   "$release_override_path" "$transaction_root/target-release-override.json" \

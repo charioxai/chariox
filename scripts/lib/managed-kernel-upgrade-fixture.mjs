@@ -98,7 +98,18 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true, servicePolicy = 1) {
+  const policyUnit = async filename => {
+    let unit = await readFile(join(repositoryRoot, "deploy/managed-kernel", filename), "utf8")
+    if (servicePolicy !== 1) unit = unit.replace(/^StateDirectory(?:Mode)?=.*\n/gm, "")
+    unit = unit.replace(/CHARIOX_PATH1_SERVICE_POLICY_VERSION=[12]/g, `CHARIOX_PATH1_SERVICE_POLICY_VERSION=${servicePolicy}`)
+    if (servicePolicy === 1 && filename === "chariox-disposable-worker-bootstrap.service"
+      && !unit.includes("StateDirectory=")) {
+      unit = unit.replace("KillMode=control-group", "KillMode=control-group\nStateDirectory=chariox\nStateDirectoryMode=0700")
+    }
+    if (servicePolicy === 0) unit = unit.replace(/^Environment=CHARIOX_PATH1_SERVICE_POLICY_VERSION=.*\n/gm, "")
+    return unit
+  }
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
@@ -117,7 +128,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const rootlessDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf")
   const allocatorDataVolumeDropIn = join(repositoryRoot, "apps/kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf")
   await put(kernel, `#!/bin/sh\nif [ "\$1" = "--print-local-daemon-protocol-version" ]; then echo ${protocol}; exit 0; fi\nexit 1\n`, 0o755)
-  await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
+  await put(supervisor, `#!/bin/sh\nif [ "\$1" = "--print-control-state-version" ]; then echo 1; exit 0; fi\necho supervisor-${label}\n`, 0o755)
   if (includeAppArtifacts) {
     await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
     await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)
@@ -136,6 +147,8 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const sourceCommit = createHash("sha1").update(`commit-${label}`).digest("hex")
   const sourceTree = createHash("sha1").update(`tree-${label}`).digest("hex")
   if (builderKeys) {
+    const diagnostics = "deploy/managed-kernel/runtime-diagnostics.py"
+    await put(join(context, diagnostics), await readFile(join(repositoryRoot, diagnostics)))
     for (const sourceFile of [
       "chariox-data-volume-admission.mjs",
       "slice-data-volume-device.mjs",
@@ -193,13 +206,13 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeWorkerService) {
     const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
     const source = join(rootfs, path)
-    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")))
+    await put(source, await policyUnit("chariox-disposable-worker-bootstrap.service"))
     artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
   }
   if (builderKeys) {
     const path = "/etc/systemd/system/chariox-path1-managed-bootstrap.service"
     const source = join(rootfs, path)
-    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")))
+    await put(source, await policyUnit("chariox-path1-managed-bootstrap.service"))
     artifactSpecs.push(["chariox-path1-managed-bootstrap.service", path, source, "file"])
     for (const [name, path, source] of [
       ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", dataVolumeAdmissionService],
@@ -249,6 +262,13 @@ async function makeHarness(context, {
   targetManifestSchema = 3,
   currentAppArtifacts = true,
   updaterPath = upgrade,
+  builderInputLF = false,
+  installedRelease = null,
+  // An actual signed payload: { rootfs, digest, releasePin, builderPin }.
+  targetRelease = null,
+  targetServicePolicy = 1,
+  currentServicePolicy = 1,
+  updaterShell = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
   await mkdir(join(root, "tmp"), { mode: 0o700 })
@@ -258,18 +278,25 @@ async function makeHarness(context, {
   await put(trustedKey, rawPublicKey(publicKey).toString("base64"), 0o600)
   const builderKeys = path1Release ? generateKeyPairSync("ed25519") : null
   const trustedBuilderKey = join(root, "trusted-builder-public-key")
-  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64"), 0o600)
+  if (builderKeys) await put(trustedBuilderKey, rawPublicKey(builderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
   const targetBuilderKeys = rotateBuilder ? generateKeyPairSync("ed25519") : builderKeys
   const nextTrustedBuilderKey = join(root, "next-trusted-builder-public-key")
-  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
-  const current = await makeRelease(
+  if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64") + (builderInputLF ? "\n" : ""), 0o600)
+  const current = installedRelease ?? await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
-    currentAppArtifacts,
+    currentAppArtifacts, currentServicePolicy,
   )
-  const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
+  const target = targetRelease ?? await makeRelease(
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema, true, targetServicePolicy,
   )
+  const nextTrustedReleaseKey = join(root, "next-trusted-release-public-key")
+  if (installedRelease) {
+    await put(nextTrustedReleaseKey, await readFile(targetRelease?.releasePin ?? trustedKey), 0o600)
+    if (targetRelease) await put(nextTrustedBuilderKey, await readFile(targetRelease.builderPin), 0o600)
+    await put(trustedKey, await readFile(installedRelease.releasePin), 0o600)
+    await put(trustedBuilderKey, await readFile(installedRelease.builderPin), 0o600)
+  }
   const installRoot = join(root, "host")
   if (path1Release) {
     await mkdir(join(installRoot, "etc/systemd/system/chariox-rootless-docker.service.d"), {
@@ -432,7 +459,7 @@ fi
 if [ "$1" = "show" ]; then
   case "$*" in
     *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
-      if [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
+      if { [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/unit-relink-pending" ]; } && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
         printf 'yes\n'
       else
         printf 'no\n'
@@ -446,6 +473,9 @@ if [ "$1" = "show" ]; then
       fi
       ;;
     *--property=DropInPaths*chariox-path1-managed-bootstrap.service)
+      if [ -f "$HARNESS_STATE/campaign-drop-in-path" ]; then
+        cat "$HARNESS_STATE/campaign-drop-in-path"
+      fi
       if [ -f "$HARNESS_STATE/home-drop-in" ] \
         || { [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
@@ -461,6 +491,10 @@ if [ "$1" = "show" ]; then
   exit 0
 fi
 if [ "$1" = "daemon-reload" ]; then
+  if [ -f "$HARNESS_STATE/unit-relink-pending" ]; then
+    rm -f -- "$HARNESS_STATE/unit-relink-pending"
+    printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
+  fi
   if [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/disk-worker-drop-in" ]; then
     printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
   fi
@@ -495,7 +529,7 @@ if [ "$1" = "start" ]; then
     printf '{"schemaVersion":2}\n' > "$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-grant-binding.json"
   fi
   if [ -f "$HARNESS_STATE/check-builder-pin-on-start" ]; then
-    cmp -s "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
+    "${process.execPath}" "${repositoryRoot}/deploy/managed-kernel/managed-kernel-upgrade-state.mjs" compare-builder-pins "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/chariox/trusted-builder-public-key" \
       "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/lib/chariox/builder-public-key" || exit 1
     printf 'matched\n' >> "$HARNESS_STATE/builder-pin-starts"
   fi
@@ -546,6 +580,7 @@ if [ "$1" = "start" ] \
   case "\${2:-}" in
     chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
       rm -f -- "$HARNESS_STATE/crash-after-supervisor-start"
+      case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
       kill -KILL "$PPID"
       exit 1
       ;;
@@ -574,13 +609,26 @@ printf '%s\n' "$*" >> "$HARNESS_STATE/mountpoint.log"
 `, 0o755)
   await put(join(bin, "node"), `#!/bin/sh
 set -eu
+# Every crash target is the direct updater parent started by this fixture.
+crash_updater() {
+  case "\${PPID:-}" in ''|0|1|*[!0-9]*) exit 1 ;; esac
+  kill -KILL "$PPID"
+}
+if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
+  && [ "\${2:-}" = "atomic-text" ] \\
+  && [ "\${3:-}" = stopped ] \\
+  && [ -f "$HARNESS_STATE/fail-after-stopped" ]; then
+  "${process.execPath}" "$@"
+  rm -f "$HARNESS_STATE/fail-after-stopped"
+  exit 23
+fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ "\${2:-}" = "sync-directory" ] \\
   && [ "\${3:-}" = "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/releases" ] \\
   && [ -f "$HARNESS_STATE/crash-after-release-publication" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-release-publication"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
@@ -589,7 +637,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \\
   && [ -f "$HARNESS_STATE/crash-after-builder-pin" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-builder-pin"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -603,7 +651,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-home-root-rename" ]; then
   /bin/mv -- "\${5}" "\${6}"
   rm -f -- "$HARNESS_STATE/crash-after-home-root-rename"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
@@ -612,7 +660,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   "${process.execPath}" "$@"
   rm -f -- "\${3%/*}/home-migration-complete" \
     "$HARNESS_STATE/crash-before-home-completion-marker"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -622,7 +670,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   "${process.execPath}" "$@"
   if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
     rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
   exit 0
@@ -631,7 +679,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-before-symlink"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -640,7 +688,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-facade-symlink" ]; then
   rm -f "$HARNESS_STATE/crash-after-facade-symlink"
   "${process.execPath}" "$@"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -648,7 +696,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-\${3:-}" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-\${3:-}"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -656,7 +704,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ -f "$HARNESS_STATE/crash-after-phase-prepared" ]; then
   "${process.execPath}" "$@"
   rm -f "$HARNESS_STATE/crash-after-phase-prepared"
-  kill -KILL "$PPID"
+  crash_updater
   exit 1
 fi
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
@@ -666,7 +714,7 @@ if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   if [ -f "$marker" ]; then
     "${process.execPath}" "$@"
     rm -f "$marker"
-    kill -KILL "$PPID"
+    crash_updater
     exit 1
   fi
 fi
@@ -712,11 +760,13 @@ exec /usr/bin/stat "$@"
     CHARIOX_MANAGED_UPGRADE_HEALTH_PORT: String(port),
     CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS: "1000",
   }
-  const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
-    spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
+  const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey,
+    ...(installedRelease ? [nextTrustedReleaseKey] : [])]) =>
+    spawnSync(updaterShell ? "/bin/sh" : updaterPath, updaterShell ? [updaterPath, ...args] : args,
+      { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
     root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
-    current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
+    current, target, trustedKey, nextTrustedReleaseKey, trustedBuilderKey, nextTrustedBuilderKey, state, env, run,
   }
 }
 

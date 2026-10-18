@@ -4,11 +4,22 @@ const _: () = chariox_app_runtime::assert_production_build();
 fn main() -> Result<(), chariox_kernel::DaemonError> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let command = args.first().and_then(|arg| arg.to_str());
+    if command == Some("--control-state") && args.len() == 3 {
+        return chariox_kernel::managed_bootstrap::control_state::run(
+            args[1].to_str().unwrap_or(""),
+            std::path::Path::new(&args[2]),
+        );
+    }
     let disposable_worker = match (command, args.len()) {
         (None, 0) => false,
         (Some("--disposable-worker"), 1) => true,
         (Some("--help" | "-h"), 1) => {
             println!("usage: chariox-managed-bootstrap [--disposable-worker | --help | --version]\n\nRun the managed home supervisor with no arguments, or bootstrap a disposable\nworker with --disposable-worker. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            return Ok(());
+        }
+        // MP-03: provisioning gates root-private receipts on this pinned binary.
+        (Some("--print-control-state-version"), 1) => {
+            println!("1");
             return Ok(());
         }
         (Some("--version"), 1) => {

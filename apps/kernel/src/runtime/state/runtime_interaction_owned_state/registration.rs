@@ -112,6 +112,37 @@ impl KernelRuntimeOwnedState {
             kernel_operation_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
         let terminal_credential_owner =
             terminal_credential_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        // MP-08 / MP-10 / MP-11: a restart or cancelled launch can leave a
+        // projected Vault card without a responder. Retire only an abandoned
+        // Vault card for this subject; never replace a live decision.
+        if let Some(owner) =
+            terminal_credential_owner.filter(|_| interaction.id().starts_with("vault-unlock-"))
+        {
+            let mut pending = self.pending_interactions.write();
+            let abandoned = session
+                .active_interactions()
+                .iter()
+                .filter(|existing| {
+                    existing.subject() == interaction.subject()
+                        && existing.id().starts_with("vault-unlock-")
+                        && pending.get(existing.id()).is_none_or(|entry| {
+                            !entry.belongs_to(&self.session_store)
+                                || (entry.terminal_credential_owner.as_deref() == Some(owner)
+                                    && entry.nobody_waits())
+                        })
+                })
+                .map(|existing| existing.id().to_owned())
+                .collect::<Vec<_>>();
+            for id in abandoned {
+                session.remove_active_interaction(&id);
+                if pending
+                    .get(&id)
+                    .is_some_and(|entry| entry.belongs_to(&self.session_store))
+                {
+                    pending.remove(&id);
+                }
+            }
+        }
         // A kernel decision nobody waits for any more does not block its
         // subject: the new request supersedes it. The pump's sweep times such
         // decisions out too, but a registration must not depend on it having
@@ -295,8 +326,8 @@ impl KernelRuntimeOwnedState {
             self.passkey_prompts.record_change();
         }
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if let Err(error) = self.session_snapshot(session_id) {
             let mut pending = self.pending_interactions.write();
             if pending

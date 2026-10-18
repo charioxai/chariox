@@ -164,9 +164,14 @@ pub(super) fn run_kernel_once(
         terminate_child(&mut child)?;
         child = spawn_kernel(config, release, topology)?;
     }
-    let status = child
-        .wait()
-        .map_err(|error| supervisor_error(&format!("wait for managed kernel: {error}")))?;
+    let status =
+        match super::control_state::wait_for_kernel(&mut child, &config.receipt_path, topology) {
+            Ok(status) => status,
+            Err(error) => {
+                terminate_child(&mut child)?;
+                return Err(error);
+            }
+        };
     Ok(KernelRun {
         status,
         runtime: started_at.elapsed(),
@@ -1855,7 +1860,9 @@ fn terminate_child(child: &mut Child) -> Result<(), DaemonError> {
     {
         return Ok(());
     }
-    if let Err(kill_error) = child.kill() {
+    let mut signals = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(child)
+        .map_err(|_| supervisor_error("record managed kernel identity before stop"))?;
+    if let Err(kill_error) = signals.kill_child() {
         if child
             .try_wait()
             .map_err(|error| {

@@ -779,6 +779,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_v4_peer_before_uploading_provider_account_component() {
+        let fixture = outbound_fixture(10);
+        let capability = RelayManagedContextCapability::new("capability".into());
+        // Frozen H/I/K peers advertise 73 and deserialize accounts as an array.
+        let transport = FakeTransport::new(vec![
+            Ok(armed_with_version(&capability, 512, 73)),
+            Err(outbound_error("base began upload", false)),
+        ]);
+        let result = transfer_managed_context_package(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".into(),
+                target_kernel_id: "target-kernel".into(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability,
+            },
+            |_| {},
+        )
+        .await;
+        let requests = transport.requests();
+        std::fs::remove_dir_all(fixture.root).unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not support the selected managed-context protocol"));
+        assert_eq!(
+            requests.len(),
+            1,
+            "MP-08: no Begin or credential-bearing Upload to old peers"
+        );
+    }
+
+    #[tokio::test]
     async fn resumes_from_target_offset_and_recovers_lost_finalize_response() {
         let fixture = outbound_fixture(600_000);
         let fixture_root = fixture.root.clone();

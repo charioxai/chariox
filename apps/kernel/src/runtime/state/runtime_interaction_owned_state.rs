@@ -88,8 +88,8 @@ impl KernelRuntimeOwnedState {
         };
         session.add_active_interaction(interaction.with_provider_login(login));
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
@@ -467,8 +467,8 @@ impl KernelRuntimeOwnedState {
             session.remove_active_interaction(interaction_id);
             sessions.restore_session(session);
         }
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if pending.kernel_wide_interaction.is_none() {
             self.session_snapshot(session_id)?;
             self.terminal_stream
@@ -573,8 +573,8 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         };
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);

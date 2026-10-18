@@ -7,17 +7,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+use super::control_state;
 use super::data_volume_observation::read_admitted_data_volume;
-use super::release::{verify_managed_bootstrap_service_binding, VerifiedReleaseEvidence};
-use super::state::BootstrapConfig;
+use super::release::{
+    managed_bootstrap_service_name, verify_managed_bootstrap_service_binding,
+    VerifiedReleaseEvidence,
+};
+use super::state::{managed_bootstrap_grant_binding_path, BootstrapConfig};
+use super::{managed_provider_topology, ManagedProviderTopology};
 
 const LINUX_BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 const OS_MACHINE_ID_PATH: &str = "/etc/machine-id";
 const PROC_ROOT: &str = "/proc";
-const MANAGED_BOOTSTRAP_SERVICE_PATH: &str =
-    "/etc/systemd/system/chariox-managed-bootstrap.service";
-const MANAGED_BOOTSTRAP_WANTS_PATH: &str =
-    "/etc/systemd/system/multi-user.target.wants/chariox-managed-bootstrap.service";
 const MAX_ID_BYTES: u64 = 128;
 const MAX_PROC_COMM_BYTES: u64 = 256;
 const MAX_PROC_STAT_BYTES: u64 = 4096;
@@ -71,21 +72,26 @@ pub(super) struct FreshnessHostPaths {
     pub(super) machine_id: PathBuf,
     pub(super) proc_root: PathBuf,
     pub(super) proc_self_exe: PathBuf,
+    pub(super) service_topology: ManagedProviderTopology,
     pub(super) service_unit: PathBuf,
     pub(super) service_wants: PathBuf,
     pub(super) data_volume_observation: PathBuf,
     pub(super) mountinfo: PathBuf,
 }
 
-impl Default for FreshnessHostPaths {
-    fn default() -> Self {
+impl FreshnessHostPaths {
+    fn for_topology(topology: ManagedProviderTopology) -> Self {
+        let service = managed_bootstrap_service_name(topology);
         Self {
             boot_id: PathBuf::from(LINUX_BOOT_ID_PATH),
             machine_id: PathBuf::from(OS_MACHINE_ID_PATH),
             proc_root: PathBuf::from(PROC_ROOT),
             proc_self_exe: PathBuf::from("/proc/self/exe"),
-            service_unit: PathBuf::from(MANAGED_BOOTSTRAP_SERVICE_PATH),
-            service_wants: PathBuf::from(MANAGED_BOOTSTRAP_WANTS_PATH),
+            service_topology: topology,
+            service_unit: PathBuf::from(format!("/etc/systemd/system/{service}")),
+            service_wants: PathBuf::from(format!(
+                "/etc/systemd/system/multi-user.target.wants/{service}"
+            )),
             data_volume_observation: PathBuf::from(DATA_VOLUME_OBSERVATION_PATH),
             mountinfo: PathBuf::from(PROC_SELF_MOUNTINFO_PATH),
         }
@@ -108,7 +114,7 @@ pub(super) fn capture_freshness_evidence_with_volume(
     capture_freshness_evidence_with_paths_and_volume(
         config,
         release,
-        &FreshnessHostPaths::default(),
+        &FreshnessHostPaths::for_topology(managed_provider_topology()?),
         expected_data_volume,
     )
 }
@@ -121,7 +127,12 @@ fn capture_freshness_evidence_with_paths_and_volume(
 ) -> Result<ManagedKernelFreshnessEvidence, DaemonError> {
     let linux_boot_id = read_linux_boot_id(&paths.boot_id)?;
     let os_machine_id = read_os_machine_id(&paths.machine_id)?;
-    verify_managed_bootstrap_service_binding(release, &paths.service_unit, &paths.service_wants)?;
+    verify_managed_bootstrap_service_binding(
+        release,
+        &paths.service_unit,
+        &paths.service_wants,
+        paths.service_topology,
+    )?;
     let processes = collect_process_observations(&paths.proc_root)?;
     validate_process_observations(&processes, std::process::id(), &release.active_release_path)?;
     validate_state_residue(config)?;
@@ -179,7 +190,7 @@ pub(super) fn capture_old_generation_runtime_identity_report(
         machine_credential,
         release,
         observed_at,
-        &FreshnessHostPaths::default(),
+        &FreshnessHostPaths::for_topology(managed_provider_topology()?),
     )
 }
 
@@ -206,7 +217,12 @@ pub(super) fn capture_old_generation_runtime_identity_report_with_paths(
         runtime_source_tree: release.source_tree.clone(),
         observed_at: observed_at.to_rfc3339_opts(SecondsFormat::Millis, true),
     };
-    verify_managed_bootstrap_service_binding(release, &paths.service_unit, &paths.service_wants)?;
+    verify_managed_bootstrap_service_binding(
+        release,
+        &paths.service_unit,
+        &paths.service_wants,
+        paths.service_topology,
+    )?;
     verify_running_kernel_release(release, &paths.proc_self_exe)?;
     validate_old_generation_runtime_identity_report(
         &report,
@@ -452,14 +468,10 @@ fn collect_process_observations(proc_root: &Path) -> Result<Vec<ProcessObservati
             continue;
         };
         let process_dir = entry.path();
-        let executable_path = match fs::read_link(process_dir.join("exe")) {
-            Ok(path) => path,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(freshness_error(&format!(
-                    "process executable cannot be inspected: {error}"
-                )))
-            }
+        let Some(executable_path) =
+            process_executable_path(fs::read_link(process_dir.join("exe")))?
+        else {
+            continue;
         };
         let executable_name = bounded_proc_text(
             &process_dir.join("comm"),
@@ -482,6 +494,21 @@ fn collect_process_observations(proc_root: &Path) -> Result<Vec<ProcessObservati
         });
     }
     Ok(observations)
+}
+
+/// The unprivileged supervisor cannot read `exe` of other users' processes. Those keep
+/// their world-readable `comm`/`stat` identity with an empty path, so name checks still apply.
+fn process_executable_path(link: std::io::Result<PathBuf>) -> Result<Option<PathBuf>, DaemonError> {
+    match link {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Ok(Some(PathBuf::new()))
+        }
+        Err(error) => Err(freshness_error(&format!(
+            "process executable cannot be inspected: {error}"
+        ))),
+    }
 }
 
 fn bounded_proc_text(path: &Path, max_bytes: u64, label: &str) -> Result<String, DaemonError> {
@@ -565,9 +592,15 @@ fn is_current_managed_bootstrap(
     observation: &ProcessObservation,
     active_release_path: &Path,
 ) -> bool {
-    observation.executable_name.trim() == "chariox-managed-bootstrap"
+    comm_matches(&observation.executable_name, "chariox-managed-bootstrap")
         && observation.executable_path
             == active_release_path.join("usr/local/bin/chariox-managed-bootstrap")
+}
+
+/// `/proc/<pid>/comm` holds at most 15 bytes, so long names arrive truncated.
+fn comm_matches(comm: &str, name: &str) -> bool {
+    let comm = comm.trim();
+    comm == name || (name.len() > 15 && comm == &name[..15])
 }
 
 fn is_bubblewrap(observation: &ProcessObservation) -> bool {
@@ -582,19 +615,24 @@ fn is_bubblewrap(observation: &ProcessObservation) -> bool {
 }
 
 fn is_chariox_runtime(observation: &ProcessObservation) -> bool {
-    matches!(
-        observation.executable_name.trim(),
-        "chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap"
-    ) || matches!(
-        observation
-            .executable_path
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some("chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap")
-    )
+    [
+        "chariox",
+        "chariox-kernel",
+        "chariox-relay",
+        "chariox-managed-bootstrap",
+    ]
+    .iter()
+    .any(|name| comm_matches(&observation.executable_name, name))
+        || matches!(
+            observation
+                .executable_path
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("chariox" | "chariox-kernel" | "chariox-relay" | "chariox-managed-bootstrap")
+        )
 }
 
-fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
+pub(super) fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
     let state_dir = config
         .receipt_path
         .parent()
@@ -603,27 +641,43 @@ fn validate_state_residue(config: &BootstrapConfig) -> Result<(), DaemonError> {
         .receipt_path
         .file_name()
         .ok_or_else(|| freshness_error("managed receipt has no file name"))?;
-    for entry in fs::read_dir(state_dir)
-        .map_err(|error| freshness_error(&format!("managed state cannot be inspected: {error}")))?
-    {
-        let entry = entry.map_err(|error| {
-            freshness_error(&format!("managed state cannot be inspected: {error}"))
-        })?;
-        let path = entry.path();
-        let allowed_receipt = entry.file_name() == receipt_name;
-        let allowed_envelope = path == config.envelope_path;
-        if !allowed_receipt && !allowed_envelope {
-            return Err(freshness_error("retired managed state residue is present"));
-        }
-    }
-    for path in [
-        state_dir.join("release-override.json"),
-        state_dir.join("disposable-worker"),
+    let mut retired_paths = vec![
         config.process_home.join("managed"),
         config.process_home.join("disposable-worker"),
-    ] {
-        if fs::symlink_metadata(&path).is_ok() {
-            return Err(freshness_error("retired managed state residue is present"));
+    ];
+    let directory_clean = if control_state::uses_helper(&config.receipt_path) {
+        // The root-private control directory is not listable by the unprivileged
+        // bootstrap; the root helper enforces the same allowlist.
+        control_state::directory_is_clean(&config.receipt_path)?
+    } else {
+        retired_paths.push(state_dir.join("disposable-worker"));
+        let grant_binding = managed_bootstrap_grant_binding_path(&config.receipt_path)?;
+        let mut clean = true;
+        for entry in fs::read_dir(state_dir).map_err(|error| {
+            freshness_error(&format!("managed state cannot be inspected: {error}"))
+        })? {
+            let entry = entry.map_err(|error| {
+                freshness_error(&format!("managed state cannot be inspected: {error}"))
+            })?;
+            let path = entry.path();
+            clean &= entry.file_name() == receipt_name
+                || path == config.envelope_path
+                || path == grant_binding;
+        }
+        clean
+    };
+    if !directory_clean {
+        return Err(freshness_error("retired managed state residue is present"));
+    }
+    for path in retired_paths {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Err(freshness_error("retired managed state residue is present")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(freshness_error(&format!(
+                    "managed state cannot be inspected: {error}"
+                )))
+            }
         }
     }
     Ok(())
@@ -643,8 +697,9 @@ mod tests {
 
     use super::{
         is_linux_boot_id, is_os_machine_id, is_release_digest, parse_parent_pid,
-        validate_freshness_evidence, validate_old_generation_runtime_identity_report,
-        validate_process_observations, ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
+        process_executable_path, validate_freshness_evidence,
+        validate_old_generation_runtime_identity_report, validate_process_observations,
+        ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks,
         ManagedKernelRuntimeIdentityReport, ProcessObservation,
     };
     use crate::managed_bootstrap::release::VerifiedReleaseEvidence;
@@ -695,6 +750,63 @@ mod tests {
             executable_path: PathBuf::from("/old/usr/local/bin/chariox-kernel"),
         };
         assert!(validate_process_observations(&[current, retired], 10, &release).is_err());
+    }
+
+    #[test]
+    fn kernel_truncated_comm_still_identifies_bootstrap_and_runtime() {
+        let release = PathBuf::from("/release");
+        let current = ProcessObservation {
+            pid: 10,
+            parent_pid: 0,
+            executable_name: "chariox-managed".to_string(),
+            executable_path: release.join("usr/local/bin/chariox-managed-bootstrap"),
+        };
+        assert!(validate_process_observations(&[current.clone()], 10, &release).is_ok());
+        let retired = ProcessObservation {
+            pid: 12,
+            parent_pid: 0,
+            executable_name: "chariox-managed".to_string(),
+            executable_path: PathBuf::new(),
+        };
+        assert!(validate_process_observations(&[current, retired], 10, &release).is_err());
+    }
+
+    #[test]
+    fn unreadable_foreign_executable_keeps_name_checks() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            process_executable_path(Err(Error::from(ErrorKind::PermissionDenied))).unwrap(),
+            Some(PathBuf::new())
+        );
+        assert_eq!(
+            process_executable_path(Err(Error::from(ErrorKind::NotFound))).unwrap(),
+            None
+        );
+        assert!(process_executable_path(Err(Error::from(ErrorKind::InvalidData))).is_err());
+
+        let release = PathBuf::from("/release");
+        let current = ProcessObservation {
+            pid: 10,
+            parent_pid: 1,
+            executable_name: "chariox-managed-bootstrap".to_string(),
+            executable_path: release.join("usr/local/bin/chariox-managed-bootstrap"),
+        };
+        let init = ProcessObservation {
+            pid: 1,
+            parent_pid: 0,
+            executable_name: "systemd".to_string(),
+            executable_path: PathBuf::new(),
+        };
+        assert!(
+            validate_process_observations(&[current.clone(), init.clone()], 10, &release).is_ok()
+        );
+        let retired = ProcessObservation {
+            pid: 12,
+            parent_pid: 1,
+            executable_name: "chariox-kernel".to_string(),
+            executable_path: PathBuf::new(),
+        };
+        assert!(validate_process_observations(&[current, init, retired], 10, &release).is_err());
     }
 
     #[test]
@@ -862,14 +974,50 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn pre_reimage_report_rejects_running_kernel_outside_verified_release() {
+        assert_pre_reimage_running_kernel_binding("chariox-managed-bootstrap.service");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn path1_pre_reimage_report_uses_path1_service() {
+        assert_pre_reimage_running_kernel_binding("chariox-path1-managed-bootstrap.service");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_pre_reimage_running_kernel_binding(service_name: &str) {
         use std::os::unix::fs::symlink;
 
         let root = FreshnessTestDirectory::new();
         let release_path = root.path().join("releases/sha256-test-release");
         let kernel_path = release_path.join("usr/local/bin/chariox-kernel");
-        let service_path =
-            release_path.join("etc/systemd/system/chariox-managed-bootstrap.service");
-        let service_contents = b"[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n";
+        let service_path = release_path.join(format!("etc/systemd/system/{service_name}"));
+        // MP-07/MP-09/MP-11: actual installer layout publishes all signed
+        // bootstrap facades, while enabling only the selected managed-home unit.
+        let signed_units: [(&str, &[u8]); 3] = [
+            (
+                "chariox-managed-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-managed-bootstrap.service"
+                ),
+            ),
+            (
+                "chariox-path1-managed-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-path1-managed-bootstrap.service"
+                ),
+            ),
+            (
+                "chariox-disposable-worker-bootstrap.service",
+                include_bytes!(
+                    "../../../../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"
+                ),
+            ),
+        ];
+        let service_contents = signed_units
+            .iter()
+            .find(|(name, _)| *name == service_name)
+            .unwrap()
+            .1;
         fs::create_dir_all(kernel_path.parent().expect("kernel parent"))
             .expect("create release kernel directory");
         fs::write(&kernel_path, b"signed kernel fixture").expect("write release kernel");
@@ -880,18 +1028,26 @@ mod tests {
         let manifest_path = release_path.join("usr/lib/chariox/release-manifest.json");
         fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
             .expect("create release manifest directory");
-        let service_digest = format!("sha256:{:x}", Sha256::digest(service_contents));
+        let mut service_artifacts = Vec::new();
+        for (name, bytes) in signed_units {
+            fs::write(
+                release_path.join(format!("etc/systemd/system/{name}")),
+                bytes,
+            )
+            .expect("write signed bootstrap unit");
+            service_artifacts.push(serde_json::json!({
+                "name": name,
+                "path": format!("/etc/systemd/system/{name}"),
+                "sha256": format!("sha256:{:x}", Sha256::digest(bytes)),
+            }));
+        }
         fs::write(
             &manifest_path,
             serde_json::to_vec(&serde_json::json!({
                 "schemaVersion": 2,
                 "sourceCommit": "c".repeat(40),
                 "sourceTree": "d".repeat(40),
-                "artifacts": [{
-                    "name": "chariox-managed-bootstrap.service",
-                    "path": "/etc/systemd/system/chariox-managed-bootstrap.service",
-                    "sha256": service_digest,
-                }],
+                "artifacts": service_artifacts,
             }))
             .expect("serialize release manifest"),
         )
@@ -903,18 +1059,27 @@ mod tests {
         fs::write(&boot_id, "01234567-89ab-cdef-0123-456789abcdef\n").expect("write boot ID");
         fs::write(&machine_id, format!("{}\n", "a".repeat(32))).expect("write machine ID");
 
-        let service_unit = root
-            .path()
-            .join("systemd/system/chariox-managed-bootstrap.service");
-        let service_wants = root
-            .path()
-            .join("systemd/wants/chariox-managed-bootstrap.service");
+        let system_dir = root.path().join("etc/systemd/system");
+        let service_unit = system_dir.join(service_name);
+        let service_wants = system_dir
+            .join("multi-user.target.wants")
+            .join(service_name);
+        let current = root.path().join("usr/lib/chariox/current");
+        fs::create_dir_all(current.parent().unwrap()).expect("create current release parent");
+        symlink(&release_path, &current).expect("link active release");
         fs::create_dir_all(service_unit.parent().expect("unit parent"))
             .expect("create service unit directory");
         fs::create_dir_all(service_wants.parent().expect("wants parent"))
             .expect("create service wants directory");
-        symlink(&service_path, &service_unit).expect("link active service unit");
-        symlink(&service_path, &service_wants).expect("link enabled service unit");
+        for (name, _) in signed_units {
+            symlink(
+                format!("../../../usr/lib/chariox/current/etc/systemd/system/{name}"),
+                system_dir.join(name),
+            )
+            .expect("install signed service facade");
+        }
+        symlink(format!("../{service_name}"), &service_wants)
+            .expect("enable selected service only");
 
         let hotfix_path = root.path().join("dev-hotfix/chariox-kernel");
         fs::create_dir_all(hotfix_path.parent().expect("hotfix parent"))
@@ -930,6 +1095,11 @@ mod tests {
             machine_id,
             proc_root: root.path().join("proc"),
             proc_self_exe: proc_self_exe.clone(),
+            service_topology: if service_name == "chariox-path1-managed-bootstrap.service" {
+                super::ManagedProviderTopology::Path1
+            } else {
+                super::ManagedProviderTopology::SharedHost
+            },
             service_unit,
             service_wants,
             data_volume_observation: root.path().join("observation.json"),
@@ -946,19 +1116,21 @@ mod tests {
             kernel_artifact_verified: true,
         };
 
-        let report = capture_old_generation_runtime_identity_report_with_paths(
-            "environment-1",
-            "machine-1",
-            "kernel-1",
-            4,
-            &format!("mcred_{}", "x".repeat(40)),
-            &release,
-            Utc.with_ymd_and_hms(2026, 9, 22, 1, 2, 3)
-                .single()
-                .expect("valid test timestamp"),
-            &paths,
-        )
-        .expect("matching running release should be reportable");
+        let observe = || {
+            capture_old_generation_runtime_identity_report_with_paths(
+                "environment-1",
+                "machine-1",
+                "kernel-1",
+                4,
+                &format!("mcred_{}", "x".repeat(40)),
+                &release,
+                Utc.with_ymd_and_hms(2026, 9, 22, 1, 2, 3)
+                    .single()
+                    .expect("valid test timestamp"),
+                &paths,
+            )
+        };
+        let report = observe().expect("matching running release should be reportable");
         assert_eq!(report.environment_id, "environment-1");
         assert_eq!(report.machine_id, "machine-1");
         assert_eq!(report.kernel_id, "kernel-1");
@@ -966,21 +1138,80 @@ mod tests {
         assert_eq!(report.linux_boot_id, "01234567-89ab-cdef-0123-456789abcdef");
         assert_eq!(report.os_machine_id, "a".repeat(32));
 
+        let other_service = if service_name == "chariox-path1-managed-bootstrap.service" {
+            "chariox-managed-bootstrap.service"
+        } else {
+            "chariox-path1-managed-bootstrap.service"
+        };
+        for name in [other_service, "chariox-disposable-worker-bootstrap.service"] {
+            let dormant = system_dir.join(name);
+            let expected = release
+                .active_release_path
+                .join(format!("etc/systemd/system/{name}"));
+            let enabled = paths.service_wants.parent().unwrap().join(name);
+            assert!(
+                observe().is_ok(),
+                "signed disabled facade is normal installer output"
+            );
+            symlink(&expected, &enabled).expect("enable conflicting service");
+            assert!(observe().is_err(), "another bootstrap must not be enabled");
+            fs::remove_file(&enabled).expect("disable conflicting service");
+            fs::remove_file(&dormant).expect("remove dormant facade");
+            symlink(&hotfix_path, &dormant).expect("link foreign dormant unit");
+            assert!(
+                observe().is_err(),
+                "foreign dormant facade must be rejected"
+            );
+            fs::remove_file(&dormant).expect("remove foreign dormant link");
+            fs::write(&dormant, b"unsigned dormant unit").expect("write unsigned dormant unit");
+            assert!(
+                observe().is_err(),
+                "regular dormant facade must be rejected"
+            );
+            fs::remove_file(&dormant).expect("remove regular dormant facade");
+            symlink(&expected, &dormant).expect("restore dormant facade");
+            let original = fs::read(&expected).expect("read signed dormant unit");
+            fs::write(&expected, b"tampered dormant unit").expect("tamper dormant unit");
+            assert!(
+                observe().is_err(),
+                "dormant unit must match signed artifact"
+            );
+            fs::write(&expected, original).expect("restore signed dormant unit");
+        }
+        for name in ["chariox-kernel.service", "chariox-relay.service"] {
+            let residue = system_dir.join(name);
+            symlink(&service_path, &residue).expect("link retired service");
+            assert!(observe().is_err(), "retired service must still be rejected");
+            fs::remove_file(residue).expect("remove retired service");
+        }
+        fs::remove_file(&paths.service_wants).expect("remove enabled service");
+        assert!(
+            observe().is_err(),
+            "service must be enabled for this release"
+        );
+        symlink(&service_path, &paths.service_wants).expect("restore enabled service");
+        fs::remove_file(&paths.service_unit).expect("remove active service");
+        symlink(&hotfix_path, &paths.service_unit).expect("link foreign service");
+        assert!(
+            observe().is_err(),
+            "foreign service symlink must be rejected"
+        );
+        fs::remove_file(&paths.service_unit).expect("remove foreign service link");
+        symlink(&service_path, &paths.service_unit).expect("restore active service");
+        fs::write(&service_path, b"tampered unit").expect("tamper service fixture");
+        assert!(
+            observe().is_err(),
+            "service hash must remain pinned to the manifest"
+        );
+        fs::write(&service_path, service_contents).expect("restore pinned service fixture");
+        assert!(
+            observe().is_ok(),
+            "restored topology must remain reportable"
+        );
+
         fs::remove_file(&proc_self_exe).expect("remove matching executable fixture");
         symlink(&hotfix_path, &proc_self_exe).expect("point current executable at hotfix");
-        assert!(capture_old_generation_runtime_identity_report_with_paths(
-            "environment-1",
-            "machine-1",
-            "kernel-1",
-            4,
-            &format!("mcred_{}", "x".repeat(40)),
-            &release,
-            Utc.with_ymd_and_hms(2026, 9, 22, 1, 2, 3)
-                .single()
-                .expect("valid test timestamp"),
-            &paths,
-        )
-        .is_err());
+        assert!(observe().is_err());
     }
 
     #[cfg(target_os = "linux")]

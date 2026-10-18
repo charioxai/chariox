@@ -290,5 +290,6 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "managed_environment_keep_running_v1",
     "terminal_relay_authorization_renewal_v1",
     "exact_prompt_cancellation_v499",
+    "app_automation_injection_v1",
     "owner_managed_context_transfer_v1",
 ];

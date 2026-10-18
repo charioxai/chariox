@@ -313,7 +313,7 @@ async fn request_runtime_interaction_with_timeout(
         {
             Ok(receiver) => break receiver,
             Err(error) if crate::runtime::state::interaction_waits(&error) => {
-                let next = tokio::time::Instant::now() + Duration::from_millis(50);
+                let next = tokio::time::Instant::now() + Duration::from_millis(25);
                 tokio::time::sleep_until(deadline.map_or(next, |deadline| deadline.min(next)))
                     .await;
             }

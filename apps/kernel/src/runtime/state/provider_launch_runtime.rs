@@ -13,6 +13,8 @@ impl KernelRuntimeState {
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
         >,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        // This route has already consumed the worker's execution-lease authority.
+        let launch_request = launch_request.with_leased_account_authority();
         let runtime_init_delay_ms;
         let started = {
             let owned = &self.owned;

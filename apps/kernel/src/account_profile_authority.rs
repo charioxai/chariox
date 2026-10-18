@@ -67,6 +67,14 @@ pub(crate) fn provider_account_authority_for_launch(
     profiles: &ProviderAccountProfileRegistry,
     request: &crate::provider::LaunchProviderRequest,
 ) -> Result<String, DaemonError> {
+    if request.leased_account_authority {
+        profiles.get(
+            &request.owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+        return Ok(request.owner_user_id.clone());
+    }
     resolved_authority(
         config,
         profiles,

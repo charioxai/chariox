@@ -630,3 +630,155 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
 
 #[path = "approval_lifetime_remote.rs"]
 mod remote;
+
+#[tokio::test]
+async fn mp08_native_permission_waits_for_existing_subject_decision() {
+    let f = Fixture::new().await;
+    let previous = f.approval().await;
+    let origin = f
+        .runtime
+        .capture_native_interaction_origin(&f.session, &f.agent, &f.run)
+        .unwrap();
+    let id = format!("native-next-{}", f.session);
+    let request = crate::local::RequestNativeProviderTurnInteractionRequest::allow_deny(
+        &f.session,
+        &f.agent,
+        &id,
+        None,
+        "Approve next tool?",
+        Some(5),
+        origin,
+    );
+    let state = f.runtime.clone();
+    let waiting = tokio::spawn(async move {
+        crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request(
+            &state, request,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !waiting.is_finished(),
+        "MP-08 a pending rendered/native decision must not deny the hook"
+    );
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+        .await
+        .unwrap();
+    assert_eq!(previous.await.unwrap().status, "answered");
+    for _ in 0..100 {
+        if f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|i| i.id() == id)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &id, "allow_once", None)
+        .await
+        .unwrap();
+    let response = waiting.await.unwrap().unwrap();
+    assert!(
+        matches!(response, crate::local::LocalDaemonResponse::NativeProviderInteractionResolved { resolution } if resolution.status == "answered" && resolution.choice_id.as_deref() == Some("allow_once"))
+    );
+}
+
+#[tokio::test]
+async fn mp08_native_permission_queue_keeps_original_deadline() {
+    let f = Fixture::new().await;
+    let previous = f.approval().await;
+    let origin = f
+        .runtime
+        .capture_native_interaction_origin(&f.session, &f.agent, &f.run)
+        .unwrap();
+    let request = crate::local::RequestNativeProviderTurnInteractionRequest::allow_deny(
+        &f.session,
+        &f.agent,
+        format!("native-timeout-{}", f.session),
+        None,
+        "Approve?",
+        Some(1),
+        origin,
+    );
+    let response =
+        crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request(
+            &f.runtime, request,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, crate::local::LocalDaemonResponse::NativeProviderInteractionResolved { resolution } if resolution.status == "timed_out" && resolution.choice_id.is_none())
+    );
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+        .await
+        .unwrap();
+    assert_eq!(previous.await.unwrap().status, "answered");
+}
+
+#[tokio::test]
+async fn mp08_native_permission_queue_cannot_attach_to_finished_turn() {
+    let f = Fixture::new().await;
+    let previous = f.approval().await;
+    let origin = f
+        .runtime
+        .capture_native_interaction_origin(&f.session, &f.agent, &f.run)
+        .unwrap();
+    let request = crate::local::RequestNativeProviderTurnInteractionRequest::allow_deny(
+        &f.session,
+        &f.agent,
+        format!("native-stale-{}", f.session),
+        None,
+        "Approve?",
+        Some(5),
+        origin,
+    );
+    let state = f.runtime.clone();
+    let waiting = tokio::spawn(async move {
+        crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request(
+            &state, request,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.session, &f.agent, Some(&f.run))
+        .unwrap();
+    assert_eq!(previous.await.unwrap().status, "timed_out");
+    let response = waiting.await.unwrap().unwrap();
+    assert!(
+        matches!(response, crate::local::LocalDaemonResponse::NativeProviderInteractionResolved { resolution } if resolution.status == "timed_out" && resolution.choice_id.is_none())
+    );
+    assert!(f
+        .runtime
+        .owned
+        .session_snapshot(&f.session)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+}

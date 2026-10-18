@@ -69,12 +69,14 @@ impl KernelRuntimeState {
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
-        let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
+        // MP-05/MP-08: an empty imported environment resolves nothing and must
+        // not block the first turn behind a Vault the target never created.
+        let has_values = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         )
         .load(session.project_id())?
-        .is_some();
-        let _vault = if has_environment {
+        .is_some_and(|state| state.manifest.entries.iter().any(|entry| !entry.excluded));
+        let _vault = if has_values {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,

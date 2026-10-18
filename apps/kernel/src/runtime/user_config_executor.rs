@@ -83,18 +83,17 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
-    request: SetProviderAccountCredentialRequest,
+    mut request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.run {
         return claude_setup_token_login::start(runtime_state, command, request).await;
     }
+    let value = zeroize::Zeroizing::new(std::mem::take(&mut request.value));
     let owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
-    let provider = crate::provider::validate_provider_account_credential_input(
-        &request.provider,
-        &request.value,
-    )?
-    .to_string();
+    let provider =
+        crate::provider::validate_provider_account_credential_input(&request.provider, &value)?
+            .to_string();
     let profile = runtime_state.provider_account_profile_registry().get(
         &owner_user_id,
         &provider,
@@ -114,7 +113,7 @@ pub(crate) async fn execute_set_provider_account_credential_request(
             "provider_account_credential_set",
         )
         .await?;
-    let token = zeroize::Zeroizing::new(request.value.trim().to_string());
+    let token = zeroize::Zeroizing::new(value.trim().to_string());
     claude_setup_token_login::verify_account_token(
         runtime_state,
         &owner_user_id,
@@ -366,5 +365,8 @@ fn credential_vault_status(
     crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }
 
+#[cfg(all(test, unix))]
+#[path = "user_config_executor_existing_token_tests.rs"]
+mod existing_token_tests;
 #[cfg(test)]
 mod tests;

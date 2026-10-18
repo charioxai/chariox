@@ -516,9 +516,13 @@ fn run_once(
         }
         worker.pending = None;
     }
-    child
-        .wait()
-        .map_err(|error| worker_error(format!("wait for worker kernel: {error}")))
+    match super::control_state::wait_for_kernel(&mut child, &config.receipt_path, topology) {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            stop_child(&mut child)?;
+            Err(error)
+        }
+    }
 }
 
 fn spawn_kernel(
@@ -817,10 +821,11 @@ impl WorkerReceipt {
     }
 
     fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
-        if !path.exists() {
+        let Some(value) =
+            super::control_state::read_optional::<Self>(path, "disposable worker receipt")?
+        else {
             return Ok(None);
-        }
-        let value: Self = read_bounded_json(path, "disposable worker receipt")?;
+        };
         let status_valid = match (value.status, value.confirmed_at.as_deref()) {
             (WorkerReceiptStatus::Exchanged, None) => true,
             (WorkerReceiptStatus::Confirmed, Some(time)) => {
@@ -856,8 +861,7 @@ impl WorkerReceipt {
         if bytes.len() > 96 * 1024 {
             return Err(worker_error("worker receipt is too large"));
         }
-        write_private_file(path, &bytes)
-            .map_err(|error| worker_error(format!("write worker receipt: {error}")))
+        super::control_state::persist(path, &bytes)
     }
 
     fn validate_identity(&self, identity: &ManagedRuntimeIdentity) -> Result<(), DaemonError> {
@@ -3063,6 +3067,9 @@ mod tests {
 
     #[test]
     fn worker_receipt_keeps_the_selected_home_and_not_the_bootstrap_token() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let previous_receipt = env::var_os(ACTIVITY_RECEIPT_ENV);
         let root = std::env::temp_dir().join(format!(
             "chariox-disposable-worker-receipt-{}",
             rand::random::<u64>()
@@ -3096,6 +3103,9 @@ mod tests {
         runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         let profile = persisted_profile(response().cloud_relay);
+        runtime.cloud_relay = Some(profile.clone());
+        env::set_var(ACTIVITY_RECEIPT_ENV, &path);
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).unwrap());
         assert_eq!(
             activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3105,6 +3115,7 @@ mod tests {
         confirmed.status = WorkerReceiptStatus::Confirmed;
         confirmed.confirmed_at = Some("2026-09-13T11:00:00Z".to_string());
         confirmed.persist(&path).unwrap();
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).unwrap());
         assert_eq!(
             confirmed_activity_allocation(&path, &runtime, &profile).unwrap(),
             "worker-1"
@@ -3136,12 +3147,15 @@ mod tests {
         );
         runtime.remote_lease_capacity = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         runtime.remote_lease_capacity = Some(1);
         runtime.lease_worker_home_caller = None;
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         runtime.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
         runtime.daemon_id = "other-kernel".to_string();
         assert!(activity_allocation(&path, &runtime, &profile).is_err());
+        assert!(super::super::managed_lifecycle_credential_is_bound(&runtime).is_err());
         let mut changed = identity();
         changed.kernel_id = "other-kernel".to_string();
         assert!(restored.validate_identity(&changed).is_err());
@@ -3149,5 +3163,9 @@ mod tests {
             .expect("read receipt bytes")
             .contains(&envelope().token));
         std::fs::remove_dir_all(&root).expect("remove disposable test state");
+        match previous_receipt {
+            Some(value) => env::set_var(ACTIVITY_RECEIPT_ENV, value),
+            None => env::remove_var(ACTIVITY_RECEIPT_ENV),
+        }
     }
 }

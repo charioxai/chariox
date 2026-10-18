@@ -941,7 +941,7 @@ fn kernel_chariox_home() -> Option<PathBuf> {
 
 pub(super) fn trusted_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     let Some(raw) = std::env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR") else {
-        return path1_control_parent();
+        return registered_managed_control_parent();
     };
     if raw.is_empty() {
         return Err(context_error(
@@ -969,13 +969,14 @@ pub(super) fn trusted_managed_control_parent() -> Result<Option<PathBuf>, Daemon
         })
 }
 
-/// Path 1 has no publication control root: the kernel's registered transfer
-/// workspaces are the trusted control parent, so a copied repository lands in
-/// the managed repository root as on a shared host.
-fn path1_control_parent() -> Result<Option<PathBuf>, DaemonError> {
+/// MP-05: managed placements without an explicit publication control root use
+/// the kernel's registered transfer parent. Repositories still publish outside
+/// protected runtime state, into the bootstrap-verified repository root.
+fn registered_managed_control_parent() -> Result<Option<PathBuf>, DaemonError> {
     if !matches!(
         crate::managed_bootstrap::managed_provider_topology(),
-        Ok(crate::managed_bootstrap::ManagedProviderTopology::Path1)
+        Ok(crate::managed_bootstrap::ManagedProviderTopology::Path1
+            | crate::managed_bootstrap::ManagedProviderTopology::SharedHost)
     ) {
         return Ok(None);
     }

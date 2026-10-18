@@ -72,7 +72,6 @@ export function createCliRuntimeProjectionComposition(
   const splitAgentResponseMode = responsePaneProjectionController.splitAgentResponseMode
   const activeInteractionForAgent = (agentId: string | null | undefined) =>
     sessionActiveInteractionForAgent(deps.sessionState(), agentId)
-  const focusedAgentInteraction = () => sessionFocusedInteraction(deps.sessionState())
   const workflowPromptState = createMemo(() => deriveWorkflowPromptState({
     workflowScreenActive: workflowScreenShowing(),
     workflows: deps.sessionState().workflows ?? [],
@@ -81,6 +80,9 @@ export function createCliRuntimeProjectionComposition(
     selectedWorkflowId: deps.selectedWorkflowId(),
     selectedWorkflowNodeId: deps.selectedWorkflowNodeId(),
   }))
+  const focusedAgentInteraction = () => workflowScreenShowing()
+    ? activeInteractionForAgent(workflowPromptState().selectedAgent?.id)
+    : sessionFocusedInteraction(deps.sessionState())
   const responsePaneSelection = responsePaneProjectionController.responsePaneSelection
   const responsePaneAgentSignature = responsePaneProjectionController.responsePaneAgentSignature
   const responsePrimaryAgent = responsePaneProjectionController.responsePrimaryAgent

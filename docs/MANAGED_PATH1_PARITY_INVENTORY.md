@@ -1,5 +1,38 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 bootstrap enrollment and relay renewal
+
+An exchanged managed bootstrap receipt binds the kernel, Machine and relay
+key. Normal kernel ownership migration used to retire its Machine credential;
+the supervisor's confirmation restart then failed while constructing the
+mandatory managed activity reporter, before starting the relay connector.
+
+Managed kernels complete the same key-pinned Cloud ownership migration as
+ordinary kernels. They retain only the receipt-bound capability required for
+managed lifecycle reports. The shared admission helper checks the receipt
+against the running kernel, Machine, relay key and Cloud profile. Disposable
+workers use their existing receipt, home-caller, role and capacity checks.
+Cloud's account membership, existing target/key checks, kernel grant issuance
+and terminal delegation remain authoritative. Context execution still requires
+confirmation. Ordinary predecessor credentials are retired as before;
+co-resident receipts confer no retention authority.
+
+This correction changes no serialized contract or protocol version. Router and
+binding regressions are supplementary. Signed-successor, real managed-machine,
+provider, shutdown and cleanup evidence remain separate MP-10 acceptance gates.
+
+## MP-08 / MP-10 / MP-11 official Claude catalog parity
+
+The shared managed, slice and publication policy pins Claude Code 2.1.296,
+including the native platform packages in both npm integrity locks. The earlier
+2.1.212 managed catalog omitted Haiku 5.5 even when an explicit Haiku 5.5
+provider turn succeeded; returning to the waiting room therefore could not
+select that model. Ordinary controls using 2.1.296 expose the current native
+model IDs. The installed official harness supplies model IDs and names for every
+placement. Updating the policy requires a newly verified signed image and real managed menu/selection
+drills; source consistency checks and ordinary controls do not establish that
+live acceptance.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's
