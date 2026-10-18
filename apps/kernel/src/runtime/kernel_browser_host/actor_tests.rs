@@ -361,7 +361,13 @@ done
 }
 
 #[test]
-fn disconnect_retires_parked_input_while_the_backend_is_occupied() {
+fn disconnect_retires_parked_input_with_the_backend_occupied_or_free() {
+    for occupied in [true, false] {
+        disconnect_retires_parked_input(occupied);
+    }
+}
+
+fn disconnect_retires_parked_input(occupied: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-md3-disconnect-busy-{:032x}",
         rand::random::<u128>()
@@ -385,7 +391,7 @@ done
     host.install_fixture_backend("alice", &script, &root);
     let backend = host.backend("alice").unwrap();
     backend.lock().unwrap().start().unwrap();
-    let held = backend.lock().unwrap();
+    let held = occupied.then(|| backend.lock().unwrap());
     host.disconnect_terminal("alice", "terminal:departed");
     let started = Instant::now();
     while !root.join("retired").exists() && started.elapsed() < Duration::from_secs(2) {
@@ -393,7 +399,7 @@ done
     }
     assert!(
         root.join("retired").exists(),
-        "MD-3: disconnect left the departed terminal's parked input alive behind the occupied backend"
+        "MD-3: disconnect left the departed terminal's parked input alive (backend occupied: {occupied})"
     );
     drop(held);
     host.shutdown().unwrap();

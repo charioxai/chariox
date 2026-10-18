@@ -1003,6 +1003,11 @@ impl KernelBrowserHost {
                     serde_json::json!({"observer":actor}),
                 );
             };
+            // Parked input must not outlive the terminal behind any operation in flight, whether or not the backend lock
+            // is free: the controller can hold a barrier while its Rust lock is released.
+            if let Some(lane) = lane {
+                lane.retire_observer(&observer);
+            }
             // Disconnect must not wait on a busy backend: retire now when it is free, else right behind the request in flight.
             let busy = match backend.try_lock() {
                 Ok(mut backend) => {
@@ -1016,10 +1021,6 @@ impl KernelBrowserHost {
                 Err(std::sync::TryLockError::WouldBlock) => true,
             };
             if busy {
-                // Input this terminal parked in the host must not outlive it while the occupied request runs on.
-                if let Some(lane) = lane {
-                    lane.retire_observer(&observer);
-                }
                 std::thread::spawn(move || {
                     if let Ok(mut backend) = backend.lock() {
                         retire(&mut backend);
