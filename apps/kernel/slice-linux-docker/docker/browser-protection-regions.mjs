@@ -258,7 +258,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // Actionability may wait while an editor is temporarily disabled. Its
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
-        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
+        // A field detached after this snapshot (a swap in flight) is not retired on a stale view: measure again from a fresh one.
+        if(!inFlight&&!state.exists)throw Error('MP-11: fill changed during protection measurement');
+        if(!inFlight&&(state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
         // confirmed absence of layout for the entire field subtree permits

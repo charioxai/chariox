@@ -679,6 +679,13 @@ for(const dpr of [1,2]) {
    await swap('something the user typed');assert.deepEqual(await collect(),[],'a replacement with another value is not the target');
    await evaluate("document.querySelector('#swap').value='MP11-disposable-fill-value'");assert.deepEqual(await collect(),[],'a retired target never resurrects');
  }));
+ test(`MP-08/MP-11 DPR${dpr}: a swap landing between the snapshot and the field read does not retire the target`,()=>setup(dpr,async({browser,connection,fill,collect,evaluate})=>{
+   await fill('#password');assert.deepEqual(await collect(),[]);
+   const send=connection.send.bind(connection);let armed=true;
+   connection.send=async(method,...args)=>{const result=await send(method,...args);if(armed&&method==='DOMSnapshot.captureSnapshot'){armed=false;await evaluate("(()=>{const old=document.querySelector('#password');const next=document.createElement('input');next.type='text';next.style.cssText=old.style.cssText;next.value=old.value;old.replaceWith(next);})()");}return result;};
+   await collect().catch(()=>{});
+   assert.equal((await collect()).length,1,'the next measurement follows the swapped field');
+ }));
  test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
    const send=connection.send.bind(connection);let intercepted=false;
    connection.send=async(method,params,session)=>{
