@@ -126,9 +126,20 @@ fn mp08_mp11_display_resume_transfers_the_owner_lease_without_retake() {
     let now = std::time::Instant::now();
     model.desktop_viewer("terminal:owner", "old", now);
     model.takeover_desktop(actor, "s", "g").unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
-    assert!(model.resume_desktop_viewer("terminal:forged", "old", "stolen", now).is_err());
-    model.resume_desktop_viewer("terminal:owner", "old", "fresh", now + std::time::Duration::from_millis(700)).unwrap();
+    model
+        .suspend_desktop_viewer("terminal:owner", "old", now)
+        .unwrap();
+    assert!(model
+        .resume_desktop_viewer("terminal:forged", "old", "stolen", now)
+        .is_err());
+    model
+        .resume_desktop_viewer(
+            "terminal:owner",
+            "old",
+            "fresh",
+            now + std::time::Duration::from_millis(700),
+        )
+        .unwrap();
     model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(6));
     assert!(model.desktop_owner_is("terminal:owner"));
     model.end_desktop_viewer("fresh", now + std::time::Duration::from_secs(7));
@@ -142,8 +153,16 @@ fn mp11_display_suspend_cannot_extend_grace_or_keep_a_stale_owner() {
     let now = std::time::Instant::now();
     model.desktop_viewer("terminal:owner", "old", now);
     model.takeover_desktop(actor, "s", "g").unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now + std::time::Duration::from_secs(4)).unwrap();
+    model
+        .suspend_desktop_viewer("terminal:owner", "old", now)
+        .unwrap();
+    model
+        .suspend_desktop_viewer(
+            "terminal:owner",
+            "old",
+            now + std::time::Duration::from_secs(4),
+        )
+        .unwrap();
     model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(5));
     assert!(!model.desktop_owner_is("terminal:owner"));
 }
@@ -220,8 +239,7 @@ fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
     // Initial/reset credits omit wait_ms or use zero, but can still await CDP.
     // Exercise those alongside an ordinary waiting credit on the same backend.
     for wait in [None, Some(0), Some(1000)] {
-        let mut credit =
-            json!({"op":"mirror_next","subscription_id":"view","generation":1});
+        let mut credit = json!({"op":"mirror_next","subscription_id":"view","generation":1});
         if let Some(wait) = wait {
             credit["wait_ms"] = wait.into();
         }
@@ -423,4 +441,55 @@ fn mp11_installed_app_launch_is_a_native_mutation_fenced_by_takeover() {
         .unwrap();
     assert!(!cancel.requested());
     model.finish(&action, EnvironmentActionTerminal::Completed);
+}
+
+#[tokio::test]
+async fn mp11_computer_reload_retains_live_epoch_without_focus_or_renewal() {
+    let host = KernelBrowserHost::new(
+        std::env::temp_dir().join(format!("culinux-reload-{:032x}", rand::random::<u128>())),
+    );
+    host.request_grant(
+        "alice",
+        "a",
+        "owner-prompt",
+        Duration::from_secs(60),
+        None,
+        "room",
+    )
+    .unwrap();
+    host.grant_desktop("alice", "a", "surface");
+    let admission = host
+        .admit_for("alice", "a", KernelBrowserCapability::Computer)
+        .unwrap();
+    let expires = host
+        .inner
+        .lock()
+        .unwrap()
+        .access
+        .grant("alice", "a")
+        .unwrap()
+        .expires_at;
+    assert!(expires.is_some());
+    host.set_focus("alice", Some("b"));
+    host.load_for("alice", "a", KernelBrowserCapability::Computer)
+        .unwrap();
+    assert!(host.check_admission(Some(&admission)).is_ok());
+    assert_eq!(
+        host.inner
+            .lock()
+            .unwrap()
+            .access
+            .grant("alice", "a")
+            .unwrap()
+            .expires_at,
+        expires
+    );
+    assert!(host
+        .load_for("alice", "a", KernelBrowserCapability::Notes)
+        .is_err());
+    host.revoke_grants("alice", Some("a"));
+    assert!(host
+        .load_for("alice", "a", KernelBrowserCapability::Computer)
+        .is_err());
+    assert!(host.check_admission(Some(&admission)).is_err());
 }

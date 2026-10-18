@@ -56,6 +56,13 @@ async fn check() {
         .await
         .unwrap();
     assert!(names().contains(&"chariox.kernel_computer".into()));
+    // MP-08/MP-11 V18: reload reuses this live capability after focus moves.
+    focus(&router, session.id(), second.id()).await;
+    router
+        .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_computer", json!({}))
+        .await
+        .unwrap();
+    focus(&router, session.id(), first.id()).await;
     let target = json!({"surface_id":"s","generation":"g"});
     for command in [
         json!({"op":"takeover","target":target}),

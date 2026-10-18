@@ -209,6 +209,11 @@ impl KernelBrowserHost {
             .inner
             .lock()
             .map_err(|_| "MD-3: browser host lock poisoned")?;
+        // MP-08/MP-11: reloading an already loaded capability reuses the live
+        // epoch, scope and deadline. It never reacquires or renews authority.
+        if require_loaded(&state, user, agent, capability).is_ok() {
+            return Ok(());
+        }
         require_focus(&state, user, agent)?;
         state.loaded.insert((user.into(), agent.into(), capability));
         drop(state);
