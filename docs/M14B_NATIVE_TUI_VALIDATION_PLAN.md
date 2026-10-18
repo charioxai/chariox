@@ -613,7 +613,8 @@ A string the 12 KiB record cap shortened also carries its original length in
 `chariox_field_bytes` (`{field: bytes}`); watermarks use that length, never the
 shortened display text, as the end of the stream. The whole-record summary that
 replaces an oversized capped record omits the strings but keeps this map (every
-output field's logical length). Optional metadata only.
+output field's logical length) and the delta owner and offset, so a summarized
+delta still ends where the producer's did. Optional metadata only.
 
 Fail-first guard for capped output: `mp08_history_owned_tool_keeps_logical_bounds_of_capped_output`
 grows a tool past the 16 KiB record cap, completes it with a status-only snapshot

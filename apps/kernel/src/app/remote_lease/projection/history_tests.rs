@@ -442,7 +442,7 @@ fn history_owned_tool_ignores_late_terminal_records(field: &str, stderr: Option<
 
 #[test]
 fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
-    capped_output_keeps_history_bounds(|status, len| {
+    capped_output_keeps_history_bounds(30_100, |status, len| {
         serde_json::json!({
             "id": "big-tool", "name": "Bash", "status": status, "output": "x".repeat(len),
         })
@@ -450,10 +450,11 @@ fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
 }
 
 // Two large fields push the capped record past 16 KiB, so the whole-record
-// summary replaces the strings: it must still carry both logical bounds.
+// summary replaces the strings: it must still carry both logical bounds, also
+// when the completion itself appends output after the last running delta.
 #[test]
 fn mp08_history_owned_tool_keeps_logical_bounds_through_the_whole_record_summary() {
-    capped_output_keeps_history_bounds(|status, len| {
+    capped_output_keeps_history_bounds(38_100, |status, len| {
         serde_json::json!({
             "id": "big-tool", "name": "Bash", "status": status,
             "stdout": "x".repeat(len), "stderr": "e".repeat(20_000),
@@ -461,7 +462,10 @@ fn mp08_history_owned_tool_keeps_logical_bounds_through_the_whole_record_summary
     });
 }
 
-fn capped_output_keeps_history_bounds(tool_json: impl Fn(&str, usize) -> serde_json::Value) {
+fn capped_output_keeps_history_bounds(
+    completed_len: usize,
+    tool_json: impl Fn(&str, usize) -> serde_json::Value,
+) {
     let (mut app, leased) = worker_lease();
     let run = super::explicit_completion_tests::provider_run(
         "run",
@@ -493,7 +497,7 @@ fn capped_output_keeps_history_bounds(tool_json: impl Fn(&str, usize) -> serde_j
         produce(tool("running", 5_000)),
         produce(tool("running", 30_000)),
         produce(tool("running", 30_100)),
-        produce(tool("completed", 30_100)),
+        produce(tool("completed", completed_len)),
     ];
     let completed = records.last().unwrap();
     assert!(

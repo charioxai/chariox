@@ -29,10 +29,14 @@ use crate::provider_output_policy::output_bounds::{
 /// has no owner and cannot establish an extension of a history-owned stream.
 fn delta_field(payload: &serde_json::Value) -> Option<&str> {
     if let Some(field) = payload.get("chariox_delta_field").and_then(|v| v.as_str()) {
-        return OUTPUT_FIELDS
-            .contains(&field)
-            .then_some(field)
-            .filter(|field| payload.get(*field).is_some_and(|v| v.is_string()));
+        // The whole-record summary omits the string but keeps its bound.
+        return OUTPUT_FIELDS.contains(&field).then_some(field).filter(|field| {
+            payload.get(*field).is_some_and(|v| v.is_string())
+                || payload
+                    .get(PROVIDER_TOOL_FIELD_BYTES)
+                    .and_then(|fields| fields.get(*field))
+                    .is_some()
+        });
     }
     let mut fields = OUTPUT_FIELDS
         .into_iter()

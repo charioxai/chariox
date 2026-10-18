@@ -307,12 +307,23 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let mut fallback = serde_json::Map::new();
     if let Value::Object(object) = &value {
-        for key in ["id", "tool", "status", "name", "command"] {
+        for key in [
+            "id",
+            "tool",
+            "status",
+            "name",
+            "command",
+            "chariox_delta",
+            "chariox_delta_field",
+            "chariox_delta_offset_bytes",
+            "chariox_output_replaced",
+        ] {
             if let Some(value) = object.get(key).cloned() {
                 fallback.insert(key.to_string(), value);
             }
         }
-        // The output strings are dropped, their logical bounds are not.
+        // The output strings are dropped, their logical bounds and the delta
+        // owner and offset that place them in the stream are not.
         let capped = object.get(PROVIDER_TOOL_FIELD_BYTES);
         let bounds: serde_json::Map<String, Value> = PROVIDER_TOOL_OUTPUT_FIELDS
             .iter()
