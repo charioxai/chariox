@@ -559,18 +559,24 @@ export class InputArbiter {
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
       // r54: band keys never wait on a renderer that cannot answer. The kernel's own record of the person's
       // action (bound to the Tab, browser and band window, the document proven above by ordered events) stands
-      // for the proof once the page failed to answer one bounded read; Enter, Tab, a page click or a Tab switch clear it.
+      // for the proof once the page failed to answer one bounded read; Enter, Tab, Escape, a page click or a Tab switch clear it; the late read settles it.
       let evaluate;
       if (ownsUiFocus) {
         const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
         if (typeof capture?.physicalFocus !== 'function') { await slowStep(this.host, 'key_claim_proof', currentProof()); return; }
         let pageFocused = false;
         if (!claim.unread) {
-          const read = await within(FOCUS_READ_MS, async () => {
+          const pending = (async () => {
             evaluate = await focusWorld();
             return capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
-          });
-          if (read === timedOut) claim.unread = true; else pageFocused = read;
+          })();
+          const read = await within(FOCUS_READ_MS, () => pending);
+          if (read === timedOut) {
+            // The record stands in only until the late read settles: a page that has its focus back ends the claim,
+            // any other answer (or a failed read) resumes verification on the next key.
+            claim.unread = true;
+            pending.then(focused => { if (focused && this.chromeFocus === claim) this.chromeFocus = null; }, () => {}).then(() => { claim.unread = false; });
+          } else pageFocused = read;
         }
         await slowStep(this.host, 'key_claim_proof', currentProof());
         if (!pageFocused) return;
@@ -608,7 +614,7 @@ export class InputArbiter {
       else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
       if (tab) this.chromeFocus = lower(keysym) === key('l') ? uiFocus(tab) : null;
-      else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
+      else if (keysym === 0xff0d || keysym === 0xff09 || keysym === 0xff1b) this.chromeFocus = null;
       omnibox(tab ? !!this.chromeFocus : !!this.inOmnibox && !!this.chromeFocus);
       return dispatched(() => source.chord(keysym, modifiers));
     };
