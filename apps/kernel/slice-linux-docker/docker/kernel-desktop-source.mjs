@@ -78,7 +78,7 @@ export class DesktopSource {
     },(header,pixels)=>{
       if(this.closed)return;
       const raw=raster.apply(header,pixels);raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
-      this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial);
+      this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial,raw.captured_ms);
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     const scope=await this.scope();
@@ -185,7 +185,7 @@ export class DesktopSource {
     if(presentation&&!presentation.stable(start,end)){
       this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
     }
-    // Serial 0 withholds every kernel-browser window: publish at once.
+    // Serial 0 (no adopted measurement): the helper masks every kernel-browser window whole, publish at once.
     if(serial===0)this.publish(sample);
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();

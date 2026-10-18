@@ -156,7 +156,7 @@ try:
                         if not isinstance(release[field],list) or len(release[field])>256:raise ValueError('desktop process scope')
                         config[field]=release[field]
                     # MP-08/MP-11: CDP regions the kernel measured stable and
-                    # presented; null withholds every kernel-browser window.
+                    # presented; null masks every kernel-browser window whole.
                     if release['browser_protection'] is not None and not isinstance(release['browser_protection'],dict) or type(release['protection_serial']) is not int:raise ValueError('desktop protection')
                     config['browser_protection']=release['browser_protection'];config['protection_serial']=release['protection_serial']
                     release={'refresh':True}
