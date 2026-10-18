@@ -8,6 +8,7 @@ import {NativeWindowRegionCapture} from './kernel-browser-window-region.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {inputHostTab} from './kernel-browser-input.mjs';
 import {lateInputAck,markDispatched} from './kernel-browser-input-queue.mjs';
+import {popupActionId} from './kernel-browser-popup-evidence.mjs';
 
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
@@ -145,7 +146,7 @@ export async function regionInput(host,command,scope,signal) {
  const tab=await host.displayTarget(command);
  if(tab.document_id!==stream.regionLease.document_id)refuse();
  let dispatched=false;
- try { await host.sampleLane(tab).run('input',()=>host.popupEvidence.capture(host.browser,tab,command._action_id,beginDispatch=>
+ try { await host.sampleLane(tab).run('input',()=>host.popupEvidence.capture(host.browser,tab,popupActionId(command),beginDispatch=>
   inputHostTab(host.browser,tab,{kind:'mirror'},{signal,resolveMirror:async()=>resolved,onDispatch:()=>{
    dispatched=true;
    host.inputEpochs.set(tab.tab_id,(host.inputEpochs.get(tab.tab_id)??0)+1);host.inputChangedAt.set(tab.tab_id,performance.now());stream.regionSource.wake();return beginDispatch();

@@ -75,3 +75,7 @@ export class BrowserPopupEvidence {
     return Object.fromEntries(tabs.flatMap(tab=>{const evidence=this.targets.get(tab.target_id);return evidence?[[tab.tab_id,evidence.actionId]]:[];}));
   }
 }
+
+// A wheel is no user activation, so it cannot open a window: it needs no observer installed in the page, whose renderer
+// round trips made a person's first scroll wait 5 s on a busy page (r55) and held the input lane behind it.
+export const popupActionId = command => command.input?.kind === 'scroll' ? null : command._action_id;

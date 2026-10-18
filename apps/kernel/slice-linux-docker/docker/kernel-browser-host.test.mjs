@@ -2129,3 +2129,14 @@ test('MP-08/MP-10/MP-11 inputLane separates Chrome band input from page input', 
   assert.deepEqual(['b1', 'b2', 'b3', 'unknown', undefined].map(binding_id => host.inputLane({ op: 'input', binding_id })), ['band', 'band', 'page', 'page', 'page']);
   host.displays.clear();
 }));
+
+// r55: a person's first wheel on a busy page waited 5 s for the popup-evidence observer's renderer round trips (a wheel
+// opens no window) and held the input lane; now it installs no observer.
+test('MP-08/MP-10/MP-11 a scroll installs no popup-evidence observer in the page, a click does', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  const input = (kind, extra) => host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, _action_id: `action-${kind}`, input: { kind, x: 10, y: 20, ...extra } });
+  sent.length = 0; await input('scroll', { delta_x: 0, delta_y: 120 });
+  assert.equal(sent.some(x => x.method === 'Page.addScriptToEvaluateOnNewDocument'), false, 'no observer for a wheel');
+  sent.length = 0; await input('click');
+  assert.equal(sent.some(x => x.method === 'Page.addScriptToEvaluateOnNewDocument'), true, 'a click keeps its popup evidence');
+}));
