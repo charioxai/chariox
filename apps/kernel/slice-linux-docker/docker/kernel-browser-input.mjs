@@ -1,6 +1,5 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
-import { UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 const viewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
@@ -15,9 +14,7 @@ export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b
 // automation) or fine trackpad deltas. An admitted native display starts
 // a notch for each nonzero fine delta; other callers retain precise CDP deltas.
 
-// MP-11: the focused element (through open shadow roots and, for admitted mirror
-// input, same-origin frames) must not be a sensitive field. A cross-origin frame
-// answers 'frame': its own world decides (see checkTextTarget).
+// MP-11: compatibility export for chrome-window; its per-key guard is owned by vidlat.
 export const sensitiveFocusExpression = observedFrameInput => `(() => { let e = document.activeElement; while(e) {
           if(e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
           if(e.shadowRoot?.activeElement) { e = e.shadowRoot.activeElement; continue; }
@@ -28,19 +25,6 @@ export const sensitiveFocusExpression = observedFrameInput => `(() => { let e = 
           }
           return false;
         } return true; })()`;
-
-// MP-08/MP-11 (530 page drag): a drag may neither start on (select) nor drop onto a protected field.
-// Same-origin frames are read through; a cross-origin frame cannot be inspected, so it fails closed.
-export const protectedPointExpression = (x, y) => `(() => { let d = document, x = ${x}, y = ${y};
-  for (let depth = 0; depth < 8; depth++) {
-    let e = d.elementFromPoint(x, y);
-    for (let n = 0; e?.shadowRoot && n < 32; n++) { const inner = e.shadowRoot.elementFromPoint(x, y); if (!inner || inner === e) break; e = inner; }
-    if (!e) return false;
-    if (e.type === 'password' || /password|one-time-code|cc-/i.test(e.autocomplete || '') || e.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) return true;
-    if (e.tagName !== 'IFRAME') return false;
-    let inner = null; try { inner = e.contentDocument; } catch {} if (!inner) return true;
-    const r = e.getBoundingClientRect(); x -= r.left + e.clientLeft; y -= r.top + e.clientTop; d = inner;
-  } return true; })()`;
 
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.round(delta / 100) || Math.sign(delta);
 // MP-11: native pointer input is at most once. An action sent to the native
@@ -56,7 +40,6 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
     const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
-    let observedFrameInput = false;
     const cachedDocument = () => {
       if (!documentCurrent()) throw new BrowserActionError("stale_document_reference", "browser document retired before native input");
     };
@@ -66,10 +49,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       assertNotCancelled(signal);
     };
-    // MP-11: all text-producing paths share the Vault-only target fence.
-    // The public key string and MCP schema are not security boundaries.
-    // MP-08/MP-10 (2.3): one isolated world per document, reused by every
-    // keystroke; a destroyed context (navigation, reload) is recreated once.
+    // MP-08/MP-11: focus is routing, not secret authority. Input never reads a value.
     const textWorld = async (fresh = false) => {
       const cache = browser.chariox_text_worlds ??= new Map();
       const cached = cache.get(tab.target_id);
@@ -82,21 +62,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (frameTree.frame.loaderId === tab.document_id) cache.set(tab.target_id, { document: tab.document_id, contextId: executionContextId });
       return executionContextId;
     };
-    // MP-08/MP-11: admitted mirrors may target observed same-origin frame
-    // descendants. Inspect the live leaf in this isolated world; direct
-    // frame input and inaccessible/protected frames still fail closed.
-    const sensitive = () => sensitiveFocusExpression(observedFrameInput);
-    const evaluateText = async expression => {
-      const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression, returnByValue: true }, sessionId)).result?.value;
+    const evaluateFocus = async () => {
+      const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression: "document.hasFocus()", returnByValue: true }, sessionId)).result?.value;
       try { return await evaluate(await textWorld()); }
       catch (error) { if (error?.code === "stale_document_reference") throw error; return await evaluate(await textWorld(true)); }
-    };
-    const checkTextTarget = async () => {
-      let verdict = await evaluateText(sensitive());
-      // An admitted mirror focus inside a cross-origin frame: the same rules run
-      // in that frame's own world (fail closed without a resolver).
-      if (verdict === 'frame') verdict = resolved?.frameSensitive ? await resolved.frameSensitive(sensitiveFocusExpression(false)) : true;
-      if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     // The guards are awaited right before a physical dispatch: a retirement (parked retry) that arrives inside one must stop it.
     const guarded = guard => guard && (async () => { assertNotCancelled(signal); await guard(); assertNotCancelled(signal); });
@@ -104,14 +73,8 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     const admitInput = async (method, params) => {
       // CDP fallbacks retain their fresh document barriers.
       await check(true);
-      if (method === "Input.insertText" || method === "Input.imeSetComposition" || (method === "Input.dispatchKeyEvent" && (params.text || (params.modifiers & 7)))) {
-        await checkTextTarget();
-        // MP-11: a fenced mirror guard below checks the live document and
-        // focused ancestry after this shared secret preflight. No mutation or
-        // await separates a duplicate document read from that final guard.
-        if (!resolved?.fenced) await check(true);
-      }
-      // MP-11: live mirror focus is the final fence, after every text preflight.
+      // MP-11: retain document, ownership and mirror epoch fences. Secret
+      // values are filtered by observation paths, never by refusing input.
       await mirrorGuard?.();
     };
     const sendInput = async (method, params) => {
@@ -131,7 +94,6 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       // MP-08/MP-10/MP-11: resolvers fence the document before their first
       // page call (point, ancestry, focus), so no separate query here.
       resolved=await resolveMirror(input);
-      observedFrameInput=resolved.observedFrameInput===true;
     }
     return browser.inputCapture.run(connection, sessionId, async () => {
       // MP-08/MP-10/MP-11: a fenced (v2) resolution has its final document
@@ -168,11 +130,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           await mirrorGuard?.();
           assertNotCancelled(signal);
           if (documentCurrent) cachedDocument();
-          const text = printable || ["Enter", "Space"].includes(input.key);
-          // MP-08/MP-10/MP-11: all asynchronous owner/region admission precedes
-          // the final live sensitive/focus check; no later await on the fast path.
-          const focused = await evaluateText(text ? `${sensitive()} ? 'sensitive' : document.hasFocus()` : "document.hasFocus()");
-          if (focused === "sensitive") throw new UserDomainRefusal("sensitive_requires_focus");
+          const focused = await evaluateFocus();
           assertNotCancelled(signal);
           if (documentCurrent) cachedDocument(); else await check();
           if (focused === true && nativeKey(keysym, Boolean(modifiers & 8))) { onDispatch?.(); return; }
@@ -241,8 +199,6 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           // Protocol 530: a primary-button drag in the page (text selection for Notes on the video path).
           if (!Number.isInteger(input.to_x) || input.to_x < 0 || input.to_x >= viewport.css_width || !Number.isInteger(input.to_y) || input.to_y < 0 || input.to_y >= viewport.css_height) throw new Error("MD-2: pointer outside viewport");
           const from = [input.x * viewScale, input.y * viewScale], to = [input.to_x * viewScale, input.to_y * viewScale];
-          await check();
-          if (await evaluateText(`${protectedPointExpression(...from)} || ${protectedPointExpression(...to)}`) !== false) throw new UserDomainRefusal("sensitive_requires_focus");
           await check();
           // Once pressed, the moves and the release are queued with it: cancellation or navigation
           // cannot strand the button (as for a click).

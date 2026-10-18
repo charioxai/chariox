@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
-import { inputHostTab, protectedPointExpression } from "./kernel-browser-input.mjs";
+import { inputHostTab } from "./kernel-browser-input.mjs";
 
 function fixture(protectedTarget = false) {
   const sent = [];
@@ -16,26 +16,13 @@ function fixture(protectedTarget = false) {
   return { sent, browser: { resolvePageTarget: async () => ({ connection, sessionId: "s" }), inputCapture: { run: async (_c, _s, fn) => fn() } } };
 }
 const tab = { target_id: "t", document_id: "doc" };
-test('MP-08/MP-11: admitted same-origin mirror frames inspect the live leaf and fail closed for protected or opaque targets',async()=>{
-  const element=(fields={})=>({tagName:'INPUT',closest:()=>null,...fields});
-  for(const [name,leaf,protectedTarget] of [
-    ['ordinary',element(),false],['password',element({type:'password'}),true],
-    ['uppercase OTP',element({autocomplete:'ONE-TIME-CODE'}),true],
-    ['payment',element({autocomplete:'CC-NUMBER'}),true],
-    ['protected ancestor',element({closest:()=>({})}),true],
-    ['shadow password',element({shadowRoot:{activeElement:element({type:'password'})}}),true],
-    ['opaque',null,true],
-  ]) for(const mode of ['direct','fallback','observed']) {
-    const mirror=mode!=='direct',observed=mode==='observed';
-    const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
-    connection.send=async(method,params)=>method==='Runtime.evaluate'
-      ? {result:{value:runInNewContext(params.expression,{document:{activeElement:element({tagName:'IFRAME',contentDocument:leaf&&{activeElement:leaf}})}})}}
-      : send(method,params);
-    const input={kind:'text',text:'fixture'};
-    const pending=inputHostTab(browser,tab,mirror?{kind:'mirror'}:input,
-      mirror?{resolveMirror:async()=>({input,guard:async()=>{},observedFrameInput:observed})}:{});
-    if(protectedTarget||!observed) {await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'},name);assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);}
-    else {await pending;assert.equal(sent.filter(x=>x.method==='Input.insertText').length,1);}
+test('MP-08/MP-11 ordinary input reaches password, OTP and frame focus without reading values',async()=>{
+  for(const input of [{kind:'text',text:'user-authorized'},...['Enter','Space','a'].map(key=>({kind:'key',key}))]) {
+    const {browser,sent}=fixture(true);
+    const result=await inputHostTab(browser,tab,input);
+    assert.equal(result,undefined);
+    assert(sent.some(call=>call.method.startsWith('Input.')));
+    assert(!sent.some(call=>call.method==='Runtime.evaluate'),'input must not read the focused value');
   }
 });
 test("MP-11: retained typing, keys and clicks dispatch identically to focused input", async () => {
@@ -70,13 +57,13 @@ test("MP-08/MP-11: focused paired Tab releases before reporting revocation",asyn
 });
 
 // MP-11: the public Rust key is an arbitrary string; the advertised MCP enum is not authority.
-test("MP-11: protected targets refuse every text-producing input in both grant modes", async () => {
+test("MP-11: protected fields allow authorized input in both grant modes", async () => {
   for (const retained of [false, true]) for (const input of [
     {kind:'text',text:'fixture'}, ...['a','é','😀',' ', 'Enter','Space'].map(key=>({kind:'key',key})),
   ]) {
     const {browser,sent}=fixture(true);
-    await assert.rejects(inputHostTab(browser,tab,input,{retained}), {code:'user_domain_sensitive_requires_focus'});
-    assert.equal(sent.filter(({method})=>method.startsWith('Input.')).length,0);
+    assert.equal(await inputHostTab(browser,tab,input,{retained}),undefined);
+    assert(sent.some(({method})=>method.startsWith('Input.')));
   }
 });
 test("MP-08/MP-11: protected targets retain non-text navigation", async () => {
@@ -97,17 +84,16 @@ test('MP-11: an asynchronous live mirror guard fences physical dispatch',async()
   assert.equal(dispatches,1);assert.equal(guards,1,'MP-08/MP-11: the final admission guard precedes the ordered press/release pair');
 });
 
-test('MP-11: IME shares the text protection preflight before the final mirror guard',async()=>{
+test('MP-11: IME retains the final mirror guard without reading secret values',async()=>{
  for(const protectedTarget of [false,true]) {
   const {browser,sent}=fixture(protectedTarget);let guarded=false;
   const pending=inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({
    observedFrameInput:true,
-   guard:async()=>{assert(sent.some(x=>x.method==='Runtime.evaluate'));guarded=true;},
+   guard:async()=>{guarded=true;},
    perform:send=>send('Input.imeSetComposition',{text:'文',selectionStart:1,selectionEnd:1}),
   })});
-  if(protectedTarget){await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'});assert(!guarded);}
-  else {await pending;assert(guarded);}
-  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,protectedTarget?0:1);
+  await pending;assert(guarded);
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,1);
  }
 });
 
@@ -185,7 +171,7 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
 });
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // text-target and focus fences; anything else stays on CDP.
-test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non-sensitive page',async()=>{
+test('MP-08/MP-10 viewer keys route to the owned display only for a focused page',async()=>{
   const run=async({sensitive=false,focused=true,native=()=>true,key='a',raw=false})=>{
     const sent=[],keys=[];let dispatched=0;
     const connection={send:async(method,params)=>{sent.push({method,params});
@@ -208,8 +194,7 @@ test('MP-08/MP-10 viewer keys route to the owned display only for a focused, non
   }
   assert.deepEqual(await run({key:'Enter'}),{result:'ok',keys:[[0xff0d,false]],dispatched:1,cdp:0});
   const refused=await run({sensitive:true});
-  assert.deepEqual([refused.keys.length,refused.cdp],[0,0],'MP-11: a sensitive text target is refused before any dispatch');
-  assert.match(String(refused.result),/sensitive/);
+  assert.deepEqual([refused.result,refused.keys.length,refused.cdp],['ok',1,0]);
   assert.deepEqual(await run({focused:false}),{result:'ok',keys:[],dispatched:1,cdp:2},'unfocused page (browser UI focus) stays on CDP');
   assert.deepEqual(await run({key:'é'}),{result:'ok',keys:[],dispatched:1,cdp:2},'non-ASCII text stays on CDP');
   assert.deepEqual(await run({native:()=>false}),{result:'ok',keys:[[97,false]],dispatched:1,cdp:2},'MP-11: refused native key falls back to CDP');
@@ -302,11 +287,11 @@ test('MP-08/MP-10 protocol498 Ctrl+A is a chord with paired releases and no inse
  assert.equal(events.length,2);assert.equal(events[0].modifiers,2);assert.equal(events[1].modifiers,2);
  assert.equal(events[0].windowsVirtualKeyCode,65);assert.equal(events[0].code,'KeyA');assert.equal(events[0].text,undefined);
 });
-test('MP-11 protocol498 modifier chords cannot copy or paste protected fields',async()=>{
+test('MP-11 protocol498 modifier chords dispatch without returning field values',async()=>{
  for(const key of ['a','c','v','x','ArrowLeft'])for(const modifiers of [2,4,10]){
   const {browser,sent}=fixture(true);
-  await assert.rejects(inputHostTab(browser,tab,{kind:'key',key,modifiers}),{code:'user_domain_sensitive_requires_focus'});
-  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,0);
+  assert.equal(await inputHostTab(browser,tab,{kind:'key',key,modifiers}),undefined);
+  assert.equal(sent.filter(x=>x.method.startsWith('Input.')).length,2);
  }
 });
 test('MP-11 protocol498 malformed modifiers are refused before input',async()=>{
@@ -327,8 +312,7 @@ test('MP-08/MP-11 mirrored undo/redo chords keep the mirror\'s observed-frame ad
       : send(method,params);
     const input={kind:'key',key:'z',modifiers};
     const pending=observedMirror?inputHostTab(browser,tab,{kind:'mirror'},{resolveMirror:async()=>({input,guard:async()=>{},observedFrameInput:true})}):inputHostTab(browser,tab,input);
-    if(!observedMirror){await assert.rejects(pending,{code:'user_domain_sensitive_requires_focus'});continue;}
-    await pending;
+        await pending;
     assert.deepEqual(sent.filter(x=>x.method==='Input.dispatchKeyEvent').map(x=>[x.params.type,x.params.code,x.params.modifiers]),[['keyDown','KeyZ',modifiers],['keyUp','KeyZ',modifiers]]);
   }
 });
@@ -369,31 +353,12 @@ test("MP-08/MP-11 (530): a page drag presses, moves and releases in the view sca
     assert(mouse.slice(1, -1).every(p => p.buttons === 1), "the primary button stays down while moving");
   } finally { ack.resolve(); await pending; }
   const before = sent.filter(x => x.method === "Runtime.evaluate").length;
-  assert(before >= 1, "protected endpoints are checked before the press");
+  assert.equal(before, 0, "ordinary drag does not inspect field values");
   await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 1, y: 1, to_x: 99999, to_y: 1 }), /outside viewport/);
 });
-test("MP-11 (530): a drag from or onto a protected field dispatches nothing", async () => {
-  const { browser, sent } = fixture(true);
-  await assert.rejects(inputHostTab(browser, tab, { kind: "drag", x: 10, y: 10, to_x: 200, to_y: 10 }), error => error.code === "user_domain_sensitive_requires_focus");
-  assert.equal(sent.filter(x => x.method === "Input.dispatchMouseEvent").length, 0);
-});
-test("MP-11 (530): drag endpoints read through same-origin frames and fail closed on cross-origin ones", () => {
-  const el = (props = {}) => ({ tagName: "DIV", autocomplete: "", closest: () => null, ...props });
-  const run = (top) => runInNewContext(protectedPointExpression(30, 40), { document: { elementFromPoint: () => top } });
-  assert.equal(run(el()), false, "ordinary text");
-  assert.equal(run(el({ tagName: "INPUT", type: "password" })), true, "a password field");
-  assert.equal(run(el({ closest: () => ({}) })), true, "inside a Vault-filled/protected field");
-  const frame = inner => Object.defineProperty(el({ tagName: "IFRAME", clientLeft: 0, clientTop: 0, getBoundingClientRect: () => ({ left: 10, top: 10 }) }),
-    "contentDocument", { get() { if (!inner) throw Error("cross-origin"); return inner; } });
-  assert.equal(run(frame({ elementFromPoint: (x, y) => (x === 20 && y === 30 ? el() : null) })), false, "same-origin frame: its own element at the frame offset");
-  assert.equal(run(frame({ elementFromPoint: () => el({ tagName: "INPUT", type: "password" }) })), true, "a password field inside a same-origin frame");
-  assert.equal(run(frame(null)), true, "a cross-origin frame cannot be inspected");
-});
-
-test('MP-11 ordinary page input applies a retired visible crop guard before any press',async()=>{
- const {inputHostTab}=await import('./kernel-browser-input.mjs');const sent=[];
- const connection={send:async(method,params)=>{sent.push(method);if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'d'}}};return {};}};
- const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
- await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'click',x:12,y:700},{inputGuard:async()=>{throw Error('retired visible crop');}}),/retired visible crop/);
- assert(!sent.some(m=>m.startsWith('Input.')),'a retired crop must dispatch no button press');
+test("MP-08/MP-11 a protected field does not block an authorized page drag or expose a value", async () => {
+  const {browser,sent}=fixture(true);
+  assert.equal(await inputHostTab(browser,tab,{kind:'drag',x:10,y:10,to_x:200,to_y:10}),undefined);
+  assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,10);
+  assert(!sent.some(x=>x.method==='Runtime.evaluate'));
 });

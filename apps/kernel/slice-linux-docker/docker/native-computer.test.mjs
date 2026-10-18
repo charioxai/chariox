@@ -183,7 +183,7 @@ test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm ch
 // where they appear as accessible text and are redacted from OCR and clipboard text.
 test('MP-08 / MP-11 Vault values never black out the desktop and are redacted from OCR and clipboard text', async () => {
   const sent=[];
-  const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'}};
+  const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'},input:{applied:true}};
   const bound={...binding,ownedProcesses:async()=>[]};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
   const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
@@ -192,5 +192,16 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   assert.equal(replies.ocr.result.text,'header [redacted] footer');
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
-  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy),e=>e.code==='user_domain_sensitive_requires_focus','agent input stays refused under a registry');
+  assert.equal((await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy)).applied,true);
+});
+
+test('MP-08/MP-11 ordinary native input remains usable while another field has a Vault value',async()=>{
+ const calls=[];const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
+ const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return {applied:true};}});
+ for(const input of [{kind:'text',text:'public input'},{kind:'key',key:'Enter'},{kind:'click',x:10,y:10}]) {
+   const result=await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{values:['test-vault-canary'],targets:[{kind:'native'}]});
+   assert.equal(result.applied,true);assert(!JSON.stringify(result).includes('test-vault-canary'));
+ }
+ assert.equal(calls.length,3);
+ assert(!JSON.stringify(calls).includes('test-vault-canary'));
 });

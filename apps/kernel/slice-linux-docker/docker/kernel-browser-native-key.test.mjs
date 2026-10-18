@@ -4,24 +4,24 @@ import {inputHostTab} from './kernel-browser-input.mjs';
 const tab={target_id:'t',document_id:'doc'};
 function fixture({sensitive=false,retireDuringEvaluation=false}={}){
  const calls=[];let current=true,native=0;
- const connection={send:async(method)=>{calls.push(method);if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:current?'doc':'next'}}};if(method==='Runtime.evaluate'){if(retireDuringEvaluation)current=false;return {result:{value:sensitive?'sensitive':true}}}if(method==='Page.createIsolatedWorld')return {executionContextId:7};return {}}};
+ const connection={send:async(method)=>{calls.push(method);if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:current?'doc':'next'}}};if(method==='Runtime.evaluate'){if(retireDuringEvaluation)current=false;return {result:{value:true}}}if(method==='Page.createIsolatedWorld')return {executionContextId:7};return {}}};
  const browser={chariox_text_worlds:new Map([['t',{document:'doc',contextId:7}]]),resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
  return {calls,browser,protect:()=>{sensitive=true;},options:{documentCurrent:()=>current,nativeKey:()=>{native++;return true}},native:()=>native};
 }
-test('MP-08/MP-10/MP-11 warm native page key has only the final live sensitive/focus evaluation',async()=>{
+test('MP-08/MP-10/MP-11 warm native page key has only the final live focus evaluation',async()=>{
  const f=fixture();await inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options);
  assert.equal(f.native(),1);assert.deepEqual(f.calls,['Runtime.evaluate']);
 });
 test('MP-08/MP-10/MP-11 document retirement while focus evaluation awaits refuses XTest',async()=>{
  const f=fixture({retireDuringEvaluation:true});await assert.rejects(inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options),{code:'stale_document_reference'});assert.equal(f.native(),0);
 });
-test('MP-08/MP-10/MP-11 sensitive focus still refuses a cached-document native key',async()=>{
- const f=fixture({sensitive:true});await assert.rejects(inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options),{code:'user_domain_sensitive_requires_focus'});assert.equal(f.native(),0);
+test('MP-08/MP-10/MP-11 sensitive focus permits a cached-document native key without returning a value',async()=>{
+ const f=fixture({sensitive:true});assert.equal(await inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options),undefined);assert.equal(f.native(),1);
 });
 
-test('MP-08/MP-10/MP-11 focus becoming sensitive during the final input guard refuses native dispatch',async()=>{
+test('MP-08/MP-10/MP-11 a secret field appearing during the final input guard does not block authorized typing',async()=>{
  const f=fixture();f.options.inputGuard=async()=>{await Promise.resolve();f.protect()};
- await assert.rejects(inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options),{code:'user_domain_sensitive_requires_focus'});assert.equal(f.native(),0);
+ assert.equal(await inputHostTab(f.browser,tab,{kind:'key',key:'a'},f.options),undefined);assert.equal(f.native(),1);
 });
 test('MP-08/MP-10/MP-11 a missing focus world never binds a different loader',async()=>{
  const f=fixture();f.browser.chariox_text_worlds.clear();

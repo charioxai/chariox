@@ -297,12 +297,12 @@ test("MD-5: multiple subscribers share one CDP source and acknowledgment", () =>
   await host.request({ op: "unsubscribe", ...second });
   assert.equal(sent.filter(call => call.method === "Page.stopScreencast").length, 1);
 }));
-test("MD-2: text input uses isolated focus checks and rejects secret fields", () => using(async ({ host, sent }) => {
+test("MD-2: ordinary text dispatches without reading secret fields", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const binding = { tab_id: opened.tab_id, generation: opened.generation };
   fixture.secretFocused = true;
-  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "text", text: "never-insert" } }), error => error.code === "user_domain_sensitive_requires_focus");
-  assert(!sent.some(call => call.method === "Input.insertText"));
+  await host.request({ op: "input", ...binding, input: { kind: "text", text: "authorized-input" } });
+  assert(sent.some(call => call.method === "Input.insertText"));
   fixture.secretFocused = false;
   await host.request({ op: "input", ...binding, input: { kind: "text", text: "fixture" } });
   assert(sent.some(call => call.method === "Input.insertText"));
@@ -549,7 +549,7 @@ test("MD-3 b220: cancelled pending input never inserts text", () => using(async 
   const opened = await host.request({ op: "open", url: "about:blank" });
   const entered = Promise.withResolvers(), release = Promise.withResolvers();
   const cancel = new AbortController();
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree") { entered.resolve(); await release.promise; } };
   const pending = host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }, { signal: cancel.signal });
   await entered.promise;
@@ -585,9 +585,9 @@ test("MD-3 b220: input rejects replacement documents and missing observation bin
 test("MD-3 b220: navigation during text preparation rejects input before insert", () => using(async ({ host, sent, connection, pages }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const target = host.tabs.get(opened.tab_id).target_id;
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") pages.set(target, { url: "about:blank", document_id: "replacement" }); };
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree") pages.set(target, { url: "about:blank", document_id: "replacement" }); };
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
-    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), error => error.code === "stale_document_reference");
+    document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), error => ["stale_document_reference","user_domain_stale_reference"].includes(error.code));
   assert(!sent.some(call => call.method === "Input.insertText"));
 }));
 
@@ -605,7 +605,7 @@ test("MD-3 b220: production stdio cancellation reaches held host input and settl
     return result.promise;
   };
   const entered = Promise.withResolvers(), release = Promise.withResolvers();
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree") { entered.resolve(); await release.promise; } };
   try {
     const command = { op: "input", tab_id: opened.tab_id, generation: opened.generation,
       document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } };
@@ -1831,7 +1831,7 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
   regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
  host.displays.set(stream.subscription_id,stream);host.nativeFront=async()=>true;
  const original=connection.send;connection.send=async(method,params,session)=>{
-  if(method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")){sent.push({method,params,session});return {result:{value:true}}}
+  if(method==='Runtime.evaluate'&&params.expression==='document.hasFocus()'){sent.push({method,params,session});return {result:{value:true}}}
   return original(method,params,session);
  };
  const command={op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'key',key:'a'}};
@@ -1900,7 +1900,7 @@ test('MP-08/MP-10/MP-11 viewer input waits in order while the busy renderer cann
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;
  let busy=true;const before=connection.beforeSend;
- connection.beforeSend=async(method)=>{if(busy&&method==='Runtime.evaluate')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
  const text=input=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
  const first=await host.request(text({kind:'text',text:'a'}));
  const second=await host.request(text({kind:'text',text:'b'}));
@@ -1937,7 +1937,7 @@ test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never de
  host.busyInputs.retryMs=5;let busy=true,refuseFirst=true;
  connection.beforeSend=async(method,params)=>{
   if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
-  if(!busy&&method==='Runtime.evaluate'){fixture.secretFocused=refuseFirst;refuseFirst=false}
+  if(!busy&&method==='Page.getFrameTree'&&refuseFirst){refuseFirst=false;throw Object.assign(Error('stale document'),{code:'stale_document_reference'})}
  };
  for(const text of ['h','t','t','p'])await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
  busy=false;

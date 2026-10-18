@@ -62,9 +62,7 @@ def input_action(action, processes=None, connection=None):
         accessibility=load('native-accessibility')
         clipboard=load('native-clipboard')
         admit_clipboard=clipboard.input_admission(processes,accessibility)
-        admit_focus=accessibility.input_guard(processes) if kind!='click' else lambda:None
         def guard():
-            admit_focus()
             admit_clipboard()
             # MP-11: an empty clipboard does not authorize a popup-free extension
             # action. Query the recipient after pointer motion, before the press.
@@ -131,7 +129,7 @@ def main(request, connection=None):
     op = request['op']
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
-        return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
+        return accessibility.snapshot(request['processes'],request.get('browser_processes'),values=request.get('values',())) if op=='accessibility' else accessibility.act(request)
     if op == 'input':
         started=time.time_ns()/1000000
         input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
