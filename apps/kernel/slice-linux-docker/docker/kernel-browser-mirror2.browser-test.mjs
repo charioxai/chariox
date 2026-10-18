@@ -968,6 +968,18 @@ test("MP-10: review #941@36a395b05-6 CSSOM media-list edits of style and no-CORS
     assert(await media(elements(snapshot).filter(([, tag]) => tag === "style")[0][0], null), "MP-10: clearing the media list reaches the viewer");
   }, { "/x.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" } }));
 
+// r61 GitHub coverage: Chrome serializes `border:var(--w) solid; border-color:var(--c)` as empty longhands
+// (`border-top-width: ;`) which a viewer parser drops: the borders of every such rule vanished (C_area 0.61). A linked sheet
+// whose CSSOM text came out that way travels as its source text.
+test("MP-10: a linked sheet whose CSSOM serialization drops var() shorthand longhands keeps its borders", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">x</div>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    const css = mirroredCss(packets);
+    assert(css.includes("var(--w)"), `MP-10: the var() shorthand reaches the viewer: ${css.slice(0, 300)}`);
+    assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
+  }, { "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" } }));
+
 // r61 DuckDuckGo results: result videos sit at opacity 0 (shown on hover) with no data yet. An invisible element paints
 // nothing, so it must never hand the page to video (it did, "region_transform", whenever the carousel scrolled into view).
 test("MP-10: a fully transparent opaque element never hands the page to video", () => mirrored(
