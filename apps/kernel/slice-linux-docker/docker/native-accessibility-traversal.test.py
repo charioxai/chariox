@@ -95,6 +95,30 @@ class TraversalTest(unittest.TestCase):
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
 
+    def test_mp08_public_editable_focus_is_distinct_from_submit_and_stays_target_bound(self):
+        from unittest.mock import Mock
+        focus=Mock(return_value=True);activate=Mock(return_value=True)
+        node=Node('Username','text')
+        node.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+        rect=types.SimpleNamespace(x=110,y=100,width=200,height=30)
+        node.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda _:rect,grabFocus=focus)
+        node.queryAction=lambda:types.SimpleNamespace(nActions=1,getName=lambda _:'activate',doAction=activate)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Writer','frame',[node])])])
+        processes=[{'pid':200,'started':'1'}]
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Username')
+        self.assertEqual(entry['actions'],['focus','activate'])
+        request={'processes':processes,'expected_tree_digest':self.driver.tree_digest(tree),'pid':200,'started':'1','path':entry['path'],'action':'focus'}
+        self.assertEqual(self.driver.act(request),{'applied':True})
+        focus.assert_called_once();activate.assert_not_called()
+        node.name='Different field'
+        with self.assertRaises(ValueError):self.driver.act(request)
+        focus.assert_called_once()
+        node.secret=True;node.role='password text'
+        protected=self.driver.snapshot(processes);entry=next(n for n in protected['nodes'] if n['role']=='password text')
+        self.assertEqual(entry['actions'],[])
+        with self.assertRaises(ValueError):self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(protected)})
+        focus.assert_called_once()
+
     def test_mp11_public_selection_evidence_never_queries_protected_or_long_text(self):
         for protected,length,readable in [(False,12,True),(False,4097,False),(True,12,False)]:
             with self.subTest(protected=protected,length=length):

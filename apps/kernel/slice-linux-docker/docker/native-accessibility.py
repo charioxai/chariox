@@ -198,9 +198,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         protected=protected or secret
         state=node.getState()
         states=[label for flag,label in [(pyatspi.STATE_SHOWING,'showing'),(pyatspi.STATE_ENABLED,'enabled'),(pyatspi.STATE_FOCUSED,'focused'),(pyatspi.STATE_EDITABLE,'editable')] if state.contains(flag)]
-        bounds=None
+        bounds=None;component=None
         try:
-            rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            component=node.queryComponent()
+            rect=component.getExtents(pyatspi.DESKTOP_COORDS)
             bounds=[rect.x,rect.y,rect.width,rect.height]
         except NotImplementedError:pass
         actions=[]
@@ -209,6 +210,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
             except NotImplementedError:pass
+            # Native text 'activate' submits; it does not select the field for
+            # keyboard input. Expose the component's actual focus operation.
+            if all(label in states for label in ('editable','showing','enabled')) and callable(getattr(component,'grabFocus',None)) and 'focus' not in actions:
+                actions.insert(0,'focus')
         name='[protected]' if secret else (node.name or '')[:4096]
         for value in values:name=name.replace(value,'[redacted]')
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
@@ -432,8 +437,6 @@ def act(request):
     node=app
     for index in request['path']:node=node.getChildAtIndex(index)
     if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()!=expected['role'] or node.name!=expected['name']:raise ValueError('stale control')
-    interface=node.queryAction()
-    index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
     if request.get('agent_input'):
         # MP-11: doAction can invoke Paste without naming that effect.
         import importlib.util
@@ -441,5 +444,12 @@ def act(request):
         clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
         protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied,sensitive_processes=sensitive_processes)
         clipboard.input_admission(request['processes'],protection,request.get('browser_processes'),request.get('values',()))()
-    if index is None or not interface.doAction(index):raise ValueError('action refused')
+    if request['action']=='focus':
+        state=node.getState()
+        if not all(state.contains(flag) for flag in (pyatspi.STATE_EDITABLE,pyatspi.STATE_SHOWING,pyatspi.STATE_ENABLED)) or not node.queryComponent().grabFocus():
+            raise ValueError('native focus refused')
+    else:
+        interface=node.queryAction()
+        index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
+        if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}
