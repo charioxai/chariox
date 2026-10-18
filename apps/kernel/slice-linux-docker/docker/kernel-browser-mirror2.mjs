@@ -25,6 +25,7 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+const MOVED = Symbol('document moved');
 const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000, DISTORTION_SETTLE_MS = 2500;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
@@ -482,6 +483,7 @@ export class Mirror2 {
       return this.frames.project(stream, { ...delta, ops: this.viewerOps(stream, [...ops, ...children.ops]), resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] });
     };
     let resources = [];
+    const moveWatch = this.host.browser.whenDocumentMoves?.(tab.target_id, tab.document_id);
     try {
       source = await read();
       assertDocument();
@@ -503,7 +505,11 @@ export class Mirror2 {
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
       while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
-        const more = await processDelta(await this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true));
+        const polled = this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true);
+        const drained = moveWatch ? await Promise.race([polled, moveWatch.promise.then(() => MOVED)]) : await polled;
+        // The old document's poll may answer late (its page outlives the commit): the commit ends this credit now.
+        if (drained === MOVED) { polled.catch(() => {}); assertDocument(); }
+        const more = await processDelta(drained);
         assertNotCancelled(signal);
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
@@ -520,7 +526,7 @@ export class Mirror2 {
       fallback = error.mirrorReason ?? 'observer_unavailable';
       this.host.timing?.(`mirror2_fallback_${fallback}${error.mirrorDetail ? ' ' + error.mirrorDetail : ''}`, timestamp());
       source = null; reset = true;
-    }
+    } finally { moveWatch?.cancel(); }
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();

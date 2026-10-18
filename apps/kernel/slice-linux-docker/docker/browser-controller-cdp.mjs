@@ -128,6 +128,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
+    this.commitWaiters = new Map();
     this.pageFramesByTarget = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
@@ -146,6 +147,18 @@ export class BrowserCdpClient {
 
   // MP-08/MP-10: discovery is observational once the canonical viewport, and
   // the Room browser bar and App panel layout sent with it, are applied.
+  // Resolves when this target's main frame commits a document other than `documentId` (at once when it already has): a
+  // long poll in the old document's page need not wait for its own timer to notice a navigation.
+  whenDocumentMoves(targetId, documentId) {
+    let wake = () => {}, waiters;
+    const promise = new Promise(resolve => {
+      wake = resolve;
+      if (this.documentIdsByTarget.get(targetId) !== documentId) return resolve();
+      waiters = this.commitWaiters.get(targetId) ?? new Set(); this.commitWaiters.set(targetId, waiters); waiters.add(resolve);
+    });
+    return { promise, cancel: () => { waiters?.delete(wake); if (waiters?.size === 0 && this.commitWaiters.get(targetId) === waiters) this.commitWaiters.delete(targetId); } };
+  }
+
   canReconcileConcurrently(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
     try {
       return this.connection?.isOpen() === true
@@ -1225,6 +1238,8 @@ export class BrowserCdpClient {
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        const waiters = this.commitWaiters.get(targetId);
+        if (waiters) { this.commitWaiters.delete(targetId); for (const wake of waiters) wake(); }
         const navigatedAt = performance.timeOrigin + performance.now();
         this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt });
         this.pageTiming?.("page_commit", navigatedAt, navigatedAt);

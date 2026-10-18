@@ -1758,3 +1758,19 @@ test('MP-08/MP-10 the controller marks the commit and the load event of a top-le
  const [[,committed,sameAt],[,from,loadedAt]]=marks;assert.equal(committed,sameAt);assert.equal(from,committed);assert(loadedAt>=from);
  await browser.close();
 });
+
+// r61 UX-09: a long poll in the old document learns of the commit when it happens, not when its own timer ends.
+test('MP-08/MP-10 whenDocumentMoves resolves at the main-frame commit of another document and never for the same one', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-a'}}});
+ let moved=false;const watch=browser.whenDocumentMoves('target-a','doc-a');watch.promise.then(()=>{moved=true});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(moved,false);
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-b',parentId:'frame-a',loaderId:'doc-child'}}});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(moved,false,'a child frame is no document change');
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-b'}}});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(moved,true);
+ const stale=browser.whenDocumentMoves('target-a','doc-a');let at=false;stale.promise.then(()=>{at=true});await new Promise(resolve=>setImmediate(resolve));assert.equal(at,true,'an already moved document resolves at once');
+ const cancelled=browser.whenDocumentMoves('target-a','doc-b');cancelled.cancel();assert.equal(browser.commitWaiters.size,0);
+ watch.cancel();await browser.close();
+});
