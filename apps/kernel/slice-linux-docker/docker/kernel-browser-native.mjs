@@ -123,6 +123,8 @@ export class LinuxCapture {
   // Chromium may finish a viewport paint after the first shared readback.
   // Retry only this observation; never admit an approximate pixel binding.
   for(let attempt=0;attempt<6&&!matched;attempt++){
+   // A fenced source (a navigation, a new Tab) must not spend a screenshot on a surface nobody will admit.
+   if(!this.valid()){this.timing('native_attestation_retired',performance.timeOrigin+performance.now());break;}
    const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
    await delay(50);
    // A protection event may have retired the readback meanwhile; its fresh

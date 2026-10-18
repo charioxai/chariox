@@ -380,3 +380,13 @@ test('MP-08/MP-11 a proven window binding admits a new document without a render
  await source.admitSurface();assert.deepEqual([attests,proofs],[2,1],'the proven binding is reused');
  const unbound=new LinuxCapture({tab:{target_id:'t'}});unbound.attest=async()=>{attests++};await unbound.admitSurface();assert.equal(attests,3,'no binding, fresh attestation');
 });
+
+// r61 UX-09: a source fenced by a navigation must not spend a screenshot (700 ms on a loading page) attesting a surface nobody will admit.
+test('MP-11 a fenced native source skips the attestation screenshot and records why',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const marks=[];let shots=0;
+ const source=new LinuxCapture({sessionId:'session',timing:name=>marks.push(name),screenshot:async()=>{shots++;throw Error('no screenshot expected');}});
+ source.closed=true;
+ await assert.rejects(source.attest(),/native attestation RGB differed/);
+ assert.equal(shots,0);assert.deepEqual(marks,['native_attestation_retired']);
+});
