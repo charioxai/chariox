@@ -559,7 +559,11 @@ export class InputArbiter {
       if (documentId !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
-      const {connection, sessionId} = await slowStep(this.host, 'key_target', this.host.browser.resolvePageTarget(tab.target_id));
+      // The ordered navigation events bind this live connection, session and loader (currentPageFrame): the key does not
+      // list the browser's targets for them. A cold or retired binding resolves the target.
+      const eventBound = this.host.browser.currentPageFrame?.(tab.target_id);
+      const {connection, sessionId} = eventBound?.frame.loaderId === documentId ? eventBound
+        : await slowStep(this.host, 'key_target', this.host.browser.resolvePageTarget(tab.target_id));
       const currentProof = async () => {
         const active = await activeAdmitted();
         if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');

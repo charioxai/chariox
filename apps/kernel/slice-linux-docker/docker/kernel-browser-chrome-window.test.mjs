@@ -755,6 +755,21 @@ for (const hang of ['focus read', 'focus world']) test(`MP-11 omnibox typing is 
  assert.ok(second-started<1200,'the first key waits a bounded time');
 });
 
+// vidlat r39: a typed key takes the page's CDP session from the event-bound frame (ordered navigation events prove the
+// live connection, session and loader); only a cold or retired binding lists the browser's targets.
+test('MP-08/MP-10/MP-11 a warm typed key does not list the browser targets; a retired binding resolves the target live', async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'doc'};let listed=0,bound=true;
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:false}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{
+  inputCapture:{physicalFocus:async(_c,_s,read)=>read()},resolvePageTarget:async()=>{listed++;return {connection,sessionId:'s'}},
+  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>bound?{connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}}:null}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async()=>true,click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'doc',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});await send({kind:'text',text:'a'});await send({kind:'text',text:'b'});await send({kind:'key',key:'c'});
+ assert.equal(listed,0,'no per-key Target.getTargets while the binding is current');
+ bound=false;await send({kind:'text',text:'d'});assert.equal(listed,1,'a retired binding resolves the target live again');
+});
+
 // MP-11 (#1016 @d46740fe4 P1): the kernel's record of Chrome-UI ownership that stands in for a timed-out focus read is
 // not permanent. The late read settles it, and a focus-returning action (Escape) ends it: the page's protected field
 // that gets the keys back is fenced again.
