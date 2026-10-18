@@ -2577,10 +2577,12 @@ impl ProviderAccountProfileRegistry {
         owner_user_id: &str,
         profile_id: &str,
     ) -> Result<bool, DaemonError> {
-        let document = self.read_document()?;
-        let stored = resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?;
-        if !stored.materialized_replica || stored.managed_context_replica.is_some() {
-            return Ok(false);
+        {
+            let document = self.read_document()?;
+            let stored = resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?;
+            if !stored.materialized_replica || stored.managed_context_replica.is_some() {
+                return Ok(false);
+            }
         }
         let environment = self.resolve_environment(owner_user_id, "claude", profile_id)?;
         Ok(environment
