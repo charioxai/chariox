@@ -111,8 +111,6 @@ export function createPasskeyPopupController(deps: {
   let value = ""
   let remember = 0
   let accessLifetime: number | null = null
-  // This terminal's own remember window; the kernel remains the authority.
-  let rememberedUntil = 0
   let connectionEpoch = 0
   let pending: object | null = null
   let pendingKey: string | null = null
@@ -207,7 +205,6 @@ export function createPasskeyPopupController(deps: {
     try {
       await (proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
       if (epoch !== connectionEpoch) return
-      if (proof?.rememberMinutes) rememberedUntil = Date.now() + proof.rememberMinutes * 60_000
       settle(prompt)
     } catch (failure) {
       if (epoch !== connectionEpoch) return
@@ -216,7 +213,6 @@ export function createPasskeyPopupController(deps: {
         settle(prompt)
         deps.notify(PASSKEY_REFUSALS[refusal]!)
       } else {
-        if (refusal === "PASSKEY_REQUIRED") rememberedUntil = 0
         if (current() && promptKey(current()!) === promptKey(prompt)) {
           error = refusal ? PASSKEY_REFUSALS[refusal]! : UNCONFIRMED
         }
@@ -231,7 +227,9 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (!open || !prompt || pending || !deps.connected()) return
     const typed = value
-    if (!typed && (prompt.kind !== "critical_approval" || Date.now() >= rememberedUntil)) {
+    // Another terminal may have opened the owner's remember window. Ordinary
+    // approvals always let the kernel check it; new authority needs fresh proof.
+    if (!typed && prompt.kind !== "critical_approval") {
       error = PASSKEY_REFUSALS.PASSKEY_REQUIRED!
       render()
       return
@@ -272,7 +270,6 @@ export function createPasskeyPopupController(deps: {
     view, approve, refuse, cycleRemember, hide, toggleDetails,
     invalidateConnectionState(options: { readonly preservePrompts?: boolean } = {}) {
       connectionEpoch++
-      rememberedUntil = 0
       pending = null
       pendingKey = null
       deps.serverClock?.invalidate()
