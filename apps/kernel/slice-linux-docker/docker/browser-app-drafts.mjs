@@ -63,7 +63,9 @@ export function installAppDrafts() {
   };
   pending.catch(() => {});
   // Private renderer fence, not an App SDK method or serialized protocol.
-  Object.defineProperty(globalThis, '__charioxAppDraftFlushed', { value: async () => { await pending; return true; } });
+  const ready = document.readyState === 'loading'
+    ? new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once:true})) : Promise.resolve();
+  Object.defineProperty(globalThis, '__charioxAppDraftFlushed', { value: async () => { await ready; await pending; restore(); return true; } });
   for (const event of ['input', 'change']) document.addEventListener(event, e => { if (eligible(e.target)) { edited.add(e.target); save(); } }, true);
   // reset fires before the browser applies default values, including App-driven resets.
   document.addEventListener('reset', () => queueMicrotask(save), true);

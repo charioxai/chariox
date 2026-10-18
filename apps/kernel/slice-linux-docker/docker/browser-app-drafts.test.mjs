@@ -19,18 +19,18 @@ function storage() {
     request.result = db; request.onupgradeneeded?.(); request.onsuccess();
   }); return request; } } };
 }
-function page(store) {
+function page(store, readyState = 'complete') {
   const listeners = new Map(), form = { id: 'todo', getAttribute: () => null };
   const title = { tagName: 'INPUT', type: 'text', id: 'title', name: 'title', value: '', defaultValue: '', form, getAttribute: () => null };
   const secret = { ...title, id: 'password', type: 'password', value: 'private-password' };
   const apiKey = { ...title, id: 'api_key', name: 'api_key', value: 'private-api-key' };
   const protectedField = { ...title, id: 'private-notice', name: 'notice', value: 'private-protected-value', closest: () => ({}) };
   const optOut = { ...title, id: 'optout', value: 'private-opt-out', getAttribute: () => 'OFF' };
-  const context = { document: { readyState: 'complete', querySelectorAll: () => [title, secret, apiKey, protectedField, optOut], addEventListener: (name, fn) => listeners.set(name, fn) },
+  const context = { document: { readyState, querySelectorAll: () => [title, secret, apiKey, protectedField, optOut], addEventListener: (name, fn) => { const previous=listeners.get(name); listeners.set(name, previous ? (...args) => { previous(...args); fn(...args); } : fn); } },
     location: { pathname: '/' }, indexedDB: store.indexedDB, localStorage: { getItem: () => null, removeItem() {} },
     MutationObserver: class { observe() {} }, queueMicrotask };
   vm.runInNewContext(`(${installAppDrafts.toString()})()`, context);
-  return { context, title, input(value) { title.value = value; listeners.get('input')({ target: title }); },
+  return { context, title, loaded() { context.document.readyState='interactive'; listeners.get('DOMContentLoaded')?.(); }, input(value) { title.value = value; listeners.get('input')({ target: title }); },
     reset() { title.value = ''; listeners.get('reset')(); } };
 }
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -65,4 +65,13 @@ test('a user edit before asynchronous draft loading takes precedence', async () 
   assert.equal(current.title.value, 'new edit');
   const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
   assert.equal(recovered.title.value, 'new edit');
+});
+
+// MP-08/MP-10/MP-11: a replacement App must not publish its opening document.
+test('App publication waits for document readiness and restored fields', async () => {
+ const store=storage();store.values.set('chariox.form-draft.v1:/', { '["todo","INPUT","title"]':'recovered draft' });
+ const current=page(store,'loading');let flushed=false;
+ const ready=current.context.__charioxAppDraftFlushed().then(()=>{flushed=true});
+ await turn();assert.equal(flushed,false,'a loading document must not replace the retained view');
+ current.loaded();await ready;assert.equal(current.title.value,'recovered draft');
 });
