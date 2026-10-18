@@ -164,3 +164,35 @@ test('MP-11 private selection evidence is never projected to Computer observers'
  assert(!JSON.stringify(result).includes('private-helper-evidence'));
  assert(!Object.hasOwn(result.nodes[0],'text'));
 });
+
+test('MP-08 / MP-11 protected focus exposes no value and returns fresh action handles',async()=>{
+ let actions=0;
+ const password={...tree.nodes[0],role:'password text',name:'private-focus-canary',protected:true,states:['showing','enabled','editable'],actions:['focus','activate']};
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+  if(request.op==='accessibility_action'){actions++;assert.equal(request.action,'focus');return {applied:true};}
+  return {...tree,nodes:[password]};
+ }});
+ const before=await native.snapshot('agent:a',{}),target=before.nodes[0];
+ assert.deepEqual(target.actions,['focus']);assert.equal(target.name,'[protected]');
+ const after=await native.action('agent:a',{target_id:target.target_id,tree_revision:before.tree_revision,action:'focus'},{});
+ assert.equal(after.applied,true);assert(after.tree_revision>before.tree_revision);
+ assert(after.nodes[0].target_id!==target.target_id);assert(!JSON.stringify(after).includes('private-focus-canary'));
+ await assert.rejects(native.action('agent:a',{target_id:target.target_id,tree_revision:before.tree_revision,action:'focus'},{}),e=>e.code==='user_domain_stale_reference');
+ await assert.rejects(native.action('agent:a',{target_id:after.nodes[0].target_id,tree_revision:after.tree_revision,action:'activate'},{}),e=>e.code==='user_domain_not_granted');
+ assert.equal(actions,1);
+});
+
+test('MP-11 private selection evidence does not expire focus handles; protection changes do',async()=>{
+ let actions=0,current={...tree,nodes:[{...tree.nodes[0],role:'text',states:['showing','enabled','editable'],actions:['focus'],text:'old public entry'}]};
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+  if(request.op==='accessibility_action'){actions++;return {applied:true};}
+  return structuredClone(current);
+ }});
+ const before=await native.snapshot('agent:a',{}),target=before.nodes[0];
+ current.nodes[0].text='edited public entry';
+ const after=await native.action('agent:a',{target_id:target.target_id,tree_revision:before.tree_revision,action:'focus'},{});
+ assert.equal(after.applied,true);assert.equal(actions,1);
+ current.nodes[0].protected=true;
+ await assert.rejects(native.action('agent:a',{target_id:after.nodes[0].target_id,tree_revision:after.tree_revision,action:'focus'},{}),e=>e.code==='user_domain_stale_reference');
+ assert.equal(actions,1);
+});

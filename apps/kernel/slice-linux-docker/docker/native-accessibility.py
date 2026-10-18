@@ -210,10 +210,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
             except NotImplementedError:pass
-            # Native text 'activate' submits; it does not select the field for
-            # keyboard input. Expose the component's actual focus operation.
-            if all(label in states for label in ('editable','showing','enabled')) and callable(getattr(component,'grabFocus',None)) and 'focus' not in actions:
-                actions.insert(0,'focus')
+        # Focus reveals no field value and never submits. A protected field
+        # exposes this operation alone; only Vault may enter its contents.
+        if all(label in states for label in ('editable','showing','enabled')) and callable(getattr(component,'grabFocus',None)) and 'focus' not in actions:
+            actions.insert(0,'focus')
         name='[protected]' if secret else (node.name or '')[:4096]
         for value in values:name=name.replace(value,'[redacted]')
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
@@ -367,7 +367,9 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
 
 
 def tree_digest(tree):
-    return hashlib.sha256(json.dumps(tree,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+    # Selection text is private provenance evidence, never target identity.
+    action_tree={**tree,'nodes':[{key:value for key,value in node.items() if key!='text'} for node in tree.get('nodes',[])]}
+    return hashlib.sha256(json.dumps(action_tree,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
 def input_target(processes, expected=None):
@@ -430,13 +432,13 @@ def act(request):
     tree=snapshot(request['processes'],request.get('browser_processes'))
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')
     expected=next((node for node in tree['nodes'] if node['pid']==request['pid'] and node['path']==request['path'] and node['started']==request['started']),None)
-    if not expected or expected['protected'] or request['action'] not in expected['actions']:raise ValueError('target denied')
+    if not expected or (expected['protected'] and request['action']!='focus') or request['action'] not in expected['actions']:raise ValueError('target denied')
     desktop=pyatspi.Registry.getDesktop(0)
     app=next((desktop.getChildAtIndex(i) for i in range(desktop.childCount) if desktop.getChildAtIndex(i).get_process_id()==request['pid']),None)
     if app is None or not alive({'pid':request['pid'],'started':request['started']}):raise ValueError('stale app')
     node=app
     for index in request['path']:node=node.getChildAtIndex(index)
-    if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()!=expected['role'] or node.name!=expected['name']:raise ValueError('stale control')
+    if (node.getRole()==pyatspi.ROLE_PASSWORD_TEXT and request['action']!='focus') or node.getRoleName()!=expected['role'] or (not expected['protected'] and node.name!=expected['name']):raise ValueError('stale control')
     if request.get('agent_input'):
         # MP-11: doAction can invoke Paste without naming that effect.
         import importlib.util

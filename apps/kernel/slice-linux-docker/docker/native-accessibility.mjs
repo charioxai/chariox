@@ -4,6 +4,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { executeNative } from './native-computer.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
 const canonical=value=>Array.isArray(value)?value.map(canonical):value && typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+// Selection bytes are private clipboard evidence, not target identity.
+const actionTree=tree=>({...tree,...(tree.nodes?{nodes:tree.nodes.map(({text,...node})=>node)}:{})});
 export class NativeAccessibility {
   constructor({binding,execute=executeNative}){this.binding=binding;this.execute=execute;this.observers=new Map();this.nextRevision=0;}
   async read(policy,signal){
@@ -15,7 +17,7 @@ export class NativeAccessibility {
     const raw=await this.execute({op:'accessibility',processes,...(browser_processes?{browser_processes}:{})},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: stale accessibility surface');
     const tree=redactObservation(raw,policy?.values??[]);
-    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree,canonical(policy??{})])).digest('hex')};
+    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(actionTree(raw)))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,actionTree(tree),canonical(policy??{})])).digest('hex')};
   }
   async snapshot(observer,policy,{signal}={}){
     const {tree,binding,digest}=await this.read(policy,signal);
@@ -42,7 +44,7 @@ export class NativeAccessibility {
       if(nodes.length>=64)break;
       const target_id=`atspi-${randomUUID()}`;
       const protectedNode=Boolean(node.protected || node.role==='password text');
-      const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.desktop_bounds??node.bounds,actions:protectedNode?[]:node.actions??[]};
+      const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.desktop_bounds??node.bounds,actions:protectedNode?(node.actions??[]).filter(action=>action==='focus'):node.actions??[]};
       const size=Buffer.byteLength(JSON.stringify(projected))+1;
       // MP-08: MCP duplicates and pretty-prints this payload; history caps at12KiB.
       if(bytes+size>3072)continue;
@@ -57,7 +59,7 @@ export class NativeAccessibility {
   async action(observer,command,policy,{signal}={}){
     const observed=this.observers.get(observer),target=observed?.handles.get(command.target_id);
     if(!target || observed.revision!==command.tree_revision)throw new UserDomainRefusal('stale_reference');
-    if(target.protected || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
+    if((target.protected && command.action!=='focus') || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
     if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.
@@ -67,7 +69,7 @@ export class NativeAccessibility {
     const agent=Boolean(command._agent_input || observer.startsWith('agent:'));
     const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true,values:policy?.values??[]}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
-    return result;
+    return {...result,...await this.snapshot(observer,policy,{signal})};
   }
   retire(observer){this.observers.delete(observer);}
   clear(){this.observers.clear();}

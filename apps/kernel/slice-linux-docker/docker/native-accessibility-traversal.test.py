@@ -95,6 +95,13 @@ class TraversalTest(unittest.TestCase):
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
 
+    def test_mp11_action_digest_omits_selection_text_but_keeps_identity_and_protection(self):
+        base={'available':True,'nodes':[{'pid':200,'path':[0],'protected':False,'text':'first'}]}
+        edited={**base,'nodes':[{**base['nodes'][0],'text':'edited'}]}
+        self.assertEqual(self.driver.tree_digest(base),self.driver.tree_digest(edited))
+        for change in [{'protected':True},{'path':[1]},{'pid':201}]:
+            self.assertNotEqual(self.driver.tree_digest(base),self.driver.tree_digest({**edited,'nodes':[{**edited['nodes'][0],**change}]}))
+
     def test_mp08_public_editable_focus_is_distinct_from_submit_and_stays_target_bound(self):
         from unittest.mock import Mock
         focus=Mock(return_value=True);activate=Mock(return_value=True)
@@ -113,11 +120,19 @@ class TraversalTest(unittest.TestCase):
         node.name='Different field'
         with self.assertRaises(ValueError):self.driver.act(request)
         focus.assert_called_once()
+        class NoSecretReads(Node):
+            def __getattribute__(self,key):
+                if key=='name' and object.__getattribute__(self,'secret'):raise AssertionError('private field name queried')
+                return super().__getattribute__(key)
+        node.__class__=NoSecretReads
+        node.queryText=lambda:(_ for _ in ()).throw(AssertionError('private field text queried'))
         node.secret=True;node.role='password text'
         protected=self.driver.snapshot(processes);entry=next(n for n in protected['nodes'] if n['role']=='password text')
-        self.assertEqual(entry['actions'],[])
-        with self.assertRaises(ValueError):self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(protected)})
-        focus.assert_called_once()
+        self.assertEqual(entry['actions'],['focus'])
+        self.assertEqual(self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(protected)}),{'applied':True})
+        self.assertEqual(focus.call_count,2)
+        with self.assertRaises(ValueError):self.driver.act({**request,'action':'activate','expected_tree_digest':self.driver.tree_digest(protected)})
+        activate.assert_not_called()
 
     def test_mp11_public_selection_evidence_never_queries_protected_or_long_text(self):
         for protected,length,readable in [(False,12,True),(False,4097,False),(True,12,False)]:
