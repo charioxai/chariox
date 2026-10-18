@@ -180,3 +180,19 @@ test('MP-08/MP-10/MP-11 desktop sparse video uses only the negotiated shared str
   await display.close();
  }
 });
+test('MP-08/MP-11 a credit in flight when protection changes asks the viewer to poll again instead of closing its stream',async()=>{
+ const {host}=fixture();let release,producers=0;const waiting=new Promise(resolve=>{release=resolve});
+ const display=new DesktopDisplay(host,{
+  createSource:async()=>{const source={closed:false,sample:()=>null,close:async()=>{source.closed=true},valid:()=>!source.closed};return source},
+  createProducer:()=>{producers++;return {feedback(){},waitReady:()=>producers===1?waiting:Promise.resolve(),take:()=>null,invalidate(){},retireUnsent(){},close:async()=>{}}}});
+ try{
+  const subscription=await display.subscribe(command,'a');
+  const request={op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0};
+  const credit=display.request(request,'a');
+  await new Promise(resolve=>setImmediate(resolve));
+  host.protection={values:['synthetic-vault-value'],targets:[],unknown:false};await display.retireSource();release();
+  assert.deepEqual(await credit,{generation:1,frame_sent:false,display_frame:null});
+  assert.deepEqual(await display.request(request,'a'),{generation:1,frame_sent:false,display_frame:null});
+  assert.equal(producers,2,'the next credit builds a producer over the new protected source');
+ }finally{await display.close()}
+});

@@ -62,7 +62,11 @@ export class DesktopDisplay {
     if(command.push?.reset)stream.resetForDelivery();
     stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
     await stream.producer.waitReady(command.push?100:20,signal);
-    if(!valid())throw new UserDomainRefusal('not_granted');
+    if(!valid()){
+      // A protection change retires the source under a credit in flight: the viewer's stream stays and it polls again over the new source.
+      if(!signal?.aborted&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding)return {generation:this.host.generation,frame_sent:false,display_frame:null};
+      throw new UserDomainRefusal('not_granted');
+    }
     const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     // A newer published sample abandons a link-paced repair batch (motion first).
