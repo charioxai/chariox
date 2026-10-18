@@ -430,10 +430,10 @@ export class KernelBrowserHost {
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     const previous = this.activeTarget;
-    const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].map(app => app.origin));
+    const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
     const restoreReady = this.pendingActive && (this.pendingActive.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= this.pendingActive.until);
     const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => this.pendingActive.app_origin
-      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id && app.origin === this.pendingActive.app_origin)
+      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === this.pendingActive.app_origin)
       : tab.tab_id === this.pendingActive.tab_id);
     if (restored) {
       await (await this.browser.ensureConnection()).send('Target.activateTarget', {targetId:restored.target_id});

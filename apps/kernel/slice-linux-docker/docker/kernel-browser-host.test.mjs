@@ -1784,7 +1784,7 @@ test('MP-08/MP-10: active first Tab is selected after every saved Tab reopens', 
 test('MP-08/MP-10/MP-11: selection waits for all verified App rebindings', () => using(async ({host}, root) => {
   const todo = await host.request({op:'open',url:'https://app.todo.invalid/'});
   const documents = await host.request({op:'open',url:'https://app.documents.invalid/'});
-  const app = (tab, origin) => ({targetId:host.tabs.get(tab.tab_id).target_id,origin});
+  const app = (tab, origin) => ({targetId:host.tabs.get(tab.tab_id).target_id,origin,ready:true});
   host.browser.appTabs = {apps:new Map([['todo',app(todo,'https://app.todo.invalid')],['documents',app(documents,'https://app.documents.invalid')]])};
   host.activeTarget = host.tabs.get(todo.tab_id).target_id;await host.save();
   await host.stop();await host.start();
@@ -1792,7 +1792,9 @@ test('MP-08/MP-10/MP-11: selection waits for all verified App rebindings', () =>
   host.browser.appTabs = {apps:new Map([['todo',app(reboundTodo,'https://app.todo.invalid')]])};
   await host.reconcile();assert(host.pendingActive);
   const reboundDocuments = await host.request({op:'open',url:'https://app.documents.invalid/'});
-  host.browser.appTabs.apps.set('documents',app(reboundDocuments,'https://app.documents.invalid'));
+  host.browser.appTabs.apps.set('documents',{...app(reboundDocuments,'https://app.documents.invalid'),ready:false});
+  await host.reconcile();assert(host.pendingActive,'an opening App may still take native focus');
+  host.browser.appTabs.apps.get('documents').ready=true;
   await host.reconcile();
   assert.equal(host.activeTarget,host.tabs.get(reboundTodo.tab_id).target_id);
   assert.equal(host.pendingActive,null);

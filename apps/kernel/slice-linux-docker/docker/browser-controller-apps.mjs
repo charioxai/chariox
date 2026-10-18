@@ -173,7 +173,7 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
-      Object.assign(open, { entry, assets: app.assets, page: app.page });
+      Object.assign(open, { entry, assets: app.assets, page: app.page, ready: false });
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
       await connection.send("Target.activateTarget", { targetId: open.targetId });
@@ -181,6 +181,7 @@ export class AppTabs {
       // Navigate (not reload): it returns once the document commits, so the
       // Room projects the Tab's URL rather than the empty one of a reload.
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      open.ready = true;
       return { target_id: open.targetId, origin };
     }
     // Each App view gets its own fullscreen window, so page and desktop
@@ -196,7 +197,8 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), agents: new Set() });
+    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    this.apps.set(sessionId, opening);
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -206,6 +208,7 @@ export class AppTabs {
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
       await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: BRIDGE_SOURCE }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      opening.ready = true;
     } catch (error) {
       this.apps.delete(sessionId);
       await this.browser.closePageTarget(connection, targetId).catch(() => {});

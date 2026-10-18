@@ -798,3 +798,13 @@ test('App bridge restores ordinary draft fields and clears a reset form', async 
   first.listeners.get('reset')?.({target:first.form});first.title.value='';await new Promise(r=>queueMicrotask(r));
   assert.equal(document().title.value,'');
 });
+
+// MP-08/MP-10/MP-11: native focus restoration waits until an App finished opening.
+test('App opening readiness is published after bridge installation and navigation', async () => {
+  const {browser,connection}=fakeBrowser(),tabs=new AppTabs(browser),entered=Promise.withResolvers(),gate=Promise.withResolvers();
+  const send=connection.send.bind(connection);
+  connection.send=async(method,params,session)=>{if(method==='Page.navigate'){entered.resolve();await gate.promise}return send(method,params,session)};
+  const opening=tabs.open({origin_label:'opening',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  try{await entered.promise;assert.equal([...tabs.apps.values()][0].ready,false)}finally{gate.resolve()}
+  await opening;assert.equal([...tabs.apps.values()][0].ready,true);
+});
