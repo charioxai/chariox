@@ -43,6 +43,9 @@ const UPDATE_EVIDENCE: &str = "/usr/lib/chariox/.managed-kernel-upgrade-result";
 const UPDATE_FAILURE: &str = "/usr/lib/chariox/.managed-kernel-upgrade-failure";
 const UPDATE_TRANSACTION: &str = "/usr/lib/chariox/.managed-kernel-upgrade";
 const TERMINAL_TRANSACTION: &str = "/usr/lib/chariox/.managed-kernel-upgrade.terminal";
+/// Exit status of a root update that failed with no recovery journal pending: nothing is left to
+/// retry or recover, so the unit's restart policy must not rerun it until the start limit.
+const NOT_RETRIABLE_EXIT: i32 = 64;
 const TRUSTED_BUILDER_PUBLIC_KEY: &str = "/etc/chariox/trusted-builder-public-key";
 
 #[derive(Debug, Deserialize)]
@@ -318,6 +321,9 @@ impl ManagedReleaseUpdateClient {
             "--property=StartLimitIntervalSec=60s",
             "--property=StartLimitBurst=5",
         ]);
+        command.arg(format!(
+            "--property=RestartPreventExitStatus={NOT_RETRIABLE_EXIT}"
+        ));
         if let Some(directory) = std::env::var_os("CHARIOX_RUNTIME_DIAGNOSTICS_DIR") {
             let mut setting = std::ffi::OsString::from("CHARIOX_RUNTIME_DIAGNOSTICS_DIR=");
             setting.push(directory);
@@ -390,20 +396,21 @@ fn update_script(
          trap \"if ! pending; then python3 '{tooling}/release-update-storage.py' cleanup '{staging_root}' '{update_id}'; rm -f '{archive}'; fi\" EXIT; \
          failed() {{ f='{authority_root}/.managed-kernel-upgrade-failure'; \
          if [ \"$(sed -n 2p \"$f\" 2>/dev/null)\" != '{update_id}' ]; then rm -f \"$f.new\"; \
-         printf '1\\n%s\\n%s\\n' '{update_id}' \"$1\" > \"$f.new\" && chmod 0644 \"$f.new\" && mv -f \"$f.new\" \"$f\"; fi; exit 1; }}; \
+         printf '1\\n%s\\n%s\\n' '{update_id}' \"$1\" > \"$f.new\" && chmod 0644 \"$f.new\" && mv -f \"$f.new\" \"$f\"; fi; exit {not_retriable}; }}; \
          run_upgrade() {{ CHARIOX_MANAGED_UPGRADE_RECOVER_ONLY=$1 CHARIOX_MANAGED_RELEASE_UPDATE_ID='{update_id}' \
          CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1 CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY={builder_key} \
          sh '{tooling}/upgrade-image.sh' '{staging}/extracted/rootfs' '{from}' '{target}' '{release_key}'; }}; \
          if pending; then run_upgrade 1; else \
          python3 '{tooling}/release-update-storage.py' prepare '{staging_root}' '{update_id}' || failed release_staging; \
          python3 '{tooling}/extract-release.py' '{archive}' '{staging}/extracted' '{publication_root}' || failed release_extraction; \
-         rm -f '{archive}'; TMPDIR='{staging}' run_upgrade 0; fi",
+         rm -f '{archive}'; TMPDIR='{staging}' run_upgrade 0 || {{ pending && exit 1; exit {not_retriable}; }}; fi",
         staging = staging.display(),
         archive = archive.display(),
         staging_root = staging_root.display(),
         publication_root = publication_root.display(),
         authority_root = authority_root.display(),
         update_id = update.update_id,
+        not_retriable = NOT_RETRIABLE_EXIT,
         builder_key = TRUSTED_BUILDER_PUBLIC_KEY,
         tooling = tooling.display(),
         from = update.from_runtime_release_digest,
@@ -734,7 +741,7 @@ mod tests {
         };
         let staging = root.join("staging");
         let archive = root.join("download.tar.gz");
-        let run = |archive_bytes: &[u8]| {
+        let run_code = |archive_bytes: &[u8]| {
             std::fs::write(&archive, archive_bytes).expect("archive");
             let status = Command::new("sh")
                 .arg("-c")
@@ -747,8 +754,9 @@ mod tests {
                 .status()
                 .expect("run update script");
             assert!(!archive.exists() && !staging.join(&update.update_id).exists());
-            status.success()
+            status.code()
         };
+        let run = |archive_bytes: &[u8]| run_code(archive_bytes) == Some(0);
         let packed = Command::new("tar")
             .args(["-czf", "-", "-C"])
             .arg(root.join("source"))
@@ -757,9 +765,11 @@ mod tests {
             .expect("pack archive")
             .stdout;
 
-        assert!(
-            !run(&packed[..packed.len() / 2]),
-            "a truncated archive fails"
+        // A failure before any transaction is not retried by the unit's restart policy.
+        assert_eq!(
+            run_code(&packed[..packed.len() / 2]),
+            Some(NOT_RETRIABLE_EXIT),
+            "a truncated archive fails once"
         );
         assert!(!root.join("invoked").exists());
         // MP-07: the failed step reaches the kernel's report; a later failure
@@ -796,6 +806,9 @@ mod tests {
                     .display()
             )
         );
+        // A failed activation with no journal left behind is not retried either.
+        std::fs::write(tooling.join("upgrade-image.sh"), "exit 1\n").expect("failing upgrade");
+        assert_eq!(run_code(&packed), Some(NOT_RETRIABLE_EXIT));
         // MP-07: an interrupted activation must remain recoverable when the
         // same root unit restarts, without another Cloud artifact download.
         let transaction = root.join(".managed-kernel-upgrade");
@@ -819,7 +832,7 @@ mod tests {
                 .status()
                 .expect("root updater")
         };
-        assert!(!restart().success());
+        assert_eq!(restart().code(), Some(1));
         assert!(
             !archive.exists(),
             "MP-07 extraction must reclaim the archive before activation/recovery"
