@@ -853,7 +853,7 @@ export class Mirror2 {
       else if (b.distorted) {
         // An animation (a fade, a slide) distorts a region only while it runs: keep the page mirrored without that still
         // until it settles; only a lasting distortion needs the whole page as video.
-        stream.distortedAt ??= Date.now();
+        if (!stream.distortedAt) { stream.distortedAt = Date.now(); this.host.timing?.(`mirror2_region_distorted ${b.distorted} ${b.tag ?? '?'}`, timestamp()); }
         if (Date.now() - stream.distortedAt < DISTORTION_SETTLE_MS) { settling = true; continue; }
         const error = new Error('MP-10: a transformed opaque region needs video'); error.mirrorReason = 'region_transform'; error.mirrorDetail = `${b.distorted} ${b.tag ?? '?'}`; throw error;
       }
