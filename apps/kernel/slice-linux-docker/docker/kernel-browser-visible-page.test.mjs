@@ -67,6 +67,21 @@ test('MP-11 visible-page input keeps ordinary dispatch and the final live crop g
  }
 });
 
+test('MP-08/MP-10/MP-11 visible-page input is admitted without a live renderer read; the final guard still reads live',async()=>{
+ const {regionInput}=await import('./kernel-browser-display-regions.mjs');
+ let live=0,request;
+ const busy=Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});
+ const stream={subscription_id:'crop',binding_id:'crop',tab_id:'t',generation:1,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionTarget:{kind:'visible_page'},regionLease:{document_id:'d',sequence:2,isAlive:()=>true},regionWindow:{isCurrent:()=>true},
+  regionSource:{attested:true,valid:()=>true},css_width:1280,css_height:712,regionCurrent:async()=>{live++;throw busy},regionFrameCurrent:async()=>true};
+ const host={generation:1,displays:new Map([['crop',stream]]),tabs:new Map([['t',{tab_id:'t',document_id:'d'}]]),request:async(command,options)=>{request={command,options};}};
+ const command={op:'input',tab_id:'t',generation:1,document_id:'d',binding_id:'crop',sequence:2,input:{kind:'text',text:'a'}};
+ await regionInput(host,command,'terminal:a');
+ assert.equal(live,0,'a parsing page answers renderer reads late: nothing before the parkable fences may wait for it');
+ assert(request,'the input reached the fenced request (where a busy renderer parks it)');
+ await assert.rejects(request.options.inputGuard(),error=>error.code==='browser_cdp_timeout');assert.equal(live,1,'the dispatch fence reads live');
+});
+
 test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source, without an RGB exemption',()=>{
  const r=visiblePageGeometry(binding(),{clientWidth:1265,clientHeight:800,zoom:1,scale:1});
  assert.equal(r.width,1264);assert.equal(r.height,712);assert.equal(r.window_region.left,0);assert.equal(r.window_region.top,87);
@@ -127,6 +142,31 @@ test('MP-08/MP-10/MP-11 visible-page startup shares the mirror document owner wh
  proof={...proof};assert.equal(await stream.regionCurrent(),false,'a replaced navigation proof cannot re-admit the same loader');await stream.close();
 });
 
+// r47 quiet-host WHATWG (15.8 MB typed URL): the parsing renderer answered no Page.getLayoutMetrics within the 5 s CDP
+// timeout, so each preview attach failed and the viewer kept the previous page for 40+ s.
+test('MP-08/MP-10/MP-11 a navigation preview starts while the new document\'s renderer is too busy to report layout',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ let busy=false;const layout={cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};
+ const connection={send:async()=>busy?new Promise((_,reject)=>setTimeout(()=>reject(Error('browser_cdp_timeout')),1500)):layout};
+ let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>proof,resolvePageTarget:async()=>{throw Error('cold target query is busy')}},timing:()=>{},armDisplayExpiry:()=>{}};
+ const captures=[];class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);captures.push(this)}async start(){return this}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+ await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+ // The typed URL commits; its renderer parses the document and answers nothing.
+ busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+ const started=Date.now(),result=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ assert(Date.now()-started<1000,`the preview waited ${Date.now()-started} ms for the busy renderer`);
+ assert.equal(result.document_id,'new');const stream=host.displays.get(result.subscription_id);
+ assert.equal(captures.at(-1).options.viewport.clientWidth,1265,'the crop is the last layout this target reported');
+ assert.equal(await stream.regionCurrent(),true);await stream.close();
+ // A changed window binding (resize, zoom, DPR) has no earlier read to stand in.
+ window.window_generation=3;await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture}),/browser_cdp_timeout/);
+});
+
 // MP-08/MP-10/MP-11: full-page navigation previews share the page-region publication fence.
 test('MP-08/MP-10/MP-11 visible-page preview holds its last page frame while Chrome UI overlaps it',async()=>{
  const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
@@ -141,4 +181,72 @@ test('MP-08/MP-10/MP-11 visible-page preview holds its last page frame while Chr
   assert.deepEqual(published,[1]);assert.equal(source.sample().serial,1,'retain only the last unobscured page');
   covered=false;source.pending=readback(3);await source.publish();assert.deepEqual(published,[1,3]);
  }finally{await source.close();}
+});
+
+// r48 quiet-host WHATWG: the preview's own attestation screenshot hit the parsing renderer. The proof belongs to the
+// window binding on this connection: a new document of the same binding reuses it, any changed binding attests again.
+test('MP-08/MP-11 a navigation preview reuses the attestation of an unchanged window binding',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const layout={cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};
+ let connection={send:async()=>layout};let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>proof,resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+ let screenshots=0;class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){if(!this.options.attestation?.proven()){screenshots++;this.options.attestation?.prove()}return this}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+ const open=async()=>host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+ await open();assert.equal(screenshots,1);
+ tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};await open();assert.equal(screenshots,1,'same binding, new document: no screenshot');
+ // r49 quiet host: the parsing WHATWG document had no scrollbar yet (1280 vs 1265 columns), same page rect.
+ layout.cssLayoutViewport.clientWidth=1280;tab.document_id='newer';proof={connection,sessionId:'s',frame:{loaderId:'newer'}};await open();assert.equal(screenshots,1,'a wider crop in the same page rect: no screenshot');
+ window.window_generation=3;await open();assert.equal(screenshots,2,'a resized/zoomed window attests again');
+ connection={send:async()=>layout};proof={connection,sessionId:'s',frame:{loaderId:'newer'}};await open();assert.equal(screenshots,3,'a new browser connection attests again');
+});
+
+// #1016 @3a955d73c review 2: a crop taken from the last layout while the renderer was busy is retired when the delayed
+// read disagrees (a scrollbar page -> a page without one), also on the production path with a native-state guard.
+test('MP-08/MP-11 a navigation preview retires its cached crop when the delayed layout read differs',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ for(const width of [1280,1265]){
+  let busy=false;const layout=w=>({cssLayoutViewport:{clientWidth:w,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}});
+  const connection={send:async()=>busy?new Promise(resolve=>setTimeout(resolve,600,layout(width))):layout(1265)};
+  let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+  const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
+   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+   browser:{currentPageFrame:()=>proof,viewportByTarget:new Map([['target','emulated']]),resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+  await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+  busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+  const stream=host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id);
+  assert.equal(await stream.regionCurrent(),true,'the cached crop serves while the renderer is busy');
+  await new Promise(resolve=>setTimeout(resolve,700));
+  assert.equal(await stream.regionCurrent(),width===1265,width===1265?'an agreeing read keeps the display':'a differing read retires the display');
+  await stream.close();
+ }
+});
+
+test('MP-08/MP-11 a navigation preview rereads a layout that timed out: late keeps its cached crop, a differing answer retires it',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ for(const [later,keeps] of [[1280,false],[1265,true],[null,true],['late',false],['later',false]]) {
+  let busy=false,calls=0;const layout=w=>({cssLayoutViewport:{clientWidth:w,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}});
+  const timeout=()=>Object.assign(Error('browser CDP method Page.getLayoutMetrics timed out after 5000ms'),{code:'browser_cdp_timeout'});
+  const connection={send:async()=>{if(!busy)return layout(1265);calls++;if(calls===1)return new Promise((_,reject)=>setTimeout(()=>reject(timeout()),600));if(later===null||later==='late'&&calls<4||later==='later'&&calls<6)throw timeout();return layout(typeof later==='string'?1280:later)}};
+  let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
+  const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+  const host={generation:1,layoutRetryMs:10,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
+   chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+   browser:{currentPageFrame:()=>proof,viewportByTarget:new Map([['target','emulated']]),resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
+  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+  await host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id).close();
+  busy=true;tab.document_id='new';proof={connection,sessionId:'s',frame:{loaderId:'new'}};
+  const stream=host.displays.get((await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture})).subscription_id);
+  assert.equal(await stream.regionCurrent(),true,'the cached crop serves while the renderer is busy');
+  await new Promise(resolve=>setTimeout(resolve,900));
+  assert.equal(await stream.regionCurrent(),keeps,later===null?'a renderer that never answers has not disagreed: the display stays':keeps?'an agreeing reread keeps the display':'a differing reread retires the display, also after the quick retries ran out');
+  await stream.close();
+ }
 });

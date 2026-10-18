@@ -56,3 +56,17 @@ test('MP-08/MP-10/MP-11 legacy resize and unapplied viewport startup retain thei
  assert.deepEqual(scheduleHostRequest(request,{canReconcileConcurrently:()=>true},{},false),{kind:'barrier'});
  assert.deepEqual(scheduleHostRequest(request,{canReconcileConcurrently:()=>false},{},true),{kind:'barrier'});
 });
+
+for(const method of ['host.browser.retire_input','host.browser.retire_observer'])test('MP-08/MP-10/MP-11 '+method+' is not queued behind a running browser operation',async()=>{
+ const input=new PassThrough(),output=new PassThrough();let release,started,completed;
+ const began=new Promise(r=>started=r),hold=new Promise(r=>release=r),retired=new Promise(r=>completed=r);
+ output.on('data',b=>{for(const line of b.toString().trim().split('\n'))if(line&&JSON.parse(line).id===2)completed()});
+ const server=new BrowserControllerStdioServer({input,output,scheduleRequest:scheduleHostRequest,handleRequest:async request=>{
+  if(request.id===1){started();await hold}return {id:request.id,ok:true,result:{}};
+ }});
+ const running=server.run();
+ input.write(JSON.stringify({id:1,method:'host.browser',params:{op:'navigate',tab_id:'t'}})+'\n');await began;
+ input.write(JSON.stringify({id:2,method,params:{observer:'terminal:a',tab_id:'t',except:'terminal:b',epoch:1}})+'\n');
+ const early=await Promise.race([retired.then(()=>true),new Promise(r=>setTimeout(()=>r(false),100))]);
+ input.end();release();await running;assert.equal(early,true,'the retirement waited behind the running operation');
+});

@@ -34,6 +34,33 @@ test("MP-08/MP-10/MP-11 the band binds on the shared owned desktop where the win
     assert.deepEqual(windows.band().rect, { left: 0, top: 0, width: 1280, height: 86 });
   } finally { await real.close(); }
 });
+// MP-11 (r54): the first paint of a loading page changes its native rect (GTK insets, width) but not the band.
+// The band's window generation and streams survive, so keys parked for the band are never made stale by it; every
+// page-bound binding and stream is retired at once.
+test("MP-11 a page-only geometry change keeps the band window generation and retires page-bound bindings", async t => {
+  const viewport = { width: 1280, height: 800 };
+  const rows = [{ id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 }];
+  const { host, windows } = fake({ rows, viewport });
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    const bound = await windows.resolve();
+    const band = windows.band(bound.tabbed), retired = []; windows.onRetire(event => retired.push(event));
+    Object.assign(rows[0], { frame_insets: [4, 4, 0, 0] }); viewport.width = 1276;
+    assert.equal(await bound.tabbed.isPageCurrent("tb"), false, "the page rect moved");
+    await windows.resolving;
+    const next = windows.current();
+    assert.equal(next.tabbed.window_generation, bound.tabbed.window_generation, "same band, same window generation");
+    assert.notDeepEqual(next.tabbed.page_rect, bound.tabbed.page_rect);
+    assert.equal(band.isCurrent(), true, "the band source stays current");
+    assert.equal(bound.tabbed.isCurrent(), false, "page-bound bindings and streams are retired");
+    assert.equal(next.tabbed.isCurrent(), true);
+    assert.deepEqual(retired.map(event => event.reason), ["page_geometry_changed"]);
+    assert.equal(await next.tabbed.isPageCurrent("tb"), true);
+    assert.equal(retired.length, 1, "one notification, not one per call");
+  } finally { await real.close(); }
+});
 test("MP-11 resolution with an owned display: band, auxiliary, generations and retirement", async t => {
   const { host, windows } = fake();
   const real = new OwnedDisplay((await import("node:os")).tmpdir());
@@ -46,7 +73,7 @@ test("MP-11 resolution with an owned display: band, auxiliary, generations and r
     assert.equal(bound.tabbed.xid, 0x600001);
     assert.equal(bound.tabbed.content_top, 174, "1774 − 800×2");
     assert.equal(bound.tabbed.role, "tabbed");
-    assert.deepEqual(windows.band(), { surface: "browser_chrome", window: { id: 0x600001, width: 2560, height: 1774 }, rect: { left: 0, top: 0, width: 2560, height: 174 }, contentHeight: 1600, isCurrent: bound.tabbed.isCurrent });
+    assert.deepEqual(windows.band(), { surface: "browser_chrome", window: { id: 0x600001, width: 2560, height: 1774 }, rect: { left: 0, top: 0, width: 2560, height: 174 }, contentHeight: 1600, isCurrent: bound.tabbed.isBandCurrent });
     assert.equal(bound.auxiliary.length, 1, "the omnibox dropdown below the band is admitted; the keepalive popup is not");
     assert.deepEqual(windows.auxiliaryRegion(bound.auxiliary[0]).rect, { left: 0, top: 0, width: 1600, height: 400 });
     const retired = []; windows.onRetire(event => retired.push(event));
@@ -706,6 +733,72 @@ test('MP-08/MP-10/MP-11 a fresh ledger observation preserves omnibox text after 
  assert.equal(String.fromCharCode(...sent),'https');
 });
 
+// MP-11 (r54): band typing never depends on a busy page renderer. The person's own toolbar click or Ctrl+L is the
+// kernel's record that Chrome's UI owns the keys; the page's physical focus is read only while the page answers.
+for (const hang of ['focus read', 'focus world']) test(`MP-11 omnibox typing is not parked behind a page that cannot answer (${hang})`, async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ const never=new Promise(()=>{});
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:false}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{
+  inputCapture:{physicalFocus:async(_c,_s,read)=>hang==='focus read'?never:read()},resolvePageTarget:async()=>({connection,sessionId:'s'}),
+  ensureFocusWorld:async()=>hang==='focus world'?never:({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>Promise.race([arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}}),
+  new Promise((_,reject)=>setTimeout(()=>reject(new Error('parked behind the page renderer')),1500))]);
+ await send({kind:'key',key:'l',modifiers:2});sent.length=0;
+ const started=performance.now();
+ await send({kind:'text',text:'a'});
+ const second=performance.now();
+ await send({kind:'text',text:'bc'});
+ assert.equal(String.fromCharCode(...sent),'abc');
+ assert.ok(performance.now()-second<100,'only the first key of a claim waits for the page; the rest use the kernel record');
+ assert.ok(second-started<1200,'the first key waits a bounded time');
+});
+
+// MP-11 (#1016 @d46740fe4 P1): the kernel's record of Chrome-UI ownership that stands in for a timed-out focus read is
+// not permanent. The late read settles it, and a focus-returning action (Escape) ends it: the page's protected field
+// that gets the keys back is fenced again.
+for (const late of ['escape', 'page focused when the read lands']) test(`MP-11 a timed-out focus read does not keep exempting a protected field (${late})`, async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ let pageHasFocus=false,release,reads=0;const gate=new Promise(resolve=>{release=resolve;});
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:true}}} // the page's field is protected;
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{
+  inputCapture:{physicalFocus:async()=>{if(!reads++){await gate;return pageHasFocus;}return pageHasFocus;}},resolvePageTarget:async()=>({connection,sessionId:'s'}),
+  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});
+ await send({kind:'text',text:'a'}); // the read exceeds its bound; the record stands for it
+ assert.equal(sent.at(-1),97);
+ if(late==='escape')pageHasFocus=false;else pageHasFocus=true;
+ release();await new Promise(resolve=>setTimeout(resolve,10)); // the renderer recovers
+ if(late==='escape'){await send({kind:'key',key:'Escape'});pageHasFocus=true;}
+ sent.length=0;
+ await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'});
+ assert.deepEqual(sent,[],'no key reaches the page field through a stale UI exemption');
+});
+
+// MP-11 (#1016 @80d272f96 P1): a key already waiting for its final proof when the late read lands on a page-focused field
+// loses its Chrome-UI exemption too: it is fenced (text and modifier chord alike), not dispatched.
+for (const next of [{kind:'text',text:'x'},{kind:'key',key:'a',modifiers:2}]) test(`MP-11 a late focus read revokes the exemption of a key awaiting its final proof (${next.kind})`, async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ let release,reads=0,calls=0,armedAt=-1,reached,hold;const gate=new Promise(resolve=>{release=resolve;});const held=new Promise(resolve=>{reached=resolve;});const open=new Promise(resolve=>{hold=resolve;});
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:true}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>{if(armedAt>=0&&++calls===armedAt){reached();await open;}return tab.target_id;}},browser:{
+  inputCapture:{physicalFocus:async()=>{if(!reads++){await gate;return true;}return true;}},resolvePageTarget:async()=>({connection,sessionId:'s'}),
+  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
+ await send({kind:'key',key:'l',modifiers:2});
+ await send({kind:'text',text:'a'}); // the read exceeds its bound; the record stands for it
+ sent.length=0;armedAt=3; // key_active, key_proof, then the final claim proof of the next key
+ const pending=send(next).then(()=>null,error=>error);
+ await held;release();await new Promise(resolve=>setTimeout(resolve,10)); // the late read lands while the key waits
+ hold();
+ assert.equal((await pending)?.code,'user_domain_sensitive_requires_focus');
+ assert.deepEqual(sent,[],'no key reaches the page field through a revoked UI exemption');
+});
+
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
 for (const physical of [false,true]) test(`MP-11 a document retired during physical focus verification is refused (${physical})`,async()=>{
  const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
@@ -788,9 +881,9 @@ test('MP-11 an occlusion probe cannot be shared across native input revisions', 
  assert.equal(await second,true);assert.equal(reads,2);finish();
 });
 
-// PERF_AUDIT 4.2.7 (C2): a key for the page reads the document's frame tree once; the fence that asserted the
-// document already holds it (the focus world and the sensitive-field check still run on every key).
-test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
+// PERF_AUDIT 4.2.7 (C2), r53: a key for the page reads no frame tree while the ordered navigation events prove the document,
+// so a renderer busy with a long parse is not asked before every key (the focus world and the sensitive-field check still run).
+test("MP-08/MP-11 a band key reads no page frame tree while navigation events prove the document", async () => {
   const sent = [];
   const connection = { send: async (method) => (sent.push(method), method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
     : method === "Runtime.evaluate" ? { result: { value: false } } : {}) };
@@ -799,7 +892,7 @@ test("MP-08/MP-11 a band key reads the page frame tree once", async () => {
   const arbiter = new InputArbiter(host, {});
   const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "text", text: "a" } } }), { dispatched: true });
-  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 1);
+  assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 0);
   assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
 });
 
@@ -932,4 +1025,18 @@ test("MP-08/MP-10 a stalled follow-up read never holds a band input's reply", as
   assert(performance.now() - started < 100, "the input itself never waits for the follow-up");
   assert.deepEqual(await arbiter.follow(reply._follow).finally(() => clearInterval(alive)), {});
   assert(performance.now() - started < 1000, "answered at the follow bound");
+});
+
+// r54 (audit lever 3): a person's band key is admitted from the native observer's record of the active Tab while no window
+// event retired it; a browser process that is slow to answer a fresh query holds nothing.
+test("MP-11 band input admission uses the cached active Tab and asks the browser only when none is recorded", async () => {
+  const tab = { tab_id: "tab", target_id: "target", document_id: "doc" };
+  let fresh = 0, cached = "target";
+  const host = { generation: 3, tabs: new Map([["tab", tab]]), tabGroups: { cachedActive: () => cached, active: async () => { fresh++; return "target"; } } };
+  const arbiter = new InputArbiter(host, {});
+  assert.equal((await arbiter.activeTab()).tab_id, "tab");
+  assert.equal(fresh, 0, "no native query while the record stands");
+  cached = null;
+  assert.equal((await arbiter.activeTab()).tab_id, "tab");
+  assert.equal(fresh, 1, "a retired record is read again");
 });

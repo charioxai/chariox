@@ -725,6 +725,15 @@ test("MP-10: every attribute travels except the denied ones (named slots, constr
   assert.deepEqual(ops.map(op => [op.name, op.value]), [["data-state", "open"]], "MP-10: attribute changes travel; credential-like names stay");
 }));
 
+// GATE-bytes r49: GitHub directory rows carry 64 KiB commit-message titles; eleven of them tripled its first paint.
+test("MP-08: a long title travels as a 1 KB tooltip, in the snapshot and in later changes", () => mirrored('<a id="a" title="' + "t".repeat(65536) + '">a</a><a id="b" title="short">b</a>', async ({ next, evaluate }) => {
+  const rows = elements(await next()), title = id => rows.find(([, , a]) => a.id === id)?.[2].title;
+  assert.deepEqual([title("a"), title("b")], ["t".repeat(1024), "short"]);
+  await evaluate("document.getElementById('b').title='u'.repeat(65536);true");
+  const ops = (await next(1000)).ops.filter(op => op.op === "attr");
+  assert.deepEqual(ops.map(op => [op.name, op.value]), [["title", "u".repeat(1024)]]);
+}));
+
 // Audit 2026-10-10 §4.8: packets whose replies were lost (a dropped socket) are sent again instead of a gap and a reset.
 test("MP-10: a credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order), not a newer sequence", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
   const first = await next();

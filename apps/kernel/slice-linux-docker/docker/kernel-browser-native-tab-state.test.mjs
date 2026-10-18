@@ -30,8 +30,13 @@ test('MP-08/MP-10/MP-11 detached extension state is never reusable',async()=>{
 });
 
 test('MP-08/MP-10/MP-11 resize, disconnect and close cannot revive cached geometry',async()=>{
- for(const event of [{method:'Page.frameResized',sessionId:'page'},{method:'Chariox.browserDisconnected'}]){
-  const h=fixture();await h.groups.viewport();h.event(event);assert.equal(h.groups.cachedViewport(),null);assert.equal(h.groups.cachedActive(),null);h.groups.close();
+ {
+  const h=fixture();await h.groups.viewport();h.event({method:'Chariox.browserDisconnected'});assert.equal(h.groups.cachedViewport(),null);assert.equal(h.groups.cachedActive(),null);h.groups.close();
+ }
+ // r54: a resize moves geometry, never the active Tab (the extension's window events retire that): band keys need no fresh read.
+ {
+  const h=fixture();await h.groups.viewport();const guard=h.groups.nativeStateGuard();h.event({method:'Page.frameResized',sessionId:'page'});
+  assert.equal(h.groups.cachedViewport(),null);assert.equal(h.groups.cachedActive(),'target-a');assert.equal(guard(),false,'an observation taken before the resize is still retired');h.groups.close();
  }
  const h=fixture();await h.groups.viewport();h.groups.close();assert.equal(h.groups.cachedViewport(),null);await assert.rejects(h.groups.viewport(),/closed/);
 });

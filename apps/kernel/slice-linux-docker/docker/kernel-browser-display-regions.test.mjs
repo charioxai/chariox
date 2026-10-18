@@ -304,3 +304,11 @@ test('MP-08/MP-10 band input marks the band stream input epoch at dispatch',asyn
  assert.equal(f.host.inputEpochs.get('t'),1);assert(f.host.inputChangedAt.get('t')>0);assert.deepEqual(events,[['input_dispatch',3]]);
  await [...f.host.displays.values()][0].close();
 });
+
+test('MP-08/MP-10/MP-11 naming a visible page input target needs no renderer read; a stale lease still refuses',async()=>{
+ const stream=(frame)=>({binding_id:'b',observed_by:'terminal:a',tab_id:'t',expires:Date.now()+1000,regionLease:{document_id:'d',sequence:3,isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionTarget:{kind:'visible_page'},
+  regionCurrent:()=>new Promise(()=>{}),regionFrameCurrent:frame});
+ const host=s=>({generation:2,displays:new Map([['s',s]]),tabs:new Map()}),command={op:'input',tab_id:'t',generation:2,document_id:'d',binding_id:'b',sequence:3,input:{kind:'click',x:1,y:2}};
+ assert.deepEqual(await regionInputTarget(host(stream(()=>true)),command,'terminal:a'),{tab_id:'t',document_id:'d'});
+ await assert.rejects(regionInputTarget(host(stream(()=>false)),command,'terminal:a'));
+});

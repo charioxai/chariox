@@ -1,4 +1,5 @@
 import {captureDocumentOwner} from './browser-controller-frames.mjs';
+import {timestamp} from './kernel-browser-timing.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 // MP-08/MP-10/MP-11: event-bound native display documents. Known page
 // captures/state reuse the CDP owner; input admission stays separately guarded.
@@ -8,7 +9,7 @@ export class DisplayDocumentPending extends Error {
  constructor(){super('MP-11: display document unavailable while loading');}
 }
 export class DisplayDocuments {
- constructor(){this.entries=new Map();}
+ constructor(timing){this.entries=new Map();this.timing=timing;}
  async target(browser,stored){
   let entry=this.entries.get(stored.target_id);
   if(entry&&(entry.browser!==browser||entry.connection?.isOpen?.()===false||entry.retired)){this.retire(entry,stored.target_id);entry=null;}
@@ -38,12 +39,14 @@ export class DisplayDocuments {
    if(message.sessionId!==sessionId)return;
    if(message.method==='Page.frameNavigated'&&!message.params?.frame?.parentId){
     entry.revision++;entry.frame=message.params?.frame?.id;entry.document=message.params?.frame?.loaderId??null;entry.pending=!entry.document;
+    entry.committedAt=timestamp();this.timing?.('page_commit',entry.committedAt,entry.committedAt);
    }else if(message.method==='Page.frameStartedLoading'&&message.params?.frameId===entry.frame){
     // Refuse captures while a document transition is not yet identified.
     entry.revision++;entry.pending=true;
    }else if(message.method==='Page.loadEventFired'||message.method==='Page.frameStoppedLoading'&&message.params?.frameId===entry.frame){
     // Completion can retain the old loader (cancelled load/download).
     // Resolve it on the event path with the existing revision fence.
+    if(message.method==='Page.loadEventFired'&&entry.committedAt)this.timing?.('page_load',entry.committedAt,timestamp());
     entry.revision++;entry.pending=true;void this.refresh(entry).catch(()=>{this.retire(entry,target);});
    }else if(message.method==='Inspector.detached'){this.retire(entry,target);}
   });

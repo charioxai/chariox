@@ -1,7 +1,7 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
 use super::browser_controller_process::{
     BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessState,
-    BrowserControllerProcessStdioBackend,
+    BrowserControllerProcessStdioBackend, RetireLane,
 };
 use super::kernel_browser_actors::KernelBrowserActors;
 pub(crate) use super::kernel_browser_actors::KernelBrowserDocumentBinding;
@@ -14,6 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,10 +22,13 @@ use std::time::Duration;
 pub(crate) struct KernelBrowserHost {
     inner: Arc<Mutex<HostState>>,
     root: PathBuf,
+    /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
+    authority_epoch: Arc<AtomicU64>,
 }
 #[derive(Default)]
 struct HostState {
     browsers: BTreeMap<String, Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
+    retire_lanes: BTreeMap<String, RetireLane>,
     stopped: bool,
     mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
     display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
@@ -138,6 +142,7 @@ impl KernelBrowserHost {
         Self {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
+            authority_epoch: Arc::default(),
         }
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -241,6 +246,7 @@ impl KernelBrowserHost {
                 Duration::from_secs(20),
             )
             .for_host();
+            state.retire_lanes.insert(user.into(), backend.retire_lane());
             state
                 .browsers
                 .insert(user.into(), Arc::new(Mutex::new(backend)));
@@ -260,9 +266,9 @@ impl KernelBrowserHost {
             Duration::from_secs(2),
         )
         .for_host();
-        self.inner
-            .lock()
-            .unwrap()
+        let mut state = self.inner.lock().unwrap();
+        state.retire_lanes.insert(user.into(), backend.retire_lane());
+        state
             .browsers
             .insert(user.into(), Arc::new(Mutex::new(backend)));
     }
@@ -435,6 +441,12 @@ impl KernelBrowserHost {
             None
         };
         let input = method == "host.browser" && params["op"] == "input";
+        let op_label = params["op"]
+            .as_str()
+            .filter(|op| op.len() <= 32 && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+            .unwrap_or("other")
+            .to_string();
+        let requested = std::time::Instant::now();
         let queued = std::time::Instant::now();
         let _mutation_guard = mutation_lane
             .as_ref()
@@ -444,6 +456,7 @@ impl KernelBrowserHost {
         if input {
             crate::transport::kernel_browser_display::timing("input_mutation_queue", queued);
         }
+        crate::transport::kernel_browser_display::slow("rust_mutation_queue", &op_label, queued);
         let queued = std::time::Instant::now();
         let mut backend = browser
             .lock()
@@ -451,6 +464,7 @@ impl KernelBrowserHost {
         if input {
             crate::transport::kernel_browser_display::timing("input_backend_queue", queued);
         }
+        crate::transport::kernel_browser_display::slow("rust_backend_queue", &op_label, queued);
         self.require_running()?;
         self.check_admission(admission)?;
         self.scope_browser_request(admission, method, &params)?;
@@ -699,9 +713,13 @@ impl KernelBrowserHost {
         // its live target through this controller. Lease/policy checks remain
         // before dispatch and after readiness, as for other observations.
         let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
+        // r55: a selection note on a busy page waits for its renderer; it must not hold the controller lock meanwhile.
+        let note = method == "host.browser"
+            && matches!(params["op"].as_str(), Some("note_selection" | "note_reanchor"));
         let mut result = if display
             || mirror_credit
             || display_subscribe
+            || note
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")
@@ -721,6 +739,7 @@ impl KernelBrowserHost {
         } else {
             backend.host_request_cancellable(method, params, cancellation.clone())
         };
+        crate::transport::kernel_browser_display::slow("rust_request", &op_label, requested);
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()
@@ -925,7 +944,29 @@ impl KernelBrowserHost {
         if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
             return Err("MP-11: not_granted: browser authority revoked".into());
         }
-        model.takeover(actor, tab, generation)
+        let actor_id = actor.actor_id.clone();
+        let outcome = model.takeover(actor, tab, generation)?;
+        let epoch = self.authority_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        drop(model);
+        // A viewer input parked in the browser host lost its kernel action when it was parked: the previous owner's
+        // waiting input ends with its authority. The takeover is not reported before the host has dropped it.
+        let backend = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .browsers
+            .get(user)
+            .cloned();
+        if let Some(backend) = backend {
+            if let Ok(mut backend) = backend.lock() {
+                // An unreachable host has no parked input left to retire.
+                let _ = backend.host_request(
+                    "host.browser.retire_input",
+                    serde_json::json!({"tab_id": tab, "except": actor_id, "epoch": epoch}),
+                );
+            }
+        }
+        Ok(outcome)
     }
     pub(crate) fn release_input(
         &self,
@@ -962,23 +1003,43 @@ impl KernelBrowserHost {
         }
         // Retire only this terminal's persistent native input/targets. Cleanup
         // is serialized behind any cancelled request and never starts a desktop.
-        let backend = self
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .browsers
-            .get(user)
-            .cloned();
+        let (backend, lane) = {
+            let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            (state.browsers.get(user).cloned(), state.retire_lanes.get(user).cloned())
+        };
         let actor = actor.to_string();
+        let observer = actor.clone();
         if let Some(backend) = backend {
-            std::thread::spawn(move || {
-                if let Ok(mut backend) = backend.lock() {
-                    let _ = backend.host_request(
-                        "host.computer.retire",
-                        serde_json::json!({"observer":actor}),
-                    );
+            let retire = move |backend: &mut BrowserControllerProcessStdioBackend| {
+                let _ = backend.host_request(
+                    "host.computer.retire",
+                    serde_json::json!({"observer":actor}),
+                );
+            };
+            // Parked input must not outlive the terminal behind any operation in flight, whether or not the backend lock
+            // is free: the controller can hold a barrier while its Rust lock is released.
+            if let Some(lane) = lane {
+                lane.retire_observer(&observer);
+            }
+            // Disconnect must not wait on a busy backend: retire now when it is free, else right behind the request in flight.
+            let busy = match backend.try_lock() {
+                Ok(mut backend) => {
+                    retire(&mut backend);
+                    false
                 }
-            });
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    retire(&mut error.into_inner());
+                    false
+                }
+                Err(std::sync::TryLockError::WouldBlock) => true,
+            };
+            if busy {
+                std::thread::spawn(move || {
+                    if let Ok(mut backend) = backend.lock() {
+                        retire(&mut backend);
+                    }
+                });
+            }
         }
     }
 
@@ -1002,6 +1063,7 @@ impl KernelBrowserHost {
                 state.access.revoke(&owner, None);
             }
             state.loaded.clear();
+            state.retire_lanes.clear();
             std::mem::take(&mut state.browsers)
         };
         let mut first = None;

@@ -79,6 +79,8 @@ export class Mirror2Navigation {
   loaded: Promise<void>
   painted = false
   readyToPresent = false
+  private filled = false
+  private filledAt = 0
   private deferred = false
   private held: HTMLIFrameElement | undefined
   private cancelLoad: (() => void) | undefined
@@ -110,7 +112,7 @@ export class Mirror2Navigation {
     this.cancelLoad?.()
     if (this.painted) { this.held?.remove(); this.held = this.frame; this.held.inert = true }
     else this.frame.remove() // a second navigation retires only its unpainted prefix
-    this.painted = false; this.readyToPresent = false
+    this.painted = false; this.readyToPresent = false; this.filled = false; this.filledAt = 0
     if (this.spare) {
       ;[this.frame, this.loaded] = this.spare; this.spare = undefined
       this.cancelLoad = this.cancelSpareLoad; this.cancelSpareLoad = undefined
@@ -149,6 +151,17 @@ export class Mirror2Navigation {
       return
     }
     this.reveal()
+  }
+  // A held, still-parsing document is ready once content continues below the fold (so the viewport is fully
+  // serialized, in document order) and covers the viewport. Evaluated at most every 250 ms: it lays out a growing tree.
+  viewportFilled(): boolean {
+    if (this.filled) return true
+    const doc = this.frame.contentDocument, view = doc?.defaultView, now = performance.now()
+    if (!this.deferred || !doc || !view || now - this.filledAt < 250) return false
+    this.filledAt = now
+    if ((doc.scrollingElement?.scrollHeight ?? 0) <= view.innerHeight || !hasVisibleMirrorContent(doc) || mirrorContentCoverage(doc) < MEANINGFUL_COVERAGE) return false
+    this.filled = true; this.reveal()
+    return true
   }
   get holding(): boolean { return this.deferred }
   hold(): void { this.deferred = true }

@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: one trusted isolated world per live CDP document.
 export const FOCUS_WORLD = 'chariox-controller-focus';
-export async function ensureFocusWorld(browser, connection, sessionId, targetId, frame) {
+export async function ensureFocusWorld(browser, connection, sessionId, targetId, frame, { timeoutMs } = {}) {
   const cache = browser.focusWorldsByTarget;
   let world = cache.get(targetId);
   if (!world || world.documentId !== frame.loaderId || world.frameId !== frame.id || world.connection !== connection || world.sessionId !== sessionId) {
@@ -12,7 +12,7 @@ export async function ensureFocusWorld(browser, connection, sessionId, targetId,
       try {
         const result = await connection.send('Page.createIsolatedWorld', {
           frameId: frame.id, worldName: FOCUS_WORLD, grantUniveralAccess: false,
-        }, sessionId);
+        }, sessionId, { timeoutMs });
         if (!creating.uniqueContextId) creating.contextId = result?.executionContextId;
         return creating;
       } catch (error) {

@@ -41,6 +41,18 @@ const DEFLATE_MIN_BYTES = 512;
 // first snapshot waits for its first contentful paint (bounded), so viewers keep the
 // previous page instead of a white, half-parsed one.
 const PAINT_HOLD_MS = 2500;
+// A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
+// (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
+// The kernel gives the controller 20 s per request (kernel_browser_host.rs, queue wait included): a credit that outlasts it
+// reaches the viewer as a transport failure, not as a busy page. A busy page's answer stays well inside it.
+export const KERNEL_CONTROLLER_DEADLINE_MS = 20_000;
+export const BUSY_RENDERER_MS = 14_000;
+const CREDIT_PATIENCE_MS = 6_500;
+// One credit as a whole ends this long after its long poll and its busy-renderer wait: calls that make their own
+// default waits (resource bytes, frames, sheets) cannot stack past the controller's 20 s.
+const CREDIT_SLACK_MS = 3_000;
+// A hung renderer still ends: the one snapshot in flight is abandoned after this.
+const SNAPSHOT_MS = 120_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
@@ -162,38 +174,49 @@ export class Mirror2 {
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? ops : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
-  async world(tab, stream) {
+  async world(tab, stream, patience) {
     const targetAt = timestamp();
     const cached = this.host.browser.currentPageFrame?.(tab.target_id);
     const { connection, sessionId } = cached ?? await this.host.browser.resolvePageTarget(tab.target_id);
-    const frameTree = cached ? { frame: cached.frame } : (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree;
+    const frameTree = cached ? { frame: cached.frame } : (await connection.send('Page.getFrameTree', {}, sessionId, { timeoutMs: patience?.() })).frameTree;
     if (frameTree?.frame?.loaderId !== tab.document_id) throw new Error('MP-11: stale mirror document');
     this.host.timing?.('mirror2_world_target', targetAt);
     const installAt = timestamp();
-    const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+    const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame, { timeoutMs: patience?.() });
     if (!Number.isSafeInteger(world.contextId) || world.contextId <= 0) throw new Error('MP-11: mirror isolated world unavailable');
     if (!world.mirror2Installed) {
-      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId);
+      const installed = await connection.send('Runtime.evaluate', { expression: `typeof globalThis.__charioxMirror2?.get === "function" || ${mirror2ObserverExpression()}`, contextId: world.contextId, returnByValue: true }, sessionId, { timeoutMs: patience?.() });
       if (installed.exceptionDetails || installed.result?.value !== true) throw new Error('MP-11: mirror observer unavailable');
       world.mirror2Installed = true;
     }
     this.host.timing?.('mirror2_world_install', installAt);
     const out = { connection, sessionId, contextId: world.contextId, navigatedAt: cached?.navigatedAt, frame: frameTree.frame, ref: observerRef(stream) };
     const cssAt = timestamp();
-    await this.watchCss(out, frameTree.frame.id, stream.id);
+    await this.watchCss(out, frameTree.frame.id, stream.id, patience);
     this.host.timing?.('mirror2_world_css', cssAt);
     return out;
   }
-  async watchCss(world, frameId, streamId) {
-    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000");
+  async watchCss(world, frameId, streamId, patience) {
+    const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000", false, patience?.());
     world.holdInitialPaint = large;
     const cssAt = timestamp();
     // Activation re-reads sheet owners; ordinary pages need not await resource
     // bodies in DOM.enable/CSS.enable before their first sanitized snapshot.
     this.css.watch(world, frameId, streamId).then(() => this.host.timing?.('mirror2_css_ready', cssAt), () => { world.cssFailed = true; });
   }
-  async evaluate(world, expression, awaitPromise = false) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId);
+  // One snapshot per world in flight. A snapshot the page has not answered keeps running in the renderer; the credit
+  // that gave up on it leaves it pending and the next credit takes its answer instead of queueing a second one.
+  async snapshotOnce(world, policy, patience) {
+    if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot()`, false, SNAPSHOT_MS) };
+    pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
+    let timer;
+    const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
+    try { const snap = await Promise.race([pending.promise, late]); if (world.snapshotPending === pending) world.snapshotPending = null; return snap; }
+    finally { clearTimeout(timer); }
+  }
+  async evaluate(world, expression, awaitPromise = false, timeoutMs) {
+    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
@@ -202,6 +225,8 @@ export class Mirror2 {
     return reply.result.value;
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
+  // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
+  invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
     this.regions.retireStream(stream);
     stream.deflate?.close(); stream.deflate = null; this.css.release(stream.id);
@@ -219,8 +244,8 @@ export class Mirror2 {
   // Registered Vault targets are marked by node identity in the observer's world.
   // Fields the kernel filled from the Vault, by node identity: top-level refs
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
-  async protectTargets(world, tab, policy, prefix = '') {
-    await this.evaluate(world, `${world.ref}.resetTargets()`);
+  async protectTargets(world, tab, policy, prefix = '', patience) {
+    await this.evaluate(world, `${world.ref}.resetTargets()`, false, patience?.());
     for (const target of policy.targets) {
       if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
       if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;
@@ -228,7 +253,7 @@ export class Mirror2 {
       if (!match) continue;
       try {
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId: Number(match[1]), executionContextId: world.contextId }, world.sessionId);
-        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this,${JSON.stringify(target.value_hash ?? null)},${JSON.stringify(target.fill_revision ?? null)})}`, returnByValue: true }, world.sessionId);
+        const marked = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.protect.call(this,${JSON.stringify(target.value_hash ?? null)},${JSON.stringify(target.fill_revision ?? null)})}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
         if (marked.exceptionDetails || marked.result?.value !== true) throw new Error('MP-11: protected target unavailable');
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
       } catch (error) {
@@ -277,7 +302,9 @@ export class Mirror2 {
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
-    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry));
+    // The credit's own clock starts here: waiting behind an earlier credit of the subscription spends it too.
+    const hard = arrival + Math.min(wait + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), KERNEL_CONTROLLER_DEADLINE_MS - 1000);
+    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard));
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
@@ -290,9 +317,53 @@ export class Mirror2 {
   }
   // Credits that arrived before this point stop waiting (their hurry count is older).
   hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
-  async packet(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
+  // The viewer keeps its native preview of a document until the DOM mirror can be built. This reset only says "still preparing".
+  previewPacket(stream, command, scope, tabId, documentId, started) {
+    if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
+    const sequence = ++stream.issued;
+    stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
+    const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
+      document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
+      snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tabId) ?? 1,
+      scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
+    this.remember(stream, sequence, packet, true);
+    this.host.timing?.('mirror2_navigation_preview', started);
+    return packet;
+  }
+  // A renderer that stays busy past the bounded wait is not an observer verdict: while a native preview covers the document
+  // the viewer is told to keep waiting (the credit stays on this subscription) instead of being sent to a video fallback.
+  async packet(stream, command, scope, signal, deadline, hurry, hard) {
+    try { return await this.withinDeadline(stream, signal, hard ?? (deadline ?? Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), async limit => { await stream.abandoned; return this.build(stream, command, scope, limit, deadline, hurry); }); }
+    catch (error) {
+      if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
+      return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
+    } finally { if (stream.world) stream.world.patience = null; }
+  }
+  // A credit that outlasts its deadline ends as a busy renderer; the abandoned build stops at its next checkpoint
+  // (it may still hold a renderer call) and issues nothing, so the next credit rebuilds once it has settled.
+  async withinDeadline(stream, signal, end, run) {
+    const limit = new AbortController(), ms = Math.max(0, end - Date.now());
+    let timer;
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => { limit.abort(); reject(Object.assign(new Error(`browser CDP method credit timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })); }, ms); });
+    const running = run(signal ? AbortSignal.any([signal, limit.signal]) : limit.signal);
+    running.catch(() => {});
+    try { return await Promise.race([running, expired]); }
+    catch (error) {
+      if (limit.signal.aborted && !signal?.aborted) {
+        stream.resetAt = Math.max(stream.resetAt ?? 0, stream.issued + 1);
+        // The abandoned build may still commit an awaited read to the stream: the next credit builds after it settled.
+        const settled = running.then(() => {}, () => {}).then(() => { if (stream.abandoned === settled) stream.abandoned = null; });
+        stream.abandoned = settled;
+      }
+      throw error;
+    }
+    finally { clearTimeout(timer); }
+  }
+  async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
+    const busyMs = this.busyMs ?? BUSY_RENDERER_MS, patience = () => Math.max(Math.min(1000, busyMs), busyMs - (timestamp() - started));
+    const delta = () => Math.max(1000, Math.min(busyMs, CREDIT_PATIENCE_MS) - (timestamp() - started));
     this.service.require(command.subscription_id, scope, command.generation);
     // MP-08/MP-10: between packets the page session's navigation events keep the document current, so an
     // unchanged document reuses its world without renderer round trips (a busy page answers those only after
@@ -304,18 +375,9 @@ export class Mirror2 {
     // It is an ordinary protected display, never a raster in the mirror packet.
     const previousDocument = stream.document_id ?? stream.initialDocument;
     if (stream.navigationPreview && previousDocument && stream.previewDocument !== tab.document_id && previousDocument !== tab.document_id) {
-      if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
       stream.previewDocument = tab.document_id;
       this.regions.retireStream(stream);
-      const sequence = ++stream.issued;
-      stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
-      const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation,
-        document_id: tab.document_id, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
-        snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1,
-        scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
-      this.remember(stream, sequence, packet, true);
-      this.host.timing?.('mirror2_navigation_preview', started);
-      return packet;
+      return this.previewPacket(stream, command, scope, tab.tab_id, tab.document_id, started);
     }
     if(stream.navigationPreview&&stream.previewDocument===tab.document_id&&stream.document_id!==tab.document_id&&stream.previewWaitedDocument!==tab.document_id){
       const previewAt=timestamp(),document=tab.document_id;
@@ -325,7 +387,7 @@ export class Mirror2 {
       stream.previewWaitedDocument=document;this.host.timing?.('mirror2_preview_wait',previewAt);
     }
     const browser = this.host.browser;
-    const world = kept?.world ?? await this.world(tab, stream), policy = this.host.protection;
+    const world = kept?.world ?? await this.world(tab, stream, patience), policy = this.host.protection;
     stream.world = world;
     if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');
     mark('world');
@@ -334,12 +396,18 @@ export class Mirror2 {
     if (after > 0 && after <= stream.issued) stream.acked = Math.max(stream.acked ?? 0, after);
     // Bytes the viewer acknowledged are kept by it for the document's lifetime: the kernel drops its copy.
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
+    // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
+    // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
+    // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
+    world.patience = reset ? patience : delta;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.
-    if (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
+    // A document the native preview already covers needs no hold: the viewer keeps the preview until its own handover gate.
+    if (stream.previewDocument !== tab.document_id && (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint)) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
     if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
@@ -364,9 +432,9 @@ export class Mirror2 {
         stream.resetAt = stream.issued + 1;
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
-        await this.protectTargets(world, tab, policy);
+        if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.evaluate(world, `${world.ref}.snapshot()`);
+        const snap = await this.snapshotOnce(world, policy, patience);
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -425,7 +493,7 @@ export class Mirror2 {
       // Legacy viewers retain first-packet fonts. Resource bytes otherwise
       // travel only without DOM changes, so an echo never queues behind them.
       const fontsAt = timestamp();
-      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -438,7 +506,11 @@ export class Mirror2 {
         if (this.empty(stream, source)) resources = await this.materialize(world, stream, null, more.loaded);
       }
     } catch (error) {
+      assertNotCancelled(signal);
       assertDocument();
+      // A renderer that does not answer is busy, not an observer verdict: no video fallback and no further renderer fence.
+      // Whatever it was asked may still run, so the next credit rebuilds the snapshot.
+      if (error?.code === 'browser_cdp_timeout') { stream.resetAt = stream.issued + 1; throw error; }
       await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
       // Over-budget/unavailable DOM: the client shows the protected video path.
       fallback = error.mirrorReason ?? 'observer_unavailable';
@@ -509,6 +581,10 @@ export class Mirror2 {
     if (sent.scroll !== stream.ownScrolls.get(null)) stream.ownScrolls.delete(null);
     for (const op of packet.ops ?? []) if (op.op === 'scroll') stream.ownScrolls.delete(op.id);
     const wire = await this.encode(stream, packet);
+    // MP-11: a protection change during the asynchronous deflate retired this packet (invalidate cleared the caches).
+    if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
+      stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
+    }
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
@@ -556,6 +632,8 @@ export class Mirror2 {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
     return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
   }
+  // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
+  fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }
   // A packet's resource budget; smaller within a second of viewer input.
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }

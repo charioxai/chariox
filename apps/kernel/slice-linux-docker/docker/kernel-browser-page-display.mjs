@@ -19,6 +19,11 @@ export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
  const source=nativeDisplay?.regionSource??host.compositors.get(command.tab_id)?.source;
  return source?.native===true&&source.attested===true&&source.valid?.()===true;
 }
+// MP-08/MP-10/MP-11: a renderer parsing a huge document answers CDP late (r47 WHATWG: every preview attach hit the
+// 5 s timeout). The layout read only narrows the crop inside the native page rect, so this target's last read under
+// the same emulated metrics and window binding stands in while the renderer is busy; a later read that differs
+// fails the current check and retires the display.
+const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);
@@ -34,21 +39,40 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const documentCurrent=()=>host.tabs.get(tab.tab_id)?.target_id===tab.target_id&&(frameProof
    ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
    :host.tabs.get(tab.tab_id)?.document_id===document);
-  const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
   const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
+  const reads=layouts.get(browser)??new Map(),key=JSON.stringify([metrics??null,window.window_generation,window.page_rect]);layouts.set(browser,reads);
+  // A crop served from the last read is retired when the renderer's delayed read disagrees.
+  // A renderer that is late is not a renderer that disagrees: a read that timed out keeps the crop and is read again,
+  // a few times quickly and then slowly (each read makes a loading page lay out), while the display lives; any other failure retires it.
+  let differs=false,closed=false;const watched=new WeakSet(),verify=(used,fresh,retries=3)=>{if(watched.has(fresh))return used;watched.add(fresh);fresh.then(viewport=>{if(JSON.stringify(viewport)!==JSON.stringify(used))differs=true;},error=>{
+   if(differs)return;if(error?.code==='browser_cdp_timeout'){{const wait=host.layoutRetryMs??1000;setTimeout(()=>{if(!closed&&alive())verify(used,read(),retries-1)},retries>0?wait:wait*5);}}else differs=true;});return used;};
+  const read=()=>connection.send('Page.getLayoutMetrics',{},sessionId).then(m=>{const viewport={clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};reads.set(tab.target_id,{key,viewport,pending:null});return viewport;});
+  const measure=async()=>{
+   const last=reads.get(tab.target_id),cached=last?.key===key?last:null;
+   if(cached?.pending)return verify(cached.viewport,cached.pending);
+   const fresh=read();
+   if(!cached)return fresh;
+   cached.pending=fresh;fresh.catch(()=>{if(cached.pending===fresh)cached.pending=null;});let timer;
+   try{return await Promise.race([fresh,new Promise(resolve=>{timer=setTimeout(()=>resolve(verify(cached.viewport,fresh)),LAYOUT_WAIT_MS);})]);}finally{clearTimeout(timer);}
+  };
   // The existing native observer retires this measurement on resize, zoom,
   // tab/window changes or detach. A cold binding retains fresh measurement.
   const viewportGuard=frameProof&&typeof metrics==='string'?host.tabGroups?.nativeStateGuard?.():null;
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
-  const alive=()=>host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
+  const alive=()=>!differs&&host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
+  // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
+  // The crop is not part of it: a new document without a scrollbar widens the crop inside the same page rect.
+  const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1]);
+  const attestation={proven:()=>proofs.get(connection)?.get(tab.target_id)===proofKey,
+   prove:()=>{const proven=proofs.get(connection)??new Map();proven.set(tab.target_id,proofKey);proofs.set(connection,proven);}};
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
-   isAlive:alive,isCurrent:current,close:async()=>{}};
+   isAlive:alive,isCurrent:current,close:async()=>{closed=true;}};
   return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
+   args:{window,viewport,attestation,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});
@@ -81,7 +105,8 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
   if(!await stream.regionCurrent())refuse();
   visiblePageInputSource(host,stream,tab,scope);
  };
- await inputGuard();
+ // The live crop check runs as a fence before the dispatch, where a busy renderer parks the input.
+ const tab=host.tabs.get(command.tab_id);if(!tab)refuse();visiblePageInputSource(host,stream,tab,scope);
  return host.request({...page,observed_by:scope},{signal,inputGuard,nativeDisplay:stream});
 }
 

@@ -281,12 +281,14 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   return page;
 }
 
+// A Vault fill is tracked: complete, or still pending in the controller's private map.
+export const hasBrowserFill=(browser,policy)=>Boolean(policy.targets?.some(target=>target.kind==='browser'&&typeof target.value_hash==='string')||browser?.fillTargets?.size);
+
 export async function measureBrowserProtection(browser,policy) {
   if(policy?.unknown||!Array.isArray(policy?.targets))throw Error('MP-11: fill policy unavailable');
   // MP-08/MP-10/MP-11: registration alone contributes no browser pixels.
   // Pending fills enter the private map before input and keep the full fence.
-  const filled=policy.targets.some(target=>target.kind==='browser'&&typeof target.value_hash==='string');
-  if(!filled&&!(browser?.fillTargets?.size))return {pages:[]};
+  if(!hasBrowserFill(browser,policy))return {pages:[]};
   const connection=await browser.ensureConnection(),{targetInfos=[]}=await connection.send('Target.getTargets');
   const pages=[];
   for(const info of targetInfos.filter(t=>t.type==='page')) {

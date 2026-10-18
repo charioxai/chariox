@@ -1285,6 +1285,18 @@ test('MP-08/MP-10 an undelivered visible image stops holding the handover after 
  }finally{await page.close()}
 });
 
+// c#368 @3c6b391d8 review: a visible CSS background whose image fails (404) held the switch forever.
+test('MP-08/MP-10 an undelivered visible CSS image stops holding the handover after the same bound',async()=>{
+ const page=await viewer();try{
+  await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));
+  await page.evaluate(()=>window.r.holdForHandover());
+  await apply(page,{...snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'new page'},{id:'n5',parent:'n3',kind:'element',tag:'div',attrs:{style:'display:block;width:20px;height:20px;background-image:url("mr:r1")'}}])),document_id:'new',sequence:2});
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'a fresh document waits for its visible CSS image');
+  await page.waitForTimeout(3300);
+  assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'the CSS image never arrives: hand over without it');
+ }finally{await page.close()}
+});
+
 // MP-08/MP-10/MP-11: diagnose an actual held-page seam without logging content.
 test('MP-08/MP-10/MP-11 handover reports a visible resource blocker without exposing its identity',async()=>{
  const page=await viewer();try{

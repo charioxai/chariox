@@ -11,9 +11,14 @@ test('MP-11 attacker-controlled exception fields cannot become timing labels',()
  const error={name:'protectedcanary',code:'protectedcanary',message:'protectedcanary',stack:'protectedcanary\n at f (/protectedcanary/protectedcanary.mjs:1:1)'};
  assert.equal(hostErrorLabel(error),'host_error Error');assert.equal(hostErrorLabel(null),'host_error Error');
 });
+test('MP-08/MP-10/MP-11 a CDP timeout names the waiting caller, not the timer inside the CDP client',()=>{
+ const error={name:'Error',code:'browser_cdp_timeout',message:'browser CDP method Page.getFrameTree timed out after 5000ms',stack:'Error\n at Timeout._onTimeout (/x/browser-controller-cdp.mjs:1358:11)\n at send (/x/browser-controller-cdp.mjs:1350:12)\n at resolveDisplayTarget (/x/kernel-browser-display-document.mjs:93:60)\n at request (/x/kernel-browser-host.mjs:700:10)'};
+ assert.equal(hostErrorLabel(error),'host_error Error browser_cdp_timeout Page.getFrameTree kernel-browser-display-document.mjs:93:60 < kernel-browser-host.mjs:700:10');
+});
 test('MP-08/MP-10/MP-11 CDP timeouts identify the public method without its arguments',()=>{
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method Page.captureScreenshot timed out after 5000ms'}),'host_error Error browser_cdp_timeout Page.captureScreenshot');
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method protectedcanary timed out after 5000ms'}),'host_error Error browser_cdp_timeout');
+ for(const method of ['Emulation.setFocusEmulationEnabled','Target.getTargetInfo','Page.bringToFront'])assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:`browser CDP method ${method} timed out after 5000ms`}),`host_error Error browser_cdp_timeout ${method}`);
 });
 
 test('MP-08/MP-10/MP-11: observer diagnostics admit fixed input refusal classes only',()=>{

@@ -1255,6 +1255,19 @@ test('MP-08/MP-10 navigate reports the committed URL after a redirect', () => us
   assert.equal(pages.get(target).document_id, 'doc-next');
 }));
 
+// r55: a selection note names its Tab and reads only that Tab live. The all-tab reconcile behind it waited for a
+// parsing page's renderer (5 s CDP timeouts, 6-24 s per note) while the kernel held its backend for the request.
+for (const op of ['note_selection', 'note_reanchor']) test(`MP-08/MP-10/MP-11 ${op} reads only its own Tab`, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const browser = host.browser, reconcile = browser.reconcile;
+  let reconciles = 0;
+  browser.reconcile = async (...args) => { reconciles++; return reconcile(...args); };
+  browser.observeNote = async () => ({ quote: 'q' });
+  const result = await host.request({ op, tab_id: opened.tab_id, generation: opened.generation, observed_by: 'terminal:fixture' });
+  assert.equal(reconciles, 0, 'no all-tab reconcile');
+  assert.deepEqual(result.observation, { quote: 'q' });
+}));
+
 // MP-08/MP-10 (review #1009 P2): the kernel's navigate/subscribe preflight names its Tab and reads only that
 // Tab live; an all-tab reconcile waits for every busy page and held the controller lock meanwhile.
 test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => using(async ({ host }) => {
@@ -1280,6 +1293,20 @@ test('MP-08/MP-10 the keepalive is a popup window outside the native tab strip',
   const { targetInfos } = await connection.send('Target.getTargets');
   assert.deepEqual(targetInfos.map(t => t.targetId).sort(), [fixture.popups[0], host.tabs.get(opened.tab_id).target_id].sort(), 'the launch tab is closed');
   assert.ok(!opened.tabs.some(tab => tab.target_id === fixture.popups[0]));
+}));
+
+// r54 (first video 8-13 s after native_admitted): any host browser op that takes over a second is named in the timing log.
+test('MP-08/MP-10 opt-in timing names a slow host browser op and only a slow one', () => using(async ({ host }, root) => {
+  const before = process.env.CHARIOX_BROWSER_DISPLAY_TIMING; process.env.CHARIOX_BROWSER_DISPLAY_TIMING = '1';
+  try {
+    const request = host.request.bind(host);
+    host.request = async params => params.op === 'display_credit' ? new Promise(resolve => setTimeout(resolve, 1100, {})) : request(params);
+    await host.handle({ id: 1, method: 'host.browser', params: { op: 'display_credit' } });
+    await host.handle({ id: 2, method: 'host.browser', params: { op: 'screenshot', format: 'png' } }).catch(() => {});
+    host.timing.flush();
+    const stages = (await readFile(path.join(root, 'display-timing.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).stage);
+    assert.deepEqual(stages.filter(stage => stage.startsWith('host_op_slow')), ['host_op_slow display_credit']);
+  } finally { if (before === undefined) delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING; else process.env.CHARIOX_BROWSER_DISPLAY_TIMING = before; }
 }));
 
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops with fixed labels (New tab / typed URL attribution).
@@ -1870,6 +1897,8 @@ test('MP-08/MP-10 a display attach reports the viewer\'s initial push request',(
 test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>using(async({host})=>{
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
+ // r54 RED 2: a selection note waits for the page renderer (8 s on a parsing page); it must not hold every key behind it.
+ for(const op of ['note_selection','note_reanchor'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 
@@ -1895,3 +1924,251 @@ test("MP-08/MP-10 a Tab's own read uses the document the page session named and 
   assert.deepEqual([live.document_id, calls], ["LIVE", ["Page.getFrameTree", "Target.getTargetInfo"]]);
   assert.deepEqual(saved, ["HOME", "LIVE"]);
 });
+
+test('MP-08/MP-10/MP-11 viewer input waits in order while the busy renderer cannot answer the fences',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;
+ let busy=true;const before=connection.beforeSend;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Runtime.evaluate')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const text=input=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
+ const first=await host.request(text({kind:'text',text:'a'}));
+ const second=await host.request(text({kind:'text',text:'b'}));
+ assert.ok(first&&second,'a busy renderer is not an error for the person');
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0,'nothing reaches the page before the fences pass');
+ busy=false;
+ for(let n=0;n<200&&sent.filter(x=>x.method==='Input.insertText').length<2;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a','b']);
+ connection.beforeSend=before;
+}));
+
+test('MP-08/MP-10/MP-11 viewer input that may have been dispatched is never parked or replayed',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let attempts=0;connection.beforeSend=async(method)=>{if(method==='Input.insertText'){attempts++;throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})}};
+ await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}}),error=>error.code==='browser_cdp_timeout');
+ await new Promise(r=>setTimeout(r,50));
+ assert.equal(attempts,1);
+}));
+
+test('MP-08/MP-10/MP-11 a parked wheel burst replays as one scroll',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ for(let n=0;n<5;n++)await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}});
+ busy=false;
+ for(let n=0;n<200&&!sent.some(x=>x.method==='Input.dispatchMouseEvent');n++)await new Promise(r=>setTimeout(r,5));
+ await new Promise(r=>setTimeout(r,30));
+ const wheels=sent.filter(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseWheel');
+ assert.equal(wheels.length,1);assert.equal(wheels[0].params.deltaY,600);
+}));
+
+test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never delivered mangled',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,refuseFirst=true;
+ connection.beforeSend=async(method,params)=>{
+  if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
+  if(!busy&&method==='Runtime.evaluate'){fixture.secretFocused=refuseFirst;refuseFirst=false}
+ };
+ for(const text of ['h','t','t','p'])await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ busy=false;
+ for(let n=0;n<100&&!host.busyInputs.queues.size&&n<5;n++)await new Promise(r=>setTimeout(r,5));
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0,'no letter of a word that lost its first letter is typed');
+}));
+
+// r55: the page acknowledged the input, so a busy renderer that cannot answer the observation after it must not turn the
+// person's accepted input into an error (r54/r55: "input refused" notices); the Tab state is the last observed one.
+test('MP-08/MP-10/MP-11 input acknowledged by the page is accepted and never replayed when only the post-input observation times out',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;
+ const reconcile=host.browser.reconcile.bind(host.browser);
+ host.browser.reconcile=async(...args)=>{if(sent.some(x=>x.method==='Input.insertText'))throw Object.assign(Error('browser CDP method Target.getTargets timed out after 5000ms'),{code:'browser_cdp_timeout'});return reconcile(...args)};
+ const reply=await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.ok(Array.isArray(reply.tabs),'the reply carries the last observed Tab state');
+ await new Promise(r=>setTimeout(r,50));
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,1);
+ assert.equal(host.busyInputs.queues.size,0);
+}));
+
+test('MP-08/MP-10/MP-11 a scroll arriving while a parked scroll is being admitted is not lost',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,release,gate=null;
+ connection.beforeSend=async(method)=>{
+  if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
+  if(gate&&method==='Page.getFrameTree')await gate;
+ };
+ const scroll=()=>host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}});
+ await scroll();
+ gate=new Promise(r=>{release=r});busy=false;
+ for(let n=0;n<200&&!host.busyInputs.queues.get('adapter')?.active;n++)await new Promise(r=>setTimeout(r,5));
+ await scroll();
+ release();
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ const wheels=sent.filter(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseWheel');
+ assert.equal(wheels.reduce((sum,x)=>sum+x.params.deltaY,0),240);
+}));
+
+test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover of its tab',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ await type('terminal:a','a');await type('terminal:b','b');await type('terminal:c','c');
+ assert.equal(host.busyInputs.queues.size,3);
+ await host.handle({id:1,method:'host.computer.retire',params:{observer:'terminal:a'}});
+ await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:c'}});
+ assert.deepEqual([...host.busyInputs.queues.values()].filter(queue=>queue.entries.length).map(queue=>queue.key),['terminal:c']);
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
+}));
+
+test('MP-08/MP-10/MP-11 the parking reply and the observer\'s state report its parked input (protocol 552), nobody else\'s',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ assert.equal((await type('terminal:a','a')).parked_input,1);
+ assert.equal((await type('terminal:a','b')).parked_input,2);
+ assert.equal((await host.request({op:'state',observed_by:'terminal:a'})).parked_input,2,'a state read answers without waiting for the busy renderer');
+ assert.equal((await host.request({op:'state',observed_by:'terminal:b'})).parked_input,undefined);
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal((await host.request({op:'state',observed_by:'terminal:a'})).parked_input,undefined,'cleared once the input is admitted');
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a','b']);
+}));
+
+test('MP-08/MP-10/MP-11 a retirement from an older ownership change cannot retire the newer owner\'s parked input',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ await type('terminal:b','b');await type('terminal:c','c');
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:c',epoch:2}});
+ await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b',epoch:1}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
+}));
+
+test('MP-08/MP-10/MP-11 a retirement for one tab is not suppressed by a newer ownership change of another tab',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const other=await host.request({op:'open',url:'about:blank'});
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:other.tab_id,except:'terminal:c',epoch:2}});
+ await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b',epoch:1}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText'),[],'the older takeover of tab X still retires the previous owner\'s input');
+}));
+
+test('MP-08/MP-10/MP-11 a parked input refused as stale on an unchanged document is admitted again; a changed document drops it',()=>using(async({host,connection,sent})=>{
+ const {UserDomainRefusal}=await import('./kernel-browser-refusal.mjs');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,refusals=2;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const inputGuard=async()=>{if(refusals-->0)throw new UserDomainRefusal('stale_reference')};
+ const type=text=>host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}},{inputGuard});
+ await type('a');busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a'],'the geometry moved under the busy renderer, the document did not');
+ busy=true;refusals=1000;await type('b');host.tabs.get(tab.tab_id).document_id='another';busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['a'],'a changed document drops the input');
+}));
+
+test('MP-08/MP-10/MP-11 a disconnected terminal\'s observer retirement drops its parked input and keeps the others\'',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const type=(observed_by,text)=>host.request({op:'input',observed_by,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
+ await type('terminal:a','a');await type('terminal:b','b');
+ await host.handle({id:1,method:'host.browser.retire_observer',params:{observer:'terminal:a'}});
+ busy=false;
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['b']);
+}));
+
+test('MP-08/MP-10/MP-11 a parked retry retired inside its final input guard dispatches nothing',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=5;let busy=true,reached,release;
+ const inGuard=new Promise(r=>{reached=r}),gate=new Promise(r=>{release=r});
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ const inputGuard=async()=>{reached();await gate};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}},{inputGuard});
+ busy=false;await inGuard;
+ await host.handle({id:1,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:b'}});
+ release();
+ for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
+ assert.deepEqual(sent.filter(x=>x.method==='Input.insertText'),[]);
+}));
+
+test('MP-08/MP-10/MP-11 viewer input parks on the first fence read that times out, not after the last',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=60_000;let timedOut=0;
+ connection.beforeSend=async(method)=>{if(!method.startsWith('Input.')){timedOut++;throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})}};
+ await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.equal(timedOut,1,'every further read would cost another 5 s of the 30 s the viewer waits');
+ assert.equal(host.busyInputs.queues.size,1);
+}));
+
+test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click never stops the browser',()=>using(async({host,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ let stops=0;const stop=host.stop.bind(host);host.stop=async()=>{stops++;return stop()};
+ connection.beforeSend=async(method,params)=>{if(method==='Input.dispatchMouseEvent'&&params.type==='mousePressed')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_cdp_timeout'&&error.afterDispatch===true);
+ assert.equal(stops,0,'the press and its release were both sent in order: nothing is stuck, and the page is only busy');
+ assert.ok(sent.some(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseReleased'),'the release was queued with the press');
+ connection.beforeSend=null;
+ assert.ok((await host.request({op:'state'})).tabs.length,'the browser is still there');
+}));
+
+// r55: Chrome's band input has its own busy lane; page input and unbound input share the page lane.
+test('MP-08/MP-10/MP-11 inputLane separates Chrome band input from page input', () => using(async ({ host }) => {
+  host.displays.set('band', { binding_id: 'b1', regionTarget: { kind: 'browser_chrome' } });
+  host.displays.set('popup', { binding_id: 'b2', regionTarget: { kind: 'browser_auxiliary' } });
+  host.displays.set('page', { binding_id: 'b3', regionTarget: { kind: 'visible_page' } });
+  assert.deepEqual(['b1', 'b2', 'b3', 'unknown', undefined].map(binding_id => host.inputLane({ op: 'input', binding_id })), ['band', 'band', 'page', 'page', 'page']);
+  host.displays.clear();
+}));
+
+// r55: a person's first wheel on a busy page waited 5 s for the popup-evidence observer's renderer round trips (a wheel
+// opens no window) and held the input lane; now it installs no observer.
+test('MP-08/MP-10/MP-11 a scroll installs no popup-evidence observer in the page, a click does', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  const input = (kind, extra) => host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, _action_id: `action-${kind}`, input: { kind, x: 10, y: 20, ...extra } });
+  sent.length = 0; await input('scroll', { delta_x: 0, delta_y: 120 });
+  assert.equal(sent.some(x => x.method === 'Page.addScriptToEvaluateOnNewDocument'), false, 'no observer for a wheel');
+  sent.length = 0; await input('click');
+  assert.equal(sent.some(x => x.method === 'Page.addScriptToEvaluateOnNewDocument'), true, 'a click keeps its popup evidence');
+}));
+
+// r55: during a navigation preview a person's wheel goes by CDP (the handover flush must follow CDP acks). A busy
+// renderer never acks it: awaiting the ack held the input lane 5-9 s and ended in an error. The dispatch order is
+// CDP's own, so the wheel is sent without awaiting the ack, as for the native path.
+test('MP-08/MP-10/MP-11 a person\'s wheel during a navigation preview does not wait for the renderer\'s ack', () => using(async ({ host, connection }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  host.displays.set('viewer', { tab_id: tab.tab_id, observed_by: 'terminal:a', expires: Date.now() + 60_000, close: async () => {} });
+  host.mirror.streams.set('m', { tab_id: tab.tab_id, scope: 'terminal:a', navigationPreview: true });
+  let released; const neverAcked = new Promise(resolve => { released = resolve; });
+  connection.beforeSend = async method => { if (method === 'Input.dispatchMouseEvent') await neverAcked; };
+  const started = performance.now();
+  try { await Promise.race([
+    host.request({ op: 'input', observed_by: 'terminal:a', _display_input: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'scroll', x: 10, y: 20, delta_x: 0, delta_y: 120 } }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the wheel waited for the renderer ack')), 1500)),
+  ]); assert.ok(performance.now() - started < 1500); }
+  finally { released(); host.displays.clear(); host.mirror.streams.clear(); }
+}));
+
+// r55: the observation after a page-acknowledged input does not hold the person's reply (and with it the whole input
+// lane) while a busy renderer takes its 5 s CDP timeouts; the reply carries the last observed Tab state.
+test('MP-08/MP-10/MP-11 the post-input observation is bounded, the input reply does not wait for a busy page', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  const reconcile = host.browser.reconcile.bind(host.browser);
+  host.browser.reconcile = (...args) => sent.some(x => x.method === 'Input.insertText') ? new Promise(() => {}) : reconcile(...args);
+  const started = performance.now();
+  const reply = await host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'text', text: 'a' } });
+  assert.ok(performance.now() - started < 1500, `the reply waited for the observation: ${Math.round(performance.now() - started)} ms`);
+  assert.ok(Array.isArray(reply.tabs));
+}));

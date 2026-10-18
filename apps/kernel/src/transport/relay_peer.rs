@@ -123,7 +123,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated144 carries the visible-page default crop contract.
 /// MP-08/MP-10/MP-11: allocated 148 carries the local 540 warm omnibox list.
 /// MP-08/MP-10/MP-11: allocated 158 carries the local 550 mirror v2 wire contract.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 158;
+/// Allocated 160 carries the local 552 `parked_input` reply field.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 160;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

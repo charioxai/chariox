@@ -45,8 +45,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
@@ -104,36 +104,46 @@ export class LinuxCapture {
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,readback);
    if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
-   this.phase='attestation';let matched=false;
-   // Chromium may finish a viewport paint after the first shared readback.
-   // Retry only this observation; never admit an approximate pixel binding.
-   for(let attempt=0;attempt<6&&!matched;attempt++){
-    const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
-    await delay(50);
-    // A protection event may have retired the readback meanwhile; its fresh
-    // replacement follows the refreshed fence (bounded wait).
-    let raw=this.latest?.raw;
-    for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
-    if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
-    matched=reference.width===raw.width&&reference.height===raw.height;
-    const nativePixels=raw.pixels;
-    // MP-08/MP-11: the reference is the protected capture; its masked
-    // regions (+2 px for rounding) are excluded. The same trusted regions
-    // mask every native frame before any encoder or client sees it.
-    const masked=attestationMask([...(shot[displayMaskRegions]??[]),statusBand(raw,this.hostScale)],raw.width,raw.height);
-    // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
-    let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
-    for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
-    // A mostly masked viewport cannot attest the surface; stay on CDP.
-    if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
-    if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
-    else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
-   }
-   if(!matched)throw Error('native attestation RGB differed');
+   this.phase='attestation';await this.admitSurface();
    if(documentOwner)documentOwner.assertCurrent();else await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    if(!this.valid())throw Error('native attestation retired');
    this.attested=true;this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
   }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host')+' '+nativeRefusalReason(error,this.helperStage),performance.timeOrigin+performance.now());await this.close();throw error}
+ }
+ // MP-08/MP-11: exact RGB proves this window binding shows the target's surface. A new document of the
+ // same binding (target, window, page rect, metrics, scales, crop) reuses that proof: a parsing renderer
+ // answers no screenshot (WHATWG 15.8 MB), and a screenshot in flight fences every native frame.
+ async admitSurface(){
+  if(this.attestation?.proven()===true){this.timing('native_attestation_reused',performance.timeOrigin+performance.now());return;}
+  await this.attest();this.attestation?.prove();
+ }
+ async attest(){
+  let matched=false;
+  // Chromium may finish a viewport paint after the first shared readback.
+  // Retry only this observation; never admit an approximate pixel binding.
+  for(let attempt=0;attempt<6&&!matched;attempt++){
+   const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
+   await delay(50);
+   // A protection event may have retired the readback meanwhile; its fresh
+   // replacement follows the refreshed fence (bounded wait).
+   let raw=this.latest?.raw;
+   for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
+   if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
+   matched=reference.width===raw.width&&reference.height===raw.height;
+   const nativePixels=raw.pixels;
+   // MP-08/MP-11: the reference is the protected capture; its masked
+   // regions (+2 px for rounding) are excluded. The same trusted regions
+   // mask every native frame before any encoder or client sees it.
+   const masked=attestationMask([...(shot[displayMaskRegions]??[]),statusBand(raw,this.hostScale)],raw.width,raw.height);
+   // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
+   let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
+   for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
+   // A mostly masked viewport cannot attest the surface; stay on CDP.
+   if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
+   if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
+   else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
+  }
+  if(!matched)throw Error('native attestation RGB differed');
  }
  async publish(){
   if(this.publishing)return;this.publishing=true;

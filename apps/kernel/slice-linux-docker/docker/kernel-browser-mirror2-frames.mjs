@@ -65,7 +65,7 @@ export class MirrorFrames {
       try {
         const { backendNodeId } = await world.connection.send('DOM.getFrameOwner', { frameId: frame.id }, world.sessionId);
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.idOfNode.call(this)}`, returnByValue: true }, world.sessionId);
+        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.idOfNode.call(this)}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
         const id = reply.result?.value;
         if (typeof id === 'string' && /^n[1-9][0-9]*$/.test(id)) owners.set(id, frame); else this.failed('owner_id', id);

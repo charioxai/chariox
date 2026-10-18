@@ -318,7 +318,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const attributes = (node, base) => {
       const attrs = {}, html = node.namespaceURI === HTML;
       for (const attribute of node.attributes) {
-        const name = attribute.name, lower = name.toLowerCase(), value = attribute.value;
+        // GATE-bytes: a tooltip shows far less than 1 KB (GitHub rows carry 64 KiB commit-message titles).
+        const name = attribute.name, lower = name.toLowerCase(), value = lower === 'title' ? attribute.value.slice(0, 1024) : attribute.value;
         if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || value.length > 65536) continue;
         if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
         // MP-08/MP-11: SVG geometry is rendered content, not arbitrary metadata.

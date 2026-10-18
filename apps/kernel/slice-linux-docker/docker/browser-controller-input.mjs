@@ -1,6 +1,8 @@
 // MP-08/MP-10: hidden RenderWidgets cannot acknowledge CDP mouse input until
 // Chromium produces visual state. A target-local capture keeps that renderer
 // active for physical input without Page.bringToFront or OS-window activation.
+const WAKE_VISIBILITY_MS = 2000;
+
 export class BrowserInputCapture {
   constructor() { this.visibilityBySession = new Map(); this.displayLeases = new Map(); this.operations = new Map(); }
 
@@ -38,13 +40,21 @@ export class BrowserInputCapture {
     });
   }
 
-  async visibility(connection, sessionId) {
+  // A display hold (`wake`) that gets no answer from a busy renderer assumes the page hidden: the wake-up is then
+  // acquired, which is always safe, instead of failing the viewer's attach on a page that is still parsing.
+  async visibility(connection, sessionId, wake = false) {
     if (this.visibilityBySession.has(sessionId)) return this.visibilityBySession.get(sessionId).visible;
-    const result = await connection.send("Runtime.evaluate", {
-      expression: "document.visibilityState === 'visible'",
-      returnByValue: true,
-      awaitPromise: false,
-    }, sessionId);
+    let result;
+    try {
+      result = await connection.send("Runtime.evaluate", {
+        expression: "document.visibilityState === 'visible'",
+        returnByValue: true,
+        awaitPromise: false,
+      }, sessionId, wake ? { timeoutMs: WAKE_VISIBILITY_MS } : undefined);
+    } catch (error) {
+      if (!wake || error?.code !== 'browser_cdp_timeout') throw error;
+      return false;
+    }
     // Reconciliation may have begun its evaluation just before input enabled
     // emulation. Preserve the physical visibility captured by that input.
     return this.visibilityBySession.get(sessionId)?.visible ?? result?.result?.value === true;
@@ -88,7 +98,7 @@ export class BrowserInputCapture {
     finally{if(!--lease.active)for(const wake of lease.waiters.splice(0))wake()}
   }
   async runTransient(connection, sessionId, operation, keepAlive = false) {
-    const visible = await this.visibility(connection, sessionId);
+    const visible = await this.visibility(connection, sessionId, keepAlive);
     // A display can outlive physical foreground visibility. Acquire its
     // renderer wake-up at hold time, before any later background transition.
     if (visible && !keepAlive) return operation();

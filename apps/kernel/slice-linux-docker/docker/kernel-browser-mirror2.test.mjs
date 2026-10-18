@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -628,6 +628,68 @@ test('MP-11 #1016 review 2: a completed early packet is retired when protection 
  assert(!JSON.stringify(packet).includes('old secret'),'no pre-update form data reaches the viewer');
 });
 
+test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit replies and resend history', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=(command_id,after,extra={})=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0,...extra},'scope');
+ const first=await credit('c1',0);assert(JSON.stringify(first).includes('old secret'),'the field is plain under the first policy');
+ const second=await credit('c2',first.sequence);
+ assert.equal(await credit('c1',0),first,'before a change a lost reply is replayed');
+ host.protection={targets:[],values:['old secret']};field='[protected]';mirror.invalidate(stream);
+ const count=snapshots,resent=await credit('r1',first.sequence,{resend:true});
+ assert.notEqual(resent,second,'resend history from the old policy is not returned');
+ assert.equal(resent.reset,true);assert.equal(snapshots,count+1,'recovery is a fresh protected reset');
+ assert(!JSON.stringify(resent).includes('old secret'));
+ const replayed=await credit('c1',0);
+ assert.notEqual(replayed,first,'a completed reply cached under the old policy is not replayed');
+ assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
+});
+
+test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=(command_id,after,extra={})=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0,...extra},'scope');
+ const encode=mirror.encode.bind(mirror);let resume,paused;const encoding=new Promise(r=>paused=r);
+ mirror.encode=async(...args)=>{paused();await new Promise(r=>resume=r);return encode(...args)};
+ const pending=credit('c1',0);await encoding;
+ host.protection={targets:[],values:['old secret']};field='[protected]';mirror.invalidate(stream);
+ resume();const outcome=await pending.then(packet=>packet,error=>error);mirror.encode=encode;
+ assert(outcome instanceof Error&&/stale mirror protection/.test(outcome.message),'the pre-protection packet is refused');
+ assert(!JSON.stringify([...(stream.history?.values()??[])]).includes('old secret'),'it is not remembered for resends');
+ const replayed=await credit('c1',0);assert(!JSON.stringify(replayed).includes('old secret'),'a replay of its credit carries no pre-protection value');
+ const resent=await credit('r1',1,{resend:true}).catch(error=>error);assert(!JSON.stringify(resent).includes('old secret'),'nor does a resend');
+});
+
+test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight do not reset again', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,resetAt:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=after=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms:0},'scope');
+ const first=await credit(0);await credit(first.sequence);
+ stream.resetAt=stream.issued+1;const reset=await credit(2);assert.equal(reset.reset,true);
+ // The large reset is still crossing the link: the viewer's credits keep naming the base before it.
+ for(let i=0;i<12;i++)assert.notEqual((await credit(reset.sequence-1)).reset,true,`credit ${i} rebuilt the page while its reset was in flight`);
+ assert.equal(snapshots,2,'no reset storm');
+ assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
+});
+
 test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view) hands the page to video on the next quiet packet', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
@@ -655,4 +717,135 @@ test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view)
  assert.equal(handoff.fallback,'region_area','a media-dominated view hands off to protected video');
  assert.equal(handoff.reset,true);assert.equal(handoff.document_id,'D1');
  assert(!handoff.nodes&&!handoff.root&&!handoff.tiles,'the handoff carries no partial DOM or stills');
+});
+
+test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',previewWaitedDocument:'new',issued:6,document_id:'old',resetAt:7};
+ const host={generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let busy=true;
+ mirror.world=async()=>{if(busy)throw Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});throw Error('observer reached')};
+ const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');
+ assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'new');assert.equal(packet.reset,true);assert.equal(packet.sequence,7);
+ const again=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:7},'scope');
+ assert.equal(again.sequence,8,'each busy round is one more waiting reset on the same subscription');
+ busy=false;
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:8},'scope'),/observer reached/);
+});
+
+test('MP-08/MP-10/MP-11 a busy renderer without a native preview still surfaces its timeout',async()=>{
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',issued:6,document_id:'old',resetAt:7};
+ const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
+ mirror.world=async()=>{throw Object.assign(Error('timed out'),{code:'browser_cdp_timeout'})};
+ await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),error=>error.code==='browser_cdp_timeout');
+});
+
+function busyFixture(extra = {}) {
+ const policy = { targets: [], values: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+ const connection = { isOpen: () => true, send: async () => ({}) };
+ const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+ const stream = { id: 's', wire: 2, chain: Promise.resolve(), tab_id: 't', world, issued: 0, document_id: null, policy: null, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', ...extra };
+ const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab, mirrorTarget: async () => tab, browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+ const mirror = new Mirror2({ host, require: () => stream, streams: new Map([['s', stream]]) });
+ mirror.frames = { attach: async () => ({ records: [], ops: [], opaque: [] }), drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source, opaqueBoxes: async () => [] };
+ mirror.materialize = async () => []; mirror.sheetOps = async () => []; mirror.tiles = async () => []; mirror.markClosedHosts = async () => {};
+ return { mirror, stream, world };
+}
+const SNAPSHOT = { root: 'n1', nodes: [{ id: 'n1', parent: null, kind: 'element', tag: 'main' }], sheets: [], resources: [], scroll: [0, 0], focused: null, selection: null, fragment: null, snapshot_complete: false };
+
+test('MP-08/MP-10/MP-11 a snapshot the busy page has not answered is awaited by the next credit, never issued twice', async () => {
+ const { mirror, stream } = busyFixture({ navigationPreview: true, previewDocument: 'D1', previewWaitedDocument: 'D1' });
+ mirror.busyMs = 30;
+ let snapshots = 0, answer;
+ mirror.evaluate = async (_, expression) => {
+  if (expression === 'm.snapshot()') { snapshots++; return new Promise(resolve => { answer = () => resolve(SNAPSHOT); }); }
+  return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ };
+ const first = await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope');
+ assert.equal(first.fallback, 'navigation_preview', 'the busy round is a waiting heartbeat');
+ const second = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: first.sequence, wait_ms: 0 }, 'scope');
+ await new Promise(resolve => setTimeout(resolve, 10)); answer();
+ const real = await second;
+ assert.equal(snapshots, 1, 'the abandoned snapshot is the one that answers');
+ assert.equal(real.reset, true); assert(!real.fallback);
+});
+
+test('MP-08/MP-10/MP-11 a delta credit waits a little longer than the default for a busy renderer, inside the viewer\'s own request timeout', async () => {
+ const { mirror, stream, world } = busyFixture({ issued: 1, document_id: 'D1', policy: {}, resetAt: 1 });
+ stream.policy = mirror.host.protection;
+ let patient;
+ mirror.evaluate = async (w, expression) => { if (expression.includes('drain')) patient = w.patience?.(); return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, pressed: 0 }; };
+ await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 0 }, 'scope');
+ assert(patient > 5000 && patient <= 6500, `a delta credit waits past the 5 s default and answers inside the viewer's 8 s: ${patient}`);
+});
+
+test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, any other read keeps the short timeout',async()=>{
+ const sent=[],world={contextId:1,sessionId:'S',connection:{send:async(method,params,session,options)=>{sent.push(options?.timeoutMs);return{result:{value:1}}}}};
+ const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{}},require:()=>({}),streams:new Map()});
+ await mirror.evaluate(world,'1');
+ world.patience=()=>17_000;
+ await mirror.evaluate(world,'1');
+ await mirror.evaluate(world,'1',false,3000);
+ assert.deepEqual(sent,[undefined,17_000,3000]);
+});
+
+test('MP-08/MP-10 a busy page answers a reset credit before the kernel gives up on the controller request (RED 4: local_transport_error)',()=>{
+ assert.ok(BUSY_RENDERER_MS+5000<=KERNEL_CONTROLLER_DEADLINE_MS,'patience plus the floors of later calls and queue wait stays inside the controller deadline');
+});
+
+// r55 (RED 4): a credit is bounded as a whole. Calls that make their own default 5 s waits (resources, frames, sheets)
+// could stack inside one credit past the controller's 20 s and hold every later credit of the subscription behind them.
+test('MP-08/MP-10/MP-11 one overall deadline per credit: a call that never answers ends the credit as a busy renderer, and the abandoned build issues nothing', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ let release; const hang = new Promise(resolve => { release = resolve; });
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ mirror.sheetOps = () => hang.then(() => []);
+ const unhandled = []; const note = reason => unhandled.push(reason); process.on('unhandledRejection', note);
+ try {
+  const started = performance.now();
+  await assert.rejects(mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry), error => error.code === 'browser_cdp_timeout');
+  assert.ok(performance.now() - started < 500, 'the credit ends at its deadline');
+  assert.equal(stream.resetAt, stream.issued + 1, 'the next credit rebuilds');
+  release(); await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(stream.issued, 0, 'the abandoned build never issues a packet');
+  assert.deepEqual(unhandled, []);
+ } finally { process.off('unhandledRejection', note); }
+});
+
+// #1016 @d46740fe4 P2: an expired credit's build may still hold a renderer call that, once answered, commits to the shared
+// stream (a resource's sent offset, frame and sheet state). The next credit builds only after it has stopped.
+test('MP-08/MP-10/MP-11 the credit after an expired one builds only once the abandoned build has settled', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ let release; const hang = new Promise(resolve => { release = resolve; });
+ const events = []; let first = true;
+ mirror.evaluate = async (_, expression) => { if (expression === 'm.snapshot()') events.push('snapshot'); return expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] }; };
+ mirror.sheetOps = () => first ? (first = false, hang.then(() => (events.push('abandoned settled'), []))) : Promise.resolve([]);
+ const credit = () => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope').catch(error => error);
+ assert.equal((await credit()).code, 'browser_cdp_timeout'); events.length = 0;
+ const next = credit();
+ await new Promise(resolve => setTimeout(resolve, 15));
+ assert.deepEqual(events, [], 'the next credit does not build while the abandoned build is live');
+ release(); await next;
+ assert.ok(events.indexOf('abandoned settled') >= 0 && events.indexOf('abandoned settled') < (events.indexOf('snapshot') < 0 ? Infinity : events.indexOf('snapshot')), 'abandoned build settled first');
+});
+
+test('MP-08/MP-10/MP-11 a credit that answers in time is not touched by the deadline', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry);
+ assert.equal(packet.reset, true);
+});
+
+test('MP-08/MP-10/MP-11 a credit queued behind a stuck one spends its own deadline from its arrival, not from its turn', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 100; mirror.creditSlackMs = 50;
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ mirror.sheetOps = () => new Promise(() => {});
+ const credit = () => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope').catch(error => error);
+ const started = performance.now();
+ const [first, second] = await Promise.all([credit(), credit()]);
+ assert.equal(first.code, 'browser_cdp_timeout'); assert.equal(second.code, 'browser_cdp_timeout');
+ assert.ok(performance.now() - started < 250, `the queued credit ends with the first one's deadline, not a full deadline later: ${Math.round(performance.now() - started)} ms`);
 });

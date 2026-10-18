@@ -7,6 +7,8 @@ export class NativeTabState {
   this.off=null;
  }
  invalidate(){this.epoch++;this.active=null;this.viewport=null;}
+ // A frame resize changes geometry, never which Tab is active (the extension raises the window binding for that).
+ invalidateGeometry(){this.epoch++;this.viewport=null;}
  detach(){this.invalidate();this.session=null;this.ready=false;this.onDetached?.();}
  async attach(session){
   if(this.closed)throw Error('MP-11: native state observer closed');
@@ -19,7 +21,7 @@ export class NativeTabState {
   this.ready=true;
  }
  onCdp(message){
-  if(message?.method==='Page.frameResized'){this.invalidate();return;}
+  if(message?.method==='Page.frameResized'){this.invalidateGeometry();return;}
   if(message?.method==='Chariox.browserDisconnected'){this.detach();return;}
   if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.detach();return;}
   if(message?.sessionId!==this.session||!this.session)return;
