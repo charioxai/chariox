@@ -2,10 +2,10 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {DisplayDocuments,resolveDisplayTarget} from './kernel-browser-display-document.mjs';
 function fixture(){
- const observers=new Set(),calls=[];let document='a',blocked;const marks=[];
+ const observers=new Set(),calls=[];let document='a',blocked;
  const connection={subscribe:fn=>(observers.add(fn),()=>observers.delete(fn)),isOpen:()=>true,send:async method=>{calls.push(method);await blocked;return {frameTree:{frame:{id:'root',loaderId:document}}}}};
- const browser={resolvePageTarget:async()=>({connection,sessionId:'s'})},cache=new DisplayDocuments((stage,started,ended)=>marks.push([stage,started,ended])),stored={target_id:'t',document_id:'a'};
- return {marks,cache,connection,calls,observers,browser,stored,event:(method,params={})=>{for(const fn of observers)fn({method,params,sessionId:'s'})},navigate:d=>document=d,block:p=>blocked=p};
+ const browser={resolvePageTarget:async()=>({connection,sessionId:'s'})},cache=new DisplayDocuments(),stored={target_id:'t',document_id:'a'};
+ return {cache,connection,calls,observers,browser,stored,event:(method,params={})=>{for(const fn of observers)fn({method,params,sessionId:'s'})},navigate:d=>document=d,block:p=>blocked=p};
 }
 test('MP-10 admitted native document and steady validation make zero CDP calls',async()=>{
  const f=fixture(),tab=await f.cache.target(f.browser,f.stored);f.calls.length=0;
@@ -124,10 +124,4 @@ for(const retirement of ['loader','session','connection'])test(`MP-08/MP-10/MP-1
  const host={generation:1,tabs:new Map([['t',stored]]),browser,save:async()=>saved.push(true)};
  await assert.rejects(resolveDisplayTarget(host,{tab_id:'t',generation:1}),error=>error.code==='user_domain_stale_reference');
  assert.equal(stored.document_id,'old');assert.deepEqual(saved,[]);
-});
-test('MP-08/MP-10 the kernel marks the commit and the load event of a navigation',async()=>{
- const f=fixture();await f.cache.target(f.browser,f.stored);
- f.event('Page.frameNavigated',{frame:{id:'root',loaderId:'b'}});f.event('Page.loadEventFired');
- assert.deepEqual(f.marks.map(([stage])=>stage),['page_commit','page_load']);
- const [[,committed,sameAt],[,from,loadedAt]]=f.marks;assert.equal(committed,sameAt);assert.equal(from,committed);assert(loadedAt>=from);f.cache.clear();
 });

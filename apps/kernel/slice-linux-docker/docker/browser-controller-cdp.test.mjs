@@ -1744,3 +1744,17 @@ test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with t
  browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId}});
  assert.equal(browser.currentPageFrame('target-a'),null);await browser.close();
 });
+
+test('MP-08/MP-10 the controller marks the commit and the load event of a top-level navigation for the kernel timing', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection}),marks=[];
+ browser.pageTiming=(stage,started,ended)=>marks.push([stage,started,ended]);
+ await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'child',parentId:'frame-a',loaderId:'c'}}});
+ browser.recordConnectionEvent({method:'Page.loadEventFired',sessionId});
+ assert.deepEqual(marks,[],'a subframe, or a load without a committed document, marks nothing');
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-a'}}});
+ browser.recordConnectionEvent({method:'Page.loadEventFired',sessionId});
+ assert.deepEqual(marks.map(([stage])=>stage),['page_commit','page_load']);
+ const [[,committed,sameAt],[,from,loadedAt]]=marks;assert.equal(committed,sameAt);assert.equal(from,committed);assert(loadedAt>=from);
+ await browser.close();
+});

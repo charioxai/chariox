@@ -113,7 +113,7 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
-    this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
+    this.displayDocuments = new DisplayDocuments();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -199,6 +199,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    this.browser.pageTiming = this.timing;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;

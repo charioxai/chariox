@@ -1222,9 +1222,15 @@ export class BrowserCdpClient {
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
-        this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt: performance.timeOrigin + performance.now() });
+        const navigatedAt = performance.timeOrigin + performance.now();
+        this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt });
+        this.pageTiming?.("page_commit", navigatedAt, navigatedAt);
         for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
+    }
+    if (message?.method === "Page.loadEventFired") {
+      const committed = this.pageFramesByTarget.get(this.targetsBySession.get(message.sessionId))?.navigatedAt;
+      if (committed) this.pageTiming?.("page_load", committed, performance.timeOrigin + performance.now());
     }
     recordFocusWorld(this,message);
     if (message?.method === "Browser.downloadWillBegin") {
