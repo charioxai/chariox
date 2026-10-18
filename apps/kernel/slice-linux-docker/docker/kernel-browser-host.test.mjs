@@ -1839,3 +1839,16 @@ for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'
  await host.request(input);assert.equal(activations,1,'already selected native tab requires no activation');
  const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
 }));
+
+// MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
+test('pending human selection preserves every verified App restore barrier', () => using(async ({host},root) => {
+ const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});
+ const docs=await host.request({op:'open',url:'https://app.documents.invalid/'});
+ host.browser.appTabs={apps:new Map([['todo',{targetId:host.tabs.get(todo.tab_id).target_id,origin:'https://app.todo.invalid',ready:true}],['docs',{targetId:host.tabs.get(docs.tab_id).target_id,origin:'https://app.documents.invalid',ready:false}]])};
+ host.pendingActive={tab_id:todo.tab_id,app_origin:'https://app.todo.invalid',apps:[],until:Date.now()};
+ await host.save();let saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+ assert.deepEqual(new Set(saved.app_origins),new Set(['https://app.todo.invalid','https://app.documents.invalid']));
+ host.pendingActive.apps=['https://app.todo.invalid','https://app.pending.invalid'];await host.save();saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+ assert.deepEqual(new Set(saved.app_origins),new Set(['https://app.todo.invalid','https://app.documents.invalid','https://app.pending.invalid']));
+ assert.equal(saved.active_app_origin,'https://app.todo.invalid');
+}));

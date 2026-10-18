@@ -137,7 +137,10 @@ export class KernelBrowserHost {
     const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // App intent remains kernel-owned; only its origin selects the restored view.
-    data.app_origins = this.pendingActive?.apps ?? [...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean);
+    data.app_origins = [...new Set([
+      ...[...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean),
+      ...(this.pendingActive?.apps ?? []),
+    ])].slice(0, TAB_LIMIT);
     data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
     data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
     const serialized = JSON.stringify(data);
