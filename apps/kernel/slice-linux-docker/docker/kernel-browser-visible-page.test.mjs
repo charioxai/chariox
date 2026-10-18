@@ -330,5 +330,6 @@ test('MP-11 an attestation refusal serves the page from the CDP display, any oth
  const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033','chariox-video-dependencies-v1','chariox-relay-binary-v96'],bitrate:8_000_000,device_scale_factor:2};
  const png=pngFallbackCommand(Error('native attestation RGB differed'),command);
  assert.deepEqual(png.codecs,['png','chariox-video-dependencies-v1','chariox-relay-binary-v96']);assert.equal(png.tab_id,'t');
+ assert.deepEqual(pngFallbackCommand(Error('MD-DISPLAY: native readback unavailable'),command).codecs,png.codecs,'a readback that never starts degrades too');
  for(const message of ['MP-11: visible page binding retired','native attestation retired','Capture protection unavailable','stale_document_reference'])assert.equal(pngFallbackCommand(Error(message),command),null,message);
 });
