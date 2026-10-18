@@ -83,7 +83,7 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(|_| error())?;
-        let result=self.room_producer_request(session_id,serde_json::json!({"op":"display_subscribe","lease_id":lease_id,"observed_by":lease_id,"codecs":offer.codecs,"bitrate":offer.bitrate,"device_scale_factor":offer.device_scale_factor,"viewport":viewport,"target":target})).await?;
+        let result=self.room_producer_request(session_id,serde_json::json!({"op":"display_subscribe","lease_id":lease_id,"observed_by":lease_id,"audience":"owner","codecs":offer.codecs,"bitrate":offer.bitrate,"device_scale_factor":offer.device_scale_factor,"viewport":viewport,"target":target})).await?;
         let binding: RoomDisplayBinding = serde_json::from_value(result).map_err(|_| error())?;
         if binding.subscription_id != lease_id
             || binding.source.kind != "desktop"
