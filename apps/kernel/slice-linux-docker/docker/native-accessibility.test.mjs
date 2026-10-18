@@ -49,7 +49,7 @@ test('MP-11 password nodes and policy values never enter target names',async()=>
  const result=await native.snapshot('agent:a',{values:['private-canary']});assert(!JSON.stringify(result).includes('private-canary'));assert.equal(result.nodes[0].name,'[protected]');assert.deepEqual(result.nodes[0].actions,[]);
 });
 
-test('MP-11 target protection invalidates cached snapshots and direct old handles on an unchanged tree', async () => {
+test('MP-11 target protection invalidates old handles without hiding public app controls', async () => {
   let actions = 0;
   const native = new NativeAccessibility({ binding: () => binding, execute: async request => {
     if (request.op === 'accessibility_action') { actions++; return { applied: true }; }
@@ -62,9 +62,11 @@ test('MP-11 target protection invalidates cached snapshots and direct old handle
   }, policy));
   const after = await native.snapshot('agent:a', policy);
   assert.notEqual(after.tree_revision, before.tree_revision);
-  assert.equal(after.nodes[0].name, '[protected]');
-  assert.deepEqual(after.nodes[0].actions, []);
+  assert.equal(after.nodes[0].name, 'Public');
+  assert.deepEqual(after.nodes[0].actions, ['click']);
   assert.equal(actions, 0);
+  assert.equal((await native.action('agent:a',{target_id:after.nodes[0].target_id,tree_revision:after.tree_revision,action:'click'},policy)).applied,true);
+  assert.equal(actions,1);
 });
 
 test('MP-08 stale handles expose the existing typed refusal instead of a generic backend failure', async () => {
@@ -142,4 +144,16 @@ test('MP-08 / MP-11 host and Room scaled snapshot centers reach the physical poi
   await computer.request({op:'input',surface_id:scoped.surface_id,generation:scoped.generation,input:{kind:'click',x:x+w/2,y:y+h/2}},policy);
   assert.deepEqual(clicked,{kind:'click',x:220,y:110});
  }
+});
+
+test('MP-08/MP-11 public native login controls stay usable after a Vault fill',async()=>{
+ const nodes=[{pid:20,started:'10',path:[0],role:'frame',name:'Cuvault Native Login',actions:[],states:['showing']},{pid:20,started:'10',path:[0,1],role:'push button',name:'Sign in',actions:['click'],states:['showing']},{pid:20,started:'10',path:[0,2],role:'password text',name:'synthetic-private-value',protected:true,actions:[],states:['showing','editable']}];
+ const binding={surface_id:'s',generation:'g',environment:{},ownedProcesses:async()=>[{pid:20,started:'10'}]};
+ const policy={unknown:false,values:['synthetic-private-value'],targets:[{kind:'native',target:{active_window:41}}]};
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>request.op==='accessibility_action'?{applied:true}:{available:true,complete:true,nodes}});
+ const seen=await native.snapshot('agent:a',policy);
+ assert(seen.nodes.some(n=>n.role==='frame'&&n.name==='Cuvault Native Login'));
+ const button=seen.nodes.find(n=>n.name==='Sign in');assert(button?.actions.includes('click'));
+ assert(!JSON.stringify(seen).includes(policy.values[0]));
+ assert.equal((await native.action('agent:a',{target_id:button.target_id,tree_revision:seen.tree_revision,action:'click'},policy)).applied,true);
 });

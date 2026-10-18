@@ -196,6 +196,16 @@ class TraversalTest(unittest.TestCase):
         self.desktop=Node('Desktop','desktop',[owned])
         with self.assertRaises(self.driver.NativeInputDenied):self.driver.input_target([{'pid':200,'started':'1'}])
 
+    def test_mp11_registered_native_fill_stays_private_when_its_field_is_plain(self):
+        field=Node('private-field-value','text');field.path='/field'
+        app=Node('Login','application',[Node('Login','frame',[field,Node('Sign in','push button')])])
+        with patch.object(self.driver._fills,'read',return_value=[{'pid':200,'started':'1','path':'/field'}]):
+            tree=self.snapshot([app])
+        secret=next(node for node in tree['nodes'] if node['role']=='text')
+        self.assertTrue(secret['protected']);self.assertEqual(secret['name'],'[protected]')
+        self.assertTrue(any(node['name']=='Sign in' and not node['protected'] for node in tree['nodes']))
+        self.assertTrue(any(node['role']=='frame' and node['name']=='Login' for node in tree['nodes']))
+
     def test_mp08_mp11_registered_values_do_not_scan_native_text(self):
         self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [Node('Writer', 'frame', [Label('v-secret'), Label('ordinary')])])])
         tree = self.driver.snapshot([{'pid': 200, 'started': '1'}], values=['v-secret'])

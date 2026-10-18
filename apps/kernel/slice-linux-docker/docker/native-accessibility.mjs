@@ -41,7 +41,7 @@ export class NativeAccessibility {
     for(const node of candidates){
       if(nodes.length>=64)break;
       const target_id=`atspi-${randomUUID()}`;
-      const protectedNode=Boolean(node.protected || node.role==='password text' || policy?.targets?.length);
+      const protectedNode=Boolean(node.protected || node.role==='password text');
       const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.desktop_bounds??node.bounds,actions:protectedNode?[]:node.actions??[]};
       const size=Buffer.byteLength(JSON.stringify(projected))+1;
       // MP-08: MCP duplicates and pretty-prints this payload; history caps at12KiB.
@@ -57,7 +57,7 @@ export class NativeAccessibility {
   async action(observer,command,policy,{signal}={}){
     const observed=this.observers.get(observer),target=observed?.handles.get(command.target_id);
     if(!target || observed.revision!==command.tree_revision)throw new UserDomainRefusal('stale_reference');
-    if(target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
+    if(target.protected || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
     if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.
@@ -65,7 +65,7 @@ export class NativeAccessibility {
     const browser_processes=await binding.browserProcesses?.();
     // MP-11: the helper gates agent doAction (which may Paste) on the clipboard owner.
     const agent=Boolean(command._agent_input || observer.startsWith('agent:'));
-    const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
+    const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true,values:policy?.values??[]}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return result;
   }

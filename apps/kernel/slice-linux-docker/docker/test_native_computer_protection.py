@@ -220,7 +220,7 @@ class WarmChannelTests(unittest.TestCase):
 
     def test_mp11_warm_channel_carries_only_human_input(self):
         events=[]
-        with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None:events.append((action['kind'],processes))):
+        with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None,values=():events.append((action['kind'],processes))):
             held=set()
             for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
                             {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},

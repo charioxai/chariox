@@ -163,6 +163,11 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
     return {'available': True, 'complete': True, 'protected': False, 'masks': masks, 'nodes': []}
 
 
+def sensitive_processes():
+    # MP-08/MP-11: a copied value stays private after its original widget closes.
+    return {(int(item['pid']),str(item['started'])) for item in _fills.read()}
+
+
 def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
@@ -181,13 +186,15 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
     # MP-11: `complete` also requires every window attributed (capture masking);
     # `traversed` only that the owned AT-SPI trees were walked without truncation.
     nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[]
-    try: desktop=pyatspi.Registry.getDesktop(0)
+    try:
+        filled={(int(item['pid']),str(item['started']),str(item['path'])) for item in _fills.read()}
+        desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
         nonlocal complete,traversed,protected
         if depth>MAX_DEPTH or len(nodes)>=MAX_NODES:complete=traversed=False;return
         role=node.getRoleName()
-        secret=node.getRole()==pyatspi.ROLE_PASSWORD_TEXT
+        secret=node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or (pid,str(started),str(getattr(node,'path',''))) in filled
         protected=protected or secret
         state=node.getState()
         states=[label for flag,label in [(pyatspi.STATE_SHOWING,'showing'),(pyatspi.STATE_ENABLED,'enabled'),(pyatspi.STATE_FOCUSED,'focused'),(pyatspi.STATE_EDITABLE,'editable')] if state.contains(flag)]
@@ -423,7 +430,7 @@ def act(request):
         import importlib.util
         spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
         clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
-        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied)
-        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'))()
+        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied,sensitive_processes=sensitive_processes)
+        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'),request.get('values',()))()
     if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}

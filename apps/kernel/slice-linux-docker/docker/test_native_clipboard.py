@@ -18,6 +18,22 @@ class ClipboardTests(unittest.TestCase):
             res_query_client_ids=Mock(return_value=SimpleNamespace(ids=[SimpleNamespace(spec=SimpleNamespace(mask=2),value=[77])])))
         return process,tree,access,owner,connection
 
+    def test_mp11_known_vault_clipboard_bytes_cannot_be_forwarded_by_a_public_source(self):
+        replies=[SimpleNamespace(stdout=b'123',returncode=0),SimpleNamespace(stdout=b'prefix private-value suffix',returncode=0)]
+        with patch.object(m.subprocess,'run',side_effect=replies):
+            with self.assertRaisesRegex(ValueError,'protected'):
+                m.selection_fingerprint(('private-value',))
+
+    def test_mp11_destroying_a_filled_field_does_not_make_its_app_a_public_clipboard_source(self):
+        p,t,a,o,c=self.setup();a.sensitive_processes=lambda:{(77,'1')}
+        self.assertIsNone(m.clipboard_source(c,[p],t,a))
+
+    def test_mp11_private_primary_selection_is_fenced_with_known_vault_values(self):
+        p,t,a,o,c=self.setup();t['nodes'][0]['protected']=True
+        c.get_selection_owner.side_effect=lambda selection:None if selection=='CLIPBOARD' else o
+        with patch('Xlib.display.Display',return_value=c):
+            with self.assertRaises(ValueError):m.input_admission([p],a,values=('private-value',))()
+
     def test_unknown_selection_owner_never_reads_clipboard_contents(self):
         p,t,a,o,c=self.setup();o.get_full_property.return_value=None;c.res_query_client_ids.return_value=SimpleNamespace(ids=[])
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:

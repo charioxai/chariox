@@ -50,7 +50,7 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action, processes=None, connection=None):
+def input_action(action, processes=None, connection=None, values=()):
     kind = action['kind']
     guard=None
     key_guard=load('native-input-destination').key_destinations if processes is not None else None
@@ -61,7 +61,7 @@ def input_action(action, processes=None, connection=None):
         # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
         clipboard=load('native-clipboard')
-        admit_clipboard=clipboard.input_admission(processes,accessibility)
+        admit_clipboard=clipboard.input_admission(processes,accessibility,None,values)
         admit_focus=accessibility.input_guard(processes) if kind!='click' else lambda:None
         def guard():
             admit_focus()
@@ -158,7 +158,7 @@ def main(request, connection=None):
         finally: connection.close()
     if op == 'input':
         started=time.time_ns()/1000000
-        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
+        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection,request.get('values',()))
         result={'applied':True}
         if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':
             result['_timing']={'started_ms':started,'ended_ms':time.time_ns()/1000000}

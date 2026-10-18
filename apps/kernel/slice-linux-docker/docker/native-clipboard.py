@@ -26,15 +26,15 @@ def owner_pid(connection, owner):
     except Exception:return None
 
 
-def owner_identity(connection):
-    owner=connection.get_selection_owner(connection.intern_atom('CLIPBOARD'))
+def owner_identity(connection, selection='CLIPBOARD'):
+    owner=connection.get_selection_owner(connection.intern_atom(selection))
     return (owner.id,owner_pid(connection,owner)) if owner else None
 
 
-def clipboard_source(connection, processes, tree, accessibility):
+def clipboard_source(connection, processes, tree, accessibility, selection='CLIPBOARD'):
     # X selections have no provenance by default. Only a live owned native app
     # whose accessibility nodes are all public may supply an agent clipboard.
-    identity=owner_identity(connection)
+    identity=owner_identity(connection,selection)
     if identity is None or identity[1] is None:return None
     # MP-11 #904 review 1: retained public nodes of a truncated walk can hide
     # a protected subtree of the owner; only a complete traversal proves it.
@@ -43,6 +43,8 @@ def clipboard_source(connection, processes, tree, accessibility):
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]
     if not process or not accessibility.alive(process) or not nodes or any(n.get('protected') for n in nodes):return None
+    sensitive=getattr(accessibility,'sensitive_processes',None)
+    if sensitive and (pid,str(process['started'])) in sensitive():return None
     return (identity[0],pid,process['started'])
 
 
@@ -73,19 +75,21 @@ def public_clipboard(processes, accessibility, mask=False, browser_processes=Non
         if connection is not None:connection.close()
 
 
-def selection_fingerprint():
+def selection_fingerprint(values=(), selection='clipboard'):
     """MP-11: fence clipboard replacement, also by the same owner window.
 
     The ICCCM TIMESTAMP changes whenever an owner re-acquires the selection;
     the text digest covers an owner that serves new bytes without doing so.
     Bytes stay inside this helper; only a digest is compared.
     """
-    stamp=subprocess.run(['xclip','-selection','clipboard','-t','TIMESTAMP','-o'],check=True,capture_output=True,timeout=2).stdout
-    text=subprocess.run(['xclip','-selection','clipboard','-o'],capture_output=True,timeout=2)
+    stamp=subprocess.run(['xclip','-selection',selection,'-t','TIMESTAMP','-o'],check=True,capture_output=True,timeout=2).stdout
+    text=subprocess.run(['xclip','-selection',selection,'-o'],capture_output=True,timeout=2)
+    if values and (text.returncode!=0 or any(value.encode() in text.stdout for value in values if value)):
+        raise ValueError('protected clipboard contents')
     return hashlib.sha256(stamp+b'\0'+(text.stdout if text.returncode==0 else b'\1')).hexdigest()
 
 
-def input_admission(processes, accessibility, browser_processes=None):
+def input_admission(processes, accessibility, browser_processes=None, values=()):
     """MP-11: any agent key, text, click or action may reach a Paste control.
 
     Admit an empty CLIPBOARD or one owned by a proved, completely traversed,
@@ -98,11 +102,18 @@ def input_admission(processes, accessibility, browser_processes=None):
         try:
             connection=_x11_module.open_display(display_module())
             try:
-                identity=owner_identity(connection)
-                if identity is None:return None
-                source=clipboard_source(connection,processes,accessibility.snapshot(processes,browser_processes),accessibility)
-                if source is None or source[:2]!=identity:raise accessibility.NativeInputDenied('native clipboard source protected or unknown')
-                return (identity,selection_fingerprint())
+                selections=[]
+                # MP-11: Shift+Insert and native Paste actions may use PRIMARY.
+                # A registered value cannot escape through that second selection.
+                for selection in ('CLIPBOARD','PRIMARY') if values else ('CLIPBOARD',):
+                    identity=owner_identity(connection,selection)
+                    if identity is None:
+                        selections.append(None);continue
+                    source=clipboard_source(connection,processes,accessibility.snapshot(processes,browser_processes),accessibility,selection)
+                    if source is None or source[:2]!=identity:raise accessibility.NativeInputDenied('native clipboard source protected or unknown')
+                    fingerprint=selection_fingerprint(values,selection.lower()) if values else selection_fingerprint()
+                    selections.append((identity,fingerprint))
+                return tuple(selections) if values else selections[0]
             finally:connection.close()
         except accessibility.NativeInputDenied:raise
         except Exception as error:raise accessibility.NativeInputDenied('native clipboard protection unavailable') from error
