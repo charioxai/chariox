@@ -362,6 +362,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop() {
+    this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
     this.lockdownOff?.(); this.lockdownOff = null;

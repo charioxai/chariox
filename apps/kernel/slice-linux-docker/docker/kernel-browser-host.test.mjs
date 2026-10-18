@@ -2103,6 +2103,20 @@ test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover 
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
 }));
 
+test('MP-08/MP-10/MP-11 stopping the browser ends a parked input and a later retry cannot relaunch it',()=>using(async({host,chromium,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=30;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.equal(host.busyInputs.queues.size,1);
+ let starts=0;const start=chromium.start;chromium.start=async(...args)=>{starts++;return start(...args)};
+ await host.request({op:'stop'});busy=false;
+ await new Promise(r=>setTimeout(r,120));
+ assert.equal(starts,0,'a stopped browser is not relaunched by a parked input');
+ assert.equal(chromium.child,null);assert.equal(host.busyInputs.queues.size,0);
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0);
+}));
+
 test('MP-08/MP-10/MP-11 the parking reply and the observer\'s state report its parked input (protocol 552), nobody else\'s',()=>using(async({host,connection,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;let busy=true;
