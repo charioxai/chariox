@@ -27,7 +27,11 @@ def scope(request):
 
 
 def answer(request, snapshot):
-    tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'], request.get('values', []))
+    try:
+        tree = snapshot(request['processes'], request['browser_processes'], request['browser_protection'], request.get('values', []))
+    except ValueError:
+        # A filled window that cannot be placed yet is uncertain, not fatal: no masks, so the kernel withholds the frame and asks again.
+        tree = {'available': False, 'complete': False}
     digest = hashlib.sha256(json.dumps(tree, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     # Native password widgets already paint dots. Preserve the desktop and
     # apply only the filled-field rectangles supplied by the snapshot.

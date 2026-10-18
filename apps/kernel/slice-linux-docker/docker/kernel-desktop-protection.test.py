@@ -20,6 +20,13 @@ class OracleTests(unittest.TestCase):
             tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], **change}
             self.assertIsNone(module.answer(REQUEST, lambda *args: tree)['masks'], change)
 
+    def test_an_unplaceable_filled_window_answers_no_masks_instead_of_ending_the_oracle(self):
+        def unplaceable(*args):
+            raise ValueError('fill desktop placement unavailable')
+        answer = module.answer(REQUEST, unplaceable)
+        self.assertIsNone(answer['masks'])
+        self.assertEqual(answer['digest'], module.answer(REQUEST, unplaceable)['digest'])
+
     def test_native_password_dots_preserve_only_local_saved_value_masks(self):
         for masks in ([], [[10, 20, 30, 40]]):
             tree = {'available': True, 'complete': True, 'protected': True, 'masks': masks}
