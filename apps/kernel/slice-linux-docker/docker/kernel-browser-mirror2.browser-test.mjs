@@ -980,6 +980,17 @@ test("MP-10: a linked sheet whose CSSOM serialization drops var() shorthand long
     assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
   }, { "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" } }));
 
+test("MP-10: an inline style attribute and a <style> element keep var() shorthand borders too", () => mirrored(
+  '<style>.s{--w:3px;border:var(--w) solid;border-color:red}</style><div class="s" id="a" style="--w:3px;border:var(--w) solid;border-color:blue;width:40px">x</div>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 4; i++) packets.push(await next(500));
+    const css = mirroredCss(packets), attrs = JSON.stringify(packets.flatMap(p => p.nodes ?? []));
+    assert(css.includes("var(--w)"), `MP-10: the <style> source reaches the viewer: ${css.slice(0, 300)}`);
+    assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand in the sheet: ${css.slice(0, 300)}`);
+    assert(attrs.includes("border:var(--w) solid") || attrs.includes("border: var(--w) solid"), `MP-10: the style attribute keeps its shorthand: ${attrs.slice(0, 400)}`);
+    assert(!/border-top-width: ;/.test(attrs), "MP-10: no empty longhand in the style attribute");
+  }, {}));
+
 // r61 DuckDuckGo results: result videos sit at opacity 0 (shown on hover) with no data yet. An invisible element paints
 // nothing, so it must never hand the page to video (it did, "region_transform", whenever the carousel scrolled into view).
 test("MP-10: a fully transparent opaque element never hands the page to video", () => mirrored(
