@@ -128,17 +128,13 @@ def native_frame_scale(bounds, frame, client):
 
 
 def capture_snapshot(processes, browser_processes=None, browser_protection=None, values=()):
-    """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot().
-    Without an adopted measurement (browser_protection None) every owned
-    kernel-browser window is masked whole."""
+    """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot()."""
     masks = _fills.regions()
     pages = [page for page in (browser_protection or {}).get('pages', []) if page.get('regions')]
-    owned = {item['pid'] for item in browser_processes or () if alive(item)}
-    if pages or (browser_protection is None and owned):
-        apps = {}
-        if pages:
-            desktop = pyatspi.Registry.getDesktop(0)
-            apps = {app.get_process_id(): app for app in (desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))) if app}
+    if pages:
+        owned = {item['pid'] for item in browser_processes or () if alive(item)}
+        desktop = pyatspi.Registry.getDesktop(0)
+        apps = {app.get_process_id(): app for app in (desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))) if app}
         try:
             from Xlib import X, display
         except ModuleNotFoundError:
@@ -153,12 +149,7 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
                 if window.get_attributes().map_state != X.IsViewable: continue
                 pid = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
                 pid = int(pid.value[0]) if pid is not None and len(pid.value) else None
-                if pid not in owned: continue
-                if browser_protection is None:
-                    part = visible_rect(frame_rect(root, window), screen)
-                    if part: masks.append(part)
-                    continue
-                if pid not in apps: continue
+                if pid not in owned or pid not in apps: continue
                 geometry = window.get_geometry(); origin = root.translate_coords(window, 0, 0)
                 client = [origin.x, origin.y, geometry.width, geometry.height]
                 matching = [page for page in unmatched if _protection._screen_scale(page.get('window'), client)]

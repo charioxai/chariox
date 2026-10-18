@@ -103,17 +103,6 @@ class TraversalTest(unittest.TestCase):
         self.assertEqual(result['masks'], [])
         self.assertTrue(result['available'] and result['complete'])
 
-    def test_mp11_capture_masks_whole_owned_browser_window_until_measured(self):
-        self.foreground(pid=300)
-        browser = [{'pid': 300, 'started': '1'}]
-        with patch.object(self.driver._fills, 'regions', side_effect=lambda: [[1, 2, 3, 4]]):
-            unmeasured = self.driver.capture_snapshot([], browser, None)
-            measured = self.driver.capture_snapshot([], browser, {'pages': []})
-            foreign = self.driver.capture_snapshot([], [{'pid': 301, 'started': '1'}], None)
-        self.assertEqual(unmeasured['masks'], [[1, 2, 3, 4], [100, 80, 300, 200]])
-        self.assertEqual(measured['masks'], [[1, 2, 3, 4]])
-        self.assertEqual(foreign['masks'], [[1, 2, 3, 4]])
-
     def test_mp11_capture_uses_only_live_plain_field_ledger(self):
         with patch.object(self.driver._fills, 'regions', return_value=[[10, 20, 80, 30]]):
             result = self.driver.capture_snapshot([], values=['value that also appears elsewhere'])
