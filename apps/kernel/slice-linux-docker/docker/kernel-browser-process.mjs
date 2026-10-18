@@ -46,7 +46,10 @@ export function launchArguments(profile, headless, display = false, nativeAccess
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
       // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.
       "--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill"] : []),
-    ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility"] : []), "about:blank",
+    // MP-08/MP-11: masking needs only each page's `document web` extents and URI. Basic mode exposes
+    // them exactly like complete mode (and form-controls/no flag expose none on large pages) at a
+    // fraction of the page-load stall.
+    ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility=basic"] : []), "about:blank",
   ];
 }
 

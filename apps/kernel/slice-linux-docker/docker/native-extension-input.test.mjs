@@ -43,7 +43,7 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
   const {open}=await import('node:fs/promises');const held=await open(desktop.runtime);
   try {
    const child=await desktop.launch(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE??'/opt/google/chrome/chrome',[
-    '--user-data-dir='+profile,'--remote-debugging-port=0','--enable-unsafe-extension-debugging','--force-renderer-accessibility',
+    '--user-data-dir='+profile,'--remote-debugging-port=0','--enable-unsafe-extension-debugging','--force-renderer-accessibility=basic',
     '--no-first-run','--no-default-browser-check','--password-store=basic','--disable-dev-shm-usage','--window-size=1280,800','https://en.wikipedia.org/wiki/Ada_Lovelace',
    ],{...environment,TMPDIR:`/proc/${process.pid}/fd/${held.fd}`});
    desktop.children.find(item=>item.child===child).browser=true;
