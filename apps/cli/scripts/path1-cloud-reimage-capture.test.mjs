@@ -35,6 +35,7 @@ function fixture() {
     receipt[`old${kind}`] = `old-${kind}`
     receipt[`new${kind}`] = `new-${kind}`
   }
+  receipt.residueChecks.cloudOldRelayRealmDisabled = false
   const requests = []
   const requestContract = {
     getManagedEnvironmentReimageReceiptRequest(environmentId) {
@@ -98,6 +99,14 @@ function sharedControllerFixture() {
   }
   return { ...input, environment, source, status, profile }
 }
+
+test("captures a retired generation realm when the old realm was per-generation", async () => {
+  const input = fixture()
+  input.receipt.oldRelayRealmId = "realm_managed_env_one_g1"
+  input.receipt.residueChecks.cloudOldRelayRealmDisabled = true
+  const capture = await capturePath1CloudReimage(input)
+  assert.equal(capture.residueChecks.cloudOldRelayRealmDisabled, true)
+})
 
 test("captures a retained shared controller realm only with explicit current product bindings", async () => {
   const input = sharedControllerFixture()
@@ -176,7 +185,10 @@ for (const [name, mutate, message] of [
   ["unchanged control identity", (r) => { r.newMachineId = r.oldMachineId }, /rotated control/],
   ["missing rebuild", (r) => { delete r.resourceObservation.rebuildActionId }, /provider rebuild/],
   ["incomplete retirement", (r) => { r.residueChecks.cloudOldHeartbeatsAbsent = false }, /retirement/],
-  ["nonshared realm not retired", (r) => { r.residueChecks.cloudOldRelayRealmDisabled = false }, /realm retirement/],
+  ["home realm retired", (r) => { r.residueChecks.cloudOldRelayRealmDisabled = true }, /realm retirement/],
+  ["generation realm not retired", (r) => {
+    r.oldRelayRealmId = "realm_managed_env_one_g1"
+  }, /realm retirement/],
   ["future completion", (r) => { r.completedAt = "2026-09-27T05:00:00.000Z" }, /completion times/],
 ]) {
   test(`rejects ${name}`, async () => {
