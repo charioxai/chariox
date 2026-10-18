@@ -114,7 +114,7 @@ test('MP-11: resource cache is epoch bounded and oversized decoded images never 
 });
 
 test('MP-08/MP-11: App tabs mirror like any page under the same observation protection',async()=>{
- const {service,host}=fixture();host.browser.appTabs={apps:new Map([['app',{targetId:'target'}]])};host.protection.values=['fixture'];
+ const {service,host}=fixture();host.browser.appTabs={apps:new Map([['app',{targetId:'target'}]]),async flushDrafts(){}};host.protection.values=['fixture'];
  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
  const packet=await service.next(next(sub.subscription_id),'a');
  assert.equal(packet.tab_id,'t');assert(!JSON.stringify(packet.nodes).includes('fixture'));
@@ -393,4 +393,13 @@ test('MP-08 mirror observes the owned desktop density without changing it for th
    assert.equal(calls.filter(call=>call.method==='Emulation.setDeviceMetricsOverride').length,0,'an observer cannot resize the source');
   }finally{service.clear()}
  }}finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=before}
+});
+
+test('MP-08/MP-10/MP-11: App draft fence finishes before publication and rechecks protection',async()=>{
+ const {service,host}=fixture(),entered=Promise.withResolvers(),commit=Promise.withResolvers();
+ host.browser.appTabs={async flushDrafts(target){assert.equal(target,'target');entered.resolve();await commit.promise}};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ let published=false;const packet=service.next(next(sub.subscription_id),'a').then(value=>{published=true;return value});
+ await entered.promise;assert.equal(published,false);host.protection={revision:2,values:[],targets:[]};commit.resolve();
+ await assert.rejects(packet,/stale mirror protection/);assert.equal(published,false);
 });

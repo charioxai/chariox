@@ -121,6 +121,18 @@ function assets(raw, entry) {
 }
 
 export class AppTabs {
+  // MP-08/MP-10/MP-11: only managed App pages have draft state. Finish a
+  // captured edit's disk commit before showing it as recoverable to viewers.
+  async flushDrafts(targetId) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === targetId);
+    if (!entry) return;
+    const [sessionId] = entry;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: 'globalThis.__charioxAppDraftFlushed?.() ?? true', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (reply.exceptionDetails || reply.result?.value !== true) throw new Error('App draft commit unavailable');
+  }
+
   constructor(browser, { restoreGraceMs = 30_000 } = {}) {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command

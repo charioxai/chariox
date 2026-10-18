@@ -350,7 +350,7 @@ test('MP-08/MP-10: a new document is held until its first contentful paint befor
     const world = { connection, sessionId: 'S', frame: { loaderId: document }, ref: 'm' };
     const stream = { tab_id: 't', world, issued, document_id: previous, policy, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
     const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
-      browser: { connection, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', 'S']]) } };
+      browser: { connection, appTabs: { async flushDrafts() { calls.push('draft-flush'); } }, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', 'S']]) } };
     const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
     mirror.world = async () => world;
     mirror.evaluate = async (_world, expression) => { calls.push(expression); if (expression.endsWith('customHosts()')) return false; return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, nodes: [], root: 'n1' }; };
@@ -361,6 +361,7 @@ test('MP-08/MP-10: a new document is held until its first contentful paint befor
   const held = calls => calls.some(call => call.includes('first-contentful-paint'));
   const navigated = await run('D2'), hold = navigated.findIndex(call => call.includes('first-contentful-paint')), snapshot = navigated.indexOf('m.snapshot()');
   assert.ok(hold >= 0 && snapshot > hold, 'the hold precedes the new document snapshot');
+  assert.ok(navigated.indexOf('draft-flush') > snapshot, 'MP-08/MP-10: durable App draft fence follows the captured DOM');
   assert.equal(held(await run('D1')), false, 'same document: no hold');
   // Review #1009 P2: a viewer resynchronizing while the navigation commits still gets the held first paint.
   assert.ok(held(await run('D2', 0)), 'client reset (after_sequence 0) on a new document: held');

@@ -373,6 +373,7 @@ export class Mirror2 {
       fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp()); source = null; reset = true; resources = [];
     }
     mark('tiles');
+    await this.host.browser.appTabs?.flushDrafts(tab.target_id);
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
     // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
     // answer asks the renderer.

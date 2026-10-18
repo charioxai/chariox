@@ -780,23 +780,24 @@ test('App bridge restores ordinary draft fields and clears a reset form', async 
   await tabs.open({origin_label:'todo-draft',installation_id:'inst-1',assets:[asset('index.html','hi')]});
   const source=connection.sent.find(m=>m.method==='Page.addScriptToEvaluateOnNewDocument').params.source;
   const storage=new Map();
+  const indexedDB={open(){const request={};queueMicrotask(()=>{request.result={createObjectStore(){},transaction(){const tx={objectStore:()=>({get(key){const read={};queueMicrotask(()=>{read.result=storage.get(key);read.onsuccess()});return read},put(value,key){storage.set(key,structuredClone(value));queueMicrotask(()=>tx.oncomplete())}})};return tx}};request.onsuccess()});return request}};
   function document(value='') {
     const listeners=new Map(),form={id:'new-todo',autocomplete:'on'};
     const title={tagName:'INPUT',type:'text',id:'title',name:'title',value,defaultValue:'',form,disabled:false,readOnly:false,getAttribute:()=>null};
     const password={...title,type:'password',id:'password',value:'private-password'};
     const off={...title,id:'off',value:'private-opt-out',getAttribute:()=> 'off'};
     const doc={readyState:'complete',querySelectorAll:()=>[title,password,off],addEventListener:(name,fn)=>listeners.set(name,fn)};
-    const context={document:doc,location:{pathname:'/'},crypto:{randomUUID:()=> 'doc'},__charioxAppCall:()=>assert.fail('draft restore must not call tools'),localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},addEventListener(){},queueMicrotask,MutationObserver:class{observe(){}},setTimeout};
+    const context={indexedDB,document:doc,location:{pathname:'/'},crypto:{randomUUID:()=> 'doc'},__charioxAppCall:()=>assert.fail('draft restore must not call tools'),localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},addEventListener(){},queueMicrotask,MutationObserver:class{observe(){}},setTimeout};
     // Use the exact runtime binding name from the generated bridge.
     const binding=source.match(/const call = globalThis\.([A-Za-z0-9_]+)/)[1];context[binding]=context.__charioxAppCall;
     vm.runInNewContext(source,context);
-    return {title,listeners,form};
+    return {title,listeners,form,context};
   }
-  const first=document();first.title.value='unsubmitted draft';first.listeners.get('input')?.({target:first.title});
-  assert.equal(document().title.value,'unsubmitted draft');
+  const first=document();await first.context.__charioxAppDraftFlushed();first.title.value='unsubmitted draft';first.listeners.get('input')?.({target:first.title});await first.context.__charioxAppDraftFlushed();
+  const recovered=document();await recovered.context.__charioxAppDraftFlushed();assert.equal(recovered.title.value,'unsubmitted draft');
   assert(!JSON.stringify([...storage]).includes('private-'));
   first.listeners.get('reset')?.({target:first.form});first.title.value='';await new Promise(r=>queueMicrotask(r));
-  assert.equal(document().title.value,'');
+  await first.context.__charioxAppDraftFlushed();const cleared=document();await cleared.context.__charioxAppDraftFlushed();assert.equal(cleared.title.value,'');
 });
 
 // MP-08/MP-10/MP-11: native focus restoration waits until an App finished opening.
@@ -807,4 +808,18 @@ test('App opening readiness is published after bridge installation and navigatio
   const opening=tabs.open({origin_label:'opening',installation_id:'inst-1',assets:[asset('index.html','hi')]});
   try{await entered.promise;assert.equal([...tabs.apps.values()][0].ready,false)}finally{gate.resolve()}
   await opening;assert.equal([...tabs.apps.values()][0].ready,true);
+});
+
+// MP-08/MP-10/MP-11: only App captures wait; failures cannot publish stale durability.
+test('App draft capture fence waits for its owned renderer and propagates failure', async () => {
+  const {browser,connection}=fakeBrowser(),tabs=new AppTabs(browser);
+  await tabs.open({origin_label:'draft-fence',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  const app=[...tabs.apps.values()][0],gate=Promise.withResolvers();
+  const send=connection.send.bind(connection);
+  let calls=0;connection.send=async(method,params,session)=>{if(method==='Runtime.evaluate'&&params.expression.includes('__charioxAppDraftFlushed')){calls++;await gate.promise;return {result:{value:true}}}return send(method,params,session)};
+  await tabs.flushDrafts('ordinary-browser-target');assert.equal(calls,0);
+  let done=false;const flush=tabs.flushDrafts(app.targetId).then(()=>{done=true});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(done,false);gate.resolve();await flush;assert.equal(calls,1);
+  connection.send=async()=>({exceptionDetails:{text:'commit failed'}});
+  await assert.rejects(tabs.flushDrafts(app.targetId),/App draft commit unavailable/);
 });
