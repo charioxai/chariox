@@ -8,6 +8,7 @@ import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
+import {timestamp} from './kernel-browser-timing.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
 // the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
@@ -50,6 +51,11 @@ export function rowMode(bgr0) {
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
 const FOCUS_READ_MS = 250, timedOut = Symbol('timed out');
+/** Names a step of a person's band key that took over a quarter second (fixed labels only), so a parked key says why. */
+async function slowStep(host, step, operation) {
+  const at = timestamp();
+  try { return await operation; } finally { if (timestamp() - at > 250) host.timing?.(`band_key_wait ${step}`, at); }
+}
 /** `operation`'s result, or `timedOut` after `ms` (the operation is left to settle on its own). */
 async function within(ms, operation) {
   let timer;
@@ -463,17 +469,17 @@ export class InputArbiter {
     const binding = this.windows.current().tabbed;
     if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
     const generation = this.host.generation;
-    let tab = await this.activeTab();
+    let tab = await slowStep(this.host, 'admit_active', this.activeTab());
     // A native New Tab can precede the next inventory poll. Discover it here,
     // before ledger admission; no action has been dispatched or replayed.
     // Discovery is advisory: the displayTarget read below still proves this
     // active document before admission. Loading background pages need no proof.
-    if (!tab) { await this.host.reconcile({readOnly:true}); tab = await this.activeTab(); }
+    if (!tab) { await slowStep(this.host, 'admit_reconcile', this.host.reconcile({readOnly:true})); tab = await this.activeTab(); }
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     // Native navigation commits independently of inventory polling. Admit the
     // live document instead of attributing a person's new input to cached state.
-    tab = await this.host.displayTarget({tab_id: tab.tab_id, generation, fresh: true});
-    const active = await this.activeTab();
+    tab = await slowStep(this.host, 'admit_target', this.host.displayTarget({tab_id: tab.tab_id, generation, fresh: true}));
+    const active = await slowStep(this.host, 'admit_recheck', this.activeTab());
     if (!binding.isCurrent() || generation !== this.host.generation || !active || active.target_id !== tab.target_id) throw new UserDomainRefusal('stale_reference');
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation};
   }
@@ -530,11 +536,11 @@ export class InputArbiter {
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      const tab = await activeAdmitted(), documentId = tab.document_id;
+      const tab = await slowStep(this.host, 'key_active', activeAdmitted()), documentId = tab.document_id;
       if (documentId !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
         && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
-      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
+      const {connection, sessionId} = await slowStep(this.host, 'key_target', this.host.browser.resolvePageTarget(tab.target_id));
       const currentProof = async () => {
         const active = await activeAdmitted();
         if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
@@ -545,7 +551,7 @@ export class InputArbiter {
         if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
         return frame;
       };
-      const {frameTree} = await currentProof();
+      const {frameTree} = await slowStep(this.host, 'key_proof', currentProof());
       const focusWorld = async () => {
         const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
         return expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
@@ -573,9 +579,9 @@ export class InputArbiter {
         if (!pageFocused) return;
         this.chromeFocus = null;
       }
-      evaluate ??= await focusWorld();
-      const {result} = await evaluate(sensitiveFocusExpression(false));
-      await currentProof();
+      evaluate ??= await slowStep(this.host, 'key_world', focusWorld());
+      const {result} = await slowStep(this.host, 'key_sensitive', evaluate(sensitiveFocusExpression(false)));
+      await slowStep(this.host, 'key_proof_after', currentProof());
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.

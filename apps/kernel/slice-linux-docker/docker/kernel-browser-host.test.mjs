@@ -1884,6 +1884,8 @@ test('MP-08/MP-10 a display attach reports the viewer\'s initial push request',(
 test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>using(async({host})=>{
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
+ // r54 RED 2: a selection note waits for the page renderer (8 s on a parsing page); it must not hold every key behind it.
+ for(const op of ['note_selection','note_reanchor'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 

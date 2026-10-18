@@ -43,7 +43,10 @@ const DEFLATE_MIN_BYTES = 512;
 const PAINT_HOLD_MS = 2500;
 // A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
 // (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
-const BUSY_RENDERER_MS = 20_000;
+// The kernel gives the controller 20 s per request (kernel_browser_host.rs, queue wait included): a credit that outlasts it
+// reaches the viewer as a transport failure, not as a busy page. A busy page's answer stays well inside it.
+export const KERNEL_CONTROLLER_DEADLINE_MS = 20_000;
+export const BUSY_RENDERER_MS = 14_000;
 const CREDIT_PATIENCE_MS = 6_500;
 // A hung renderer still ends: the one snapshot in flight is abandoned after this.
 const SNAPSHOT_MS = 120_000;

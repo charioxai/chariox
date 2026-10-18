@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -786,4 +786,8 @@ test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, a
  await mirror.evaluate(world,'1');
  await mirror.evaluate(world,'1',false,3000);
  assert.deepEqual(sent,[undefined,17_000,3000]);
+});
+
+test('MP-08/MP-10 a busy page answers a reset credit before the kernel gives up on the controller request (RED 4: local_transport_error)',()=>{
+ assert.ok(BUSY_RENDERER_MS+5000<=KERNEL_CONTROLLER_DEADLINE_MS,'patience plus the floors of later calls and queue wait stays inside the controller deadline');
 });
