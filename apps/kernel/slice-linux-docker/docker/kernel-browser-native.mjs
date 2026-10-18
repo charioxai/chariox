@@ -54,8 +54,8 @@ export class LinuxCapture {
  rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
   if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
-  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.fence();}
-  if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page')this.fence();
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.timing('native_fenced frame_navigated '+this.phase,performance.timeOrigin+performance.now());this.fence();}
+  if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page'){this.timing('native_fenced target_created '+this.phase,performance.timeOrigin+performance.now());this.fence();}
   // MP-11: attribute-only protection changes produce no XDamage. Retire even
   // before attestation, so an empty snapshot cannot outlive marker insertion.
   if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){

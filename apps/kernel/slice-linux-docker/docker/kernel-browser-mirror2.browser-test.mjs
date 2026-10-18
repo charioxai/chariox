@@ -795,7 +795,7 @@ test("MP-10: a tainted canvas falls back to a screenshot crop, and under a filte
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas still shows (screenshot crop)");
     await evaluate("document.getElementById('wrap').style.filter='grayscale(1)';true");
     await new Promise(resolve => setTimeout(resolve, 1100));
-    let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+    let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
     assert.equal(packet.fallback, "region_transform");
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
 
@@ -968,6 +968,25 @@ test("MP-10: review #941@36a395b05-6 CSSOM media-list edits of style and no-CORS
     assert(await media(elements(snapshot).filter(([, tag]) => tag === "style")[0][0], null), "MP-10: clearing the media list reaches the viewer");
   }, { "/x.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" } }));
 
+// r61 DuckDuckGo: a fade or slide distorts a region only while it runs. The page stays mirrored through a short
+// distortion; only a lasting one hands it to video, and the cause is named.
+test("MP-10: a transient distortion of a screenshot-crop region keeps the page mirrored; a lasting one names its cause", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate, host }) => {
+    const marks = []; const timing = host.timing; host.timing = (name, ...rest) => { marks.push(name); return timing?.call(host, name, ...rest); };
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal((await next()).fallback, undefined);
+    await evaluate("wrap.style.opacity='0.5';true");
+    const until = Date.now() + 1800;
+    while (Date.now() < until) assert.equal((await next(300)).fallback, undefined, "MP-10: a distortion shorter than the settle window never hands the page to video");
+    await evaluate("wrap.style.opacity='';true");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    for (let i = 0; i < 3; i++) assert.equal((await next(500)).fallback, undefined);
+    await evaluate("wrap.style.filter='grayscale(1)';true");
+    let packet = await next(1000); for (let i = 0; i < 8 && packet.fallback === undefined; i++) packet = await next(1000);
+    assert.equal(packet.fallback, "region_transform");
+    assert(marks.includes("mirror2_fallback_region_transform filter_ancestor canvas"), `MP-10: the cause is recorded: ${marks.filter(m => /fallback/.test(m))}`);
+  }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
+
 // Review #941 @36a395b05 finding 5: rotate(180deg), scaleX(-1) and the rotate property keep the bounding size, and a
 // translucent ancestor composites too: a viewport crop already holds that compositing, which the mirrored DOM applies
 // again. Such regions hand the page to labelled video (it returns once the transform goes).
@@ -979,7 +998,7 @@ test("MP-10: review #941@36a395b05-5 a screenshot-crop region under a size-prese
     for (const [element, style] of [["c", "transform:rotate(180deg)"], ["wrap", "transform:scaleX(-1)"], ["c", "rotate:180deg"], ["wrap", "opacity:0.5"]]) {
       await evaluate(`${element}.style.cssText=${JSON.stringify(style)};true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
-      let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+      let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
       assert.equal(packet.fallback, "region_transform", `MP-10: ${element} ${style}`);
       await evaluate(`${element}.style.cssText='';true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
@@ -1104,7 +1123,7 @@ test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-orig
     for (const style of ["opacity:0.5", "transform:rotate(180deg)"]) {
       await evaluate(`f.style.cssText=${JSON.stringify(style)};true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
-      let packet = await next(1000); for (let i = 0; i < 3 && packet.fallback === undefined; i++) packet = await next(1000);
+      let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
       assert.equal(packet.fallback, "region_transform", `MP-10: frame owner ${style}`);
       await evaluate("f.style.cssText='';true");
       await new Promise(resolve => setTimeout(resolve, 1100));
