@@ -20,6 +20,15 @@ fn describes_human_control_wait(reason: &str) -> bool {
             .any(|word| reason.contains(word)))
 }
 
+// A late Blocked event can arrive after Release. Only a concrete Computer
+// ownership refusal authorizes continuation without a current human owner.
+fn describes_released_human_control_wait(reason: &str) -> bool {
+    let reason = reason.to_ascii_lowercase();
+    reason.contains("environment_input_owned") || reason.contains("human_takeover")
+        || (describes_human_control_wait(&reason) && reason.contains("computer")
+            && ["owned", "belongs", "stopped", "refused", "rejected"].iter().any(|word| reason.contains(word)))
+}
+
 impl KernelRuntimeState {
     fn task_has_human_input_owner(&self, task: &AgentTaskExecution) -> bool {
         if self
@@ -78,10 +87,11 @@ impl KernelRuntimeState {
             return false;
         }
         if self.task_has_human_input_owner(task) {
-            if !recorded && !describes_human_control_wait(&task.reason) {
-                return false;
-            }
-            let fresh = self
+            // Even a genuine task decision must leave Release accessible. It
+            // becomes an owner interaction after Release; only a control wait
+            // is eligible for automatic continuation.
+            let control_wait = recorded || describes_human_control_wait(&task.reason);
+            let fresh = control_wait && self
                 .owned
                 .human_control_task_waits
                 .lock()
@@ -107,7 +117,11 @@ impl KernelRuntimeState {
             return true;
         }
         if !recorded {
-            return false;
+            if !describes_released_human_control_wait(&task.reason) {
+                return false;
+            }
+            self.owned.human_control_task_waits.lock().unwrap_or_else(|e| e.into_inner())
+                .insert(task.task_id.clone(), task.blocked_revision);
         }
         // The native turn may still be settling after its Blocked event. Never
         // overlap it with the continuation triggered by the human's Release.

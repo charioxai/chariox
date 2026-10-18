@@ -877,3 +877,105 @@ async fn computer_human_control_wait_does_not_open_an_owner_modal() {
         "the periodic sweep must not reopen a modal"
     );
 }
+
+// MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
+#[tokio::test]
+async fn computer_release_before_blocked_event_does_not_open_an_owner_modal() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::session::{CanonicalViewport, EnvironmentActor, EnvironmentActorKind, InputTarget};
+    let f = Fixture::with_room_tools();
+    f.state
+        .start_room_environment(
+            &f.session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .write()
+        .transition_room_environment(&f.session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    f.state
+        .request_room_environment_takeover_as_actor(
+            &f.session,
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    // The human released after the tool refusal, before the provider's Blocked event.
+    f.state.release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop).unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("computer-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store.agent_lifecycle(Operation::Block {task:id.clone(),prompt:id,reason:"Computer input stopped because a human has control of the desktop; waiting for Release".into()}).unwrap() else {panic!()};
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "a human-control wait must keep Release clickable"
+    );
+
+}
+
+// MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
+#[tokio::test]
+async fn computer_task_decision_leaves_release_accessible_until_human_releases() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::session::{CanonicalViewport, EnvironmentActor, EnvironmentActorKind, InputTarget};
+    let f = Fixture::with_room_tools();
+    f.state
+        .start_room_environment(
+            &f.session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .write()
+        .transition_room_environment(&f.session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    f.state
+        .request_room_environment_takeover_as_actor(
+            &f.session,
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("computer-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store.agent_lifecycle(Operation::Block {task:id.clone(),prompt:id,reason:"Goal evaluation timed out; inspect the receipt and choose whether to resume".into()}).unwrap() else {panic!()};
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "a human-control wait must keep Release clickable"
+    );
+    f.state.release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop).unwrap();
+    f.state.ensure_task_owner_interaction(blocked).await.unwrap();
+    assert_eq!(f.active_ids().len(), 1, "genuine decisions remain available after Release");
+}
