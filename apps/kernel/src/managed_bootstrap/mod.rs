@@ -8,6 +8,7 @@ mod data_volume_observation;
 mod freshness;
 mod provider_path;
 mod release;
+mod release_recovery;
 mod state;
 mod supervisor;
 pub mod worker;
@@ -363,13 +364,8 @@ fn prepare_managed_kernel_with_documents(
         .ok_or_else(|| {
             bootstrap_error("managed bootstrap envelope and receipt are both missing")
         })?;
-    let release = verify_release(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        expected_digest,
-        &config.kernel_binary,
-    )?;
+    let release =
+        verify_configured_release(config, expected_digest, release_recovery::recover_pending)?;
     let identity =
         load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
     let confirmation = match (receipt, envelope) {
@@ -393,6 +389,25 @@ fn prepare_managed_kernel_with_documents(
         release,
         confirmation,
     })
+}
+
+fn verify_configured_release(
+    config: &BootstrapConfig,
+    expected_digest: &str,
+    recover: impl FnOnce() -> Result<bool, DaemonError>,
+) -> Result<VerifiedRelease, DaemonError> {
+    release_recovery::verify_or_recover(
+        || {
+            verify_release(
+                &config.manifest_path,
+                &config.signature_path,
+                &config.public_key_path,
+                expected_digest,
+                &config.kernel_binary,
+            )
+        },
+        recover,
+    )
 }
 
 #[cfg(test)]

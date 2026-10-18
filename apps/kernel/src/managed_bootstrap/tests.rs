@@ -37,6 +37,26 @@ mod cloud_enrollment;
 mod disposable_worker;
 
 #[test]
+fn a_release_mismatch_runs_interrupted_update_recovery_before_the_retry() {
+    let fixture = Fixture::new("release-recovery-wiring");
+    let wrong_digest = format!("sha256:{}", "0".repeat(64));
+    let recovered = std::cell::Cell::new(0);
+    let error = super::verify_configured_release(&fixture.config, &wrong_digest, || {
+        recovered.set(recovered.get() + 1);
+        Ok(true)
+    })
+    .expect_err("a mismatching release stays refused when recovery does not fix it");
+    assert_eq!(recovered.get(), 1);
+    assert!(error.to_string().contains("does not match"));
+    assert!(
+        super::verify_configured_release(&fixture.config, &fixture.release_digest, || {
+            panic!("a matching release needs no recovery")
+        })
+        .is_ok()
+    );
+}
+
+#[test]
 fn ordinary_explicit_state_ignores_host_global_managed_receipt() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("ordinary-global-receipt");
