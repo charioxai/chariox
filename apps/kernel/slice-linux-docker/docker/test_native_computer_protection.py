@@ -259,7 +259,7 @@ class HostVaultIdentityTests(unittest.TestCase):
             reads.append(True)
             return node
         def identity(_):
-            return {**field,'path':'/app/other'} if change and len(reads)>1 else field
+            return {**field,'path':'/app/other'} if change and len(reads)>(2 if change=='after_select' else 1) else field
         fills=SimpleNamespace(focused_field=focused,identity=identity)
         connection=SimpleNamespace(close=lambda:None)
         def typed(text,expected_target,before_press=None,key_guard=None):
@@ -267,17 +267,23 @@ class HostVaultIdentityTests(unittest.TestCase):
             self.assertIsNotNone(key_guard)
             before_press()
             calls.append('injected')
+        def select(kind,key,duration,before_press=None,key_guard=None):
+            self.assertEqual((kind,key,duration),('key','CTRL+A',1))
+            self.assertIsNotNone(key_guard)
+            before_press()
+            calls.append('selected')
         modules={'native-fill-targets':fills,'native-x11':SimpleNamespace(open_display=lambda _:connection),'native-accessibility':SimpleNamespace(alive=lambda _:True),'native-input-destination':SimpleNamespace(key_destinations=lambda *_:None)}
-        with patch.object(module,'load',side_effect=modules.get),patch.object(module.keyboard,'focused_target',return_value=target),patch.object(module.keyboard,'type_text',side_effect=typed):
+        with patch.object(module,'load',side_effect=modules.get),patch.object(module.keyboard,'focused_target',return_value=target),patch.object(module.keyboard,'type_text',side_effect=typed),patch.object(module.keyboard,'hold_input',side_effect=select),patch.object(module.keyboard,'assert_secret_target'):
             request={'op':'secret_input','processes':[{'pid':123,'started':'45','browser':not owned}], 'expected_target':target,'expected_field':field,'text':'synthetic-only'}
             if change or not owned:
                 with self.assertRaises(ValueError):module.main(request)
-                self.assertEqual(calls,[])
+                self.assertEqual(calls,['selected'] if change=='after_select' else [])
             else:
                 self.assertEqual(module.main(request),{'inserted':True,'field':field})
-                self.assertEqual(calls,['injected'])
+                self.assertEqual(calls,['selected','injected'])
     def test_mp11_host_vault_rechecks_atspi_leaf_before_each_press(self):self.exercise(change=True)
     def test_mp11_host_vault_refuses_browser_and_unowned_destination(self):self.exercise(owned=False)
+    def test_mp11_host_vault_refuses_a_field_change_after_selecting_existing_text(self):self.exercise(change='after_select')
     def test_mp08_host_vault_returns_only_filled_field_identity(self):self.exercise()
 
 if __name__=='__main__':unittest.main()

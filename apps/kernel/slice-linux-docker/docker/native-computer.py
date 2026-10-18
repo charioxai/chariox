@@ -150,10 +150,16 @@ def main(request, connection=None):
             if target!=request['expected_target'] or field!=request['expected_field']:
                 raise ValueError('Vault fill field changed')
             def same_field():
+                keyboard.assert_secret_target(connection,target)
                 current=fills.focused_field(target['active_window'], connection)
                 if fills.identity(current)!=field: raise ValueError('Vault fill field changed')
+            # A Vault fill replaces an existing value, including retries. The
+            # privileged chord has the same exact field/window fences as text;
+            # it never grants the agent ordinary input to a protected field.
+            key_guard=load('native-input-destination').key_destinations
+            keyboard.hold_input('key','CTRL+A',1,before_press=same_field,key_guard=key_guard)
             keyboard.type_text(request['text'], target, before_press=same_field,
-                               key_guard=load('native-input-destination').key_destinations)
+                               key_guard=key_guard)
             return {'inserted':True,'field':field}
         finally: connection.close()
     if op == 'input':
