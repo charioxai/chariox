@@ -25,6 +25,8 @@ const OMNIBOX_WARM_MS = 30_000;
 const omniboxSeenKey = t => `${t.browser_generation}:${t.xid}:${t.bounds.width}x${t.bounds.height}@${t.scale}:${JSON.stringify(t.page_rect)}`;
 /** A state read right after an address-bar key waits this long for the list that key opens. */
 const OMNIBOX_LIST_WAIT_MS = 250;
+/** A listed popup is trusted this long after the last inventory read (a live band reads every 150 ms). */
+const STALE_ROWS_MS = 500;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
@@ -244,6 +246,26 @@ export class ChromeWindows {
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
+  /** A band that cannot read (retired, re-subscribing) leaves a closed menu listed for seconds (r17, accbrowser r1): a state read
+   * then re-reads the owner's own inventory, one read at a time, only while a popup is listed and no read is recent. */
+  async refreshStale() {
+    if (!this.bound?.auxiliary.length || !this.bound.tabbed.isCurrent() || performance.now() - (this.rowsReadAt ?? -Infinity) < STALE_ROWS_MS) return;
+    this.staleRead ??= this.readOwnerRows().catch(() => {}).finally(() => { this.staleRead = null; });
+    await this.staleRead;
+  }
+  async readOwnerRows() {
+    const host = this.host, chromium = host.chromium, display = chromium?.display, pid = chromium?.browserPid ?? chromium?.child?.pid, generation = host.generation;
+    const live = () => host.generation === generation && ownsDisplay(display) && (chromium.browserPid ?? chromium.child?.pid) === pid;
+    if (!live() || !Number.isSafeInteger(pid) || pid <= 1) return;
+    const rows = await this.inventory(display, pid, live), bound = this.bound;
+    if (!live() || !bound?.tabbed.isCurrent()) return;
+    this.rowsReadAt = performance.now();
+    // Retire only: a popup whose own X window is gone leaves the list; nothing is published or rebound here.
+    const open = new Set(rows.filter(r => r.visible).map(r => r.id)), kept = bound.auxiliary.filter(a => a.in_window || open.has(a.xid));
+    if (kept.length === bound.auxiliary.length) return;
+    this.bound = Object.freeze({tabbed: bound.tabbed, auxiliary: kept});
+    this.auxiliaryCount = kept.length; this.host.timing?.(`aux_count ${kept.length}`, performance.timeOrigin + performance.now());
+  }
   /** Is Chrome's omnibox list shown right now (re-read, not the last poll)? */
   async omniboxShown() {
     this.omnibox = await this.readOmnibox();
@@ -371,6 +393,7 @@ export class ChromeWindows {
       this.unreadableMarked = false;
       try {
         const binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
+        this.rowsReadAt = performance.now();
         this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
         if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live: this.omniboxLive};
       } catch {}

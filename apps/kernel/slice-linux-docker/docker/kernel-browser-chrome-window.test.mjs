@@ -453,6 +453,30 @@ test("MP-08/MP-11 popup tracking marks when no band can be read and when the pop
   } finally { await real.close(); }
 });
 
+// BROWSER-UX-14 (accbrowser r1: a menu stayed listed 4-5 s after its item was clicked): with no band able to read the
+// inventory, a state read re-reads the owner's own inventory, so a popup Chrome closed no longer stays listed.
+test("MP-08/MP-11 a state read retires a closed popup when no band can read the inventory", async t => {
+  const tabbed = { id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 };
+  const menu = { id: 0x600070, x: 2000, y: 140, width: 497, height: 801, visible: true, focused: false, override_redirect: true, transient_for: 0 };
+  const rows = [tabbed, menu];
+  const { host, windows } = fake({ rows });
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    await windows.resolve();
+    assert.deepEqual(windows.auxiliaryState().map(({ x, y }) => [x, y]), [[1000, 70]], "the menu is listed");
+    rows.splice(1, 1);
+    const stopDead = windows.watch(async () => { throw Error("MP-11: native window inventory lease"); }, 5);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      assert.equal(windows.auxiliaryState().length, 1, "no band reads: the closed menu is still listed");
+      await windows.refreshStale();
+      assert.deepEqual(windows.auxiliaryState(), [], "the owner's inventory retires it");
+    } finally { stopDead(); }
+  } finally { await real.close(); }
+});
+
 // MP-08/MP-10/MP-11: Caps Lock/automation can report upper-case key labels
 // without Shift. Native X11 must receive the caller's explicit modifier chord.
 test('MP-08/MP-10/MP-11 band accelerators preserve explicit modifiers despite upper-case labels', async () => {

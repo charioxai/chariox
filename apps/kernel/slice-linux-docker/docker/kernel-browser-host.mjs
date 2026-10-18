@@ -665,6 +665,7 @@ export class KernelBrowserHost {
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
+    if (command.op === "state") await this.chromeWindows?.refreshStale?.();
     if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
