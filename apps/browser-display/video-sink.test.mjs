@@ -135,21 +135,34 @@ test('MP-08/MP-10/MP-11 direct video pixels use the visible low-latency canvas',
 
 // vidlat r39: two decoded page frames inside one compositor frame must not overwrite each other.
 test('MP-08/MP-10 paced page crop draws at most one frame per compositor frame and keeps order',async()=>{
- const draws=[],ticks=[];
+ const draws=[],ticks=[],drops=[];
  const view={requestAnimationFrame:cb=>{ticks.push(cb);return ticks.length},cancelAnimationFrame(){}};
  const canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:view},getContext:()=>({drawImage:image=>draws.push(image.n)})};
  const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
- const sink=new VideoSink(canvas,()=>{},{direct:true,paced:true});
- const tick=async()=>{ticks.shift()();await new Promise(resolve=>setTimeout(resolve,5));};
+ const sink=new VideoSink(canvas,stage=>drops.push(stage),{direct:true,paced:true});
+ const settle=()=>new Promise(resolve=>setTimeout(resolve,5));
+ const tick=async()=>{ticks.shift()();await settle();};
  try{
-  const first=sink.commit(frame(1),{width:8,height:8});assert.deepEqual(draws,[1],'a frame in an idle compositor frame draws at once');
-  assert.equal((await first).drawn,true);
-  let second=false;const secondJob=sink.commit(frame(2),{width:8,height:8}).then(o=>{second=o.drawn});
-  await new Promise(resolve=>setTimeout(resolve,5));assert.deepEqual(draws,[1],'a second frame in the same compositor frame waits');assert.equal(second,false);
-  await tick();await secondJob;assert.deepEqual(draws,[1,2],'it is drawn after that frame, before the next one is composed');assert.equal(second,true);
-  const thirdJob=sink.commit(frame(3),{width:8,height:8});await new Promise(resolve=>setTimeout(resolve,5));assert.deepEqual(draws,[1,2],'the following frame waits for its own compositor frame');
-  await tick();assert.equal((await thirdJob).drawn,true);assert.deepEqual(draws,[1,2,3]);
+  // Decode-ahead hands several decoded frames to the sink inside one compositor frame.
+  const jobs=[1,2,3].map(n=>sink.commit(frame(n),{width:8,height:8}));
+  assert.deepEqual(draws,[1],'a frame in an idle compositor frame draws at once; the others wait');
+  await settle();assert.deepEqual(draws,[1]);
+  await tick();assert.deepEqual(draws,[1,2],'the next one is drawn after that frame, before the next one is composed');
+  await tick();assert.deepEqual(draws,[1,2,3],'order is kept and nothing is skipped');
+  assert.deepEqual((await Promise.all(jobs)).map(o=>o.drawn),[true,true,true]);assert.deepEqual(drops,[]);
   await tick();const idle=sink.commit(frame(4),{width:8,height:8});assert.deepEqual(draws,[1,2,3,4],'after an idle frame the next draw is immediate again');await idle;
+ }finally{sink.close()}
+});
+test('MP-08/MP-10 paced page crop skips only the oldest beyond its decode-ahead backlog',async()=>{
+ const draws=[],ticks=[],drops=[];
+ const view={requestAnimationFrame:cb=>{ticks.push(cb);return 1},cancelAnimationFrame(){}};
+ const canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:view},getContext:()=>({drawImage:image=>draws.push(image.n)})};
+ const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
+ const sink=new VideoSink(canvas,stage=>drops.push(stage),{direct:true,paced:true});
+ try{
+  const jobs=[1,2,3,4,5,6].map(n=>sink.commit(frame(n),{width:8,height:8}));
+  const outcomes=await Promise.all(jobs.slice(1,3));assert.deepEqual(outcomes.map(o=>o.drawn),[false,false],'frames 2 and 3 fell behind the three newest');
+  assert.deepEqual(draws,[1]);assert.equal(drops.length,2);
  }finally{sink.close()}
 });
 test('MP-08/MP-10 paced page crop leaves nothing waiting when the document hides',async()=>{

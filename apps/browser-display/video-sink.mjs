@@ -107,10 +107,11 @@ export class VideoSink {
   });
  }
  // vidlat r39: a page crop shows one decoded frame per compositor frame. Frames that arrive within
- // one frame used to overwrite each other (~15 % of the draws never reached the screen); the later
- // one now waits for the next frame, in order. Presentation is serial, so at most one commit waits.
+ // one frame used to overwrite each other (~15 % of the draws never reached the screen); each later
+ // one now waits for the next frame, in order. Decode-ahead can queue a few; the oldest beyond three are skipped.
  commitPaced(view){
-  if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitPending(true);return;}
+  while(this.pending.length>3){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
+  if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitOldest();return;}
   this.armFrame(view);
  }
  armFrame(view){
@@ -121,10 +122,11 @@ export class VideoSink {
    if(this.closed||!this.pending.length)return;
    // The waiting frame is drawn after this frame's commit, so the next compositor frame shows it.
    this.frameDrawn=true;this.armFrame(view);
-   setTimeout(()=>{if(!this.closed&&this.pending.length)this.commitPending(true);},0);
+   setTimeout(()=>{if(!this.closed)this.commitOldest();},0);
   });
  }
  endFrame(){if(this.frameRaf!==undefined)this.cancelFrame?.(this.frameRaf);this.frameRaf=undefined;this.frameDrawn=false;}
+ commitOldest(){const job=this.pending.shift();if(!job)return;const rest=this.pending;this.pending=[job];this.commitPending(true);this.pending=rest;}
  commitPending(visible){
   this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);
   if(!latest)return;
