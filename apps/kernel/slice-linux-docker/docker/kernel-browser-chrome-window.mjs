@@ -403,9 +403,8 @@ export class InputArbiter {
   /** A native click into the page puts the keys back in the page. */
   pageFocused() { this.chromeFocus = null; }
   /** The kernel-observed active Tab of the tabbed window, or null (fail closed). */
-  // `cached`: a key may use the owner snapshot until an activation/resize/detach event retires it; a miss reads live.
-  async activeTab({cached = false} = {}) {
-    const target = (cached ? this.host.tabGroups?.cachedActive?.() : null) ?? await this.host.tabGroups?.active().catch(() => null);
+  async activeTab() {
+    const target = await this.host.tabGroups?.active().catch(() => null);
     return target ? [...this.host.tabs.values()].find(tab => tab.target_id === target) ?? null : null;
   }
   async isActiveTab(tab, binding) {
@@ -419,7 +418,7 @@ export class InputArbiter {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const binding = this.windows.current().tabbed;
     if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
-    const tab = await this.activeTab({cached: command.input?.kind === 'key'});
+    const tab = await this.activeTab();
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
   }
@@ -465,20 +464,18 @@ export class InputArbiter {
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
     // pixels): they need the admitted active Tab, not its document, so a strip click while the
     // page loads is not dropped. Text and other keys may reach the page: document fenced too.
-    const activeAdmitted = async (cached = false) => {
+    const activeAdmitted = async () => {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
-      const tab = await this.activeTab({cached});
+      const tab = await this.activeTab();
       if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
       if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
     const current = async () => {
-      const tab = await activeAdmitted(input.kind === 'key' || input.kind === 'text');
+      const tab = await activeAdmitted();
       if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
       const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      // A key reads the loader from the event-bound document state when it is current (a miss reads live).
-      const frame = input.kind === 'key' || input.kind === 'text' ? await this.host.displayDocuments?.frame(this.host.browser, tab) : null;
-      const {frameTree} = frame ? {frameTree: {frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      const {frameTree} = await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       return {connection, sessionId, tab, frameTree};
     };
     // Isolated world: the page cannot redefine what it reports. The shared

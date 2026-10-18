@@ -63,14 +63,6 @@ export class DisplayDocuments {
   const target=stored.target_id,document=stored.document_id,tab=await this.target(browser,stored);
   return ()=>stored.target_id===target&&stored.document_id===document&&tab.document_id===document&&this.current(tab);
  }
- // MP-08/MP-10/MP-11: the event-bound frame of `stored`'s requested loader, or null (the caller reads live):
- // no observer yet (it attaches now), a navigation pending, or the loader is not the current one.
- async frame(browser,stored){
-  let tab;
-  try{tab=await this.target(browser,stored);}catch{return null;}
-  const entry=this.connection(tab);
-  return tab.document_id===stored.document_id&&this.current(tab)&&entry.frame?{id:entry.frame,loaderId:entry.document}:null;
- }
  connection(tab){const s=tab[snapshot];if(!s)throw Error('MP-11: display document unbound');return s.entry;}
  async validate(tab){
   if(this.current(tab))return true;
