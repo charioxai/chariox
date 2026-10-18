@@ -78,13 +78,16 @@ export class DesktopSource {
       if(header.width!==this.binding.width||header.height!==this.binding.height||!validMasks(header.protected_regions,header.width,header.height))throw Error('MP-11: desktop raster protection/geometry');
     },(header,pixels)=>{
       if(this.closed)return;
-      const raw=raster.apply(header,pixels);raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
-      this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial);
+      this.helperFrame(header,raster.apply(header,pixels));
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     const scope=await this.scope();
     child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
       mask:scope.mask,values:scope.values,processes:scope.processes,browser_processes:scope.browser_processes})+'\n');
+  }
+  helperFrame(header,raw) {
+    raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
+    this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial,header.captured_ms);
   }
   // MP-08/MP-10/MP-11: the native worker reads the owned desktop root into
   // private slots and encodes with x264; every readback is masked here, bound

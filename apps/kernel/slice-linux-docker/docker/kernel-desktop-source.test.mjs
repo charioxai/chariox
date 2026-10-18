@@ -243,3 +243,18 @@ test('MP-08/MP-11 a new source with a tracked fill measures while it waits for i
     }finally{await f.source.close()}
   }
 });
+
+test('MP-08/MP-11 helper frames carry their capture time into the gate, so a tracked fill can start the helper stream',async()=>{
+  const f=fillFixture();
+  f.source.native=null;f.source.startNative=f.source.startHelper=async()=>{};
+  f.source.gate={protectionSerial:0,protection:null,step:async()=>{
+    const started=Date.now();f.source.gate.protectionSerial=1;
+    // The helper's header carries captured_ms; the frame arrives through the helper callback, not offer().
+    const sample=f.frame(1);f.source.helperFrame({protected_regions:[],protection_serial:1,captured_ms:started-5},sample.raw);
+    return {started,verified:1,changed:false};
+  }};
+  try{
+    await f.source.start();
+    assert.equal(f.published.length,1,'the helper frame the adopted measurement covers is published');
+  }finally{await f.source.close()}
+});
