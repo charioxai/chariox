@@ -113,3 +113,13 @@ makes the next proof-free answer require trusted entry and leaves the decision
 pending. Verify fresh sudo and access/extension decisions still need proof.
 Record baseline failure, fixed behavior, recordings and exact source identities.
 Source and component tests alone do not accept this row.
+
+## MP-08 / MP-10 / MP-11: legacy sudo disclosure
+
+Required scenario `kernel-sudo/LEGACY-DISCLOSURE`: before approval, a browser
+that consumes only the popup title and message must still display the target
+agent, session and complete task. The message is a compatibility fallback;
+structured clients also receive `sudo_request`. The full task must survive
+beyond the structured summary's 160-character limit. Verify both DPR1 and DPR2
+through the hosted relay, refuse the request and confirm no task runs. The
+baseline must show the missing disclosure with approval still enabled.

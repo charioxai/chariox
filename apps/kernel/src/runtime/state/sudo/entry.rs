@@ -155,15 +155,19 @@ impl KernelRuntimeState {
         };
         let agent = self.owned.agent_store.get_agent(&entry.agent_id)?;
         let session = self.owned.session_store.get_session(&entry.session_id)?;
-        let summary = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut task_summary: String = summary
+        // Keep a complete, readable fallback for clients that project only
+        // title/message and ignore the structured sudo presentation.
+        let task_description: String = prompt
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
             .chars()
             .filter(|c| {
                 !c.is_control() && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
             })
-            .take(160)
             .collect();
-        if summary.chars().count() > 160 {
+        let mut task_summary: String = task_description.chars().take(160).collect();
+        if task_description.chars().count() > 160 {
             task_summary.push('…');
         }
         let presentation = SudoRequestPresentation {
@@ -180,10 +184,23 @@ impl KernelRuntimeState {
         } else {
             format!("{requester_name} wants to run one sudo task")
         };
-        let mut interaction = RuntimeInteraction::for_kernel_operation(&entry.entry_id, &entry.entry_id, title,
-            "Sudo allows critical approvals across this kernel until this task yields or is revoked.",
-            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
-            .with_timeout_sec(seconds).with_sudo_request(presentation);
+        let message = format!(
+            "Agent: {}\nSession: {}\nTask: {}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
+            presentation.agent_name, presentation.session_name, task_description,
+        );
+        let mut interaction = RuntimeInteraction::for_kernel_operation(
+            &entry.entry_id,
+            &entry.entry_id,
+            title,
+            message,
+            vec![
+                RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                    .requiring_passkey(),
+            ],
+        )
+        .with_timeout_sec(seconds)
+        .with_sudo_request(presentation);
         if let Some(requester) = requester {
             interaction = interaction.with_requester(requester);
         }

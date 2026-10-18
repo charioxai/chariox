@@ -1075,7 +1075,7 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
     let id = grant_id.clone();
     let task = tokio::spawn(async move { state.request_kernel_sudo(&id, request).await });
     let prompt = popup(&f.state).await;
-    // MP-08 / MP-10 / MP-11: no technical wall in the default question.
+    // MP-08 / MP-10 / MP-11: legacy browsers retain only these fields.
     let value = serde_json::to_value(&prompt).unwrap();
     assert_eq!(
         value["sudo_request"]["task"],
@@ -1097,7 +1097,21 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
     assert_eq!(value["requester"]["pid"], std::process::id());
     assert!(!prompt.message.contains(&f.request.session_id));
     assert!(!prompt.message.contains("OS pid"));
-    assert!(!prompt.message.contains("external first line"));
+    #[derive(serde::Deserialize)]
+    struct LegacyBrowserPrompt {
+        message: String,
+    }
+    let legacy: LegacyBrowserPrompt = serde_json::from_value(value.clone()).unwrap();
+    assert!(legacy
+        .message
+        .contains("external first line full second line"));
+    let presentation = prompt.sudo_request.as_ref().unwrap();
+    assert!(legacy
+        .message
+        .contains(&format!("Agent: {}", presentation.agent_name)));
+    assert!(legacy
+        .message
+        .contains(&format!("Session: {}", presentation.session_name)));
     assert!(f.state.passkey_prompts_for("guest").is_empty());
     let mut answer = RespondToInteractionRequest {
         session_id: prompt.session_id.clone(),
@@ -1660,4 +1674,42 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         .load_subject_events_by_kind(&turn.entry_id, "kernel_access.sudo", 10)
         .unwrap();
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
+}
+
+// MP-08 / MP-10 / MP-11: the legacy fallback must not lose the end of a task.
+#[tokio::test]
+async fn legacy_sudo_message_keeps_full_task_beyond_structured_summary() {
+    let f = fixture();
+    let grant = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut request = external_request(&f);
+    request.prompt = format!("{}\nlast authorized operation", "review build ".repeat(20));
+    let expected = request
+        .prompt
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let state = f.state.clone();
+    let waiting = tokio::spawn(async move { state.request_kernel_sudo(&grant, request).await });
+    let prompt = popup(&f.state).await;
+    assert!(prompt.message.contains(&expected));
+    assert!(!prompt
+        .sudo_request
+        .as_ref()
+        .unwrap()
+        .task_summary
+        .contains("last authorized operation"));
+    f.state
+        .answer_terminal_runtime_interaction(
+            &prompt.session_id,
+            &prompt.interaction_id,
+            "refuse",
+            None,
+            Some("local"),
+            None,
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    assert!(waiting.await.unwrap().is_err());
 }
