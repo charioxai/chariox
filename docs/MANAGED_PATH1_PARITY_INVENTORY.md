@@ -19,7 +19,8 @@ Known Vault values are scrubbed before label truncation in the private helper
 and again before public projection. Public labels/actions remain available when
 another field is protected; handles retain observer, revision, process and
 surface fences. Pixel masking and clipboard observation keep their existing
-independent capture paths.
+independent capture paths. Navigation AX does not authorize browser-owned
+clipboard bytes; the private browser marker preserves that existing fence.
 
 These changed input-admission and observation anchors require current MP-11
 semantic review. Fail-first Node/Python regressions are supplementary evidence;

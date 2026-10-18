@@ -346,6 +346,9 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible)
         finally:connection.close()
+        # MP-11: navigation AX never proves browser clipboard contents public.
+        for node in nodes:
+            if node['pid'] in browsers:node['browser']=True
         # MP-11: pixel coverage still uses the independent CDP placement proof.
         # AX exposes public navigation; field values are filtered above and again
         # through the live Vault value policy before the model projection.

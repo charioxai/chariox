@@ -89,6 +89,10 @@ class TraversalTest(unittest.TestCase):
         self.driver = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.driver)
         self.driver.alive = lambda process: True
+        # MP-11: synthetic trees have no fill registrations; never read the
+        # launching account's real runtime ledger in a source fixture.
+        fills=patch.object(self.driver._fills,'read',return_value=[])
+        fills.start();self.addCleanup(fills.stop)
 
     def tearDown(self):
         for name, module in self.saved.items():

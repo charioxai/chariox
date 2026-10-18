@@ -42,7 +42,7 @@ def clipboard_source(connection, processes, tree, accessibility):
     pid=identity[1]
     process=next((p for p in processes if p['pid']==pid),None)
     nodes=[n for n in tree.get('nodes',[]) if n.get('pid')==pid]
-    if not process or not accessibility.alive(process) or not nodes or any(n.get('protected') for n in nodes):return None
+    if not process or not accessibility.alive(process) or not nodes or any(n.get('protected') or n.get('browser') for n in nodes):return None
     return (identity[0],pid,process['started'])
 
 

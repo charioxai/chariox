@@ -55,6 +55,14 @@ class ClipboardTests(unittest.TestCase):
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
             self.assertIsNone(m.public_clipboard([p],a));read.assert_not_called()
 
+    def test_mp11_public_browser_navigation_does_not_authorize_clipboard_values(self):
+        p,t,a,o,c=self.setup()
+        a.snapshot.return_value={**t,'nodes':[{'pid':77,'protected':False,'browser':True}]}
+        with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run') as read:
+            self.assertIsNone(m.public_clipboard([p],a))
+            with self.assertRaises(ValueError):m.input_admission([p],a)
+        read.assert_not_called()
+
     def test_complete_public_owned_source_allows_the_same_read_and_paste_policy(self):
         p,t,a,o,c=self.setup()
         with patch('Xlib.display.Display',return_value=c),patch.object(m.subprocess,'run',return_value=SimpleNamespace(stdout=b'public',returncode=0)):
