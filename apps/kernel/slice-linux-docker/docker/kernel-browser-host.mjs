@@ -190,6 +190,7 @@ export class KernelBrowserHost {
       app_origin: appRestoreOrigin(saved.active_app_origin),
       apps: Array.isArray(saved.app_origins) ? saved.app_origins.map(appRestoreOrigin).filter(Boolean).slice(0, TAB_LIMIT) : [],
       until: Date.now() + 30_000 };
+    if (!this.pendingActive.tab_id && !this.pendingActive.app_origin) this.pendingActive = null;
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
