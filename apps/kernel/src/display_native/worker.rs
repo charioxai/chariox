@@ -1,5 +1,6 @@
 //! MP-08/MP-10/MP-11: private control, bounded leases and packet ownership.
 use super::{
+    direct::Direct,
     exact::ExactWorker,
     ffi::{self, Capture},
     raster::{self, Slot},
@@ -27,6 +28,12 @@ struct Config {
     /// MP-08/MP-10/MP-11: private kernel-resolved owned-window crop.
     #[serde(default)]
     window_region: Option<WindowRegion>,
+    /// L3: this worker's frame-channel token; leases need it and the retire pipe.
+    #[serde(default)]
+    frames: Option<String>,
+    /// L3: Node's synchronous retire pipe is fd 3; state records need it.
+    #[serde(default)]
+    retires: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +92,75 @@ mod region_tests {
         // The worker's own bound owner is the only inventory owner.
         assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
     }
+    // L3: the worker auto-encodes only under a current, unexpired record.
+    #[test]
+    fn mp11_auto_state_refuses_retired_and_expired_generations() {
+        let state = |generation: u64, until_ms: f64| {
+            serde_json::from_value::<AutoState>(json!({"generation":generation,"encoder":"motion","bitrate":8000000,"reduced":false,"until_ms":until_ms})).unwrap()
+        };
+        let mut auto = Auto::default();
+        assert!(auto.job(1, 0.).is_none());
+        auto.arm(state(2, 100.)).unwrap();
+        let (q, generation) = auto.job(7, 50.).unwrap();
+        assert_eq!(
+            (
+                generation,
+                q.serial,
+                q.stripes,
+                q.unprotected,
+                q.regions.len()
+            ),
+            (2, 7, false, true, 0)
+        );
+        assert_eq!(q.reset, json!(false));
+        assert!(
+            auto.job(8, 100.).is_none(),
+            "an expired verdict stops itself"
+        );
+        auto.retire(2);
+        assert!(
+            auto.job(9, 50.).is_none(),
+            "a retire holds every later readback"
+        );
+        // A record queued before the retire arrives after it: ignored, not fatal.
+        auto.arm(state(2, 1e15)).unwrap();
+        auto.arm(state(1, 1e15)).unwrap();
+        assert!(
+            auto.job(9, 50.).is_none(),
+            "a superseded record never revives a retired generation"
+        );
+        auto.arm(state(4, 1e15)).unwrap();
+        assert!(
+            auto.arm(state(3, 1e15)).is_err(),
+            "generations never go back"
+        );
+        auto.retire(3);
+        assert!(
+            auto.job(10, 50.).is_some(),
+            "an older retire keeps a newer record"
+        );
+        for bad in [
+            json!({"generation":5,"encoder":"../x","bitrate":8000000,"reduced":false,"until_ms":1}),
+            json!({"generation":5,"encoder":"motion","bitrate":1,"reduced":false,"until_ms":1}),
+        ] {
+            assert!(auto.arm(serde_json::from_value(bad).unwrap()).is_err());
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(
+                r#"{"lease":{"generation":5,"sequence":1,"chain":2,"template":{"kind":"video"}}}"#
+            ),
+            Ok(Command::Lease { .. })
+        ));
+        assert!(
+            serde_json::from_str::<Command>(r#"{"state_retire":3}"#).is_err(),
+            "retires take the synchronous pipe only"
+        );
+        // A record cannot carry masks: protected frames always take a request.
+        assert!(serde_json::from_str::<Command>(
+            r#"{"state":{"generation":5,"encoder":"motion","bitrate":8000000,"reduced":false,"until_ms":1,"regions":[]}}"#
+        )
+        .is_err());
+    }
     #[test]
     fn mp11_region_config_cannot_escape_owned_window_or_widen_legacy_geometry() {
         let base = json!({"pid":42,"width":1280,"height":174,"pool":"/owned/pool",
@@ -140,6 +216,12 @@ enum Command {
     },
     Retire {
         retire: String,
+    },
+    State {
+        state: AutoState,
+    },
+    Lease {
+        lease: super::direct::Grant,
     },
     Commit {
         commit: String,
@@ -229,6 +311,85 @@ struct Pointer {
 struct WindowsQuery {
     id: u64,
 }
+/// L3 (AUDIT2 §4): Node's state record lets the codec thread encode each
+/// readback as an unmasked whole frame without a request. Node still fences,
+/// masks and publishes every frame; it uses an auto-encoded packet only when
+/// that fence found no protected region, the generation is still current and
+/// the codec chain is unbroken. A retire stops auto-encoding before Node acts
+/// on the event; the record also expires on its own (`until_ms`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AutoState {
+    generation: u64,
+    encoder: String,
+    bitrate: i32,
+    reduced: bool,
+    until_ms: f64,
+}
+#[derive(Default)]
+pub(super) struct Auto {
+    state: Option<AutoState>,
+    retired: u64,
+}
+impl Auto {
+    pub(super) fn arm(&mut self, state: AutoState) -> Result<(), String> {
+        super::sessions::session_name(&state.encoder)?;
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|s| state.generation < s.generation)
+            || !state.until_ms.is_finite()
+            || !(500000..=64000000).contains(&state.bitrate)
+        {
+            return Err("MP-11: native state record".into());
+        }
+        // A record queued on stdin before a retire reached the pipe: its
+        // generation stays retired and the worker lives on.
+        if state.generation <= self.retired {
+            return Ok(());
+        }
+        self.state = Some(state);
+        Ok(())
+    }
+    pub(super) fn retire(&mut self, generation: u64) {
+        self.retired = self.retired.max(generation);
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|s| s.generation <= self.retired)
+        {
+            self.state = None;
+        }
+    }
+    /// The current, unexpired record generation.
+    pub(super) fn current(&self, now: f64) -> Option<u64> {
+        self.state
+            .as_ref()
+            .filter(|s| now < s.until_ms)
+            .map(|s| s.generation)
+    }
+    pub(super) fn encoder(&self) -> Option<&str> {
+        self.state.as_ref().map(|s| s.encoder.as_str())
+    }
+    /// The encode for this readback, or none (no current, unexpired record).
+    pub(super) fn job(&self, serial: u64, now: f64) -> Option<(Encode, u64)> {
+        let s = self.state.as_ref().filter(|s| now < s.until_ms)?;
+        Some((
+            Encode {
+                id: 0,
+                encoder: s.encoder.clone(),
+                serial,
+                bitrate: s.bitrate,
+                reset: json!(false),
+                regions: Vec::new(),
+                stripes: false,
+                reduced: s.reduced,
+                unprotected: true,
+            },
+            s.generation,
+        ))
+    }
+}
 fn admit_default() -> bool {
     true
 }
@@ -254,6 +415,22 @@ pub(super) fn readback_wait(dirty: bool, free_slot: bool, elapsed: Duration) -> 
         1000
     }
 }
+/// The poll wait. A lease also checks quiet and stalled credit on its own;
+/// a held readback sleeps until credit, retire or control wakes the poll.
+pub(super) fn poll_timeout(
+    dirty: bool,
+    free_slot: bool,
+    held: bool,
+    lease_link: bool,
+    elapsed: Duration,
+) -> i32 {
+    let timeout = readback_wait(dirty, free_slot, elapsed);
+    if held || lease_link && !(0..=20).contains(&timeout) {
+        20
+    } else {
+        timeout
+    }
+}
 pub(super) fn epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -277,7 +454,7 @@ pub(super) fn emit_to(
         .and_then(|_| out.flush())
         .map_err(|_| "MP-11: native reply pipe".into())
 }
-fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
+pub(super) fn emit(header: Value, payload: &[u8]) -> Result<(), String> {
     emit_to(
         &mut std::io::stdout().lock(),
         header,
@@ -290,6 +467,35 @@ pub(super) fn reply(id: u64, value: Value) -> Result<(), String> {
     emit_to(
         &mut std::io::stdout().lock(),
         json!({"reply":id,"length":bytes.len()}),
+        &bytes,
+        8 * 1024 * 1024,
+    )
+}
+/// Where the codec thread sends an encode: Node's request, Node's auto entry,
+/// or the kernel frame channel under a lease (L3).
+#[derive(Clone, Copy)]
+enum Route {
+    Reply,
+    Auto(u64),
+    Lease(u64),
+}
+fn locked_direct(direct: &std::sync::Mutex<Direct>) -> std::sync::MutexGuard<'_, Direct> {
+    direct.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// L3: tell Node which lease generations ended; it then needs a fresh readback.
+fn resume(direct: &std::sync::Mutex<Direct>) -> Result<bool, String> {
+    let ended = std::mem::take(&mut locked_direct(direct).ended);
+    for generation in &ended {
+        emit(json!({"ended":generation,"length":1}), &[0])?;
+    }
+    Ok(!ended.is_empty())
+}
+/// L3: an auto-encode reply names its readback serial and state generation.
+fn auto_reply(serial: u64, generation: u64, value: Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&value).map_err(|_| "MP-11: native reply")?;
+    emit_to(
+        &mut std::io::stdout().lock(),
+        json!({"auto":serial,"generation":generation,"length":bytes.len()}),
         &bytes,
         8 * 1024 * 1024,
     )
@@ -409,21 +615,65 @@ pub(super) fn run() -> Result<(), String> {
     let mut refresh = true;
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut wake = None;
+    let mut inventory = None;
     let mut damage_at = epoch();
     // MP-08/MP-10: video encoding runs on its own thread so readback continues
     // during x264; capture damage queues while that thread holds the sessions.
-    let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root)));
+    let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root.clone())));
     let mut pending_rows = 0u8;
     let (codec_tx, codec_rx) =
-        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64)>(4);
+        std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64, Route)>(4);
+    // L3: Node's synchronous retire pipe (fd 3) and the kernel's frame channel.
+    let retires = if config.retires {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(3, &mut stat) } != 0
+            // Node's stdio pipes are socketpairs.
+            || !matches!(stat.st_mode & libc::S_IFMT, libc::S_IFIFO | libc::S_IFSOCK)
+            || unsafe { libc::fcntl(3, libc::F_SETFL, libc::O_NONBLOCK) } != 0
+        {
+            return Err("MP-11: native retire pipe".into());
+        }
+        3
+    } else {
+        -1
+    };
+    let link = match (
+        &config.frames,
+        std::env::var_os("CHARIOX_BROWSER_DISPLAY_FRAMES"),
+    ) {
+        (Some(token), Some(path))
+            if retires >= 0
+                && token.len() == 32
+                && token.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            std::os::unix::net::UnixStream::connect(path)
+                .ok()
+                .and_then(|mut link| {
+                    link.write_all(format!("{}\n", json!({ "hello": token })).as_bytes())
+                        .ok()?;
+                    Some(link)
+                })
+        }
+        _ => None,
+    };
+    let direct = std::sync::Arc::new(std::sync::Mutex::new(Direct::new(retires, link, root)));
     let codec_sessions = sessions.clone();
+    let codec_direct = direct.clone();
     std::thread::spawn(move || {
         let lock = || {
             codec_sessions
                 .lock()
                 .map_err(|_| "MP-11: native sessions poisoned".to_string())
         };
-        while let Ok((q, lease, queued)) = codec_rx.recv() {
+        // The codec's last row: the reference of its next delta.
+        let mut last: Option<(String, u64)> = None;
+        while let Ok((mut q, lease, queued, route)) = codec_rx.recv() {
+            if matches!(route, Route::Lease(_))
+                && locked_direct(&codec_direct)
+                    .needs_key(last.as_ref().filter(|(e, _)| *e == q.encoder).map(|l| l.1))
+            {
+                q.reset = json!(true);
+            }
             let started = epoch();
             // x264 runs between two short critical sections.
             let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
@@ -441,7 +691,20 @@ pub(super) fn run() -> Result<(), String> {
                     if let Some(spans) = value["timings"].as_array_mut() {
                         spans.push(json!(["native_codec_queue", queued, started]));
                     }
-                    reply(q.id, value)
+                    if let Some(row) = value["stripes"].as_array().and_then(|r| r.last()) {
+                        last = row["sequence"].as_u64().map(|s| (q.encoder.clone(), s));
+                    }
+                    match route {
+                        Route::Auto(generation) => auto_reply(q.serial, generation, value),
+                        Route::Lease(generation) => {
+                            let mut direct = locked_direct(&codec_direct);
+                            if !direct.send(generation, &value, epoch()) {
+                                direct.discard(&value);
+                            }
+                            Ok(())
+                        }
+                        Route::Reply => reply(q.id, value),
+                    }
                 })
                 .is_err()
             {
@@ -450,14 +713,25 @@ pub(super) fn run() -> Result<(), String> {
         }
     });
     let mut bounds = [0, 0, w, h];
+    let mut damaged = Instant::now();
     loop {
         if unsafe { ffi::cx_capture_damage(capture.0) } != 0 {
             if !dirty {
                 damage_at = epoch();
             }
             dirty = true;
+            damaged = Instant::now();
         }
-        let due = readback_due(dirty, wake.is_some(), last.elapsed());
+        // L3: a leased readback waits for the kernel's credit (delivered).
+        let held = {
+            let mut d = locked_direct(&direct);
+            d.drain();
+            d.hold(damaged.elapsed())
+        };
+        if resume(&direct)? {
+            (dirty, refresh, wake) = (true, true, Some(epoch()));
+        }
+        let due = !held && readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -519,8 +793,48 @@ pub(super) fn run() -> Result<(), String> {
                     unsafe {
                         ffi::cx_capture_cpu(capture.0, cpu.as_mut_ptr());
                     }
+                    // A full codec queue leaves this readback to Node's request.
+                    let (job, leased) = {
+                        let mut d = locked_direct(&direct);
+                        d.drain();
+                        let leased = d.leased(epoch());
+                        (d.auto.job(serial, epoch()), leased)
+                    };
+                    let auto_generation = match job {
+                        Some((q, generation)) => {
+                            let route = if leased == Some(generation) {
+                                Route::Lease(generation)
+                            } else {
+                                Route::Auto(generation)
+                            };
+                            match codec_tx.try_send((q, slots[index].codec_lease(), epoch(), route))
+                            {
+                                Ok(()) => Some(route),
+                                Err(std::sync::mpsc::TrySendError::Full(_)) => None,
+                                Err(_) => {
+                                    return Err("MP-11: native codec queue unavailable".into())
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+                    // L3: a leased readback never reaches Node; the codec job
+                    // pins its pixels, so the slot is free again now.
+                    if leased.is_some() {
+                        slots[index].serial = None;
+                        if auto_generation.is_none() {
+                            dirty = true;
+                        }
+                        refresh = false;
+                        wake = None;
+                        continue;
+                    }
+                    let auto_generation = match auto_generation {
+                        Some(Route::Auto(generation)) => Some(generation),
+                        _ => None,
+                    };
                     emit(
-                        json!({"identical":changed == 0,"shift_adjacent":shift_header,"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
+                        json!({"auto":auto_generation,"identical":changed == 0,"shift_adjacent":shift_header,"motion_height":motion_height,"adjacent_damage_tiles":adjacent_headers,"damage_tiles":tile_headers,"native_cpu":cpu,"slot":index,"width":w,"height":h,"length":1,"serial":serial,"base_serial":admitted,"patch":null,"signature":format!("{serial:016x}"),"captured_ms":at,"capture_ms":epoch()-at,"damage":bounds,"damage_ready_ms":damage_at,"native_read_ms":epoch(),"input_wake_ms":wake}),
                         &[0],
                     )?;
                     refresh = false;
@@ -528,7 +842,14 @@ pub(super) fn run() -> Result<(), String> {
                 wake = None;
             }
         }
-        let timeout = readback_wait(dirty, slots.iter().any(|s| s.available()), last.elapsed());
+        let [retire_fd, link_fd] = locked_direct(&direct).fds();
+        let timeout = poll_timeout(
+            dirty,
+            slots.iter().any(|s| s.available()),
+            held,
+            link_fd >= 0,
+            last.elapsed(),
+        );
         let mut fds = [
             libc::pollfd {
                 fd: 0,
@@ -540,12 +861,41 @@ pub(super) fn run() -> Result<(), String> {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: retire_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: link_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
-        if unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) } < 0 {
+        if unsafe { libc::poll(fds.as_mut_ptr(), 4, timeout) } < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err("MP-11: native poll".into());
+        }
+        if fds[2].revents != 0 || fds[3].revents != 0 {
+            let (delivered, encoder) = {
+                let mut d = locked_direct(&direct);
+                d.drain();
+                let delivered = d.receive();
+                (delivered, d.auto.encoder().map(str::to_owned))
+            };
+            if let (Some(encoder), false) = (encoder, delivered.is_empty()) {
+                let mut s = sessions
+                    .lock()
+                    .map_err(|_| "MP-11: native sessions poisoned")?;
+                for revision in delivered {
+                    s.delivered(&encoder, revision);
+                }
+            }
+            if resume(&direct)? {
+                (dirty, refresh, wake) = (true, true, Some(epoch()));
+            }
         }
         if fds[0].revents & (libc::POLLIN | libc::POLLHUP) == 0 {
             continue;
@@ -597,6 +947,20 @@ pub(super) fn run() -> Result<(), String> {
                     slot.serial = None;
                 }
                 Command::Retire { retire } => locked()?.retire(&retire),
+                Command::State { state } => {
+                    let mut d = locked_direct(&direct);
+                    d.drain();
+                    if retires < 0 {
+                        return Err("MP-11: native state without retire pipe".into());
+                    }
+                    d.auto.arm(state)?
+                }
+                Command::Lease { lease } => {
+                    locked_direct(&direct).grant(lease, epoch())?;
+                    if resume(&direct)? {
+                        (dirty, refresh, wake) = (true, true, Some(epoch()));
+                    }
+                }
                 Command::Plans { plans } => unsafe {
                     ffi::cx_capture_plans(capture.0, plans as i32)
                 },
@@ -629,9 +993,10 @@ pub(super) fn run() -> Result<(), String> {
                     reply(p.id, json!({ "dragged": dragged }))?;
                 }
                 // A failed read refuses this request only; the capture keeps running.
-                Command::Windows { windows: q } => match owner_windows(owner) {
-                    Ok(rows) => reply(q.id, json!({ "windows": rows }))?,
-                    Err(_) => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
+                // The walk runs on its own thread: it never blocks readbacks or encodes.
+                Command::Windows { windows: q } => match &*inventory.get_or_insert_with(|| super::inventory::Inventory::start(owner).ok()) {
+                    Some(inventory) => inventory.ask(q.id),
+                    None => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
                 },
                 // MP-08/MP-10: [keysym, shift] one key press/release.
                 Command::Key {
@@ -689,9 +1054,9 @@ pub(super) fn run() -> Result<(), String> {
                         .ok_or("MP-11: native encode lease")?;
                     // MP-10 (#933 review 7): a full codec queue refuses this
                     // encode softly (Node skips one sample); never fatal.
-                    match codec_tx.try_send((q, slot.codec_lease(), epoch())) {
+                    match codec_tx.try_send((q, slot.codec_lease(), epoch(), Route::Reply)) {
                         Ok(()) => {}
-                        Err(std::sync::mpsc::TrySendError::Full((q, _, _))) => {
+                        Err(std::sync::mpsc::TrySendError::Full((q, _, _, _))) => {
                             reply(q.id, json!({"busy": true}))?
                         }
                         Err(_) => return Err("MP-11: native codec queue unavailable".into()),
@@ -760,6 +1125,9 @@ fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
     }
     let mut data = [0i64; 32 * 13];
     let count = unsafe { ffi::cx_capture_inventory(pid as libc::c_ulong, data.as_mut_ptr(), 32) };
+    window_rows(&data, count)
+}
+pub(super) fn window_rows(data: &[i64; 32 * 13], count: i32) -> Result<Vec<Value>, String> {
     if count < 0 { return Err("MP-11: native window inventory".into()); }
     Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }

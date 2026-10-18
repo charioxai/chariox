@@ -2,6 +2,8 @@
  * authorize damage reuse. Owner 0 reads the root of the kernel-owned desktop
  * X server (never a login session); the kernel masks it before any encode.
  * No provider state. */
+#include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <time.h>
 static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t);return t.tv_sec*1000.+t.tv_nsec/1000000.;}
@@ -31,6 +33,10 @@ struct Capture {
     unsigned long insets[4];
     unsigned long owner;
     Atom state_atom,fullscreen_atom;
+    /* Owned-surface fence: proved once, then re-proved only after the server reports a change to
+     * the window, its ancestors or the three properties the binding reads. */
+    Atom pid_atom,insets_atom;
+    Window ancestors[16];int ancestor_count,surface_dirty,woken;
     uint8_t *previous;
     /* The slot holding the latest readback. Only this worker writes slots,
      * and a slot is compared before it can be overwritten by a new readback. */
@@ -198,7 +204,10 @@ image:
     c->hash_cur=malloc(height*sizeof(uint64_t));c->hash_last=malloc(height*sizeof(uint64_t));
     if (!c->previous||!c->hash_cur||!c->hash_last) goto fail;
     c->damage=XDamageCreate(c->display,c->window,XDamageReportRawRectangles);
-    XSelectInput(c->display,c->window,StructureNotifyMask);
+    c->pid_atom=XInternAtom(c->display,"_NET_WM_PID",False);c->insets_atom=XInternAtom(c->display,"_GTK_FRAME_EXTENTS",False);
+    if(!c->state_atom)c->state_atom=XInternAtom(c->display,"_NET_WM_STATE",False);
+    XSelectInput(c->display,c->window,c->desktop?StructureNotifyMask:StructureNotifyMask|PropertyChangeMask);
+    c->surface_dirty=1; /* the first readback proves the binding after the events are armed */
     return c;
 fail:
     cx_capture_close(c); return NULL;
@@ -226,7 +235,7 @@ struct Capture *cx_capture_open_selected_region(unsigned long owner,Window selec
 }
 /* Numeric-only inventory on the kernel-owned private X server. Never names
  * a desktop/root surface, title, URL, pixels or credentials. */
-struct InventorySearch {Display *display;Window root,focus;unsigned long owner;int64_t *out;int limit,found,failed;unsigned remaining;};
+struct InventorySearch {Display *display;Window root,focus;unsigned long owner;int64_t *out;int limit,found,failed,select;unsigned remaining;};
 static void inventory_windows(struct InventorySearch *s,Window parent,unsigned depth){
     Window root,ancestor,*children=NULL;unsigned count=0;
     if(!XQueryTree(s->display,parent,&root,&ancestor,&children,&count)){s->failed=1;return;}
@@ -235,6 +244,8 @@ static void inventory_windows(struct InventorySearch *s,Window parent,unsigned d
     for(unsigned i=0;i<count&&!s->failed;i++){
         if(window_pid(s->display,children[i])==s->owner){
             XWindowAttributes a;Window transient=0,child;int x,y;unsigned long insets[4];
+            /* Selected before the reads below, so a change after them reaches the event queue. */
+            if(s->select)XSelectInput(s->display,children[i],StructureNotifyMask|PropertyChangeMask|FocusChangeMask);
             if(!XGetWindowAttributes(s->display,children[i],&a)||a.width<1||a.height<1||s->found==s->limit||
                 !XTranslateCoordinates(s->display,children[i],s->root,0,0,&x,&y,&child)||
                 !frame_insets(s->display,children[i],insets)){s->failed=1;break;}
@@ -248,13 +259,66 @@ static void inventory_windows(struct InventorySearch *s,Window parent,unsigned d
     }
     if(children)XFree(children);
 }
+static int inventory_read(Display *d,unsigned long owner,int64_t *out,int limit,int select){
+    struct InventorySearch s={.display=d,.root=DefaultRootWindow(d),.owner=owner,.out=out,.limit=limit,.select=select,.remaining=2048};
+    int revert;XGetInputFocus(d,&s.focus,&revert);
+    inventory_windows(&s,s.root,0);return s.failed?-1:s.found;
+}
 int cx_capture_inventory(unsigned long owner,int64_t *out,int limit){
     if(owner<=1||limit<1||limit>32)return -1;
     Display *d=XOpenDisplay(NULL);if(!d)return -1;
-    struct InventorySearch s={.display=d,.root=DefaultRootWindow(d),.owner=owner,.out=out,.limit=limit,.remaining=2048};
-    int revert;XGetInputFocus(d,&s.focus,&revert);
-    inventory_windows(&s,s.root,0);XCloseDisplay(d);return s.failed?-1:s.found;
+    int found=inventory_read(d,owner,out,limit,0);XCloseDisplay(d);return found;
 }
+/* L1: a persistent inventory connection. The walk is the one above; this adds the events that can
+ * change its result (root children, and the owner windows' structure, focus and the properties the
+ * rows read), so a caller can walk when told instead of polling. A missed event only delays a
+ * discovery: every consumer still proves its window with the exact fence before use. */
+struct Inventory {Display *display;unsigned long owner;Atom pid,state,insets,transient;};
+static Display *inventory_display;
+static XErrorHandler inventory_previous;
+static int inventory_failed(Display *display,XErrorEvent *event) {
+    if(display==inventory_display)return 0; /* a selected window that was destroyed meanwhile */
+    return inventory_previous?inventory_previous(display,event):0;
+}
+struct Inventory *cx_inventory_open(unsigned long owner){
+    if(owner<=1)return NULL;
+    Display *d=XOpenDisplay(NULL);if(!d)return NULL;
+    struct Inventory *v=calloc(1,sizeof(*v));if(!v){XCloseDisplay(d);return NULL;}
+    v->display=d;v->owner=owner;
+    v->pid=XInternAtom(d,"_NET_WM_PID",False);v->state=XInternAtom(d,"_NET_WM_STATE",False);
+    v->insets=XInternAtom(d,"_GTK_FRAME_EXTENTS",False);v->transient=XInternAtom(d,"WM_TRANSIENT_FOR",False);
+    inventory_display=d;inventory_previous=XSetErrorHandler(inventory_failed);
+    XSelectInput(d,DefaultRootWindow(d),SubstructureNotifyMask);XSync(d,False);
+    return v;
+}
+int cx_inventory_read(struct Inventory *v,int64_t *out,int limit){
+    if(limit<1||limit>32)return -1;
+    return inventory_read(v->display,v->owner,out,limit,1);
+}
+/* Drains the queue; 1 when an event that can change the rows arrived. */
+int cx_inventory_changed(struct Inventory *v){
+    int changed=0;
+    while(XPending(v->display)){
+        XEvent e;XNextEvent(v->display,&e);
+        if(e.type==PropertyNotify){Atom a=e.xproperty.atom;changed|=a==v->pid||a==v->state||a==v->insets||a==v->transient;}
+        else changed=1;
+    }
+    return changed;
+}
+/* 1: a row may have changed; 2: the wake fd is readable; 0: timeout; -1: connection lost. Events a
+ * walk already read into Xlib's queue are checked before sleeping, so they wake the caller too. */
+int cx_inventory_wait(struct Inventory *v,int wake,int timeout_ms){
+    for(;;){
+        if(cx_inventory_changed(v))return 1;
+        struct pollfd p[2]={{.fd=ConnectionNumber(v->display),.events=POLLIN},{.fd=wake,.events=POLLIN}};
+        int n=poll(p,2,timeout_ms);
+        if(n<0&&errno==EINTR)continue;
+        if(n<0||p[0].revents&(POLLHUP|POLLERR|POLLNVAL))return -1;
+        if(n==0)return 0;
+        if(p[1].revents)return 2;
+    }
+}
+void cx_inventory_close(struct Inventory *v){if(v){XCloseDisplay(v->display);free(v);}}
 void cx_capture_cpu(struct Capture *c,double *out) {memcpy(out,c->cpu,sizeof(c->cpu));}
 
 int cx_capture_fd(struct Capture *c) { return ConnectionNumber(c->display); }
@@ -265,16 +329,67 @@ static int owned_window_current(struct Capture *c) {
     if(c->retired||!bound_surface(c)){c->retired=1;return 0;}
     return 1;
 }
+/* MP-11: ancestors can hide the window (map_state) without an event on it, so the fence also
+ * watches the chain below the root. Re-walked at every full check; a deeper tree grants nothing. */
+static int watch_ancestors(struct Capture *c) {
+    Window root,parent=c->window,*children=NULL;unsigned count=0;c->ancestor_count=0;
+    if(c->desktop)return 1;
+    int complete=0;
+    for(int depth=0;depth<16&&!complete;depth++){
+        if(!XQueryTree(c->display,parent,&root,&parent,&children,&count))return 0;
+        if(children)XFree(children);
+        if(parent==None||parent==root)complete=1;else c->ancestors[c->ancestor_count++]=parent;
+    }
+    if(!complete)return 0;
+    /* A window destroyed meanwhile makes the select fail: refuse instead of dying on the X error. */
+    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
+    redirect_previous=XSetErrorHandler(redirect_failed);
+    for(int i=0;i<c->ancestor_count;i++)XSelectInput(c->display,c->ancestors[i],StructureNotifyMask);
+    XSync(c->display,False);XSetErrorHandler(redirect_previous);redirect_display=NULL;
+    return !redirect_error;
+}
+static int surface_atom(struct Capture *c,Atom atom) {return atom==c->pid_atom||atom==c->state_atom||atom==c->insets_atom;}
+/* Everything bound_surface reads: attributes and mapping of the window and its ancestors, and
+ * the PID, state and frame-extents properties of the window. */
+static int surface_event(struct Capture *c,XEvent *event) {
+    Window at=event->xany.window;int watched=at==c->window;
+    for(int i=0;i<c->ancestor_count;i++)watched|=at==c->ancestors[i];
+    if(!watched)return 0;
+    switch(event->type){
+        case ConfigureNotify:case MapNotify:case UnmapNotify:case DestroyNotify:case ReparentNotify:case GravityNotify:return 1;
+        case PropertyNotify:return at==c->window&&surface_atom(c,event->xproperty.atom);
+    }
+    return 0;
+}
+/* Same effect as cx_capture_damage on a binding change; the wake it owes is delivered there. */
+static void note_surface_event(struct Capture *c,XEvent *event) {
+    if(event->type==DestroyNotify&&event->xdestroywindow.window==c->window)c->retired=1;
+    if(event->type==UnmapNotify&&event->xunmap.window==c->window)c->retired=1;
+    if(event->type==ConfigureNotify&&event->xconfigure.window==c->window&&
+        (event->xconfigure.width!=c->window_width||event->xconfigure.height!=c->window_height))c->retired=1;
+    c->surface_dirty=c->woken=1;
+}
+static Bool surface_predicate(Display *d,XEvent *event,XPointer arg) {(void)d;return surface_event((struct Capture *)arg,event);}
+static void take_surface_events(struct Capture *c) {
+    XEvent event;
+    while(XCheckIfEvent(c->display,&event,surface_predicate,(XPointer)c))note_surface_event(c,&event);
+}
+/* The binding is current while no event reported a change since the last full proof. Events the
+ * server generated before a reply reach the client before that reply. */
+static int surface_current(struct Capture *c) {
+    take_surface_events(c);
+    if(c->retired)return 0;
+    if(c->surface_dirty){
+        c->surface_dirty=0;
+        if(!watch_ancestors(c)||!bound_surface(c)){c->retired=1;return 0;}
+    }
+    return 1;
+}
 int cx_capture_damage(struct Capture *c) {
-    int dirty=0;
+    int dirty=c->woken;c->woken=0;
     while (XPending(c->display)) {
         XEvent event; XNextEvent(c->display,&event);
-        if(event.type==DestroyNotify&&event.xdestroywindow.window==c->window){c->retired=1;dirty=1;}
-        if(event.type==UnmapNotify&&event.xunmap.window==c->window){c->retired=1;dirty=1;}
-        if(event.type==ConfigureNotify&&event.xconfigure.window==c->window){
-            if(event.xconfigure.width!=c->window_width||event.xconfigure.height!=c->window_height)c->retired=1;
-            dirty=1;
-        }
+        if(surface_event(c,&event)){note_surface_event(c,&event);dirty=1;}
         if (event.type==c->event) {
             XRectangle r=((XDamageNotifyEvent *)&event)->area;
             if (r.x<c->xoffset+c->width && r.x+r.width>c->xoffset && r.y<c->offset+c->height && r.y+r.height>c->offset) dirty=1;
@@ -431,7 +546,9 @@ static void shift_plan(struct Capture *c,const uint8_t *raw,const uint8_t *base,
 int cx_capture_read(struct Capture *c, uint8_t *out, int *bounds) {
     c->tile_count=c->adjacent_count=-1;c->shift.valid=0;
     memset(c->cpu,0,sizeof(c->cpu));double at=capture_cpu();
-    if (!owned_window_current(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->xoffset,c->offset,AllPlanes)) return -1;
+    if (!surface_current(c) || !XShmGetImage(c->display,c->pixmap,c->image,c->xoffset,c->offset,AllPlanes)) return -1;
+    /* A change reported before the image reply makes this image unproven: prove it again or refuse. */
+    if (!surface_current(c)) return -1;
     c->cpu[0]=capture_cpu()-at;at=capture_cpu();
     size_t stride=(size_t)c->width*4, size=stride*c->height;
     uint8_t *raw=(uint8_t *)c->image->data;

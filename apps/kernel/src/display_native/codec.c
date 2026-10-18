@@ -138,8 +138,9 @@ struct Row {
      * normative H.264 decoding; valid until this row's next encode/close. */
     const uint8_t *recon_y,*recon_uv;
     int recon_y_stride,recon_uv_stride;
+    int stale; /* MP-11: the guard decoder skipped a packet; its frame certifies nothing until the next IDR. */
 };
-struct Codec { int width,height,bitrate,row_count,reduced,key_reduced,enc_width,enc_height,openh264; struct Row rows[8]; double models[8][2]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; char diagnostic[4096]; };
+struct Codec { int width,height,bitrate,row_count,reduced,key_reduced,enc_width,enc_height,openh264; struct Row rows[8]; double models[8][2]; uint8_t *masked,*full; double cpu[6]; AVBufferRef *device; int hardware_requested,fallback; int unprotected; uint64_t guard_decodes; char diagnostic[4096]; };
 /* MP-10/MP-11: bounded driver-only logs; never page content or pixels. */
 static _Thread_local struct Codec *diagnosing;
 static pthread_once_t diagnostic_once=PTHREAD_ONCE_INIT;
@@ -198,6 +199,10 @@ struct Codec *cx_codec_open(int width,int height,int bitrate,int row_count,int r
 /* MP-08/MP-10: hardware owns the same masked input/output path. A failed
  * device/context is visible in diagnostics, never presented as acceleration. */
 /* MP-08/MP-10: telemetry for the contention fallback actually applied. */
+/* MP-11: set before each encode by the caller that PROVED the capture holds no
+ * protected region; any other state (unknown, stale, protected) leaves it 0. */
+void cx_codec_unprotected(struct Codec *c,int unprotected) {c->unprotected=unprotected!=0;}
+uint64_t cx_codec_guard_decodes(struct Codec *c) {return c->guard_decodes;}
 int cx_codec_reduced(struct Codec *c) {return c->row_count==1&&c->enc_width!=c->width;}
 int cx_codec_backend(struct Codec *c) {return c->hardware_requested?(c->device&&!c->fallback?1:2):0;}
 int cx_codec_openh264(struct Codec *c) {return c->openh264;}
@@ -509,7 +514,13 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
             return -2;
         }
         at=cpu_ms();
-        int safe=output_safe(row,row->packet,length,c->width,h,y,regions,count);
+        /* MP-11: unprotected rows (no rgb) only certify exact repair, so a proven
+         * unprotected capture skips the decode of delta packets and marks the
+         * decoder stale; keys always decode and resynchronise it. */
+        int skip=c->unprotected&&!count&&!row->rgb&&!key&&row->decoder;
+        int safe=1;
+        if(skip)row->stale=1;
+        else{safe=output_safe(row,row->packet,length,c->width,h,y,regions,count);if(row->decoder){c->guard_decodes++;row->stale=0;}}
         c->cpu[4]+=cpu_ms()-at;
         if (safe<=0) { for(int i=0;i<8;i++)row_close(&c->rows[i]);return safe==0?-2:-1; }
         uint64_t reference=row->sequence;row->sequence++;
@@ -538,7 +549,7 @@ void cx_codec_repair_bounds(struct Codec *c,const uint8_t *source,const uint8_t 
         const uint8_t *luma=NULL,*cb=NULL,*cr=NULL;int step=1;
         if (!scaled&&row->recon_y&&row->recon_uv&&!row->hardware) {
             luma=row->recon_y+(size_t)local*row->recon_y_stride;cb=row->recon_uv+(size_t)(local/2)*row->recon_uv_stride;cr=cb+1;step=2;
-        } else if (!scaled&&f&&f->data[0]&&f->format==AV_PIX_FMT_YUV420P&&(f->color_range==AVCOL_RANGE_MPEG||f->color_range==AVCOL_RANGE_UNSPECIFIED)) {
+        } else if (!scaled&&!row->stale&&f&&f->data[0]&&f->format==AV_PIX_FMT_YUV420P&&(f->color_range==AVCOL_RANGE_MPEG||f->color_range==AVCOL_RANGE_UNSPECIFIED)) {
             luma=f->data[0]+(size_t)local*f->linesize[0];cb=f->data[1]+(size_t)(local/2)*f->linesize[1];cr=f->data[2]+(size_t)(local/2)*f->linesize[2];
         }
         for (int dx=x;dx<x+w;dx++) {

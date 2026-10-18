@@ -22,7 +22,7 @@ export class BusyInputQueue {
   // `lane` names the surface an input acts on (the page, or Chrome's own band): each observer has one queue per lane, so an
   // input that waits for the page's renderer never holds back the band's keys, which do not depend on it.
   constructor(run, reply, { retryMs = 500, limit = LIMIT, ttlMs = TTL_MS, staleMs = STALE_MS, sameDocument = () => false, event = () => {}, lane = () => '' } = {}) {
-    Object.assign(this, { run, reply, retryMs, limit, ttlMs, staleMs, sameDocument, event, lane }); this.queues = new Map(); this.stopped = false;
+    Object.assign(this, { run, reply, retryMs, limit, ttlMs, staleMs, sameDocument, event, lane }); this.queues = new Map(); this.attempts = new Set(); this.stopped = false;
   }
 
   /** How many inputs of `key` (an observer) wait, across its lanes. */
@@ -31,13 +31,17 @@ export class BusyInputQueue {
   async submit(key, command, options) {
     const slot = `${key}\0${this.lane(command)}`, queue = this.queues.get(slot);
     if (queue) return this.park(queue, command, options);
-    try { return await this.run(command, options); }
+    // The first attempt is in no queue yet: a retirement that lands while its fence waits aborts it here and keeps it from parking.
+    const attempt = { key, command, abort: new AbortController() };
+    this.attempts.add(attempt);
+    const signal = options?.signal ? AbortSignal.any([options.signal, attempt.abort.signal]) : attempt.abort.signal;
+    try { return await this.run(command, { ...options, signal }); }
     catch (error) {
-      if (this.stopped || !busy(error)) throw error;
+      if (this.stopped || signal.aborted || !busy(error)) throw error;
       const created = { key, slot, entries: [], draining: false };
       this.queues.set(slot, created);
       try { return this.park(created, command, options, error); } catch (refused) { this.queues.delete(slot); throw refused; }
-    }
+    } finally { this.attempts.delete(attempt); }
   }
 
   park(queue, command, options, cause) {
@@ -76,12 +80,15 @@ export class BusyInputQueue {
   // The parking reply ended the kernel's action for this input, so its authority ends here: the terminal that parked it
   // disconnected, or another actor took over its tab. A request already being admitted is cancelled at its next fence.
   retire(drop) {
+    for (const attempt of this.attempts) if (drop(attempt.key, attempt.command)) attempt.abort.abort();
     for (const queue of this.queues.values()) {
       const kept = [];
       for (const entry of queue.entries) if (drop(queue.key, entry.command)) { entry.abort.abort(); this.event('input_dropped'); } else kept.push(entry);
       queue.entries = kept;
     }
   }
+
+  retireAll() { this.retire(() => true); }
 
   stop() { this.stopped = true; this.queues.clear(); }
 }

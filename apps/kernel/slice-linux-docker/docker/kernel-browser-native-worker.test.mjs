@@ -4,7 +4,7 @@ import {NativeWorkerControl,nativeExactReplyLimit} from './kernel-browser-native
 import {NativePipe} from './kernel-browser-native-pipe.mjs';
 import {PortableEncoder,DisplayStream} from './kernel-browser-display.mjs';
 import {NativeRefiner} from './kernel-browser-refiner.mjs';
-import {displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {displayMaskRegions,displayUnprotected,maskNativeRaster} from './kernel-browser-pixels.mjs';
 test('MP-08/MP-10/MP-11 Retina exact replies fit private IPC without enlarging raw or encode bounds',async()=>{
  const writes=[],bridge=new NativeWorkerControl({stdin:{write(line){writes.push(JSON.parse(line))}}},()=>{});
  const exact=bridge.request('exact',{serial:1});
@@ -123,4 +123,31 @@ test('MP-11 native rejection count is written before document retirement closes 
  worker.rejected('stale_document');worker.close();
  assert.deepEqual(writes.map(s=>JSON.parse(s)),[{reject:'stale_document'}]);
  assert.throws(()=>worker.rejected('page secret'),/rejection reason/);
+});
+test('MP-11 the guard-decode skip request exists only for a capture proven free of protected regions',async()=>{
+ const sent=[],make=extra=>({width:4,height:4,nativeEncode:async q=>{sent.push(q);return {backend:'native-openh264',stripes:[],revision:1}},...extra});
+ const encoder=new PortableEncoder();
+ try{
+  const proven=maskNativeRaster(make(),[]);
+  await encoder.encodeStripes(proven,8000000,false);
+  await encoder.encodeStripes(make(),8000000,false); // protection never established: unknown
+  const claimed=make();claimed[displayUnprotected]=true;claimed[displayMaskRegions]=[{x:1,y:1,width:1,height:1}];
+  await encoder.encodeStripes(claimed,8000000,false); // a mask always wins
+  await encoder.encodeStripes(make({[displayMaskRegions]:[{x:1,y:1,width:1,height:1}]}),8000000,false);
+  assert.deepEqual(sent.map(q=>q.unprotected===true),[true,false,false,false]);
+  assert.equal(maskNativeRaster(make({pixels:Buffer.alloc(64)}),[{x:0,y:0,width:1,height:1}])[displayUnprotected],undefined);
+ }finally{await encoder.close()}
+});
+test('MP-11 an asynchronous retire-pipe error fences the worker and leaves Node running',async()=>{
+ const {Writable}=await import('node:stream');
+ const killed=[];
+ // The peer closed its end: the write is accepted, the EPIPE arrives later as the stream's error event.
+ const retires=new Writable({write(_chunk,_encoding,done){setImmediate(()=>done(Object.assign(Error('EPIPE'),{code:'EPIPE'})))}});
+ const bridge=new NativeWorkerControl({stdin:{destroyed:false,write(_bytes,done){done?.()}},stdio:[null,null,null,retires],kill:signal=>killed.push(signal)},()=>{});
+ assert.ok(bridge.arm({encoder:'e'}),'a record is armed');
+ bridge.retireState('e');
+ await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(bridge.closed,true,'the capture is closed');
+ assert.deepEqual(killed,['SIGKILL'],'the worker is killed');
+ assert.equal(bridge.arm({encoder:'e'}),null,'a closed worker arms nothing');
 });

@@ -250,3 +250,76 @@ test('MP-08/MP-11 a navigation preview rereads a layout that timed out: late kee
   await stream.close();
  }
 });
+
+// vidlat r22: publication borrows the native owner verdict, never the layout read; input and admission stay fresh.
+test('MP-08/MP-10/MP-11 visible-page publication reuses the owner verdict but reads the layout viewport every time',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ let fresh=0,cached=0,layoutReads=0,clientWidth=1280,document='d';
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,
+  isPageCurrent:async()=>{fresh++;return true},isPagePublishable:async()=>{cached++;return true}};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{resolvePageTarget:async()=>({connection:{send:async()=>{layoutReads++;return {cssLayoutViewport:{clientWidth,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}}}},sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+ class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);}async start(){return this;}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ const stream=[...host.displays.values()][0],{publishCurrent}=stream.regionSource.options;
+ fresh=cached=layoutReads=0;
+ assert.equal(await publishCurrent(),true);assert.equal(await publishCurrent(),true);
+ assert.deepEqual([fresh,cached,layoutReads],[0,2,2],'two publications: owner verdict reused, layout read each time');
+ assert.equal(await stream.regionCurrent(),true);assert.deepEqual([fresh,cached,layoutReads],[1,2,3],'input guard stays fresh');
+ assert.equal(await stream.regionSource.options.validateCurrent(),true);assert.equal(fresh,2,'attestation stays fresh');
+ clientWidth=1265;assert.equal(await publishCurrent(),false,'a scrollbar appearing (no CDP event) retires the next publication');
+ clientWidth=1280;tab.document_id='d2';assert.equal(await publishCurrent(),false,'a new document retires it');
+ tab.document_id='d';window.isCurrent=()=>false;assert.equal(await publishCurrent(),false,'a retired window retires it');
+});
+
+test('MP-11 visible-page publication reads the layout once, then only after a page report, a mismatch or a lost observer',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const listeners=new Set(),reads=[];let metrics={clientWidth:1280,clientHeight:800},binding_;
+ const connection={subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},async send(method,params){
+  if(method==='Page.getLayoutMetrics'){reads.push(1);return {cssLayoutViewport:metrics,cssVisualViewport:{zoom:1,scale:1}};}
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f'}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+  if(method==='Runtime.addBinding')binding_=params.name;
+  return {};
+ }};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},arbiter:{isActiveTab:async()=>true},
+  browser:{resolvePageTarget:async()=>({connection,sessionId:'s'})},timing:()=>{},armDisplayExpiry:()=>{}};
+ let options;class Capture {constructor(o){options=o;this.region=visiblePageGeometry(o.window,o.viewport);}async start(){return this;}async close(){}}
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ const stream=await subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture});
+ const report=()=>[...listeners].forEach(fn=>fn({sessionId:'s',method:'Runtime.bindingCalled',params:{name:binding_,executionContextId:7}}));
+ const publishReads=async()=>{reads.length=0;const ok=await options.publishCurrent();return [ok,reads.length];};
+ assert.deepEqual(await publishReads(),[true,1],'the first publication has no verdict and reads');
+ for(let i=0;i<5;i++)assert.deepEqual(await publishReads(),[true,0],'a proven verdict is reused');
+ reads.length=0;assert.equal(await options.validateCurrent(),true);assert.equal(reads.length,1,'admission and input always read fresh');
+ report();assert.deepEqual(await publishReads(),[true,1],'a page report forces one read');
+ assert.deepEqual(await publishReads(),[true,0]);
+ metrics={clientWidth:1265,clientHeight:800};report();
+ assert.deepEqual(await publishReads(),[false,1],'a changed layout is refused');
+ assert.deepEqual(await publishReads(),[false,1],'and never becomes the verdict');
+ metrics={clientWidth:1280,clientHeight:800};assert.deepEqual(await publishReads(),[true,1]);assert.deepEqual(await publishReads(),[true,0]);
+ [...listeners].forEach(fn=>fn({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f'}}}));
+ assert.deepEqual(await publishReads(),[true,1]);assert.deepEqual(await publishReads(),[true,1],'a lost observer reads every publication');
+ await [...host.displays.values()][0].close();assert.equal(listeners.size,0);
+});
+
+test('MP-11 visible-page subscribe closes the layout observer when the display is rejected after admission',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const tab={tab_id:'t',target_id:'target',document_id:'d'},window={...binding(),window_generation:2,isPageCurrent:async()=>true};
+ let metrics=0,listeners=0;const sent=[];
+ const connection={subscribe:()=>{listeners++;return()=>listeners--;},send:async(method)=>{sent.push(method);
+  if(method==='Page.getLayoutMetrics'){metrics++;return {cssLayoutViewport:{clientWidth:1280,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};}
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f'}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+  return {};}};
+ const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),displayTarget:async()=>tab,
+  chromeWindows:{current:()=>({tabbed:window})},chromium:{scale:1},browser:{resolvePageTarget:async()=>({connection,sessionId:'s'})},timing:{}};
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:2};
+ await assert.rejects(subscribeVisiblePage(host,command,'terminal:a',undefined,{Capture:class {}}));
+ for(let n=0;n<20;n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(listeners,0);assert.ok(sent.includes('Runtime.removeBinding'));assert.equal(host.displays.size,0);
+});

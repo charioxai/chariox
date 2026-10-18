@@ -142,8 +142,11 @@ export const displayMaskRegions = Symbol('kernel display protection');
 // Private transform capability, never serialized to a client. The encoder
 // masks a COW mapping before its independent input/output privacy guards.
 export const displayNativeMaskSource = Symbol('kernel native mask source');
+// MP-11: set only by maskNativeRaster on a capture whose region fence proved
+// no protected node. Absent (never read from a frame carried over) = unknown.
+export const displayUnprotected = Symbol('kernel display proven unprotected');
 export function maskNativeRaster(raw, regions, previousRegions, previous) {
-  if(!regions.length)return raw;
+  if(!regions.length){raw[displayUnprotected]=true;return raw;}
   const {width,height}=raw;
   const stable=previousRegions&&JSON.stringify(previousRegions)===JSON.stringify(regions);
   if(raw.shared&&typeof raw.copyPixels==='function'&&typeof raw.readRegion==='function'){

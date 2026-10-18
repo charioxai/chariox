@@ -27,6 +27,7 @@ Status XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
     (void)d;(void)w;memset(attributes,0,sizeof(*attributes));
     attributes->width=1280;attributes->height=800;attributes->map_state=IsViewable;return 1;
 }
+Bool XCheckIfEvent(Display *d,XEvent *e,Bool (*p)(Display*,XEvent*,XPointer),XPointer a){(void)d;(void)e;(void)p;(void)a;return False;}
 Bool XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
     (void)d;(void)a;(void)image;(void)x;(void)y;(void)plane;return True;
 }

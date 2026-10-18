@@ -45,6 +45,7 @@ import {
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -721,6 +722,8 @@ export class BrowserCdpClient {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+          // MP-11: a new protected target ends every display lease before the value is typed.
+          retireNativeStates();
           // MP-11: bind the completed value before releasing in-flight coverage.
           // A failed action still fingerprints whatever it inserted; an
           // unprovable completion keeps the fill pending (covered).

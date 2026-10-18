@@ -5,7 +5,7 @@ import { timestamp } from './kernel-browser-timing.mjs';
 import { displayGeometry as geometry } from './kernel-browser-geometry.mjs';
 import { displayMaskRegions } from './kernel-browser-pixels.mjs';
 import { assertNotCancelled, assertCurrentDocument } from './browser-controller-actions.mjs';
-import { exactPatchLimit } from './kernel-browser-display.mjs';
+import { directLease, exactPatchLimit } from './kernel-browser-display.mjs';
 import { nativeDamageTiles } from './kernel-browser-tiles.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { NativeRefiner } from './kernel-browser-refiner.mjs';
@@ -15,6 +15,8 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
+  const leased=stream.adoptLease?.(command.after_sequence);
+  if(leased)host.timing.event?.('native_lease_ended',{frames:leased});
   const region=stream.regionLease;
   const regionAlive=()=>!region||(command.generation===host.generation&&stream.regionSource.valid()&&region.isAlive()&&stream.regionWindow.isCurrent());
   const retired=()=>{
@@ -182,8 +184,14 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
   const deadline = now() + budgetMs;
   for (;;) {
     const reply = await displayCredit(host, stream, command, signal);
-    if (reply.frame_sent) stream.pushedAt = now();
-    if (reply.frame_sent || now() >= deadline || signal?.aborted) return reply;
+    if (reply.frame_sent) {
+      stream.pushedAt = now();
+      // L3: the private grant travels beside the frame; the kernel strips it.
+      const lease = reply.display_frame?.[directLease]?.();
+      if (lease) { reply.direct_lease = lease; host.timing.event?.('native_lease_granted', { generation: lease.generation }); }
+      return reply;
+    }
+    if (now() >= deadline || signal?.aborted) return reply;
     const producer = stream.producer;
     const refining = stream.refiner?.active;
     // A protected CDP capture source has no readiness signal: retry at the

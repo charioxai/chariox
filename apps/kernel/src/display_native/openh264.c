@@ -45,21 +45,48 @@ void cx_openh264_close(void *encoder) {
 #define CX_QP_MIN 24
 #define CX_QP_MAX 51
 static double frame_bits(const struct Encoder *h) {return h->p.iTargetBitrate/60.;}
-/* Gradient activity of the macroblocks that differ from the previous input. */
-static double activity(const uint8_t *y,int stride,const uint8_t *previous,int width,int height,int *changed) {
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+/* Sum of |neighbour differences| of one 16x16 luma block: 15 horizontal and 15 vertical steps per row/column pair. */
+static int block_gradient(const uint8_t *p,int stride) {
+    int sum=64;
+#if defined(__SSE2__)
+    /* PSADBW sums eight byte differences at once. Lane 15 is masked off the horizontal step, so no row is read past its block. */
+    const __m128i lanes=_mm_set_epi8(0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1);
+    __m128i total=_mm_setzero_si128();
+    for (int r=0;r<16;r++) {
+        const uint8_t *row=p+(size_t)r*stride;
+        __m128i here=_mm_loadu_si128((const __m128i *)row);
+        total=_mm_add_epi64(total,_mm_sad_epu8(_mm_and_si128(here,lanes),_mm_srli_si128(here,1)));
+        if (r) total=_mm_add_epi64(total,_mm_sad_epu8(here,_mm_loadu_si128((const __m128i *)(row-stride))));
+    }
+    sum+=_mm_cvtsi128_si32(total)+_mm_cvtsi128_si32(_mm_srli_si128(total,8));
+#else
+    for (int r=0;r<16;r++) {
+        const uint8_t *row=p+(size_t)r*stride;
+        for (int x=1;x<16;x++) sum+=abs(row[x]-row[x-1]);
+        if (r) for (int x=0;x<16;x++) sum+=abs(row[x]-row[x-stride]);
+    }
+#endif
+    return sum;
+}
+/* Gradient activity of the macroblocks that differ from the previous input (all of them without
+ * `compare`). One pass: a changed block's luma is also copied into `previous`, still in cache. */
+static double activity(const uint8_t *y,int stride,uint8_t *previous,int compare,int width,int height,int *changed) {
     double total=0;*changed=0;
     for (int my=0;my<height/16;my++) for (int mx=0;mx<width/16;mx++) {
-        int differs=!previous,sum=64;
-        for (int r=0;r<16;r++) {
-            const uint8_t *p=y+(size_t)(my*16+r)*stride+mx*16;
-            if (!differs&&memcmp(p,previous+(size_t)(my*16+r)*width+mx*16,16)) differs=1;
-            for (int x=1;x<16;x++) sum+=abs(p[x]-p[x-1]);
-            if (r) for (int x=0;x<16;x++) sum+=abs(p[x]-p[x-stride]);
-        }
-        if (differs) {total+=sum;(*changed)++;}
+        const uint8_t *p=y+(size_t)(my*16)*stride+mx*16;uint8_t *q=previous+(size_t)(my*16)*width+mx*16;
+        int differs=!compare;
+        for (int r=0;r<16&&!differs;r++) differs=memcmp(p+(size_t)r*stride,q+(size_t)r*width,16)!=0;
+        if (!differs) continue;
+        total+=block_gradient(p,stride);(*changed)++;
+        for (int r=0;r<16;r++) memcpy(q+(size_t)r*width,p+(size_t)r*stride,16);
     }
     return total;
 }
+/* Exposed for the exactness test only. */
+double cx_openh264_activity(const uint8_t *y,int stride,uint8_t *previous,int compare,int width,int height,int *changed) {return activity(y,stride,previous,compare,width,height,changed);}
 /* Size roughly halves every 8 QP; the model is bits per activity at QP 45. */
 static double scale(int qp) {return exp2((45-qp)/8.);}
 /* The x264 stream contract: constrained baseline, Annex B with parameter sets
@@ -69,8 +96,16 @@ static double scale(int qp) {return exp2((45-qp)/8.);}
  * directly into input latency; rate control is ours either way. model
  * holds two bits-per-activity estimates (intra, inter) that outlive the
  * encoder, so a reset's IDR starts from what earlier IDRs cost. */
+/* Sliced threads spin: on a quiet 16-vCPU host four threads cost 10 ms of CPU per 1264x708 frame (17 ms at
+ * 1920x1080) against 3.3 ms (5.8 ms) for one, with the same or a longer wall time; two threads win only
+ * from about 3 MP (2528x1416: 10.8 ms wall, 18 ms CPU against 16.7 ms for one). `limit` is the caller's cap. */
+int cx_openh264_slice_threads(int width,int height,int limit) {
+    int want=(long)width*height>2500000?2:1;
+    return limit<1?1:want<limit?want:limit;
+}
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model) {
     ISVCEncoder *e=NULL;struct Encoder *h;
+    threads=cx_openh264_slice_threads(width,height,threads);
     if (!cx_openh264_available()||create_encoder(&e)||!e) return NULL;
     if (!(h=calloc(1,sizeof(*h)))) {destroy_encoder(e);return NULL;}
     h->e=e;h->model=model;h->qp=h->max_qp=max_qp>0?max_qp:CX_QP_MAX;
@@ -109,7 +144,7 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     for (int i=0;i<3;i++){picture.iStride[i]=strides[i];picture.pData[i]=planes[i];}
     picture.uiTimeStamp=(long long)(sequence*1000/60);
     int changed,blocks=(width/16)*(height/16);
-    double busy=activity(planes[0],strides[0],sequence?h->previous:NULL,width,height,&changed);
+    double busy=activity(planes[0],strides[0],h->previous,sequence!=0,width,height,&changed);
     /* A mostly changed frame costs about an intra frame. */
     int intra=!sequence||changed*5>=blocks*4;
     double rate=h->model[!intra];
@@ -125,7 +160,6 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
         h->qp=qp;
     }
     if ((*e)->EncodeFrame(e,&picture,&info)!=cmResultSuccess) return -1;
-    for (int y=0;y<height;y++) memcpy(h->previous+(size_t)y*width,planes[0]+(size_t)y*strides[0],width);
     double bits=8.*info.iFrameSizeInBytes;
     h->fill=fmax(h->fill-bits,-1.5*frame_bits(h));
     if (busy>0&&bits>0) {double *m=&h->model[!intra];*m=(*m+bits/(busy*scale(qp)))/2;}
