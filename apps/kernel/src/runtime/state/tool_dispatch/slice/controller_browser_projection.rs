@@ -11,6 +11,7 @@ const MAX_CONTROLLER_BROWSER_TEXT_QUERY_BYTES: usize = 64 * 1024;
 // that while a heavy page (Wikipedia, ~240 KB of links) would otherwise be refused.
 const MAX_CONTROLLER_BROWSER_STATUS_BYTES: usize = 24 * 1024;
 const MAX_CONTROLLER_BROWSER_STATUS_ITEM_CHARS: usize = 200;
+const MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES: usize = 6 * 1024;
 const BROWSER_STATUS_ELEMENT_KEYS: [&str; 3] = ["fields", "buttons", "links"];
 
 pub(super) fn controller_browser_status_surfaces(
@@ -134,8 +135,26 @@ pub(super) fn bound_controller_browser_status(
         totals.insert(key.to_string(), items.len().into());
         elements.extend(items.into_iter().map(|item| (key, item)));
     }
-    if let Some(focused) = browser.get_mut("focusedElement") {
-        truncate_status_strings(focused);
+    let current_tab = payload.get("tab_id").cloned();
+    // Titles, URLs and the tab inventory share the cap with the element pages.
+    truncate_status_strings(&mut payload);
+    if let Some(tabs) = payload
+        .get_mut("tabs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        tabs.sort_by_key(|tab| tab.get("tab_id") != current_tab.as_ref());
+        let (mut used, mut kept) = (0, Vec::new());
+        let total_tabs = tabs.len();
+        for tab in tabs.drain(..) {
+            used += tab.to_string().len();
+            if kept.is_empty() || used <= MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES {
+                kept.push(tab);
+            }
+        }
+        if kept.len() < total_tabs {
+            payload["tabs_omitted"] = (total_tabs - kept.len()).into();
+        }
+        payload["tabs"] = kept.into();
     }
     let total = elements.len();
     let mut used = payload.to_string().len() + 512;
@@ -857,6 +876,28 @@ mod tests {
             .map(|i| format!("element-{i}"))
             .collect::<Vec<_>>();
         assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn controller_browser_status_bounds_oversized_titles_and_tab_inventories() {
+        let long = "T".repeat(10_000);
+        let mut status = synthetic_status(0, "Link");
+        status["title"] = long.clone().into();
+        status["browser"]["title"] = long.clone().into();
+        status["browser"]["url"] = format!("https://example.test/{long}").into();
+        let bounded = bound_controller_browser_status(status, 0);
+        assert!(bounded.to_string().len() <= 24 * 1024, "{}", bounded.to_string().len());
+        assert!(bounded["page"]["next_cursor"].is_null());
+
+        let mut status = synthetic_status(5, "Link");
+        status["tabs"] = (0..200)
+            .map(|i| serde_json::json!({"tab_id": format!("tab-{i}"), "title": long, "url": format!("https://example.test/{i}/{long}")}))
+            .collect();
+        status["tab_id"] = "tab-150".into();
+        let bounded = bound_controller_browser_status(status, 0);
+        assert!(bounded.to_string().len() <= 24 * 1024, "{}", bounded.to_string().len());
+        assert_eq!(bounded["tabs"][0]["tab_id"], "tab-150");
+        assert_eq!(bounded["tabs_omitted"], 200 - bounded["tabs"].as_array().unwrap().len());
     }
 
     #[test]
