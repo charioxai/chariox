@@ -147,7 +147,7 @@ pub(super) fn bound_controller_browser_status(
         let total_tabs = tabs.len();
         for tab in tabs.drain(..) {
             used += tab.to_string().len();
-            if kept.is_empty() || used <= MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES {
+            if used <= MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES {
                 kept.push(tab);
             }
         }
@@ -176,6 +176,16 @@ pub(super) fn bound_controller_browser_status(
         "total": totals,
         "next_cursor": (next_cursor < total).then_some(next_cursor),
     });
+    // Never return an oversized tool result, even if a future metadata field
+    // grows independently of the element pages. Keep the continuation handle.
+    if payload.to_string().len() > MAX_CONTROLLER_BROWSER_STATUS_BYTES {
+        payload = serde_json::json!({
+            "session_id": payload["session_id"], "environment_id": payload["environment_id"],
+            "tab_id": payload["tab_id"], "document_revision": payload["document_revision"],
+            "browser": {"fields": payload["browser"]["fields"], "buttons": payload["browser"]["buttons"], "links": payload["browser"]["links"]},
+            "page": payload["page"],
+        });
+    }
     payload
 }
 
@@ -190,6 +200,7 @@ fn truncate_status_strings(value: &mut serde_json::Value) {
                 text.push('…');
             }
         }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(truncate_status_strings),
         serde_json::Value::Object(map) => map.values_mut().for_each(truncate_status_strings),
         _ => {}
     }
@@ -880,14 +891,33 @@ mod tests {
 
     #[test]
     fn controller_browser_status_bounds_oversized_titles_and_tab_inventories() {
-        let long = "T".repeat(10_000);
+        let long = "T".repeat(30_000);
         let mut status = synthetic_status(0, "Link");
         status["title"] = long.clone().into();
         status["browser"]["title"] = long.clone().into();
         status["browser"]["url"] = format!("https://example.test/{long}").into();
         let bounded = bound_controller_browser_status(status, 0);
-        assert!(bounded.to_string().len() <= 24 * 1024, "{}", bounded.to_string().len());
+        assert!(
+            bounded.to_string().len() <= 24 * 1024,
+            "{}",
+            bounded.to_string().len()
+        );
         assert!(bounded["page"]["next_cursor"].is_null());
+
+        let mut single = synthetic_status(0, "Link");
+        single["tabs"] = serde_json::json!([{"tab_id": "focused", "title": long, "url": long}]);
+        single["tab_id"] = "focused".into();
+        let bounded = bound_controller_browser_status(single, 0);
+        assert!(bounded.to_string().len() <= MAX_CONTROLLER_BROWSER_STATUS_BYTES);
+        assert_eq!(bounded["tabs"][0]["tab_id"], "focused");
+        assert!(
+            bounded["tabs"][0]["title"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 201
+        );
 
         let mut status = synthetic_status(5, "Link");
         status["tabs"] = (0..200)
@@ -895,9 +925,16 @@ mod tests {
             .collect();
         status["tab_id"] = "tab-150".into();
         let bounded = bound_controller_browser_status(status, 0);
-        assert!(bounded.to_string().len() <= 24 * 1024, "{}", bounded.to_string().len());
+        assert!(
+            bounded.to_string().len() <= 24 * 1024,
+            "{}",
+            bounded.to_string().len()
+        );
         assert_eq!(bounded["tabs"][0]["tab_id"], "tab-150");
-        assert_eq!(bounded["tabs_omitted"], 200 - bounded["tabs"].as_array().unwrap().len());
+        assert_eq!(
+            bounded["tabs_omitted"],
+            200 - bounded["tabs"].as_array().unwrap().len()
+        );
     }
 
     #[test]
