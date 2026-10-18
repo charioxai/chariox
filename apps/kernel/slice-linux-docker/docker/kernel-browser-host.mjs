@@ -838,7 +838,8 @@ export class KernelBrowserHost {
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
-      const result = this.observe(await this.reconcile().catch(error => { throw markDispatched(error); }), null, scope);
+      // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
+      const result = this.observe(await this.reconcile().catch(error => { if (error?.code === 'browser_cdp_timeout') return this.tabState(); throw markDispatched(error); }), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
     }

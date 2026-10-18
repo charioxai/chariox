@@ -1975,12 +1975,15 @@ test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never de
  assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0,'no letter of a word that lost its first letter is typed');
 }));
 
-test('MP-08/MP-10/MP-11 input acknowledged by the page is never replayed when only the post-input observation times out',()=>using(async({host,sent})=>{
+// r55: the page acknowledged the input, so a busy renderer that cannot answer the observation after it must not turn the
+// person's accepted input into an error (r54/r55: "input refused" notices); the Tab state is the last observed one.
+test('MP-08/MP-10/MP-11 input acknowledged by the page is accepted and never replayed when only the post-input observation times out',()=>using(async({host,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;
  const reconcile=host.browser.reconcile.bind(host.browser);
  host.browser.reconcile=async(...args)=>{if(sent.some(x=>x.method==='Input.insertText'))throw Object.assign(Error('browser CDP method Target.getTargets timed out after 5000ms'),{code:'browser_cdp_timeout'});return reconcile(...args)};
- await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}}),error=>error.code==='browser_cdp_timeout'&&error.afterDispatch===true);
+ const reply=await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.ok(Array.isArray(reply.tabs),'the reply carries the last observed Tab state');
  await new Promise(r=>setTimeout(r,50));
  assert.equal(sent.filter(x=>x.method==='Input.insertText').length,1);
  assert.equal(host.busyInputs.queues.size,0);

@@ -153,5 +153,5 @@ export async function regionInput(host,command,scope,signal) {
    host.inputEpochs.set(tab.tab_id,(host.inputEpochs.get(tab.tab_id)??0)+1);host.inputChangedAt.set(tab.tab_id,performance.now());stream.regionSource.wake();return beginDispatch();
   }}))); }
  catch(error){if(dispatched)markDispatched(error);if(dispatched&&!lateInputAck(error)||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
- return host.observe(await host.reconcile().catch(error=>{throw markDispatched(error);}),null,scope);
+ return host.observe(await host.reconcile().catch(error=>{if(error?.code==='browser_cdp_timeout')return host.tabState();throw markDispatched(error);}),null,scope);
 }
