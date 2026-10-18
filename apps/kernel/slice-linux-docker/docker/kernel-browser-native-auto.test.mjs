@@ -43,23 +43,24 @@ test('L3 a current unprotected auto frame is used without an encode request',asy
  assert.equal(writes.filter(w=>w.state).length,1,'renewal only near expiry');
 });
 
-test('L3 frames of a retired generation are refused and the chain gap takes a key',async()=>{
+test('L3 frames of a retired generation are refused and the chain gap re-encodes a key at once',async()=>{
  const {writes,requests,manual,bridge,raw,autoReply,encoder}=rig();
  manual.push(reply(1,true));await encoder.encode(raw(1),8e6,true,'avc1.420033');
  bridge.retireState();
  assert.deepEqual(writes.at(-1),{state_retire:1});
  // Read back before the retire reached the worker: encoded, never published.
  const stale=raw(2,{auto:1}),staleReply=reply(2);autoReply(2,1,staleReply);
- manual.push(reply(3));
- await assert.rejects(encoder.encode(stale,8e6,false,'avc1.420033'),e=>e.busy===true&&/chain gap/.test(e.message));
- assert.equal(requests.length,2);
+ manual.push(reply(3));manual.push(reply(4,true));
+ // The gap re-encodes the same readback as a key at once: skipping it would hold its pixels until the next damage.
+ const rekeyed=await encoder.encode(stale,8e6,false,'avc1.420033');
+ assert.equal(rekeyed.key,true);assert.equal(requests.length,3);assert.equal(requests.at(-1).reset,true);
  bridge.dropAuto(2);assert.ok(gone(staleReply.packet),'the unpublished auto packet is deleted');
  // The next key (after the retire quiet window) re-arms under a new generation; generation 1 stays refused.
  bridge.retiredAt=-Infinity;manual.push(reply(1,true));await encoder.encode(raw(4),8e6,true,'avc1.420033');
  assert.equal(writes.filter(w=>w.state).at(-1).state.generation,2);
  const old=raw(5,{auto:1});autoReply(5,1,reply(2));manual.push(reply(2));
  await encoder.encode(old,8e6,false,'avc1.420033');
- assert.equal(requests.length,4,'a generation-1 frame is never used under generation 2');
+ assert.equal(requests.length,5,'a generation-1 frame is never used under generation 2');
 });
 
 test('L3 protected frames never use an auto packet',async()=>{
