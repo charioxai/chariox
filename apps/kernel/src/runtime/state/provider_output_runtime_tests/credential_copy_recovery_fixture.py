@@ -147,7 +147,7 @@ class Handler(socketserver.StreamRequestHandler):
                             notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'failed','error':{'message':failure}}}}
                         else:
                             (home / 'synthetic-resumed').write_text(turn_id)
-                            notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
+                            if not (home / 'synthetic-hold-sudo').exists(): notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
                     state_path.write_text(json.dumps(state))
                 self.send({'id': request['id'], 'result': result})
                 if notification: self.send(notification)

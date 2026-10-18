@@ -204,7 +204,7 @@ impl KernelRuntimeState {
                     }
                     // Reload the official harness so its in-memory auth cannot retain the invalidated copy.
                     if state
-                        .restart_provider_after_login(&run, prompt.as_ref())
+                        .restart_provider_after_login(&run, prompt.as_ref(), _claim)
                         .await
                         .is_ok()
                     {
@@ -280,6 +280,7 @@ impl KernelRuntimeState {
         &self,
         run: &crate::provider::RuntimeProviderRun,
         prompt: Option<&crate::session::PromptQueueItem>,
+        claim: RecoveryClaim,
     ) -> Result<(), DaemonError> {
         let agent_id = agent_id_for(run);
         let config = self.owned.config_projection.snapshot();
@@ -304,6 +305,8 @@ impl KernelRuntimeState {
         let request = self
             .prepare_provider_launch_request_with_vault(request, "resume after provider login")
             .await?;
+        // Capture the still-live grant before retiring the official harness.
+        let sudo = self.sudo_for_provider_run(run.id()).ok();
         self.retire_owned_provider_run_after_terminal_failure(run.session_id(), run.id())
             .await;
         self.spawn_provider_relaunch(
@@ -318,6 +321,8 @@ impl KernelRuntimeState {
             let agent_id = agent_id.to_string();
             let previous_run = run.id().to_string();
             tokio::spawn(async move {
+                // Keep recovery's bounded hold until the replacement is bound.
+                let _claim = claim;
                 // Relaunch retains the admitted prompt; dispatch only when the replacement is ready.
                 let outcome = tokio::time::timeout(Duration::from_secs(60), async {
                     loop {
@@ -330,6 +335,13 @@ impl KernelRuntimeState {
                                 && run.state() == crate::provider::ProviderRunState::Running
                             {
                                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
+                                if let Some(original) = sudo.as_ref() {
+                                    if !state
+                                        .rebind_sudo_after_provider_login(original, &run, &prompt)?
+                                    {
+                                        return Ok(false);
+                                    }
+                                }
                                 return state.redispatch_after_provider_login(&run, &prompt).await;
                             }
                         }

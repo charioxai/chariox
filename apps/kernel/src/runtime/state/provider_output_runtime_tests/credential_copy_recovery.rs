@@ -246,6 +246,7 @@ async fn run_case(recovery: RecoveryCase) {
         .unwrap();
     assert_eq!(run.account_profile(), copied.profile_id);
     if sudo_recovery {
+        std::fs::write(target_home.join("synthetic-hold-sudo"), "hold").unwrap();
         let prompt = runtime
             .owned
             .prompt_state_owner
@@ -554,6 +555,41 @@ async fn run_case(recovery: RecoveryCase) {
         })
         .await
         .expect("the same admitted turn should resume after login");
+    }
+    if sudo_recovery {
+        // MP-08 / MP-10 / MP-11: completing login must preserve the existing
+        // exact-prompt grant on the real replacement run, including its effect.
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert_ne!(replacement.id(), run.id());
+        let turn = runtime
+            .sudo_for_provider_run(replacement.id())
+            .expect("login recovery dropped the approved sudo work");
+        let request =
+            crate::local::LocalDaemonRequest::AliasSession(crate::local::AliasSessionRequest {
+                session_id: session.id().into(),
+                alias: "sudo-after-login".into(),
+            });
+        runtime
+            .authorize_sudo_request(&turn.entry_id, &request)
+            .unwrap();
+        let scoped = runtime.with_external_command_authority(Some((&turn.entry_id, &request)));
+        scoped
+            .alias_session(session.id(), "sudo-after-login".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .alias(),
+            Some("sudo-after-login")
+        );
     }
     assert_eq!(std::fs::read(&source_auth).unwrap(), original);
     assert!(runtime
