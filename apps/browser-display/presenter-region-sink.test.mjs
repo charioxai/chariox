@@ -10,6 +10,6 @@ for(const explicit of [true,false])test(`MP-08/MP-10/MP-11 ${explicit?'opaque re
  const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:2},options);
  try{
   const pending=stream.presenter.videoSink.commit({image:{close(){},clone(){return {close(){}}}},decodedAt:1},{...binding,sequence:1,width:320,height:180});
-  assert.equal(draws,1,'a crop must draw before another viewer animation frame');assert.equal(raf,0);assert.equal((await pending).drawn,true);
+  assert.equal(draws,1,'a crop must draw before another viewer animation frame');assert.equal(raf,1,'the only animation frame requested marks the end of this frame; the draw never waited for it');assert.equal((await pending).drawn,true);
  }finally{await stream.close()}
 });

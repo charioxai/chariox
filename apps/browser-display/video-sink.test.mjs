@@ -132,3 +132,34 @@ test('MP-08/MP-10/MP-11 direct video pixels use the visible low-latency canvas',
  try{sink.setup({});await sink.commit({image:{clone:()=>({close(){}})}},{width:8,height:8});assert(visible);assert.deepEqual(draws,[{name:'visible',desynchronized:true}]);}
  finally{sink.close()}
 });
+
+// vidlat r39: two decoded page frames inside one compositor frame must not overwrite each other.
+test('MP-08/MP-10 paced page crop draws at most one frame per compositor frame and keeps order',async()=>{
+ const draws=[],ticks=[];
+ const view={requestAnimationFrame:cb=>{ticks.push(cb);return ticks.length},cancelAnimationFrame(){}};
+ const canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:view},getContext:()=>({drawImage:image=>draws.push(image.n)})};
+ const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
+ const sink=new VideoSink(canvas,()=>{},{direct:true,paced:true});
+ const tick=async()=>{ticks.shift()();await new Promise(resolve=>setTimeout(resolve,5));};
+ try{
+  const first=sink.commit(frame(1),{width:8,height:8});assert.deepEqual(draws,[1],'a frame in an idle compositor frame draws at once');
+  assert.equal((await first).drawn,true);
+  let second=false;const secondJob=sink.commit(frame(2),{width:8,height:8}).then(o=>{second=o.drawn});
+  await new Promise(resolve=>setTimeout(resolve,5));assert.deepEqual(draws,[1],'a second frame in the same compositor frame waits');assert.equal(second,false);
+  await tick();await secondJob;assert.deepEqual(draws,[1,2],'it is drawn after that frame, before the next one is composed');assert.equal(second,true);
+  const thirdJob=sink.commit(frame(3),{width:8,height:8});await new Promise(resolve=>setTimeout(resolve,5));assert.deepEqual(draws,[1,2],'the following frame waits for its own compositor frame');
+  await tick();assert.equal((await thirdJob).drawn,true);assert.deepEqual(draws,[1,2,3]);
+  await tick();const idle=sink.commit(frame(4),{width:8,height:8});assert.deepEqual(draws,[1,2,3,4],'after an idle frame the next draw is immediate again');await idle;
+ }finally{sink.close()}
+});
+test('MP-08/MP-10 paced page crop leaves nothing waiting when the document hides',async()=>{
+ const draws=[],view={requestAnimationFrame:()=>1,cancelAnimationFrame(){}},document=new EventTarget();document.hidden=false;document.defaultView=view;
+ const canvas={isConnected:true,width:8,height:8,ownerDocument:document,getContext:()=>({drawImage:image=>draws.push(image.n)})};
+ const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
+ const sink=new VideoSink(canvas,()=>{},{direct:true,paced:true});
+ try{
+  await sink.commit(frame(1),{width:8,height:8});const waiting=sink.commit(frame(2),{width:8,height:8});
+  document.hidden=true;document.dispatchEvent(new Event('visibilitychange'));
+  assert.equal((await waiting).drawn,false);assert.equal(sink.frameDrawn,false);
+ }finally{sink.close()}
+});

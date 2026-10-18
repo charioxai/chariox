@@ -2,9 +2,9 @@
 // canvas overlay until the next complete decoded video image (key or delta).
 // No producer or protection-policy changes.
 export class VideoSink {
- constructor(canvas,onTiming,{direct=false}={}){
-  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
-  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
+ constructor(canvas,onTiming,{direct=false,paced=false}={}){
+  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.paced=paced&&direct;this.frameDrawn=false;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
+  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.endFrame();this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
  setup(decoder){
@@ -99,12 +99,32 @@ export class VideoSink {
    if(this.canvas.ownerDocument?.hidden){this.commitPending(false);return;}
    // MP-08/MP-10/MP-11: an intermediate region canvas is copied into a
    // visible surface by onPresented; only that surface needs a paint boundary.
+   if(this.paced&&this.direct){this.commitPaced(view);return;}
    if(this.direct||this.canvas.isConnected===false){this.commitPending(true);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
    const commit=()=>this.commitPending(!this.canvas.ownerDocument?.hidden);
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);
   });
  }
+ // vidlat r39: a page crop shows one decoded frame per compositor frame. Frames that arrive within
+ // one frame used to overwrite each other (~15 % of the draws never reached the screen); the later
+ // one now waits for the next frame, in order. Presentation is serial, so at most one commit waits.
+ commitPaced(view){
+  if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitPending(true);return;}
+  this.armFrame(view);
+ }
+ armFrame(view){
+  if(this.frameRaf!==undefined||!view.requestAnimationFrame)return;
+  this.cancelFrame=view.cancelAnimationFrame?.bind(view);
+  this.frameRaf=view.requestAnimationFrame(()=>{
+   this.frameRaf=undefined;this.frameDrawn=false;
+   if(this.closed||!this.pending.length)return;
+   // The waiting frame is drawn after this frame's commit, so the next compositor frame shows it.
+   this.frameDrawn=true;this.armFrame(view);
+   setTimeout(()=>{if(!this.closed&&this.pending.length)this.commitPending(true);},0);
+  });
+ }
+ endFrame(){if(this.frameRaf!==undefined)this.cancelFrame?.(this.frameRaf);this.frameRaf=undefined;this.frameDrawn=false;}
  commitPending(visible){
   this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);
   if(!latest)return;
@@ -150,7 +170,7 @@ export class VideoSink {
  }
  close({preserveFrame=false}={}){
   if(preserveFrame)this.freeze();
-  this.closed=true;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;commitHidden(this.pending);
+  this.closed=true;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;this.endFrame();commitHidden(this.pending);
   this.last?.close();this.last=null;this.stopTrack();
  }
 }
