@@ -175,3 +175,15 @@ test('MP-08/MP-10/MP-11 Computer drops screenshot-transformed native pixels and 
  stable=true;f.source.next=f.raw(3,f.now()+2);await f.source.protect();
  assert.equal(f.published.length,1,'stable native readbacks resume');
 });
+
+
+test('MP-08/MP-10/MP-11 Computer coalesces transient retries until capture restoration',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');const f=fixture();let finish,wakes=0;
+ const fence=new CapturePresentationFence(f.now),held=fence.run(()=>new Promise(resolve=>finish=resolve),async()=>{});
+ f.source.binding={...binding,browser:()=>({connection:{presentationFence:fence}})};f.source.wake=async()=>{wakes++};f.source.worker.close=()=>{};
+ try{
+  for(let n=0;n<20;n++)f.source.offer({raw:f.raw(n,f.now()+1)},0,f.now()+1);
+  assert.equal(wakes,0);assert.equal(f.published.length,0);assert.equal(f.released(),20);
+  f.advance(200);finish();await held;f.advance(2);await delay(10);assert.equal(wakes,1);assert.equal(f.published.length,0);
+ }finally{await f.source.close()}
+});

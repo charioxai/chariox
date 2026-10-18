@@ -21,7 +21,7 @@ const observerReason=description=>observerReasons.find(([text])=>typeof descript
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:geometry.width,height:geometry.height},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
 export class MirrorService {
   constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
-  invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){stream.policy=null;stream.resources.clear();continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
+  invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){this.v2.invalidate(stream);continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
   clear() {for(const id of [...this.streams.keys()])this.drop(id);}
   drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2){stream.releaseRender?.().catch(()=>{});this.v2.dispose(stream);}else stream?.deflate?.close();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
@@ -52,6 +52,8 @@ export class MirrorService {
     return reply.result.value;
   }
   async subscribe(command,scope) {
+    if(command.navigation_preview!==undefined&&command.navigation_preview!==true)throw new Error('MP-11: mirror preview negotiation');
+    if(command.font_requirements!==undefined&&(command.font_requirements!==true||command.wire!==2))throw new Error('MP-11: mirror font negotiation');
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
     // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
@@ -65,11 +67,15 @@ export class MirrorService {
       // MP-08/MP-10: like an attached video view, a live DOM view keeps its
       // hidden RenderWidget awake. No OS activation or shared-page resize.
       const {connection,sessionId}=await this.host.browser.resolvePageTarget(tab.target_id);
-      await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
+      // The event-fed cached document equal to the Tab's needs no renderer round trip (see displayTarget).
+      const current=()=>this.host.browser.documentIdsByTarget?.get(tab.target_id)===tab.document_id?null:assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
+      await current();
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender}));}
+      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,navigationPreview:command.navigation_preview===true&&process.env.CHARIOX_KERNEL_BROWSER_DISPLAY==='1'}));}
+
       catch(error){await releaseRender().catch(()=>{});throw error;}
-      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2};}
+      this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
+      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{})};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
   }

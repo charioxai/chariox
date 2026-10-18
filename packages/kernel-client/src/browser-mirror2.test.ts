@@ -6,15 +6,22 @@ import { setFlagsFromString } from 'node:v8'
 import { runInNewContext } from 'node:vm'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
 import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
+import { RelayFrameReceiver } from './relay-frame-transport.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
 // MP-08/MP-10/MP-11: these scalar/queue fixtures start with a painted surface;
 // staged-document readiness and event retirement use the real-Chromium suite.
 function paintedRenderer(container: HTMLElement, send: ConstructorParameters<typeof BrowserMirror2Renderer>[1]): BrowserMirror2Renderer {
+  container.ownerDocument.addEventListener ??= () => {}
+  container.ownerDocument.removeEventListener ??= () => {}
   const renderer = new BrowserMirror2Renderer(container, send)
   ;(renderer as unknown as { navigation: { painted: boolean } }).navigation.painted = true
   const frame = renderer.frame as HTMLIFrameElement & { removeEventListener?: unknown }
   frame.removeEventListener ??= () => {}
+  // Real frames share the registering document; scalar fixtures must expose
+  // its pointer-listener cleanup surface too.
+  Object.defineProperty(frame, 'ownerDocument', { value: frame.ownerDocument ?? container.ownerDocument, configurable: true })
+  frame.ownerDocument.removeEventListener ??= () => {}
   return renderer
 }
 
@@ -38,7 +45,7 @@ test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching C
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'use', ns: 'svg', attrs: { href: 'https://x/#icon' } })), new Map()), /unsafe mirror/)
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n3', parent: 'n2', kind: 'element', tag: 'foreignObject', ns: 'svg' })), new Map()), /unsafe mirror/)
   assert.match(mirror2SandboxCsp, /script-src 'none'/); assert.match(mirror2SandboxCsp, /connect-src 'none'/); assert.match(mirror2SandboxCsp, /img-src blob: data:;/)
-  assert.equal(browserMirror2MinimumProtocolVersion, 517)
+  assert.equal(browserMirror2MinimumProtocolVersion, 550)
 })
 
 test('MP-11: masks carry no content and leaves never parent nodes', () => {
@@ -138,17 +145,36 @@ test('MP-10/MP-11: sheet references resolve within the epoch and are validated a
 
 // Viewer flow with a scripted kernel and a recording renderer (no DOM needed).
 const flow = (script: (command: Record<string, unknown>) => Promise<unknown>) => {
-  const applied: number[] = [], failures: unknown[] = []
+  const applied: number[] = [], failures: unknown[] = [], fontNegotiations: boolean[] = []
   let failNext = false, always = false
   const packets: Mirror2Packet[] = []
-  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
+  const renderer = () => ({ requireNativeFonts: (value: boolean) => { fontNegotiations.push(value) }, frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (packet: Mirror2Packet) => { if (failNext) { failNext = always; throw Error('MP-11: nested mirror unavailable') } applied.push(packet.sequence); packets.push(packet) } })
   const requests: Array<Record<string, unknown>> = []
-  const transport = { protocolVersion: 517, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
-  return { applied, packets, failures, requests, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
+  const transport = { protocolVersion: 550, request: async (request: unknown) => { const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command); return { KernelBrowser: { result: await script(command) } } } }
+  return { applied, packets, failures, requests, fontNegotiations, failOnce: () => { failNext = true }, failAlways: () => { failNext = true; always = true }, start: (failingMs?: number) => attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: error => failures.push(error) }, { credits: 1, waitMs: 0, renderer, ...(failingMs ? { failingMs } : {}) }) }
 }
 // Protocol 489: a reset carries the binding and header; a delta only what changed.
 const packet = (sequence: number, reset: boolean, _base?: number | null) => reset ? { wire: 2, subscription_id: 's', tab_id: 't', generation: 1, document_id: 'd', sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: 1, scroll: [0, 0], focused: null, selection: null, root: 'n1', nodes: [[1, 0, 1], [1, 1, 'html']], ops: [] } : { wire: 2, sequence, ops: [] }
 const until = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check() && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10)) }
+
+test('MP-08/MP-10/MP-11 the renderer requires native font certificates only after acknowledgement', async () => {
+ for (const acknowledged of [undefined, true]) {
+  const f = flow(async command => command.op === 'mirror_subscribe' ? { subscription_id: 's', ...(acknowledged ? { font_requirements: true } : {}) } : command.op === 'mirror_close' ? { closed: true } : new Promise(() => {}))
+  const mirror = await f.start()
+  assert.equal(f.requests[0]!.font_requirements, true)
+  assert.deepEqual(f.fontNegotiations, [acknowledged === true])
+  await mirror.close()
+ }
+})
+
+test('MP-08/MP-10/MP-11 a 550 kernel types every v2 field: a subscription refusal is never retried without one', async () => {
+ for (const message of ['unknown field `font_requirements`', 'MP-11: mirror font negotiation', 'permission denied', 'unknown field `navigation_preview`']) {
+  let calls = 0
+  const refused = flow(async () => { calls++; throw Error(message) })
+  await assert.rejects(refused.start(), error => error instanceof Error && error.message === message)
+  assert.equal(calls, 1, 'no schema fallback')
+ }
+})
 
 test('MP-08/MP-10: a failed packet application does not stop later packets (the reset applies)', async () => {
   let sequence = 0
@@ -210,8 +236,8 @@ test('MP-10: removing an inline style forgets it, so a later resource cannot res
 
 test('MP-08/MP-10: compact deltas inherit binding and header from their base; deflated bodies inflate in sequence order; late copies are not gaps', async () => {
   const kernel = kernelContext()
-  const reset = { ...packet(1, true), scroll: [0, 40], focused: 'n2' }
-  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
+  const reset = { ...packet(1, true), snapshot_complete: false, font_failures:['a'.repeat(64)], scroll: [0, 40], focused: 'n2' }
+  const bodies = [reset, { wire: 2, sequence: 2, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 3, snapshot_complete: true, font_failures:[], focused: null, ops: [{ op: 'text', id: 'n2', text: 'x'.repeat(600) }] }, { wire: 2, sequence: 4, ops: [] }]
   const wires: unknown[] = []
   for (const body of bodies) { const text = JSON.stringify(body); wires.push(text.length >= 512 ? { wire: 2, sequence: body.sequence, ...(body.sequence === 1 ? { reset: true } : {}), encoding: 'deflate', ...await kernel.encode(text) } : body) }
   kernel.close()
@@ -224,6 +250,8 @@ test('MP-08/MP-10: compact deltas inherit binding and header from their base; de
   await mirror.close()
   assert.deepEqual(f.applied, [1, 2, 3, 4]); assert.deepEqual(f.failures, [])
   const [, second, third, fourth] = f.packets
+  assert.deepEqual(f.packets.map(p => p.snapshot_complete), [false, false, true, true], '539 completion changes survive compression, ordering and omitted compact headers')
+  assert.deepEqual(f.packets.map(p => p.font_failures), [['a'.repeat(64)],['a'.repeat(64)],[],[]], 'native font failures inherit and clear through compact deflated deltas')
   assert.deepEqual([second!.subscription_id, second!.tab_id, second!.document_id, second!.base_sequence, second!.reset, second!.scroll, second!.focused], ['s', 't', 'd', 1, false, [0, 40], 'n2'])
   assert.equal(third!.focused, null, 'an explicit null replaces the base value'); assert.equal(fourth!.focused, null); assert.deepEqual(fourth!.resources, [])
 })
@@ -388,7 +416,7 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   let sequence = 0, dropped = false, released: Array<() => void> = []
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 550, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -408,13 +436,42 @@ test('MP-10: credits that fail together (a dropped socket) count as one failure:
   assert.deepEqual([after[0]!.after_sequence, after[0]!.resend], [1, true], 'MP-10: the first credit after the drop is the resend that ends the lost long polls')
 })
 
+// r47 quiet-host GitHub drill (8 Mbit/s): small deltas overtook a 420 KB reset on the relay. Each one was buffered
+// (its base not applied) yet released its credit, so the kernel answered credits past its 8-packet history while the
+// reset was still arriving, and reset again: ~70 full 420 KB snapshots a minute and the page never left video.
+test('MP-08/MP-10: packets that overtake a slow packet hold their credit until applied: the window stays bounded', async () => {
+  let sequence = 0, slow = true, issuedBehind = 0
+  const applied: number[] = [], requests: Array<Record<string, unknown>> = []
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const transport = { protocolVersion: 550, receiving: () => slow, request: async (request: unknown) => {
+    const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push(command)
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    if (command.after_sequence === 0) return { KernelBrowser: { result: packet(++sequence, true) } }
+    const own = ++sequence
+    if ((command.after_sequence as number) < sequence - 8) issuedBehind++
+    // Packet 2 is large: it crosses the link while the small ones behind it arrive at once.
+    if (own === 2) await until(() => !slow, 5000); else await new Promise(resolve => setTimeout(resolve, 5))
+    return { KernelBrowser: { result: packet(own, false) } }
+  } }
+  const view = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure: () => {} }, { credits: 4, waitMs: 0, renderer })
+  await until(() => applied.length >= 1)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  const during = sequence; slow = false
+  await until(() => applied.length >= 6)
+  await view.close()
+  assert.ok(during <= 5, `MP-10: at most the credit window is answered past the applied base while packet 2 arrives (${during - 1})`)
+  assert.equal(issuedBehind, 0, 'MP-10: no credit falls behind the kernel history')
+  assert.deepEqual(applied.slice(0, 6), [1, 2, 3, 4, 5, 6], 'MP-08: packets apply in order without a reset')
+})
+
 // Round 11 hosted drop drill (b3, DPR2): a reply lost without a replay left a gap; the viewer waited 500 ms and reset
 // (a full snapshot: 2.2 s after the drop). Protocol 501: the missing packet is asked for at once (resend).
 test('MP-10: protocol 501 a gap (a reply lost with its socket) asks for the missing packet at once; it applies without a reset', async () => {
   let sequence = 0, gapAt = 0
   const applied: number[] = [], requests: Array<Record<string, unknown>> = []
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 550, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -442,7 +499,7 @@ test('MP-08: a queued credit answered within the kernel bound is not lost: no re
   let sequence = 0, chain: Promise<unknown> = Promise.resolve()
   const requests: Array<Record<string, unknown>> = [], started = Date.now(), wait = 2000
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async () => {} })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 550, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -467,7 +524,7 @@ test('MP-10: protocol 501 an overdue oldest credit (orphaned by the transport) a
   let sequence = 0
   const applied: Array<[number, number]> = [], requests: Array<Record<string, unknown>> = [], started = Date.now()
   const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push([p.sequence, Date.now() - started]) } })
-  const transport = { protocolVersion: 517, request: async (request: unknown) => {
+  const transport = { protocolVersion: 550, request: async (request: unknown) => {
     const command = (request as { KernelBrowser: { command: Record<string, unknown> } }).KernelBrowser.command; requests.push({ ...command, at: Date.now() - started })
     if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
     if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
@@ -506,7 +563,7 @@ test('specific retired-subscription replies retire the viewer immediately',async
 test('a refused input reports its reason without retiring paint or replaying the gesture',async()=>{
  let send:any,inputs=0,sequence=0;const refusals:unknown[]=[],failures:unknown[]=[]
  const error=Error('kernel_browser_failed: MD-2: browser operation failed: Error occluded_node')
- const mirror=await attachBrowserMirror2({protocolVersion:517,request:async(r:any)=>{
+ const mirror=await attachBrowserMirror2({protocolVersion:550,request:async(r:any)=>{
   const c=r.KernelBrowser.command
   if(c.op==='mirror_subscribe')return {KernelBrowser:{result:{subscription_id:'s'}}}
   if(c.op==='mirror_close')return {KernelBrowser:{result:{closed:true}}}
@@ -563,4 +620,109 @@ test('MP-11: tree refusals distinguish missing delta targets from invalid parent
   assert.throws(() => validateMirror2Packet(delta('n6', 'n6'), previous), { message: 'MP-11: unsafe mirror tree (missing operation target)' })
   assert.throws(() => validateMirror2Packet(delta('n2', 'n8'), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
   assert.throws(() => validateMirror2Packet(base(tree({ id: 'n7', parent: 'n8', kind: 'text', text: 'PRIVATE_PAGE_TEXT' })), previous), { message: 'MP-11: unsafe mirror tree (missing or out-of-order parent)' })
+})
+
+// MP-08/MP-10/MP-11: the renderer depends on the explicit completion bit.
+test('MP-11 completion header is boolean; pre-550 kernels (#1016 review 5: 539/540 lack the wire extensions) are refused before subscription', async () => {
+  for (const snapshot_complete of [true, false]) validateMirror2Packet(base(tree(element('p')), { snapshot_complete }), new Map())
+  validateMirror2Packet(base(tree(element('p'))), new Map())
+  for (const snapshot_complete of [null, 0, 'true', {}]) assert.throws(() => validateMirror2Packet(base(tree(element('p')), { snapshot_complete } as unknown as Partial<Mirror2Packet>), new Map()), /unsafe mirror header/)
+  for (const protocolVersion of [517, 535, 538, 539, 540, NaN]) {
+    let called = false
+    await assert.rejects(attachBrowserMirror2({ protocolVersion, request: async () => { called = true } }, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure() {} }), /requires protocol 550/)
+    assert.equal(called, false)
+  }
+})
+
+
+test('MP-10: a progressing 700 KB response over two seconds does not start another transfer', async () => {
+  let nexts = 0, resends = 0
+  const receiver = new RelayFrameReceiver(), applied: number[] = []
+  const transport = { protocolVersion: 550, receiving: () => receiver.receiving(), request: async (request: any): Promise<any> => {
+    const command = request.KernelBrowser.command
+    if (command.op === 'mirror_subscribe') return { KernelBrowser: { result: { subscription_id: 's' } } }
+    if (command.op === 'mirror_close') return { KernelBrowser: { result: { closed: true } } }
+    const turn = ++nexts; if (command.resend) resends++
+    if (turn > 2) return new Promise(() => {})
+    if (turn === 1) return { KernelBrowser: { result: packet(1, true) } }
+    const body = JSON.stringify({ KernelBrowser: { result: packet(2, false) }, padding: 'a'.repeat(700_000) })
+    let complete: string | null = null
+    for (let offset = 0; offset < body.length; offset += 16_384) {
+      complete = receiver.receive(JSON.stringify({ kind: 'transport_chunk', transfer_id: 1, offset, total_bytes: body.length, payload: body.slice(offset, offset + 16_384) }), () => {})
+      if (!complete) await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return JSON.parse(complete!)
+  } }
+  const renderer = () => ({ frame: {} as HTMLIFrameElement, ready: async () => {}, close: () => {}, apply: async (p: Mirror2Packet) => { applied.push(p.sequence) } })
+  const mirror = await attachBrowserMirror2(transport, {} as HTMLElement, { tab_id: 't', generation: 1, device_scale_factor: 1 }, { failure() {} }, { credits: 1, waitMs: 0, renderer })
+  try { await until(() => applied.length === 2, 2800); assert.equal(applied.length, 2); assert.equal(resends, 0) }
+  finally { await mirror.close() }
+})
+
+test('MP-10: validated chunk progress suppresses recovery only while the transfer advances', async () => {
+  const receiver = new RelayFrameReceiver()
+  receiver.receive(JSON.stringify({kind:'transport_chunk',transfer_id:1,offset:0,total_bytes:700_000,payload:'x'}), () => {})
+  assert.equal(receiver.receiving(), true)
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  assert.equal(receiver.receiving(), false, 'a stalled response cannot keep recovery paused')
+  assert.throws(() => receiver.receive(JSON.stringify({kind:'transport_chunk',transfer_id:1,offset:0,total_bytes:700_000,payload:'x'}), () => {}))
+  assert.equal(receiver.receiving(), false, 'invalid bytes cannot refresh progress')
+})
+
+
+test('MP-11 a reset can reuse only immutable sheets actually retained by this viewer', () => {
+  const digest = 'd'.repeat(24), known = new Map<string, string>(), retained = new Map([[digest, 'p{color:red}']])
+  const reset = base(tree({id:'n3',parent:'n2',kind:'element',tag:'style',css_ref:digest}))
+  assert.equal(resolveMirror2Sheets(reset, known, retained).nodes![2]!.css, 'p{color:red}')
+  assert.throws(() => resolveMirror2Sheets({...reset,nodes:tree({id:'n3',parent:'n2',kind:'element',tag:'style',css_ref:'e'.repeat(24)})}, known, retained), /sheet reference/)
+})
+
+test('MP-08/MP-10/MP-11 native preview keeps credits alive and a handover flush applies after earlier packets',async()=>{
+ const applied:number[]=[],commands:any[]=[],previews:string[]=[];let sequence=0,closed=false;
+ const renderer=()=>({frame:{} as HTMLIFrameElement,ready:async()=>{},close:()=>{},apply:async(p:Mirror2Packet)=>{applied.push(p.sequence)}});
+ const request=async(r:any)=>{const c=r.KernelBrowser.command;commands.push(c);let result:any;
+  if(c.op==='mirror_subscribe')result={subscription_id:'s'};
+  else if(c.op==='mirror_close'){closed=true;result={closed:true}}
+  else if(c.op==='mirror_next'){
+   const n=++sequence;if(n===1)result={...packet(1,true),fallback:'navigation_preview',snapshot_complete:false};
+   else {if(!c.flush)await new Promise(resolve=>setTimeout(resolve,10));result=packet(n,n===2)}
+  }
+  return{KernelBrowser:{result}};
+ };
+ const view=await attachBrowserMirror2({protocolVersion:550,request},{}as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:assert.fail,preparing:(p:Mirror2Packet)=>previews.push(p.document_id)} as any,{renderer,credits:1,waitMs:0});
+ try{
+  await until(()=>applied.length>0,1000);
+  assert.deepEqual(previews,['d']);assert.equal(commands[0].navigation_preview,true);
+  const fresh=await (view as any).synchronize();assert.equal(fresh.document_id,'d');assert(applied.includes(fresh.sequence));
+  assert(commands.some(c=>c.flush&&c.wait_ms===0));
+ }finally{await view.close();assert(closed)}
+});
+
+// MP-08/MP-10/MP-11: recovery over an existing video also has a staged reset.
+test('MP-08/MP-10/MP-11 a recovery reset holds the renderer before any reset content applies',async()=>{
+ const calls:string[]=[];let issued=0;
+ const request=async(r:any)=>{const c=r.KernelBrowser.command;
+  if(c.op==='mirror_subscribe')return{KernelBrowser:{result:{subscription_id:'s'}}};
+  if(c.op==='mirror_close')return{KernelBrowser:{result:{closed:true}}};
+  if(++issued>1)await new Promise(resolve=>setTimeout(resolve,10));
+  return{KernelBrowser:{result:packet(issued,issued===1)}};
+ };
+ const renderer=()=>({frame:{}as HTMLIFrameElement,ready:async()=>{},close:()=>{},holdForHandover:()=>calls.push('hold'),apply:async()=>{calls.push('apply')}});
+ const mirror=await attachBrowserMirror2({protocolVersion:550,request},{}as HTMLElement,{tab_id:'t',generation:1,device_scale_factor:1},{failure:assert.fail,prepareReset:()=>{calls.push('prepare');return true}}as any,{renderer,credits:1,waitMs:0});
+ try{await until(()=>calls.includes('apply'),1000);assert.deepEqual(calls.slice(0,3),['prepare','hold','apply'])}finally{await mirror.close()}
+});
+
+test('MP-08/MP-10/MP-11 source font failure metadata is bounded and authenticated as part of the packet',()=>{
+ const valid='a'.repeat(64)
+ for(const font_failures of [[],[valid]])validateMirror2Packet(base(tree(element('p')),{font_failures} as Partial<Mirror2Packet>),new Map())
+ for(const font_failures of [null,'x',[valid,valid],['not-a-digest'],Array(129).fill(valid)])assert.throws(()=>validateMirror2Packet(base(tree(element('p')),{font_failures} as unknown as Partial<Mirror2Packet>),new Map()),/unsafe mirror header/)
+})
+
+test('MP-08/MP-10/MP-11 native font requirements are bounded and target a known document only',()=>{
+ const nodes:Mirror2Record[]=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'p'}]
+ const hashes=Array.from({length:129},(_,i)=>i.toString(16).padStart(64,'0'))
+ for(const required of [null,[],hashes.slice(0,128)])validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}),new Map())
+ for(const required of [undefined,'x',[hashes[0],hashes[0]],hashes,['invalid']])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}as any),new Map()),/unsafe mirror fonts/)
+ for(const id of ['n2','n99'])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id,required:[]}]}),new Map()),/unsafe mirror fonts/)
+ assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required:[],family:'unexpected'}]}as any),new Map()),/unsafe mirror fonts/)
 })

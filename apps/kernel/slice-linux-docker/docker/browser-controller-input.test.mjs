@@ -95,6 +95,28 @@ test('MP-08/MP-10: a display hold acquired while visible still keeps a later hid
   assert.equal(emulated,false);assert.equal(capture.displayLeases.size,0);assert(!calls.includes('Page.bringToFront'));
 });
 
+// MP-08/MP-10: a viewer attaching to a page whose renderer is parsing (a 16 MB document) must not wait on a renderer read.
+test('MP-08/MP-10: a display hold acquired while the renderer is busy assumes the page hidden and keeps it awake',async()=>{
+  const capture=new BrowserInputCapture(),calls=[];
+  const connection={async send(method,params,session,options){
+    calls.push({method,params,options});
+    if(method==='Runtime.evaluate')throw Object.assign(Error(`browser CDP method ${method} timed out after ${options?.timeoutMs}ms`),{code:'browser_cdp_timeout'});
+    return {};
+  }};
+  const release=await capture.hold(connection,'display');
+  assert(calls.find(c=>c.method==='Runtime.evaluate').options.timeoutMs<=2000,'the visibility read is short');
+  assert.deepEqual(calls.filter(c=>c.method.startsWith('Emulation.')).map(c=>c.params.enabled),[true],'the wake-up is acquired');
+  await release();
+  assert.deepEqual(calls.filter(c=>c.method.startsWith('Emulation.')).map(c=>c.params.enabled),[true,false]);
+  assert.equal(capture.displayLeases.size,0);assert.equal(capture.visibilityBySession.size,0);
+});
+
+test('MP-08/MP-10: an input run (not a display hold) still reports a busy renderer',async()=>{
+  const capture=new BrowserInputCapture();
+  const connection={async send(){throw Object.assign(Error('timed out'),{code:'browser_cdp_timeout'})}};
+  await assert.rejects(capture.run(connection,'s',async()=>1),{code:'browser_cdp_timeout'});
+});
+
 // MP-11: physical focus sampling neither overlaps input nor releases a live display.
 test('MP-11 physical focus sampling restores emulation after a refusal and orders later input',async()=>{
  const capture=new BrowserInputCapture();let emulated=false,finish,entered;

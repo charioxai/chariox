@@ -19,3 +19,19 @@ test('MP-11 failure and clear never leave a stale catalog promise reusable',asyn
  const pending=deferred<number>();const old=reads.run(request,'scope',()=>pending.promise);reads.clear();const fresh=reads.run(request,'scope',async()=>++n);assert.equal(await fresh,2);pending.resolve(0);await old
  assert.equal(await reads.run(request,'scope',async()=>++n),3)
 })
+
+
+test('MP-08/MP-10 catalogs wait for initial mirror paint while writes proceed and duplicate reads coalesce',async()=>{
+ const reads=new KernelCatalogReads(),release=reads.hold();let sent=0
+ const request={GetProviderCatalog:{}}
+ const a=reads.run(request,'scope',async()=>++sent),b=reads.run(request,'scope',async()=>++sent)
+ assert.equal(sent,0)
+ assert.equal(await reads.run({SubmitPrompt:{}},'scope',async()=>++sent),1)
+ release();assert.deepEqual(await Promise.all([a,b]),[2,2]);assert.equal(sent,2)
+})
+test('MP-11 clearing a display hold cancels deferred reads before any changed authority can write',async()=>{
+ const reads=new KernelCatalogReads(),release=reads.hold();let sent=0
+ const a=reads.run({GetProviderCatalog:{}},'old-scope',async()=>++sent)
+ reads.clear();release();await assert.rejects(a,/catalog read cancelled/);assert.equal(sent,0)
+ assert.equal(await reads.run({GetProviderCatalog:{}},'new-scope',async()=>++sent),1)
+})

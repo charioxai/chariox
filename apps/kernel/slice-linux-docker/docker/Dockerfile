@@ -231,6 +231,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-c
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
@@ -297,6 +298,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
+    /opt/chariox-slice/browser-focus-world.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
@@ -355,8 +357,10 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-input-queue.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-macos.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-observer.mjs \
@@ -366,8 +370,10 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \

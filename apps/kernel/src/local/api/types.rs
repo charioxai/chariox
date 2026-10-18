@@ -327,6 +327,12 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
 /// Allocated 535 registers525 resumption, worker attach and initial push credit once.
 /// MP-08/MP-10/MP-11: allocated536 captures only the visible page on the owned desktop.
-/// MP-08/MP-10/MP-11: allocated 548 adds
-/// `KernelBrowser` `state_wait`: a parked state read replacing the viewer's 250 ms poll.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 548;
+/// MP-08/MP-10/MP-11: allocated 540 keeps the omnibox list's `chrome_window.auxiliary`
+/// entry (visible height 0) while the address bar has the person's keys.
+/// MP-08/MP-10/MP-11: allocated 550 versions the mirror v2 wire extensions (navigation preview,
+/// font requirements, known sheets, flush, snapshot completion); clients require it for mirror v2.
+/// MP-08/MP-10/MP-11: allocated 552 adds the Browser reply's `parked_input` (input this observer has
+/// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
+/// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
+/// replacing the viewer's 250 ms poll.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 556;

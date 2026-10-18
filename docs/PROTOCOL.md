@@ -4136,6 +4136,113 @@ under its observed-frame, live-focus and epoch guards (before 530 they were
 document-bound `display_input` chords, which refuse any focused frame). Clients
 feature-detect 530; no client floor moves.
 
+### MP-08 / MP-10 / MP-11: mirror initial snapshot completion (local 539 / peer 147)
+
+MP-08 / MP-10 / MP-11: the same coordinator-authorized additive unreleased539
+allocation adds `mirror_subscribe.font_requirements?: true` and the v2 operation
+`{op:"fonts", id, required}`. Kernels emit the operation only for explicitly
+negotiating v2 viewers and acknowledge `font_requirements:true` in the subscribe
+result; older viewers keep their existing operation set. An acknowledged viewer
+holds every document lacking its certificate; an older kernel without the
+acknowledgment retains the conservative legacy path. `id` must name a
+known document record, including same-origin and rebased cross-origin child
+roots. `required` is null while native font loading is pending, otherwise at
+most128 unique sorted SHA-256 descriptors for native loaded FontFaces, using
+the canonical descriptor below. More than4096 faces, a loaded descriptor above
+4096 characters, or more than128 distinct loaded descriptors stays pending;
+an incomplete list never becomes a ready empty certificate. Loading/completion
+wakes the existing credit. Snapshots carry the operation before deltas; each
+child's document ID is rebased, while descriptor hashes are unchanged.
+
+For a certified document, clients require every matching required face to load
+from the existing validated kernel font resources. A source-loaded offscreen
+face is explicitly preloaded. Failed unused fallbacks do not block a document
+whose requirements are satisfied; missing required faces do. Certificates
+retire with their document/frame or reset, and packet changes during hashing,
+font loading or image decoding invalidate the handover proof. No name, source
+URL, page text, credential or new input/protection authority is added. Older
+kernels without this operation retain the conservative failure-metadata path.
+The protocol/hash fixture is `browser-mirror2-font-requirements-550.json`.
+
+MP-08 / MP-10 / MP-11: the coordinator-authorized additive extension of mirror's
+unreleased 539/147 allocation (current union 540/148) adds
+`font_failures?: string[]`. It contains at most 128 unique lowercase SHA-256 hex
+descriptors. Every matching native FontFace must have status `error`; any
+unloaded, loading or loaded match prevents certification. Hash UTF-8 JSON of
+`[family, style, weight, stretch, unicodeRange]`: remove matching family quotes,
+trim/lowercase family, trim/collapse style and weight whitespace, normalize
+weight `normal` to `400` and stretch `normal` to `100%`, remove whitespace and
+uppercase unicodeRange. Descriptors above 4096 characters or FontFaceSets above
+4096 faces are not certified. A client failed face with a matching authenticated
+kernel descriptor may use the same fallback. Missing metadata is conservative.
+An explicit empty array clears prior failures; unchanged lists inherit through
+the existing compact/deflated delta. Native font completion/failure wakes the
+existing mirror credit. No font name, URL, credential or input authority is
+added. The snapshot/hash fixture is `browser-mirror2-font-failures-550.json`.
+
+The mirror v2 packet header adds `snapshot_complete?: boolean`. The kernel emits
+`true` only when the main document's initial serializer has drained and its
+native `document.readyState` is `complete`. A bounded prefix, even one with a
+hidden body, emits `false`. This is main-document readiness; child-frame
+completion cannot override it. Resources may continue refining independently.
+A readiness change wakes an outstanding credit. A completion change between
+credits is retained until the next drain, so an otherwise empty completion
+header cannot be lost. Compact deltas inherit an omitted value from their base,
+just like focus, scroll and selection; resets always carry the boolean.
+
+The shared renderer requires protocol 539. It keeps the previous inert page
+while an incoming prefix has no visible viewport content. Only confirmed
+completion starts the bounded two-second hold for an intentionally empty page.
+A completed empty timer also emits a local presentation notification carrying
+only the last applied packet metadata, so View promotion does not wait for another
+credit. This neither creates a packet nor advances sequence/acknowledgement state;
+closed renderers and replaced frames cannot publish it. Visible content may paint
+before completion; the serializer and opaque relay
+chunk transport remain bounded and keep their existing input/band interleaving.
+The field does not relax observation protection, frame admission or input fences.
+
+The frozen header fixture `browser-mirror2-completion-550.json` is hash-pinned by
+`mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash`; real-Chromium observer,
+controller, compact-header and renderer drills cover pending prefixes, completion
+wakes (including between credits), completed empty pages and pre-539 rejection.
+These supplementary checks do not replace the MP-10 real hosted UI/timing matrix.
+
+#### MP-08 / MP-10 / MP-11: retained mirror sheets in the unreleased 539/147 allocation
+
+A `mirror_next` credit may carry `known_sheets`, at most 128 lowercase 24-digit
+hexadecimal stylesheet digests. These name sanitized CSS texts that this viewer
+actually retains until its subscription closes. Omission means no retained
+cross-document dictionary, preserving the existing client path. A reset includes
+all other sheet definitions; deltas keep the existing snapshot dictionary.
+The kernel uses the advertised digests only to omit repeated CSS text. They do
+not authorize a document, input, resource fetch or observation.
+
+The viewer keeps an immutable subscription dictionary of at most 128 sheets and
+8 MiB of UTF-8 text. It never evicts an advertised entry while a credit or reset
+could still refer to it. Additional definitions use ordinary per-document delivery.
+Every resolved CSS use passes the existing sandbox/CSS validation. Closing the
+renderer discards both dictionaries. This extends mirror's own unreleased
+539/147 allocation additively, as allocated by the coordinator; no new protocol
+number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
+the request extension and its hash, including legacy omission/round-trip coverage.
+
+MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
+`mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
+`fallback:"navigation_preview"`, `snapshot_complete:false` notification before
+observer preparation. It is nonterminal only for the opting-in viewer; the next
+credit supplies the new document's actual snapshot. Old input epochs and region
+leases retire before the notification. No page pixels or new input authority
+travel in this packet. With protected display disabled it is never issued.
+
+The viewer may show the existing whole-page protected VIDEO display while
+preparing its script-free DOM offscreen. `mirror_next.flush:true` requires
+`wait_ms:0`, ends earlier long polls and performs a fresh observer drain; it
+never replays a history packet. Opted-in native input awaits CDP dispatch ACKs
+so a flush after those receipts is causal. The client must match document and
+geometry, await full snapshot/assets and settle in-flight input before atomic
+handover; a newer input or document invalidates that attempt. Active pointer
+and IME composition remain on the existing native input surface until complete.
+
 MP-08 / MP-10 / MP-11: allocated 540/148 keeps the omnibox suggestion list's
 stream warm. While the person's keys are in the band's address bar (a click on
 it, Ctrl+L, typing there; at most 30 s without such input) the Browser state's
@@ -4165,7 +4272,27 @@ registration (as a 535 resume does) instead of after the viewer's first
 `display_ack` — one round trip less per stream open. Kernels report it only on
 the kernel-private `display_attach` reply; the relay sees nothing new.
 
-MP-08 / MP-10: allocated 548/156 adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
+MP-08 / MP-10 / MP-11: allocated 550/158 versions the mirror v2 wire contract
+that 539/540 kernels shipped unversioned: `mirror_subscribe`
+`navigation_preview`/`font_requirements`, `mirror_next` `known_sheets`/`flush`,
+explicit `snapshot_complete` and the font packets. No shape changes; the
+`browser-mirror2-*-550.json` fixtures pin them. Clients require 550 for mirror v2
+(`browserMirror2MinimumProtocolVersion`) and send every field without a schema
+retry; older kernels keep the legacy mirror.
+
+MP-08 / MP-10 / MP-11: allocated 552/160 adds the optional integer `parked_input`
+to a Browser reply (the input `op` and `state` for the observer; omitted when 0).
+A viewer's input that a busy renderer cannot pass the renderer-bound fences for is
+parked in order by the kernel and answered with success; `parked_input` is how many
+inputs of that observer are still parked. A `state` read for an observer with parked
+input answers from the kernel's last observation without waiting for the renderer.
+The viewer holds its preview-to-mirror handover while `parked_input` is positive,
+because the handover retires the display the parked input is bound to. The kernel
+never re-resolves or re-binds a display for parked input. The
+`browser-parked-input-552.json` fixture pins the shape. Older kernels never park
+(they refuse the input), so the field is simply absent.
+
+MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
 viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
 `revision`, an opaque string the viewer sends back as `after` (empty or invalid:
 read at once). The kernel answers when the state, as the caller sees it, differs
@@ -4176,8 +4303,8 @@ window changes, Tab or agent requests and a policy change; a person's keys and
 wheel raise none. A signal only means "read again": the reply's content decides, so
 a missed signal costs at most `wait_ms`. The wait holds no protection barrier, so
 Vault insertion never waits on a parked viewer. `state` itself is unchanged.
-`browser-state-wait-548.json` pins the shape (Rust hash test
-`mp08_mp10_browser_state_wait_548_snapshot`). Viewers feature-detect 548 and poll
+`browser-state-wait-556.json` pins the shape (Rust hash test
+`mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
 
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
@@ -4233,3 +4360,11 @@ recovery request. Sender/generation admission, lease renewal and protected
 frame publication keep their existing paths. `browser-visible-page-536.json`
 pins the additive request and ACK capability response. See the display region
 drill for required real-path checks; source regressions do not close acceptance.
+
+MP-08 / MP-10 / MP-11 — native-to-DOM handover retains an issued visible-page
+crop as a presentation clip around the canonical mirror layout. The temporary
+video producer closes after handover. A subsequent protected capture may resolve
+the same crop afresh for a live opted-in mirror of that observer/document/policy;
+the kernel requires exact issued geometry, active owned window, density and
+pre/post-capture fences. A frame-size hint never supplies capture coordinates or
+observation authority. This composes unreleased mirror539 with union 540/148.

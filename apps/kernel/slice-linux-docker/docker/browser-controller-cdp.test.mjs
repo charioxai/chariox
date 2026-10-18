@@ -1730,3 +1730,17 @@ test('ordinary tab reconciliation survives more than64 unrelated advertising fra
  const browser=new BrowserCdpClient({connectionFactory:async()=>connection});
  try{const state=await browser.reconcile(viewport);assert.equal(state.tabs.length,2);assert.equal(connection.calls.filter(c=>c.method==='Target.attachToTarget'&&c.params.targetId.startsWith('ad-')).length,0,'state must not attach unrelated iframe targets; isolated listeners own bounded child sessions')}finally{await browser.close()}
 })
+
+
+test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with their session', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-a'}}});
+ const cached=browser.currentPageFrame('target-a');assert.equal(cached.frame.loaderId,'doc-a');assert.ok(Number.isFinite(cached.navigatedAt));
+ browser.recordConnectionEvent({method:'Page.frameStartedLoading',sessionId,params:{frameId:'frame-a'}});
+ assert.equal(browser.currentPageFrame('target-a'),null);
+ browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-b'}}});
+ assert.equal(browser.currentPageFrame('target-a').frame.loaderId,'doc-b');
+ browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId}});
+ assert.equal(browser.currentPageFrame('target-a'),null);await browser.close();
+});

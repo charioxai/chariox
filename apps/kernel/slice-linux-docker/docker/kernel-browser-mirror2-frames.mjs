@@ -24,10 +24,11 @@ const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
   attr: slot => ({ name: same, value: same }), text: () => ({ text: same }), form: () => ({ form: same }), scroll: () => ({ scroll: same }), size: () => ({ size: same }), state: () => ({ state: same }),
   css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }), fragment: () => ({ fragment: same }),
+  fonts: () => ({ required: same }),
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
-  sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
+  snapshot_complete: same, font_failures: same, sheets: same, scroll: same, fragment: same, revision: same, pressed: same, opaque: same, loaded: same }); // sheets: frame-local ids, read through the child's own CDP session first
 const apply = (value, schema, what) => Object.fromEntries(Object.entries(value).map(([name, field]) => { if (!Object.hasOwn(schema, name)) throw new Error(`MP-11: unrebased mirror ${what} field`); return [name, field === undefined ? field : schema[name](field)]; }));
 export function rebaseRecord(record, slot) {
   if (!slot) return record;
@@ -64,7 +65,7 @@ export class MirrorFrames {
       try {
         const { backendNodeId } = await world.connection.send('DOM.getFrameOwner', { frameId: frame.id }, world.sessionId);
         const { object } = await world.connection.send('DOM.resolveNode', { backendNodeId, executionContextId: world.contextId }, world.sessionId);
-        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.idOfNode.call(this)}`, returnByValue: true }, world.sessionId);
+        const reply = await world.connection.send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: `function(){return ${world.ref}.idOfNode.call(this)}`, returnByValue: true }, world.sessionId, { timeoutMs: world.patience?.() });
         await world.connection.send('Runtime.releaseObject', { objectId: object.objectId }, world.sessionId).catch(() => {});
         const id = reply.result?.value;
         if (typeof id === 'string' && /^n[1-9][0-9]*$/.test(id)) owners.set(id, frame); else this.failed('owner_id', id);
@@ -94,6 +95,7 @@ export class MirrorFrames {
     child.documentId = loaderId;
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
     const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
+    delete snap.full_pending; // a child frame sends its sheets whole
     await this.mirror.markClosedHosts(child, snap);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
   }
@@ -127,7 +129,7 @@ export class MirrorFrames {
         out.records.push(...records);
         out.resources = [...(out.resources ?? []), ...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot }))];
         if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
-        out.ops.push(...snap.sheetOps);
+        out.ops.push(...(snap.ops ?? []).map(op => rebaseOp(op, slot)), ...snap.sheetOps);
       } catch (error) { this.failed('attach', error); out.opaque.push(id); }
     }
     return out;
@@ -142,7 +144,7 @@ export class MirrorFrames {
         let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
         if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
         if (raw.resync) throw new Error('resync');
-        delete raw.closed_candidates; // Controller-private discovery signal never enters the strict rebased delta schema.
+        delete raw.closed_candidates; delete raw.full_pending; // Controller-private discovery signal never enters the strict rebased delta schema.
         const delta = rebaseDelta(raw, entry.slot);
         // Morphed child nodes (a new page node under a viewer id) are changed input targets too.
         out.ops.push(...delta.ops, ...await this.sheetOps(entry.child, entry.slot, raw.sheets)); out.changed.push(...delta.changed); out.resources.push(...delta.resources);
@@ -161,7 +163,7 @@ export class MirrorFrames {
           const next = { slot, owner, child, loaderId, documentId: rebaseId(snap.nodes[0].id, slot), scroll: JSON.stringify(snap.scroll), fragment: snap.fragment ?? null, focus: rebaseFocus(snap, slot) };
           stream.frames.set(owner, next); stream.frameSlots.set(slot, next);
           const records = snap.nodes.map(r => rebaseRecord(r, slot)); records[0] = { ...records[0], parent: owner, ...(next.fragment ? { fragment: next.fragment } : {}) };
-          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...snap.sheetOps);
+          out.ops.push({ op: 'children', id: owner, children: [records[0].id], nodes: records }, ...(snap.ops ?? []).map(op => rebaseOp(op, slot)), ...snap.sheetOps);
           if (snap.scroll[0] || snap.scroll[1]) out.ops.push({ op: 'scroll', id: records[0].id, scroll: snap.scroll });
           out.resources.push(...snap.resources.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })));
         } catch {}

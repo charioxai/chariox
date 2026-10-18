@@ -8,7 +8,14 @@ export function relayTransportUrl(value: string): string {
 }
 export const relayMaxTransfers = 4
 export const relayMaxAssemblyBytes = 128 * 1024 * 1024
+// Socket-local only: no payload inspection or request authority. A stalled
+// transfer stops suppressing recovery after one second without valid bytes.
+const receivers = new WeakMap<object, RelayFrameReceiver>()
+export function relayResponseInProgress(socket: object | null): boolean { return !!socket && receivers.get(socket)?.receiving() === true }
 export class RelayFrameReceiver {
+  private progressAt = -Infinity
+  constructor(socket?: object) { if (socket) receivers.set(socket, this) }
+  receiving(): boolean { return this.active.size > 0 && performance.now() - this.progressAt < 1000 }
   private active = new Map<number, { total: number; bytes: number; parts: string[] }>()
   private reserved = 0
   private lastId = 0
@@ -45,6 +52,7 @@ export class RelayFrameReceiver {
     if (last >= 0 && active.parts[last]!.length < relayChunkBytes) active.parts[last] += payload
     else active.parts.push(payload)
     active.bytes += bytes
+    this.progressAt = performance.now()
     let completed: string | null = null
     if (active.bytes === total) {
       completed = active.parts.join("")

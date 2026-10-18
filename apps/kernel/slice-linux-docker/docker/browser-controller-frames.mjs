@@ -1,4 +1,42 @@
+import {BrowserActionError} from './browser-controller-actions.mjs';
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
+
+// MP-08/MP-10/MP-11: an asynchronous inspection may populate a cold cache,
+// but it cannot replace a newer navigation/session event with an old result.
+export function pageObservationFence(browser, connection, sessionId, targetId, frame) {
+  const entry = browser.pageFramesByTarget.get(targetId), document = browser.documentIdsByTarget.get(targetId);
+  const owner = browser.currentPageFrame(targetId);
+  const stale = () => new BrowserSnapshotError('stale_document_reference', 'browser document observation retired');
+  if (owner && (owner.frame.loaderId !== frame.loaderId || owner.frame.id !== frame.id)) throw stale();
+  const assertCurrent = () => {
+    if (browser.connection !== connection || browser.sessionsByTarget.get(targetId) !== sessionId ||
+        browser.pageFramesByTarget.get(targetId) !== entry || browser.documentIdsByTarget.get(targetId) !== document) throw stale();
+  };
+  assertCurrent();return { owner, assertCurrent };
+}
+
+export function captureDocumentOwner(browser, tab, expectedConnection, expectedSession) {
+  const target=tab?.target_id, document=tab?.document_id, frame=target&&browser?.currentPageFrame?.(target);
+  if (!frame) return null;
+  const {connection,sessionId}=frame;
+  const current=()=>browser.connection===connection && frame.connection===connection && frame.sessionId===sessionId &&
+    browser.currentPageFrame(target)===frame && frame.frame.loaderId===document &&
+    (expectedConnection===undefined||expectedConnection===connection) && (expectedSession===undefined||expectedSession===sessionId);
+  const assertCurrent=()=>{if(!current())throw new BrowserActionError('stale_document_reference','browser capture owner retired');};
+  assertCurrent();return {connection,sessionId,assertCurrent};
+}
+
+// Native state is metadata only. A pending page keeps its last committed id;
+// this never populates the frame-owner cache or admits pixels/input.
+export function nativeStatePage(browser, connection, sessionId, target, visibleTargetId, configured) {
+  if (!configured || typeof visibleTargetId !== 'string' || browser.connection !== connection ||
+      browser.sessionsByTarget.get(target.targetId) !== sessionId) return null;
+  const document = browser.currentPageFrame(target.targetId)?.frame.loaderId ?? browser.documentIdsByTarget.get(target.targetId);
+  if (typeof document !== 'string' || !document) return null;
+  return { target_id: target.targetId, ...(typeof target.openerId === 'string' ? {opener_target_id:target.openerId} : {}),
+    document_id: document, url: typeof target.url === 'string' ? target.url : '',
+    title: typeof target.title === 'string' ? target.title : '', focused: target.targetId === visibleTargetId };
+}
 
 const MAX_FRAMES = 64;
 const MAX_NODES = 5_000;

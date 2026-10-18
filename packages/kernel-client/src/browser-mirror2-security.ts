@@ -85,8 +85,8 @@ export function decodeMirror2Records(rows: unknown, context: string | null): Mir
 }
 // Stylesheet digests resolve against this snapshot epoch's sheet table (the
 // texts are validated wherever they are used, like inline texts).
-export function resolveMirror2Sheets(packet: Mirror2Packet, known: Map<string, string>): Mirror2Packet {
-  if (packet.reset) known.clear()
+export function resolveMirror2Sheets(packet: Mirror2Packet, known: Map<string, string>, retained?: ReadonlyMap<string, string>): Mirror2Packet {
+  if (packet.reset) { known.clear(); for (const [digest, text] of retained ?? []) known.set(digest, text) }
   if (packet.sheets !== undefined) {
     if (!packet.sheets || typeof packet.sheets !== 'object' || Array.isArray(packet.sheets) || Object.keys(packet.sheets).length > 4096) fail('sheets')
     for (const [digest, text] of Object.entries(packet.sheets)) { if (!/^[a-f0-9]{24}$/.test(digest) || typeof text !== 'string') fail('sheets'); known.set(digest, text) }
@@ -167,11 +167,14 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     case 'state': if (!validState(op.state) || known(op.id) && known(op.id)!.kind !== 'element') fail('op'); break
     case 'fragment': if (!validFragment(op.fragment) || known(op.id) && known(op.id)!.kind !== 'document') fail('op'); break
+    case 'fonts': if (Object.keys(op).some(key => !['op', 'id', 'required'].includes(key)) || known(op.id)?.kind !== 'document' || op.required !== null && (!Array.isArray(op.required) || op.required.length > 128 || new Set(op.required).size !== op.required.length || op.required.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('fonts'); break
     default: fail('op')
   }
 }
 export function validateMirror2Packet(packet: Mirror2Packet, previous: ReadonlyMap<string, Mirror2Record>): void {
   if (packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0 || packet.css_width !== 1280 || packet.css_height !== 800 || ![1, 2].includes(packet.device_scale_factor) || !Array.isArray(packet.resources) || !Array.isArray(packet.tiles) || packet.resources.length > 4096 || packet.tiles.length > 256) throw Error('MP-11: mirror packet bounds')
+  if (packet.snapshot_complete !== undefined && typeof packet.snapshot_complete !== 'boolean') fail('header')
+  if (packet.font_failures !== undefined && (!Array.isArray(packet.font_failures) || packet.font_failures.length > 128 || new Set(packet.font_failures).size !== packet.font_failures.length || packet.font_failures.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('header')
   if (!Array.isArray(packet.scroll) || packet.scroll.length !== 2 || !finite(packet.scroll) || packet.focused !== null && !id.test(packet.focused) || packet.fragment !== undefined && packet.fragment !== null && (typeof packet.fragment !== 'string' || packet.fragment.length > 2048)) fail('header')
   if (packet.fallback !== undefined) { if (typeof packet.fallback !== 'string' || !/^[a-z_]{1,64}$/.test(packet.fallback)) fail('fallback'); return }
   const fresh = new Map<string, Mirror2Record>()

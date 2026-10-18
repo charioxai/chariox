@@ -1,3 +1,5 @@
+import {captureDocumentOwner} from './browser-controller-frames.mjs';
+import {resumeAfterCapturePresentation} from './browser-capture-presentation.mjs';
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: OS-neutral capture interface: start/subscribe/sample/close.
 // Linux XDamage/XShm implementation; macOS unsupported until ScreenCaptureKit.
@@ -43,8 +45,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
+  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
@@ -75,6 +77,13 @@ export class LinuxCapture {
  }
  /** A cached readback masked under the current projection (startup admits only such a sample). */
  currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
+ // MP-08/MP-10/MP-11: a busy navigation can retire its first protected sample.
+ // Wait only for a current mask projection and stop as soon as its lease retires.
+ async waitForCurrentSample({now=()=>performance.now(),pause=delay}={}){
+  const deadline=now()+5_000;
+  while(this.valid()&&!this.currentSample()&&now()<deadline)await pause(Math.min(10,deadline-now()));
+  return this.valid()&&this.currentSample();
+ }
  // Retire every published, queued and in-flight pixel of the current mask projection.
  retireFrames(){
   this.nativeWorker?.retireState();
@@ -86,6 +95,8 @@ export class LinuxCapture {
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
+   const documentOwner=captureDocumentOwner(this.browser,this.tab,this.connection,this.sessionId);
+   this.phase='presentation';await this.connection.presentationFence?.recoverFailed?.();
    this.phase='bounds';const readback=await this.prepareReadback();
    // A DOM mutation may retire the first fence while it is measured (busy
    // real pages); retry a bounded number of times instead of refusing.
@@ -93,38 +104,47 @@ export class LinuxCapture {
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,readback);
-   for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
-   this.phase='attestation';let matched=false;
-   // Chromium may finish a viewport paint after the first shared readback.
-   // Retry only this observation; never admit an approximate pixel binding.
-   for(let attempt=0;attempt<6&&!matched;attempt++){
-    const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
-    await delay(50);
-    // A protection event may have retired the readback meanwhile; its fresh
-    // replacement follows the refreshed fence (bounded wait).
-    let raw=this.latest?.raw;
-    for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
-    if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
-    matched=reference.width===raw.width&&reference.height===raw.height;
-    const nativePixels=raw.pixels;
-    // MP-08/MP-11: the reference is the protected capture; its masked
-    // regions (+2 px for rounding) are excluded. The same trusted regions
-    // mask every native frame before any encoder or client sees it.
-    const masked=attestationMask([...(shot[displayMaskRegions]??[]),statusBand(raw,this.hostScale)],raw.width,raw.height);
-    // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
-    let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
-    for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
-    // A mostly masked viewport cannot attest the surface; stay on CDP.
-    if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
-    if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
-    else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
-   }
-   if(!matched)throw Error('native attestation RGB differed');
-   await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
+   if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
+   this.phase='attestation';await this.admitSurface();
+   if(documentOwner)documentOwner.assertCurrent();else await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
    if(!this.valid())throw Error('native attestation retired');
    this.attested=true;this.timing('native_admitted',performance.timeOrigin+performance.now());return this;
   }catch(error){this.timing('native_unavailable_'+this.phase+'_'+(this.helperStage??'host')+' '+nativeRefusalReason(error,this.helperStage),performance.timeOrigin+performance.now());await this.close();throw error}
+ }
+ // MP-08/MP-11: exact RGB proves this window binding shows the target's surface. A new document of the
+ // same binding (target, window, page rect, metrics, scales, crop) reuses that proof: a parsing renderer
+ // answers no screenshot (WHATWG 15.8 MB), and a screenshot in flight fences every native frame.
+ async admitSurface(){
+  if(this.attestation?.proven()===true){this.timing('native_attestation_reused',performance.timeOrigin+performance.now());return;}
+  await this.attest();this.attestation?.prove();
+ }
+ async attest(){
+  let matched=false;
+  // Chromium may finish a viewport paint after the first shared readback.
+  // Retry only this observation; never admit an approximate pixel binding.
+  for(let attempt=0;attempt<6&&!matched;attempt++){
+   const shot=await this.screenshot(),reference=decodePng(shot.data_base64,this.scale);
+   await delay(50);
+   // A protection event may have retired the readback meanwhile; its fresh
+   // replacement follows the refreshed fence (bounded wait).
+   let raw=this.latest?.raw;
+   for(let n=0;n<50&&!raw&&this.valid();n++){await delay(10);raw=this.latest?.raw;}
+   if(!raw||!this.valid()){this.timing('native_attestation_no_readback',performance.timeOrigin+performance.now());break;}
+   matched=reference.width===raw.width&&reference.height===raw.height;
+   const nativePixels=raw.pixels;
+   // MP-08/MP-11: the reference is the protected capture; its masked
+   // regions (+2 px for rounding) are excluded. The same trusted regions
+   // mask every native frame before any encoder or client sees it.
+   const masked=attestationMask([...(shot[displayMaskRegions]??[]),statusBand(raw,this.hostScale)],raw.width,raw.height);
+   // MP-08/MP-10: on mismatch record only counts and bounds (no pixels).
+   let differing=0,l=Infinity,t=Infinity,r=-1,b=-1;
+   for(let n=0;matched&&n<nativePixels.length;n+=4)if(!masked?.[n/4]&&(reference.pixels[n]!==nativePixels[n+2]||reference.pixels[n+1]!==nativePixels[n+1]||reference.pixels[n+2]!==nativePixels[n])){const p=n/4,x=p%raw.width,y=(p-x)/raw.width;differing++;l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x);b=Math.max(b,y);}
+   // A mostly masked viewport cannot attest the surface; stay on CDP.
+   if(matched&&masked&&masked.reduce((n,v)=>n+v,0)>raw.width*raw.height*.9){matched=false;this.timing('native_attestation_masked',performance.timeOrigin+performance.now());break;}
+   if(differing){matched=false;this.timing(`native_attestation_differs ${attempt} ${differing} ${l},${t},${r},${b}`,performance.timeOrigin+performance.now());}
+   else if(!matched)this.timing(`native_attestation_geometry ${reference.width}x${reference.height} ${raw.width}x${raw.height}`,performance.timeOrigin+performance.now());
+  }
+  if(!matched)throw Error('native attestation RGB differed');
  }
  async publish(){
   if(this.publishing)return;this.publishing=true;
@@ -136,7 +156,7 @@ export class LinuxCapture {
    // after the capture: a readback holding the list's pixels always sees it open.
    if(this.occluded&&await this.occluded()){this.timing('native_region_occluded',raw.captured_ms);raw.release?.();this.publishingRaw=null;continue;}
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
-    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;this.wake(true);continue;
+    this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;resumeAfterCapturePresentation(this,this.connection.presentationFence,()=>this.wake(true));continue;
    }
    if(!this.valid())break;
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
@@ -167,6 +187,9 @@ export class LinuxCapture {
    at=performance.timeOrigin+performance.now();const masked=maskNativeRaster(raw,regions,this.previousRegions,this.latest?.raw);this.timing('native_mask_copy_hash',at);
    if(masked!==raw){raw.release?.();raw=masked;this.publishingRaw=raw;}
    if(!this.valid())break;
+   // MP-11: a projection may retire while the final lease check awaits.
+   // Only a raster from the current protection can satisfy delivery/startup.
+   if(!this.valid()||revision!==this.regionRevision||raw.captured_ms<this.regions.beforeAt){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;this.wake(true);continue;}
    this.previousRegions=regions;
    this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
@@ -240,7 +263,7 @@ export class LinuxCapture {
   this.child.stdin.write(JSON.stringify(command)+'\n');return true;
  }
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.nativeWorker?.retireState();this.closed=true;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.nativeWorker?.retireState();this.closed=true;this.presentationResume?.();this.presentationResume=null;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){

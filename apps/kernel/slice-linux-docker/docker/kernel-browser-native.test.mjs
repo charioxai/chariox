@@ -283,6 +283,28 @@ test('MP-08/MP-10/MP-11 a page region holds its frame under in-window Chrome UI 
  await source.close();
 });
 
+// MP-11 review #1016 P1: the final asynchronous lease check must not resurrect a retired mask projection.
+test('MP-11 retiring masks during final lease validation rejects the old raster until a fresh readback',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async()=>assert.fail('unexpected CDP')};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true,timing:()=>{}});
+ source.valid=()=>!source.closed;source.attested=true;
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[{}],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const published=[];source.subscribe(sample=>published.push(sample.serial));
+ const readback=serial=>({width:64,height:32,length:64*32*4,pixels:Buffer.alloc(64*32*4,serial),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now(),release(){}});
+ let release,checks=0;source.validateCurrent=async()=>{if(++checks===1)await new Promise(resolve=>{release=resolve});return true};
+ try{
+  source.pending=readback(1);const publishing=source.publish();
+  for(let n=0;n<100&&!release;n++)await new Promise(resolve=>setTimeout(resolve,1));
+  assert(release,'publication reached the final lease check');
+  source.retireFrames();await source.regions.refresh();release();await publishing;
+  assert.deepEqual(published,[],'the retired projection never returns to delivery');
+  assert.equal(source.sample(),null,'startup must still wait for a current projection');
+  source.validateCurrent=async()=>true;source.pending=readback(2);await source.publish();
+  assert.deepEqual(published,[2]);assert.equal(source.sample().serial,2,'only a fresh protected readback can satisfy startup');
+ }finally{release?.();await source.close();}
+});
+
 // MP-08/MP-10/MP-11: metadata awaits precede the final live admission;
 // no pixel masking/consumer can run before it, and no duplicate query follows.
 test('MP-08/MP-10/MP-11 native pixel admission follows metadata with one live binding query',async()=>{
@@ -309,4 +331,52 @@ for(const phase of ['occlusion','metadata','binding'])for(const retirement of ['
  source.subscribe(()=>delivered++);
  try{await source.publish();assert.equal(released,1);assert.equal(reads,0);assert.equal(delivered,0);assert.equal(source.sample(),null);assert(!timings.some(s=>s.startsWith('native_publish_failed')));}
  finally{await source.close()}
+});
+
+
+// MP-08/MP-10/MP-11: WHATWG live readback arrived at2747ms, after the old2s wait.
+test('MP-08/MP-10/MP-11 startup awaits a late current projection instead of accepting a retired first sample',async()=>{
+ const source=new LinuxCapture({});source.valid=()=>!source.closed;source.latest={revision:-1};let at=0;
+ const ready=await source.waitForCurrentSample({now:()=>at,pause:async ms=>{at+=ms;if(at>=2750)source.latest={revision:source.regionRevision}}});
+ assert.equal(ready,true);assert.equal(at,2750);assert.equal(source.currentSample(),true);
+});
+test('MP-08/MP-10/MP-11 startup sample wait is bounded and exits immediately when the lease retires',async()=>{
+ for(const retire of [false,true]){
+  const source=new LinuxCapture({});source.valid=()=>!source.closed;let at=0;
+  assert.equal(await source.waitForCurrentSample({now:()=>at,pause:async ms=>{at+=ms;if(retire&&at>=40)source.closed=true}}),false);
+  assert.equal(at,retire?40:5000);assert.equal(source.latest,undefined);
+ }
+});
+
+
+test('MP-08/MP-10/MP-11 screenshot restoration coalesces native retries without admitting transient pixels',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');
+ let clock=100,finish,wakes=0,released=0;
+ const fence=new CapturePresentationFence(()=>clock),held=new Promise(resolve=>finish=resolve),restored=fence.run(()=>held,async()=>{});
+ const source=new LinuxCapture({connection:{presentationFence:fence}});source.valid=()=>!source.closed;source.wake=()=>{wakes++};
+ try{
+  for(let n=0;n<20;n++){source.pending={captured_ms:101,release:()=>{released++}};await source.publish()}
+  assert.equal(wakes,0,'transient rejections must not force another readback');assert.equal(released,20);assert(!source.latest);
+  clock=200;finish();await restored;clock=202;await new Promise(resolve=>setTimeout(resolve,10));assert.equal(wakes,1,'one fresh readback after restoration');assert(!fence.stable(101),'old transient pixels remain rejected');
+ }finally{await source.close()}
+});
+test('MP-08/MP-10/MP-11 closing native capture cancels its pending restoration wake',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');let clock=100,finish,wakes=0;
+ const fence=new CapturePresentationFence(()=>clock),restored=fence.run(()=>new Promise(resolve=>finish=resolve),async()=>{});
+ const source=new LinuxCapture({connection:{presentationFence:fence}});source.valid=()=>!source.closed;source.wake=()=>{wakes++};source.pending={captured_ms:101,release(){}};
+ await source.publish();await source.close();clock=200;finish();await restored;clock=202;await new Promise(resolve=>setTimeout(resolve,10));assert.equal(wakes,0);
+});
+
+// r48 quiet-host WHATWG typed URL: each new preview re-attested with a screenshot of the parsing renderer
+// (5 s CDP timeouts, then a failed fence restore held every native frame for ~30 s).
+test('MP-08/MP-11 a proven window binding admits a new document without a renderer screenshot',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ let proven=false,proofs=0,attests=0;const attestation={proven:()=>proven,prove:()=>{proofs++;proven=true}};
+ const source=new LinuxCapture({tab:{target_id:'t'},attestation});
+ source.screenshot=()=>assert.fail('a proven binding takes no screenshot');
+ source.attest=async()=>{attests++;if(attests===1)throw Error('native attestation RGB differed');};
+ await assert.rejects(source.admitSurface(),/RGB differed/);assert.equal(proofs,0,'a failed attestation proves nothing');
+ await source.admitSurface();assert.deepEqual([attests,proofs],[2,1]);
+ await source.admitSurface();assert.deepEqual([attests,proofs],[2,1],'the proven binding is reused');
+ const unbound=new LinuxCapture({tab:{target_id:'t'}});unbound.attest=async()=>{attests++};await unbound.admitSurface();assert.equal(attests,3,'no binding, fresh attestation');
 });

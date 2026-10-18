@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { inflateRawSync, deflateSync, constants as zlib } from "node:zlib";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
@@ -725,6 +725,15 @@ test("MP-10: every attribute travels except the denied ones (named slots, constr
   assert.deepEqual(ops.map(op => [op.name, op.value]), [["data-state", "open"]], "MP-10: attribute changes travel; credential-like names stay");
 }));
 
+// GATE-bytes r49: GitHub directory rows carry 64 KiB commit-message titles; eleven of them tripled its first paint.
+test("MP-08: a long title travels as a 1 KB tooltip, in the snapshot and in later changes", () => mirrored('<a id="a" title="' + "t".repeat(65536) + '">a</a><a id="b" title="short">b</a>', async ({ next, evaluate }) => {
+  const rows = elements(await next()), title = id => rows.find(([, , a]) => a.id === id)?.[2].title;
+  assert.deepEqual([title("a"), title("b")], ["t".repeat(1024), "short"]);
+  await evaluate("document.getElementById('b').title='u'.repeat(65536);true");
+  const ops = (await next(1000)).ops.filter(op => op.op === "attr");
+  assert.deepEqual(ops.map(op => [op.name, op.value]), [["title", "u".repeat(1024)]]);
+}));
+
 // Audit 2026-10-10 §4.8: packets whose replies were lost (a dropped socket) are sent again instead of a gap and a reset.
 test("MP-10: a credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order), not a newer sequence", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
   const first = await next();
@@ -1244,12 +1253,57 @@ test('MP-10 M2: continuations finish the full DOM with bounded ordinary children
     assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
   }));
 
-test('MP-10/MP-11 M2: mutation during a continuation restarts a bounded current snapshot', () => mirrored(
+// BROWSER-UX-09 / GATE-bytes (browserux r20, typed github.com): the page hydrates while the bounded
+// snapshot continues. Each restart re-sent the whole head CSS (3 x 362 KB on an 8 Mbit/s link).
+test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a restarted snapshot', () => mirrored(
+  '<style>h1:not(.marker-once){color:#123456}' + '.pad{margin:1px}'.repeat(6000) + '</style><h1 class="pad">Viewport first</h1><main id="m"><p>kept</p><p id="gone">removed later</p>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>'
+  + '<script>let n=0;window.tick=setInterval(()=>{document.querySelector("h1").append(" t"+(n++))},15)</script>', async ({next,evaluate,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
+    const [main]=elements(first).find(([,,attrs])=>attrs.id==='m'),[gone]=elements(first).find(([,,attrs])=>attrs.id==='gone');
+    // Hydration shape: script/style churn in head, a removal and an insertion under the parent being walked.
+    await evaluate(`document.head.append(Object.assign(document.createElement('script'),{textContent:'1'}),Object.assign(document.createElement('style'),{textContent:'i{}'}));document.querySelector('#gone').remove();document.querySelector('#m').append(Object.assign(document.createElement('section'),{textContent:'Appended paragraph'}));true`);
+    const seen=new Set(first.nodes.map((_,i,rows)=>rows.slice(0,i+1).reduce((n,row)=>n+row[0],0)));
+    let bytes=JSON.stringify(first).length,tail=false,appended=false,mainKids=null,ticks=false;
+    const marker=JSON.stringify(first).split('marker-once').length-1;assert.equal(marker,1,'the head CSS is in the first packet');
+    for(let n=0;n<300&&!(tail&&appended&&mainKids&&!mainKids.includes(gone)&&ticks);n++){
+      const packet=await next(200);assert.notEqual(packet.reset,true,'a mutation never restarts the snapshot');assert(!packet.fallback);
+      const json=JSON.stringify(packet);bytes+=json.length;assert(!json.includes('marker-once'),'the head CSS crosses once');
+      for(const op of packet.ops){
+        if(op.op!=='children')continue;
+        let id=0;for(const row of op.nodes){id+=row[0];assert(!seen.has(id),'a node is introduced once');seen.add(id);tail||=row[2]===0&&row[3]==='Last paragraph';appended||=row[2]===0&&row[3]==='Appended paragraph';ticks||=row[2]===0&&/^ t\d+$/.test(row[3]);}
+        if(op.id===main)mainKids=op.children;
+      }
+    }
+    assert(tail,'the continuation reaches the last paragraph');assert(appended,'an insertion under the walked parent arrives');assert(ticks,'changes to finished nodes arrive while it continues');
+    assert(mainKids&&!mainKids.includes(gone),'a child removed from the walked parent leaves the viewer');
+    assert(bytes<2*JSON.stringify(first).length+1024*1024,`bounded total bytes: ${bytes}`);
+    await evaluate('clearInterval(window.tick);true');
+    const world=host.mirror.streams.get(subscription_id).world;
+    for(let n=0;n<20&&await host.mirror.v2.evaluate(world,`${world.ref}.pending()`);n++)await next(100);
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
+  }));
+
+test('MP-10 M2: more than 100000 records on nodes the continuation has not reached do not restart it', () => mirrored(
+  '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,evaluate,host,subscription_id}) => {
+    const first=await next();assert(!first.fallback);
+    // A parsing or hydrating document: 110011 records, almost all about nodes not yet sent.
+    await evaluate(`const ps=[...document.querySelectorAll('main p')];for(let i=0;i<11;i++)for(const p of ps)p.append('.');true`);
+    let tail=false;
+    for(let n=0;n<200&&!tail;n++){const packet=await next(200);assert.notEqual(packet.reset,true,'no overflow restart');for(const op of packet.ops)if(op.op==='children')tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last paragraph');}
+    assert(tail,'the continuation reaches the last paragraph');
+    const world=host.mirror.streams.get(subscription_id).world;
+    for(let n=0;n<20&&await host.mirror.v2.evaluate(world,`${world.ref}.pending()`);n++)await next(100);
+    assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
+  }));
+
+test('MP-10 M2: children appended to a parent the continuation is walking arrive in bounded continuation packets', () => mirrored(
   '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '</main>', async ({next,evaluate}) => {
     const first=await next();assert(!first.fallback);
-    await evaluate(`document.querySelector('h1').replaceChildren('Changed viewport');true`);
-    const reset=await next();assert.equal(reset.reset,true);assert(!reset.fallback);assert(reset.nodes.length<4096);
-    assert(texts(reset).has('Changed viewport'),'no stale saved subtree crosses the reset');
+    // A parser still appending: the walk must reach them, not one synchronous diff of the whole parent.
+    await evaluate(`const m=document.querySelector('main');for(let i=0;i<20000;i++)m.append(Object.assign(document.createElement('p'),{textContent:'late'}));m.append(Object.assign(document.createElement('p'),{textContent:'Last appended'}));true`);
+    let tail=false;
+    for(let n=0;n<300&&!tail;n++){const packet=await next(200);assert.notEqual(packet.reset,true);assert(!packet.fallback);let count=0;for(const op of packet.ops){if(op.op!=='children')continue;count+=op.nodes.length;tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last appended');}assert(count<8192,`bounded packet: ${count} nodes`);}
+    assert(tail,'appended children arrive');
   }));
 
 
@@ -1330,16 +1384,97 @@ test('MP-11: full snapshots retire the old control-shape cache',()=>mirrored('<i
 // r9 hosted drill (GitHub): the site's head style sheets filled the first 128 KiB, so the reset reached the
 // viewer without a body and painted a white page until later credits. The head precedes the viewport.
 test('MP-08/MP-10 M2: large head style sheets do not push the visible viewport out of the reset',()=>mirrored(
- '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style><style>'+'.d{margin:1px}\n'.repeat(8000)+'</style></head><body><h1>Visible heading</h1>'+'<p>content</p>'.repeat(200)+'</body>',async({next})=>{
+ '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style><style>'+'.d{margin:1px}\n'.repeat(8000)+'</style></head><body><h1 class="c d">Visible heading</h1>'+'<p>content</p>'.repeat(200)+'</body>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(JSON.stringify(first).length>128*1024,'the fixture head alone exceeds the prefix bound');
  assert(texts(first).has('Visible heading'),'the viewport content travels with the head');
 }));
 
 test('MP-08/MP-10 M2: byte-heavy documents below the element threshold still continue in bounded packets',()=>mirrored(
- '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(500))+'</p>'+('<p>'+('content '.repeat(500))+'</p>').repeat(600)+'</main>',async({next})=>{
+ '<h1>Visible heading</h1><main>'+'<p>'+('payload '.repeat(1000))+'</p>'+('<p>'+('content '.repeat(1000))+'</p>').repeat(1500)+'</main>',async({next})=>{
  const first=await next();assert(!first.fallback);
  assert(texts(first).has('Visible heading'),'viewport heading precedes continuation');
- assert(JSON.stringify(first).length<200*1024,'a sub-10k-element page cannot put megabytes into its reset');
+ assert(JSON.stringify(first).length<9*1024*1024,'an ordinary reset stops at 8 MiB plus at most one bounded record');
  const second=await next();assert(!second.reset);assert(second.ops.some(op=>op.op==='children'));
 }));
+
+// MP-08/MP-10/MP-11: ordinary GitHub-sized navigation is one complete reset.
+test('MP-10 M2: ordinary navigation includes the form after a byte-heavy body header atomically',()=>mirrored(
+ '<head><style>'+'.c{color:#123456}\n'.repeat(12000)+'</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(80)+'</header><form><h1>Sign in to the destination</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Sign in to the destination'),'the complete ordinary document reaches the viewer before replacing its prior paint');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation leaves no unfinished body');
+ assert(JSON.stringify(first).length<3*1024*1024,'ordinary resets retain a size cap');
+}));
+
+// MP-08/MP-10/MP-11: hosted GitHub's later CSS exceeds the initial 2MiB cap.
+test('MP-10 M2: an ordinary document between two and four MiB fits the eight MiB reset cap',()=>mirrored(
+ '<head><style>body{margin:0}</style></head><body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(300)+'</header><form><h1>Complete destination form</h1><input id="login"></form></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Complete destination form'),'the ordinary form cannot be deferred behind a partial reset');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'ordinary navigation fits the eight MiB cap');
+ assert(JSON.stringify(first).length<5*1024*1024,'record/message backstop remains bounded');
+}));
+
+// MP-08/MP-10/MP-11: current GitHub styles now exhaust 4 MiB before the file list.
+test('MP-10 M2: an ordinary document between four and eight MiB includes its destination in the reset',()=>mirrored(
+ '<body><header hidden>'+('<span>'+('template '.repeat(1000))+'</span>').repeat(600)+'</header><main><h1>Complete destination after current site head</h1><input id="destination"></main></body>',async({next,host,subscription_id})=>{
+ const first=await next();assert(!first.fallback);
+ assert(texts(first).has('Complete destination after current site head'),'a complete native page cannot be replaced by its header prefix');
+ const world=host.mirror.streams.get(subscription_id).world;
+ assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false);
+ assert(JSON.stringify(first).length<9*1024*1024,'the ordinary reset retains a bounded byte cap');
+}));
+
+// MP-08/MP-10/MP-11: exercise the actual controller encoder, not only the observer.
+test('MP-10 protocol539 completion follows the final initial continuation and compacts unchanged headers', () => mirrored(
+  '<header hidden>'+('<span>hidden prefix</span>').repeat(12000)+'</header><p>Final viewport</p>', async ({ next }) => {
+    const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-mirror2-completion-550.json', import.meta.url), 'utf8'))
+    const first = await next(); assert.equal(first.reset, true)
+    assert.equal(first.snapshot_complete, fixture.reset_header.snapshot_complete)
+    let complete = first.snapshot_complete, drains = 0
+    while (!complete) {
+      const packet = await next(); assert(!packet.fallback)
+      if (Object.hasOwn(packet, 'snapshot_complete')) complete = packet.snapshot_complete
+      assert(++drains < 300, 'initial serialization must settle')
+    }
+    assert(drains > 0)
+    const idle = await next()
+    assert.equal(Object.hasOwn(idle, 'snapshot_complete'), false, 'unchanged completion inherits its base')
+  }))
+
+// GATE-bytes / BROWSER-UX-09 (typed github.com: 363 KB of deflated CSS in the first paint): a first paint carries the
+// rules the document uses; each large sheet's full text follows on a quiet packet (readable and cross-origin sheets).
+const bulkCss = prefix => `p.used{color:rgb(1, 2, 3)}@media (min-width: 1px){p.used{margin:0}.${prefix}-unused-0{color:red}}` + Array.from({ length: 2000 }, (_, i) => `.${prefix}-unused-${i}{color:rgb(${i % 250}, 1, 2);padding:${i}px}`).join("");
+test("GATE-bytes: a first paint sends only the used rules of large sheets; their full text follows", () => mirrored(
+  '<link rel="stylesheet" href="/a.css"><link rel="stylesheet" href="http://localhost:PORT/b.css"><p class="used">text</p>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const reset = await next(0, true), first = JSON.stringify(reset);
+    assert.equal(reset.reset, true);
+    assert(first.includes("rgb(1, 2, 3)") && first.includes("@media"), "the used rule and its group reach the first paint");
+    assert(!first.includes("a-unused-1999") && !first.includes("b-unused-1999"), "unused rules wait");
+    assert(first.length < 16 * 1024, `first paint ${first.length} bytes`);
+    let later = "";
+    for (let i = 0; i < 8 && !(later.includes("a-unused-1999") && later.includes("b-unused-1999")); i++) later += JSON.stringify(await next(1000));
+    assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
+  }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
+
+// Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
+test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
+  '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {
+    const first = await next(); assert(!first.fallback); assert(first.nodes.length < 4096);
+    const moved = elements(first).find(([, , attrs]) => attrs.id === 'moved')?.[0]; assert(moved, 'the paragraph is in the prefix');
+    await evaluate("document.querySelector('#destination').append(document.querySelector('#moved'));true");
+    let section = null, restored = false;
+    for (let n = 0; n < 300 && !restored; n++) {
+      const packet = await next(200); assert.notEqual(packet.reset, true);
+      for (const op of packet.ops) {
+        if (op.op !== 'children') continue;
+        let id = 0; for (const row of op.nodes) { id += row[0]; if (row[2] === 'section' && row[3]?.id === 'destination') section = `n${id}`; }
+        if (section && op.id === section && (op.children.includes(moved) || op.nodes.some(row => row[2] === 0 && row[3] === 'Move me'))) restored = true;
+      }
+    }
+    assert(section, 'the continuation reaches the section'); assert(restored, 'the moved paragraph is mirrored under its new parent');
+  }));

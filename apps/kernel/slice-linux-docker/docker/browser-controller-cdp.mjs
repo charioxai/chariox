@@ -1,3 +1,5 @@
+import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
+import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
@@ -50,7 +52,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 // Focus is read in a controller-owned isolated world: a page can redefine
 // document.visibilityState in its own world, but not in this one.
-const FOCUS_WORLD = "chariox-controller-focus";
 
 export class BrowserControllerError extends Error {
   constructor(code, message) {
@@ -95,8 +96,10 @@ export class BrowserCdpClient {
     stageUploads,
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
+    focusWorldSource,
   } = {}) {
     this.applyCanonicalDisplay = applyCanonicalDisplay;
+    this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
     this.fetchImpl = fetchImpl;
@@ -125,6 +128,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
+    this.pageFramesByTarget = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
@@ -149,7 +153,7 @@ export class BrowserCdpClient {
     } catch { return false; }
   }
 
-  async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth } = {}) {
+  async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
     const viewport = canonicalViewport(rawViewport);
     // A changed or failed viewport is never an observational preflight.
     if (this.appliedViewport !== appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth)) {
@@ -191,14 +195,14 @@ export class BrowserCdpClient {
         || deviceMetricsFor(viewport);
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
-          return await this.inspectPage(connection, target, metricsFor(target));
+          return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
           if (!targetGone(error)) throw error;
           await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
           if (!now.some((candidate) => candidate.targetId === target.targetId)) return null;
           try {
-            return await this.inspectPage(connection, target, metricsFor(target));
+            return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
           } catch (again) {
             // Gone twice: it is closing. The next reconcile sees it if not.
             if (!targetGone(again)) throw again;
@@ -240,7 +244,7 @@ export class BrowserCdpClient {
         this.downloadCancellationReasons.clear();
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
-        this.documentIdsByTarget.clear();
+        this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
@@ -270,7 +274,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -391,7 +395,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -413,7 +417,7 @@ export class BrowserCdpClient {
     this.browserGeneration += 1;
     if (typeof connection.subscribe === "function") {
       this.unsubscribeFromConnection = connection.subscribe(
-        (message) => this.recordConnectionEvent(message),
+        (message) => { if(this.connection===connection)this.recordConnectionEvent(message); },
       );
     }
     try {
@@ -443,7 +447,7 @@ export class BrowserCdpClient {
     this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId);
-    this.documentIdsByTarget.delete(targetId);
+    this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.dialogDefaults.delete(targetId);
@@ -463,15 +467,18 @@ export class BrowserCdpClient {
   }
 
 
-  async inspectPage(connection, target, metrics) {
+  async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
     // Metrics differ per target (App pages lay out beside their panel).
     // Reapply only when this target's metrics changed.
     const metricsKey = JSON.stringify(metrics);
-    if (this.viewportByTarget.get(target.targetId) !== metricsKey) {
+    const configured = this.viewportByTarget.get(target.targetId) === metricsKey;
+    if (!configured) {
       await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       this.viewportByTarget.set(target.targetId, metricsKey);
     }
+    const metadata = nativeStatePage(this, connection, sessionId, target, visibleTargetId, configured);
+    if (metadata) return metadata;
     const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
     const frame = frameTree?.frameTree?.frame;
     const documentId = frame?.loaderId;
@@ -481,6 +488,7 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
+    const observation = pageObservationFence(this, connection, sessionId, target.targetId, frame);
     // MP-08/MP-10/MP-11: overlap independent observations, retaining both
     // fences and draining their work before a failed observation returns.
     const [focus, frames] = await Promise.allSettled([
@@ -489,7 +497,9 @@ export class BrowserCdpClient {
     ]);
     if (focus.status === "rejected") throw focus.reason;
     if (frames.status === "rejected") throw frames.reason;
+    observation.assertCurrent();
     this.documentIdsByTarget.set(target.targetId, documentId);
+    if (!observation.owner) this.pageFramesByTarget.set(target.targetId, { connection, sessionId, frame });
     return {
       target_id: target.targetId,
       ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
@@ -503,18 +513,8 @@ export class BrowserCdpClient {
   // One isolated world per document: polls reuse it, a new document gets a new one.
   // Input capture emulates focus while it runs: report the physical visibility
   // it captured before enabling emulation instead.
-  async ensureFocusWorld(connection, sessionId, targetId, frame) {
-    let world = this.focusWorldsByTarget.get(targetId);
-    if (world?.documentId !== frame.loaderId) {
-      const created = await connection.send(
-        "Page.createIsolatedWorld",
-        { frameId: frame.id, worldName: FOCUS_WORLD, grantUniveralAccess: false },
-        sessionId,
-      );
-      world = { documentId: frame.loaderId, contextId: created?.executionContextId };
-      this.focusWorldsByTarget.set(targetId, world);
-    }
-    return world;
+  ensureFocusWorld(connection, sessionId, targetId, frame, options) {
+    return ensureFocusWorld(this, connection, sessionId, targetId, frame, options);
   }
   async observeNote(request) { return observeBrowserNote(this, request); }
 
@@ -1044,6 +1044,14 @@ export class BrowserCdpClient {
   // MP-11: region protection inspects isolated frames through these sessions.
   frameSession(frameId, connection) { return this.frameSessions.sessionFor(frameId, connection); }
 
+  // MP-08/MP-10/MP-11: navigation events are ordered with CDP replies. Reuse
+  // only this live connection/session/loader; a cold or retired binding queries.
+  currentPageFrame(targetId) {
+    const entry = this.pageFramesByTarget.get(targetId);
+    return entry && entry.connection === this.connection && entry.connection?.isOpen?.() === true
+      && entry.sessionId === this.sessionsByTarget.get(targetId)
+      && entry.frame.loaderId === this.documentIdsByTarget.get(targetId) ? entry : null;
+  }
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -1098,6 +1106,9 @@ export class BrowserCdpClient {
     this.targetsBySession.set(sessionId, targetId);
     try {
       await Promise.all([
+        ...(this.focusWorldSource ? [connection.send("Page.addScriptToEvaluateOnNewDocument", {
+          source: this.focusWorldSource, worldName: FOCUS_WORLD, runImmediately: true,
+        }, sessionId)] : []),
         connection.send("Page.enable", {}, sessionId),
         connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
         connection.send("Runtime.enable", {}, sessionId),
@@ -1205,14 +1216,20 @@ export class BrowserCdpClient {
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
+    if (message?.method === "Page.frameStartedLoading") {
+      const targetId = this.targetsBySession.get(message.sessionId), entry = this.pageFramesByTarget.get(targetId);
+      if (entry?.frame.id === message.params?.frameId) this.pageFramesByTarget.delete(targetId);
+    }
     if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       const targetId = this.targetsBySession.get(message.sessionId);
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt: performance.timeOrigin + performance.now() });
         for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
     }
+    recordFocusWorld(this,message);
     if (message?.method === "Browser.downloadWillBegin") {
       const targetId = this.targetsByFrame.get(message.params?.frameId);
       const guid = message.params?.guid;
@@ -1337,15 +1354,18 @@ export class CdpConnection {
     if (sessionId) {
       payload.sessionId = sessionId;
     }
+    // A timeout fires from a timer, with no caller on its stack: keep the caller's frames to name who waited.
+    const caller = {};
+    Error.captureStackTrace(caller);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new BrowserControllerError(
-            "browser_cdp_timeout",
-            `browser CDP method ${method} timed out after ${timeoutMs}ms`,
-          ),
+        const error = new BrowserControllerError(
+          "browser_cdp_timeout",
+          `browser CDP method ${method} timed out after ${timeoutMs}ms`,
         );
+        error.stack += caller.stack.replace(/^[^\n]*/, "");
+        reject(error);
       }, timeoutMs);
       this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {

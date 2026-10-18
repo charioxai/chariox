@@ -255,12 +255,20 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs"),
     ),
     (
+        "kernel-browser-mirror2-preview.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs"),
+    ),
+    (
         "kernel-browser-mirror2.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2.mjs"),
     ),
     (
         "kernel-browser-mirror2-observer.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs"),
+    ),
+    (
+        "kernel-browser-mirror2-fonts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs"),
     ),
     (
         "kernel-browser-mirror2-regions.mjs",
@@ -399,6 +407,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-response-bodies.mjs"),
     ),
     (
+        "browser-focus-world.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-focus-world.mjs"),
+    ),
+    (
         "browser-controller-cdp.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-cdp.mjs"),
     ),
@@ -467,8 +479,16 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-input.mjs"),
     ),
     (
+        "kernel-browser-input-queue.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-input-queue.mjs"),
+    ),
+    (
         "kernel-browser-refusal.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-refusal.mjs"),
+    ),
+    (
+        "kernel-browser-screenshot.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-screenshot.mjs"),
     ),
     (
         "kernel-browser-host.mjs",

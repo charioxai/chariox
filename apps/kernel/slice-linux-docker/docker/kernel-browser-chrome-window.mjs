@@ -7,6 +7,8 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
+import {markDispatched} from './kernel-browser-input-queue.mjs';
+import {slowMark} from './kernel-browser-timing.mjs';
 import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
@@ -21,6 +23,9 @@ export const POPUP_CORNER = 16;
 export const OMNIBOX_LIST_HEIGHT = 344;
 /** Protocol 540: an address bar without the person's input for this long no longer keeps its list stream warm. */
 const OMNIBOX_WARM_MS = 30_000;
+const omniboxSeenKey = t => `${t.browser_generation}:${t.xid}:${t.bounds.width}x${t.bounds.height}@${t.scale}:${JSON.stringify(t.page_rect)}`;
+/** A state read right after an address-bar key waits this long for the list that key opens. */
+const OMNIBOX_LIST_WAIT_MS = 250;
 /** Raster rects outside the list's two rounded bottom corners (radius r px), one per row. */
 export function omniboxPopupRect(state, windowLeft, windowTop, bandHeight, windowWidth, windowHeight) {
   if (!Array.isArray(state) || state[0] !== 'visible') return null;
@@ -46,6 +51,13 @@ export function rowMode(bgr0) {
 
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
+const FOCUS_READ_MS = 250, timedOut = Symbol('timed out');
+const slowStep = (host, step, operation) => slowMark(host.timing, `band_key_wait ${step}`, operation);
+/** `operation`'s result, or `timedOut` after `ms` (the operation is left to settle on its own). */
+async function within(ms, operation) {
+  let timer;
+  try { return await Promise.race([operation(), new Promise(resolve => { timer = setTimeout(resolve, ms, timedOut); })]); } finally { clearTimeout(timer); }
+}
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
 
 /** The inventory poll is a backstop: the worker announces its changes. */
@@ -53,10 +65,17 @@ const INVENTORY_BACKSTOP_MS = 1000;
 export class ChromeWindows {
   constructor(host, {inventory = noInventory} = {}) {
     this.host = host; this.inventory = inventory;
-    this.windowGeneration = 0; this.bound = null; this.listeners = new Set();
+    this.windowGeneration = 0; this.pageEpoch = 0; this.omniboxSeen = new Map(); this.bound = null; this.listeners = new Set();
     this.auxiliaryIds = new Map(); this.auxiliarySequence = 0;
   }
   onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  /** Native UI input invalidates the observation before dispatch and after its acknowledgement. */
+  uiInput() {
+    this.occlusionRevision = (this.occlusionRevision ?? 0) + 1;
+    this.uiInputs = (this.uiInputs ?? 0) + 1;
+    let finished = false;
+    return () => { if (!finished) { finished = true; this.uiInputs--; this.occlusionRevision++; } };
+  }
   retire(reason) {
     if (!this.bound) return;
     retireNativeStates();
@@ -64,6 +83,14 @@ export class ChromeWindows {
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
     this.host.stateSignal?.notify();
+  }
+  /** The page rect moved under an unchanged band: page-bound bindings go stale, the band keeps its generation. */
+  retirePage() {
+    if (!this.bound) return;
+    retireNativeStates();
+    const {window_generation} = this.bound.tabbed; this.pageEpoch++;
+    this.host.timing?.('chrome_window_page_retired', performance.timeOrigin + performance.now());
+    for (const listener of this.listeners) listener({window_generation, reason: 'page_geometry_changed'});
   }
   current() {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
@@ -106,16 +133,20 @@ export class ChromeWindows {
     const contentTop = Math.floor(pageRect.top / 2) * 2;
     if (!(contentTop > 0 && contentTop < row.height)) throw new UserDomainRefusal('stale_reference');
     const previous = this.bound?.tabbed;
-    const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration && JSON.stringify(previous.page_rect) === JSON.stringify(pageRect);
-    if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
-    const windowGeneration = this.windowGeneration;
-    const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    // The band is the window's top `content_top` rows: a page-only change (insets, width) leaves its identity
+    // and generation alone and retires only what is bound to the page rect (r54).
+    const sameBand = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration;
+    if (!sameBand) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
+    else if (previous.isCurrent() && JSON.stringify(previous.page_rect) !== JSON.stringify(pageRect)) this.retirePage();
+    const windowGeneration = this.windowGeneration, pageEpoch = this.pageEpoch;
+    const isBandCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    const isCurrent = () => isBandCurrent() && this.pageEpoch === pageEpoch;
     // MP-08/MP-10/MP-11: identity and geometry share one fresh native query.
     const isPageCurrent = async target_id => {
       if (!isCurrent()) return false;
       try { const next=await measure();if (JSON.stringify(next.rect) === JSON.stringify(pageRect)) return (target_id===undefined||next.target_id===target_id)&&isCurrent(); } catch {}
       // Rebind at the real geometry: no other path may notice (r13 union3: the band never came back).
-      if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
+      if (isCurrent()) { this.retirePage(); this.resolve().catch(() => {}); }
       return false;
     };
     // MP-11: source publication still calls the fresh check above. Delivery
@@ -132,7 +163,7 @@ export class ChromeWindows {
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached,isPagePublishable});
+      scale, pid, isCurrent: role === 'tabbed' ? isCurrent : isBandCurrent, isBandCurrent, isPageCurrent,isPageCurrentCached,isPagePublishable});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -172,7 +203,7 @@ export class ChromeWindows {
     // visible), so the next list paints from a running stream instead of a new one (r12: ~0.9 s).
     const popup = live ? (last && last.x === live.x && last.y === live.y && last.width === live.width && live.height <= last.height ? last : full)
       : this.omniboxWarm() ? last : null;
-    if (popup) this.omniboxLast = {...popup, window_generation: tabbed.window_generation};
+    if (popup) { this.omniboxLast = {...popup, window_generation: tabbed.window_generation}; this.noteOmnibox(tabbed, popup); }
     this.omniboxLive = live;
     if (popup && bound.length < 8) {
       const scale = tabbed.scale, r = {id: row.id, x: row.x + popup.x * scale, y: row.y + popup.y * scale, width: popup.width * scale, height: popup.height * scale};
@@ -193,9 +224,17 @@ export class ChromeWindows {
     this.healedAt = now;
     await this.resolve().catch(() => {});
   }
-  /** The last list rect of this window (window CSS px), or null. */
+  /** The last list rect of this window (window CSS px), or null. A window that is rebound at the same X
+   * window, size, scale, page boundary and Chrome process (a native capture fit and back) keeps the list rect Chrome showed
+   * there: it is the same proven rect, so the first list after the rebind paints from a warm stream. */
   omniboxRect(tabbed = this.bound?.tabbed) {
-    return tabbed && this.omniboxLast?.window_generation === tabbed.window_generation ? this.omniboxLast : null;
+    if (!tabbed) return null;
+    return this.omniboxLast?.window_generation === tabbed.window_generation ? this.omniboxLast : this.omniboxSeen.get(omniboxSeenKey(tabbed)) ?? null;
+  }
+  noteOmnibox(tabbed, {x, y, width, height}) {
+    const key = omniboxSeenKey(tabbed);
+    this.omniboxSeen.delete(key); this.omniboxSeen.set(key, {x, y, width, height});
+    if (this.omniboxSeen.size > 4) this.omniboxSeen.delete(this.omniboxSeen.keys().next().value);
   }
   /** Protocol 540: the address bar has (`on`) or lost the person's keys; `ago` backdates it (ms). */
   focusOmnibox(on, ago = 0) {
@@ -210,7 +249,7 @@ export class ChromeWindows {
     if (!this.omniboxWarm() || !this.bound?.tabbed.isCurrent()) return;
     for (;;) {
       this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(this.rows);
-      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > 250) return;
+      if (this.omniboxLive || !this.omniboxWarm() || performance.now() - this.omniboxFocusAt > OMNIBOX_LIST_WAIT_MS) return;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
@@ -220,8 +259,8 @@ export class ChromeWindows {
     this.refreshAuxiliary(this.rows);
     return !!this.omniboxLive;
   }
-  /** Is window CSS x over the address bar (the last list's span)? Unknown before a first list. */
-  onOmnibox(x) { const last = this.omniboxRect(); return !!last && x >= last.x && x < last.x + last.width; }
+  /** Is window CSS x over the address bar (the last list's span)? null before a first list. */
+  onOmnibox(x) { const last = this.omniboxRect(); return last ? x >= last.x && x < last.x + last.width : null; }
   /** A band frame (Chrome's own UI): is the toolbar row under a browser-modal scrim? */
   observeBand(raw) {
     const tabbed = this.bound?.tabbed;
@@ -268,7 +307,8 @@ export class ChromeWindows {
     const bind = r => Object.freeze({...tabbed, role: 'auxiliary', xid: r.id, parent_xid: tabbed.xid, content_top: null,
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
-    // Protocol 548: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    if (this.bound.auxiliary.length !== this.auxiliaryCount) { this.auxiliaryCount = this.bound.auxiliary.length; this.host.timing?.(`aux_count ${this.auxiliaryCount}`, performance.timeOrigin + performance.now()); }
+    // Protocol 556: a parked state read wakes when the popups it reports (menu, omnibox list) change.
     const popups = JSON.stringify(this.auxiliaryState());
     if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }
@@ -278,26 +318,46 @@ export class ChromeWindows {
     this.omnibox = await this.readOmnibox();
     this.refreshAuxiliary(this.rows);
     if (source.isCurrent() !== true) return false;
-    if (!point) return true;
+    // MP-11: keeping capture warm never grants keyboard admission after the list closes.
+    if (!point) return !!this.omniboxLive;
     const live = this.omniboxLive, scale = this.bound.tabbed.scale, region = source.region.window_region;
     const x = region.left / scale + point.x, y = region.top / scale + point.y;
     return !!live && x >= live.x && x < live.x + live.width && y >= live.y && y < live.y + live.height;
   }
   /** r10: is Chrome UI drawn inside the tabbed window (the omnibox dropdown, a dialog's page overlay)
    * over this window rect (physical px from the window's top-left)? A page region then holds its frame. */
-  inWindowOver(rect) {
-    const tabbed = this.bound?.tabbed, live = this.omniboxLive, scale = tabbed?.scale;
+  inWindowOver(rect, live = this.omniboxLive) {
+    const tabbed = this.bound?.tabbed, scale = tabbed?.scale;
     // The list's stream is taller than a short list: only the live list covers the page.
     const over = b => !!b && b.x < rect.left + rect.width && rect.left < b.x + b.width && b.y < rect.top + rect.height && rect.top < b.y + b.height;
-    return !!tabbed?.isCurrent() && this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && over(omnibox
-      ? live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}
-      : {x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height}));
+    return !!tabbed?.isCurrent() && (over(live && {x: live.x * scale, y: live.y * scale, width: live.width * scale, height: live.height * scale}) ||
+      this.bound.auxiliary.some(({in_window, omnibox, bounds: b}) => in_window && !omnibox &&
+        over({x: b.x - tabbed.bounds.x, y: b.y - tabbed.bounds.y, width: b.width, height: b.height})));
   }
   /** The same, after re-reading Chrome's list (the poll may not have seen it open yet). */
   async inWindowOverNow(rect) {
-    this.omnibox = await this.readOmnibox();
-    this.refreshAuxiliary(this.rows);
-    return this.inWindowOver(rect);
+    const binding = this.bound?.tabbed, focus = this.host.arbiter?.chromeFocus;
+    if (!binding?.isCurrent()) return false;
+    // Steady page frames use the shared watcher. Chrome-UI input is the narrow
+    // interval in which a dropdown can paint before that watcher observes it.
+    const revision = this.occlusionRevision ?? 0, cache = this.occlusionCache;
+    // MP-11: native dispatch acknowledges queueing, not Chrome's paint. A
+    // negative read cannot end an active omnibox interval; the list may open
+    // before the next watcher tick without another key or focus change.
+    const focused = focus && focus.generation === this.host.generation && focus.window_generation === binding.window_generation;
+    if (!focused && !this.uiInputs && (revision === 0 || cache?.binding === binding && cache.revision === revision)) return this.inWindowOver(rect, cache?.binding === binding ? cache.live : this.omniboxLive);
+    const read = this.occlusionRead?.binding === binding && this.occlusionRead.revision === revision ? this.occlusionRead :
+      (this.occlusionRead = {binding, revision, promise: this.readOmnibox()});
+    let state;
+    try { state = await read.promise; } finally { if (this.occlusionRead === read) this.occlusionRead = null; }
+    if (this.bound?.tabbed !== binding || !binding.isCurrent()) return false;
+    if (revision !== (this.occlusionRevision ?? 0)) return true; // input crossed observation: hold pixels
+    // A capture probe observes geometry; auxiliary publication/retirement stays
+    // on the watcher/input paths rather than mutating bindings inside readback.
+    const live = omniboxPopupRect(state, binding.bounds.x / binding.scale, binding.bounds.y / binding.scale,
+      binding.page_rect.top / binding.scale, binding.bounds.width / binding.scale, binding.bounds.height / binding.scale);
+    if (!this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live};
+    return this.inWindowOver(rect, live);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). The newest
    * band that still reads wins: an older band's capture can retire before its viewer unsubscribes.
@@ -326,12 +386,20 @@ export class ChromeWindows {
   }
   /** One read of the watched inventory now (a band input's reply sees the menu it opened). */
   async observeRows() {
+    let unreadable = 0;
     for (const next of [...this.watcher?.reads ?? []].reverse()) {
       let rows;
-      try { rows = await next(); } catch { continue; }
-      try { this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows); } catch {}
+      try { rows = await next(); } catch { unreadable++; continue; }
+      this.unreadableMarked = false;
+      try {
+        const binding = this.bound?.tabbed, revision = this.occlusionRevision ?? 0, focus = this.host.arbiter?.chromeFocus;
+        this.omnibox = await this.readOmnibox(); this.refreshAuxiliary(rows);
+        if (binding === this.bound?.tabbed && !this.uiInputs && revision === (this.occlusionRevision ?? 0)) this.occlusionCache = {binding, revision, focus, live: this.omniboxLive};
+      } catch {}
       return;
     }
+    // Every watched band is unreadable: popups are no longer refreshed (a closed menu stays listed). Marked once per streak.
+    if (unreadable && !this.unreadableMarked) { this.unreadableMarked = true; this.host.timing?.('aux_poll_unreadable', performance.timeOrigin + performance.now()); }
   }
   /** Protocol 530 state: popups of the band's window, CSS px from the window's top-left. */
   auxiliaryState() {
@@ -353,7 +421,7 @@ export class ChromeWindows {
   band(binding = this.current().tabbed) {
     return {surface: 'browser_chrome', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
       rect: {left: 0, top: 0, width: binding.bounds.width, height: binding.content_top},
-      contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isCurrent};
+      contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isBandCurrent ?? binding.isCurrent};
   }
   auxiliaryRegion(binding) {
     const tabbed = this.current().tabbed;
@@ -403,9 +471,9 @@ export class InputArbiter {
   /** A native click into the page puts the keys back in the page. */
   pageFocused() { this.chromeFocus = null; }
   /** The kernel-observed active Tab of the tabbed window, or null (fail closed). */
-  // `cached`: a key may use the owner snapshot until an activation/resize/detach event retires it; a miss reads live.
-  async activeTab({cached = false} = {}) {
-    const target = (cached ? this.host.tabGroups?.cachedActive?.() : null) ?? await this.host.tabGroups?.active().catch(() => null);
+  async activeTab() {
+    // The native observer's own record stands while no window event retired it: a busy browser process need not answer a key.
+    const target = this.host.tabGroups?.cachedActive?.() ?? await this.host.tabGroups?.active().catch(() => null);
     return target ? [...this.host.tabs.values()].find(tab => tab.target_id === target) ?? null : null;
   }
   async isActiveTab(tab, binding) {
@@ -419,9 +487,20 @@ export class InputArbiter {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const binding = this.windows.current().tabbed;
     if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
-    const tab = await this.activeTab({cached: ['key', 'text'].includes(command.input?.kind)});
+    const generation = this.host.generation;
+    let tab = await slowStep(this.host, 'admit_active', this.activeTab());
+    // A native New Tab can precede the next inventory poll. Discover it here,
+    // before ledger admission; no action has been dispatched or replayed.
+    // Discovery is advisory: the displayTarget read below still proves this
+    // active document before admission. Loading background pages need no proof.
+    if (!tab) { await slowStep(this.host, 'admit_reconcile', this.host.reconcile({readOnly:true})); tab = await this.activeTab(); }
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
-    return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
+    // Native navigation commits independently of inventory polling. Admit the
+    // live document instead of attributing a person's new input to cached state.
+    tab = await slowStep(this.host, 'admit_target', this.host.displayTarget({tab_id: tab.tab_id, generation, fresh: true}));
+    const active = await slowStep(this.host, 'admit_recheck', this.activeTab());
+    if (!binding.isCurrent() || generation !== this.host.generation || !active || active.target_id !== tab.target_id) throw new UserDomainRefusal('stale_reference');
+    return {tab_id: tab.tab_id, document_id: tab.document_id, generation};
   }
   /** After ledger admission: band input reaches Chrome's own UI through the band
    * source, for the Tab the ledger admitted (rechecked right before dispatch). Only
@@ -465,50 +544,79 @@ export class InputArbiter {
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
     // pixels): they need the admitted active Tab, not its document, so a strip click while the
     // page loads is not dropped. Text and other keys may reach the page: document fenced too.
-    const activeAdmitted = async (cached = false) => {
+    const activeAdmitted = async () => {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
-      const tab = await this.activeTab({cached});
+      const tab = await this.activeTab();
       if (!tab || tab.tab_id !== command.tab_id || command.generation !== this.host.generation) throw new UserDomainRefusal('stale_reference');
       if (source.overPage && !await this.windows.inWindowCurrent(source, ['click', 'scroll'].includes(input.kind) ? {x: input.x, y: input.y} : null)) throw new UserDomainRefusal('stale_reference');
       return tab;
     };
-    const current = async () => {
-      const tab = await activeAdmitted(input.kind === 'key' || input.kind === 'text');
-      if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
-      // A key reads the loader and the target session from the event-bound document state when it is current (a miss reads live).
-      const bound = input.kind === 'key' || input.kind === 'text' ? await this.host.displayDocuments?.bound(this.host.browser, tab) : null;
-      const {connection, sessionId} = bound ?? await this.host.browser.resolvePageTarget(tab.target_id);
-      const frame = bound?.frame ?? null;
-      const {frameTree} = frame ? {frameTree: {frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-      return {connection, sessionId, tab, frameTree};
-    };
+    const uiFocus = tab => ({tab_id:tab.tab_id, generation:this.host.generation, window_generation:stream.regionWindow?.window_generation});
     // Isolated world: the page cannot redefine what it reports. The shared
     // input owner suspends a mirror's focus emulation for the physical read.
     const textTarget = async () => {
-      // PERF_AUDIT 4.2.7: the frame tree that just fenced the document (one CDP read per key).
-      const {connection, sessionId, tab, frameTree} = await current();
-      const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
-      const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      const tab = await slowStep(this.host, 'key_active', activeAdmitted()), documentId = tab.document_id;
+      if (documentId !== command.document_id) throw new UserDomainRefusal('stale_reference');
+      const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
+        && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
+      const {connection, sessionId} = await slowStep(this.host, 'key_target', this.host.browser.resolvePageTarget(tab.target_id));
+      const currentProof = async () => {
+        const active = await activeAdmitted();
+        if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
+        // The page session's ordered navigation events prove the document: a busy renderer is not asked.
+        const cached = this.host.browser.currentPageFrame?.(tab.target_id);
+        const frame = cached && cached.connection === connection && cached.sessionId === sessionId && cached.frame.loaderId === documentId
+          ? {frameTree:{frame:cached.frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
+        if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
+        return frame;
+      };
+      const {frameTree} = await slowStep(this.host, 'key_proof', currentProof());
+      const focusWorld = async () => {
+        const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+        return expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      };
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
       // The person's own native action (a toolbar click, Ctrl+L) puts them in Chrome's UI; the page's
       // physical focus confirms it (read with focus emulation suspended: a mirror keeps it on, so
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
-      if (this.chromeFocus === `${tab.tab_id}:${tab.document_id}`) {
-        const capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') return;
-        if (!await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true)) return;
-        this.chromeFocus = null;
+      // r54: band keys never wait on a renderer that cannot answer. The kernel's own record of the person's
+      // action (bound to the Tab, browser and band window, the document proven above by ordered events) stands
+      // for the proof once the page failed to answer one bounded read; Enter, Tab, Escape, a page click or a Tab switch clear it; the late read settles it.
+      let evaluate;
+      if (ownsUiFocus) {
+        const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
+        if (typeof capture?.physicalFocus !== 'function') { await slowStep(this.host, 'key_claim_proof', currentProof()); return; }
+        let pageFocused = false;
+        if (!claim.unread) {
+          const pending = (async () => {
+            evaluate = await focusWorld();
+            return capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
+          })();
+          const read = await within(FOCUS_READ_MS, () => pending);
+          if (read === timedOut) {
+            // The record stands in only until the late read settles: a page that has its focus back ends the claim,
+            // any other answer (or a failed read) resumes verification on the next key.
+            claim.unread = true;
+            pending.then(focused => { if (focused && this.chromeFocus === claim) this.chromeFocus = null; }, () => {}).then(() => { claim.unread = false; });
+          } else pageFocused = read;
+        }
+        await slowStep(this.host, 'key_claim_proof', currentProof());
+        // A late read that found the page focused ended this claim while the proof ran: the field is fenced below.
+        if (!pageFocused && this.chromeFocus === claim) return;
+        if (this.chromeFocus === claim) this.chromeFocus = null;
       }
-
-      const {result} = await evaluate(sensitiveFocusExpression(false));
+      evaluate ??= await slowStep(this.host, 'key_world', focusWorld());
+      const {result} = await slowStep(this.host, 'key_sensitive', evaluate(sensitiveFocusExpression(false)));
+      await slowStep(this.host, 'key_proof_after', currentProof());
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
     // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.
     const dispatched = async action => {
       let done;
-      onDispatch?.();
-      try { done = await action(); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw error; }
+      const finishUi = ['browser_chrome', 'browser_auxiliary'].includes(source?.surface) ? this.windows.uiInput?.() : null;
+      try { onDispatch?.(); done = await slowStep(this.host, 'native_action', action()); } catch (error) { if (error?.code === 'native_input_uncertain') return {dispatched: true}; throw markDispatched(error); }
+      finally { finishUi?.(); }
       if (!done) throw new UserDomainRefusal('stale_reference');
       return {dispatched: true};
     };
@@ -516,7 +624,7 @@ export class InputArbiter {
     const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
     // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
-    const omnibox = on => { this.inOmnibox = on; this.windows.focusOmnibox?.(on); };
+    const omnibox = (on, ago) => { this.inOmnibox = on; this.windows.focusOmnibox?.(on, ago); };
     const chord = async (keysym, modifiers) => {
       if (!Number.isSafeInteger(keysym) || !Number.isSafeInteger(modifiers) || refusedChord(keysym, modifiers)) throw new UserDomainRefusal('not_granted');
       let tab;
@@ -528,8 +636,8 @@ export class InputArbiter {
       else if (popup && (!source.overPage || await this.windows.omniboxShown?.() === true)) await activeAdmitted();
       else await textTarget();
       // Ctrl+L puts the keys in the omnibox; Enter and Tab hand them back to the page, other shortcuts may switch Tabs.
-      if (tab) this.chromeFocus = lower(keysym) === key('l') ? `${tab.tab_id}:${tab.document_id}` : null;
-      else if (keysym === 0xff0d || keysym === 0xff09) this.chromeFocus = null;
+      if (tab) this.chromeFocus = lower(keysym) === key('l') ? uiFocus(tab) : null;
+      else if (keysym === 0xff0d || keysym === 0xff09 || keysym === 0xff1b) this.chromeFocus = null;
       omnibox(tab ? !!this.chromeFocus : !!this.inOmnibox && !!this.chromeFocus);
       return dispatched(() => source.chord(keysym, modifiers));
     };
@@ -540,8 +648,11 @@ export class InputArbiter {
       if (button === undefined) throw new Error('MD-2: unsupported input');
       // Below the tab strip is Chrome's toolbar (omnibox, buttons): the keys go to Chrome's UI.
       // A popup item (menu, dropdown) may navigate or switch Tabs: the keys return to the page.
-      const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? `${tab.tab_id}:${tab.document_id}` : null;
-      omnibox(!!this.chromeFocus && this.windows.onOmnibox?.(input.x) === true);
+      const tab = await switching(); this.chromeFocus = band && button === 1 && input.y >= STRIP_HEIGHT ? uiFocus(tab) : null;
+      // Before the window's first list its span is unknown: a toolbar click may be the address bar, so the keys
+      // after it wait for the list they open (the click itself does not wait).
+      const over = this.windows.onOmnibox?.(input.x);
+      omnibox(!!this.chromeFocus && (over === true || over === null), over === null ? -OMNIBOX_LIST_WAIT_MS - 1 : 0);
       return dispatched(() => source.click(input.x, input.y, button));
     }
     if (input.kind === 'drag') {

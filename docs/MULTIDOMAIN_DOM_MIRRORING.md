@@ -38,7 +38,7 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   suppression and frame slots are retired before rebuilding. Cancellation
   keeps the fence ahead of the published sequence, forcing the next credit
   to rebuild a full base. Resource keys retain their document lifetime.
-  A small document has a 20,000-record/4 MiB
+  An ordinary document has a 20,000-record/8 MiB
   atomic backstop, including large open shadow trees. Input echoes precede
   continuation records. A same-document reset preserves an active root wheel
   target and submits that position through normal input under the newly applied
@@ -232,13 +232,6 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   a second script-free iframe and retires the prior frame only after continued
   visible content is available. A fresh attachment keeps its labelled loading
   state until then. Preparation work is bounded and stops after the first paint.
-  The producer also exempts head bytes from the 128 KiB chunk accounting until
-  the body is reached while cumulative observation bytes remain within 2 MiB.
-  This carries ordinary large CSS heads with their viewport. Node/time and the
-  64 MiB document bounds remain; the exemption is checked between records, not
-  a new wire-size limit. Larger or node-heavy heads can still need continuation,
-  so the client paint hold remains necessary. Quiet-host measurements qualify
-  first-packet cost separately; source tests do not establish that timing gate.
   MP-11: the held frame is inert; event forwarding also checks that the event's
   document belongs to the current painted iframe, because native keyboard focus
   can remain in an inert iframe. Same-document protection resets apply at once;
@@ -690,3 +683,93 @@ flow with an installed signed or unsigned Todo or Docs App:
 Retain fail-first baseline and final-head screenshots, console/log captures,
 per-key timings, exact source/binary identities, shaping calibration and cleanup.
 Controller fixtures supplement these drills and do not close their acceptance.
+
+### MP-08 / MP-10 / MP-11: ordinary first-snapshot cap (2026-10-15)
+
+Ordinary documents (at most 10,000 native elements) serialize atomically until
+completion or 8 MiB of record data. This keeps a site's header/templates from
+replacing the previous page before its form or file list arrives. The cap is
+evaluated between records: one record is bounded at 1 MiB, so this is not a
+strict 8 MiB serialized-message limit. An open shadow tree also switches to
+continuation at 20,000 records. Larger documents retain the existing 1,024-visit
+first prefix and bounded, viewer-credited continuation. Browserux 91599e472's
+bounded head-CSS exception remains on that large-document path.
+
+Atomic observation uses the existing protocol 532 chunks-v2 transport, whose
+16 KiB frames share a 64 KiB acknowledged window and fairly interleave display
+events with replies; it adds no unchunked bypass or new wire flag. The client
+still stages incomplete documents from the capped/large path and fences input
+from the held prior document. Same-document protection resets remain immediate.
+This internal snapshot budget changes no serialized shape or client floor.
+
+The initial 2 MiB candidate failed real hosted GitHub login at 1920×1080 DPR2:
+later CSS made resets stop at 2,117,536–2,119,117 record bytes with continuation
+pending. That record-work cap can be reached before the form despite much
+smaller deduplicated/compressed wire data. A later hosted GitHub repository
+check also exhausts 4 MiB after 946–955 records, while the complete native page
+has 2,346–2,518 elements. Its viewer shows only the header. The 8 MiB cap covers
+that larger ordinary-document range; over-cap documents still continue.
+Resets for lost base/recovery use the same producer policy as first
+attachment/navigation. These observations and source regressions do not close
+the strict hosted fidelity, interactivity or stability gates.
+
+### MP-08 / MP-10 / MP-11: explicit initial completion (539/147)
+
+`snapshot_complete` is true only after the initial main-document serializer has
+drained and native document readiness is complete. False keeps an invisible
+body prefix from starting the two-second intentionally-empty-page timer. A
+readiness change wakes the credit; a change between credits remains pending.
+Compact headers inherit completion from their base. Both renderer copies require
+539 and retain the previous inert page until visible content or confirmed empty
+completion. This adds no observation authority or protection exception.
+
+The ordinary-document atomic backstop is 20,000 records / 8 MiB of record data
+(up to one bounded record beyond the byte threshold), with 40,000 iterator visits.
+It is synchronous work on the native page thread; 532 relay chunk interleaving
+does not bound that CPU time. The cap has not increased in539. Near-cap first
+packet/continuation input timings still need quiet-host evidence before acceptance
+or any further cap increase. B3 functional runs and source tests are not that
+timing evidence.
+
+MP-08 / MP-10 / MP-11 completed-empty presentation: the local two-second timer
+notifies the View with the last applied frame metadata. Idle or stalled credits
+cannot postpone View promotion after that timer. The packet callback still runs
+only for received/applied packets; presentation creates no sequence or ACK and
+is fenced by the current applied sequence, renderer lifetime and frame identity.
+
+### MP-08 / MP-10 / MP-11: native navigation handover (539/147)
+
+Owner decision 2026-10-16 permits the existing protected whole-page VIDEO path
+while a typed URL's DOM snapshot prepares. The opting-in subscription announces
+`navigation_preview` before observer work, retires old input epochs/region leases,
+and continues delivering the new document's mirror offscreen. Ordinary clients
+that do not opt in keep their current paint hold. No screenshot polling path or
+new capture/input authority is added.
+
+Required cell `MIRROR-NAVIGATION-HANDOVER`: from a fresh real hosted web client,
+use the native omnibox to navigate between public sites, then click/type/scroll
+while VIDEO changes to DOM. Run 1440×900 and 1920×1080 at DPR1 and DPR2 through
+the shaped hosted WSS path. Record full screen video and per-frame mode/geometry
+samples across the switch. Watch the recording and inspect every transition
+frame: no blank frame, layout jump, old-page flash, lost or duplicate input.
+Verify the final field value and caret through normal keys after handover;
+repeat a navigation, an active pointer gesture and IME composition. A mismatched
+document/geometry, incomplete snapshot, pending input or active composition must
+keep the admitted native surface until a fresh synchronized mirror can replace
+it. Capture a region before and after the switch. The base must fail the same
+video/handover assertion. Source fixtures supplement this real drill only.
+
+MP-08 / MP-10 / MP-11 startup boundary: the subscription binds its initial
+document without starting native preview. A later document transition, including
+one committed before the first snapshot drains, may announce navigation preview.
+This keeps ordinary attachment on the mirror path and prevents native page
+initialization from resizing an already painted band before the person's first
+URL input. Existing owned-window rebinding still handles later native starts.
+
+MP-08 / MP-10 / MP-11 — native preview scheduling: after a navigation-preview
+notification, the observer waits at most2500ms for this observer/document's
+ordinary protected visible-page producer to initialize on the owned desktop.
+The wait ends on a valid attested sample, a deadline or cancellation; it grants
+no capture/input authority. This gives native startup a chance before a large
+DOM drain competes on CDP. Record `mirror2_preview_wait` and native first-paint
+timings on the real large-document flow; source scheduling checks are not acceptance.

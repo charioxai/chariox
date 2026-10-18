@@ -1,5 +1,193 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
+
+The real WHATWG navigation timed out repeatedly creating a world that Chromium
+had already created from the kernel's registered preload. A source diagnostic
+that reused that world produced native preview; full handover remains pending.
+The current CDP owner now records only the named isolated, non-default context
+with a unique identifier, matching the live connection, session, committed main
+frame and loader. A new unique context gets a fresh owner even if its numeric
+ID is reused; installation state never carries across that replacement. Navigation, context destruction and context clearing retire
+it. A queued event from a retired connection is ignored. An observed context
+also releases a concurrent redundant creation without waiting for its renderer
+reply, preserving the same cached owner object used by capture restoration.
+Default/unregistered/child/stale contexts are refused. Existing document,
+protection and screenshot presentation proofs still gate publication and input.
+Focused fail-first checks cover ownership and races; a diagnostic preview is
+not matching-built, full-DPR, quiet-host or stability acceptance.
+
+## MP-08 / MP-10 / MP-11 typed font opt-in (2026-10-16)
+
+The native-font snapshot drill caught the missing Rust command field before a
+matching binary was produced (242 protocol checks passed; the new round-trip
+failed on the unknown field). The typed request now carries the optional font
+opt-in through the existing mirror dispatcher; omission preserves prior request
+bytes. New viewers retry once without that opt-in only when an older typed
+kernel explicitly rejects that field before dispatch. Other errors, including
+permissions and other unknown fields, propagate. Positive font requirements
+still need the kernel acknowledgement; a retry retains conservative legacy
+checks. Client fail-first and a real older-kernel UI rejection are recorded;
+matching-built and legacy real UI validation remain required.
+
+## MP-08 / MP-10 / MP-11 standalone canvas fidelity (2026-10-16)
+
+Real BBC source-versus-viewer screenshots show a white native canvas becoming
+viewer-theme gray through the transparent outer sandbox. Give only that outer
+iframe a white backing, preserving author backgrounds and the source document's
+own dark color scheme. Child iframe transparency and the script-free sandbox do
+not change. A real-Chromium pixel regression fails for the transparent canvas on
+the base and passes for transparent, dark and author-colored documents after.
+This is supplementary evidence; fresh real-site/full-DPR handover and recordings
+remain required before acceptance.
+
+## MP-08 / MP-10 / MP-11 stale mirror credit retirement (2026-10-16)
+
+A navigation can retire a pending observer drain before it returns an eviction.
+The old credit must refuse before resnapshotting, resource work or another
+renderer identity query; the ordered document event already proves retirement.
+The next credit takes the existing native-preview/new-document path. Unknown
+document state retains the fresh renderer check. This tightens the existing
+observation fence and adds no wire or input authority. Supplementary fail-first
+races cover evicted, ordinary and rejected drains; real hosted handover remains
+an acceptance obligation.
+
+## MP-08 / MP-10 / MP-11 native document font requirements (2026-10-16)
+
+The real BBC article can have an extra failed viewer fallback that the native
+page never used. [FontFaceSet.check](https://drafts.csswg.org/css-font-loading-3/) tests a family
+list rather than proving which fallback painted. The kernel now emits document-scoped loaded-font requirements
+as the explicitly negotiated `fonts` operation (`mirror_subscribe.font_requirements`),
+within mirror's authorized additive unreleased539/147
+allocation (union540/148). Shared and Cloud renderers load the required native
+faces, refuse missing/pending requirements, and retire them on frame removal or
+reset. Same-origin and cross-origin documents use the ordinary observer and
+rebased operation path. Bounds and an applied-packet fence prevent incomplete
+or stale certificates. Existing font-failure metadata remains the conservative
+compatibility path. Font resources, sandbox, Vault masks, native pixel proof,
+permissions and input dispatch keep their existing authorities. Source checks
+and a source-override BBC completion do not establish exact-built, fullDPR,
+quiet-host or multi-hour acceptance.
+
+## MP-08 / MP-10 / MP-11 native font failures (2026-10-16)
+
+The real BBC diagnostic finds font failures in the source browser itself; all
+six font resources it fetched are available to mirroring. A source-native failed
+face legitimately uses fallback. The existing header now certifies those failures
+as bounded descriptor hashes, under mirror's authorized unreleased 539/147
+extension (union 540/148). Every matching native face must have failed; an
+unconfirmed visible client failure still holds native video. Shared and Cloud
+renderers validate, inherit and clear the metadata identically. Protocol
+snapshots/hash, real-Chromium failure/wake and ambiguous-face cases, compact
+inheritance and renderer admission checks accompany the change. No font names,
+URLs, credential, permission, pixel or resource-fetch authority are added.
+Source checks do not establish acceptance; the exact built hosted candidate must
+pass the same real cookie/article/capture and complete window/DPR matrix.
+
+## MP-08 / MP-10 / MP-11 rendered-font handover readiness (2026-10-16)
+
+A completed page waits for fonts needed by its visible text, controls and
+`::before`/`::after` content. Chromium resolves the actual family, weight and
+unicode range through `FontFaceSet.check`; unused font variants no longer hold
+handover merely because another face failed. Missing visible fonts still keep
+the admitted native view. This uses the existing font and resource contracts,
+with matching shared and Cloud behavior and no new resource-fetch authority.
+A real hosted BBC baseline reached a settled 35-face set (six loaded, two failed,
+27 unused) but remained in video at the global font gate. Focused real-Chromium
+regressions distinguish unused declarations from missing visible text, control
+and generated-content fonts. Those checks do not establish live acceptance;
+the complete site/window/DPR, transition, timing and stability drills still apply.
+
+## MP-08 / MP-10 / MP-11 held mirror continuation layout (2026-10-16)
+
+The shared renderer continues to apply records and resources while native video
+owns presentation. Until `snapshot_complete`, it queues the latest scroller
+positions and defers visibility checks for that held DOM. Completion applies
+those positions before the existing readiness and input-drain handover. Ordinary
+progressive mirrors retain their existing presentation behavior. The shared OSS
+and Cloud navigation modules use the same rule; sandbox, masks, native admission
+and serialized fields are unchanged. A real-Chromium regression reduces a batch
+of ten held continuations from nine forced layouts to at most two, while checking
+that prior paint remains and final content and scroll survive. This is a focused
+regression, not hosted usability, quiet timing or full MP-item acceptance. Handover
+diagnostics report only fixed blocker names (content, resource slices, visible
+image, font, CSS image, decode or retired document), with numeric timings. An
+unchanged blocker emits once, without node, URL, text or resource identity.
+
+
+
+## MP-08 / MP-10 / MP-11 capture restoration retries (2026-10-16)
+
+Browser and Computer native sources share the capture presentation fence. Every
+readback intersecting a screenshot or its compositor restoration remains
+inadmissible. A rejected readback now registers one cancellable retry after
+successful restoration, instead of immediately forcing another readback while
+the same fence is active. Overlapping captures must all restore; a failed
+restoration keeps the fence closed. A later source start may repeat the original
+restoration proof; only its success closes that failed interval, and old pixels
+remain excluded. Closing either source cancels its pending readback retry. A warm screenshot
+restoration reuses the existing CDP owner's live connection/session/loader and
+isolated focus world. The same two-animation-frame proof still runs; replacement
+of either the frame reference or world keeps the fence closed. A retry resolves
+the current owner again. A first preview may create its isolated world through that same known frame
+owner before the mirror observer starts; owner replacement during creation
+also keeps the fence closed. Unknown or mismatched frame bindings retain fresh discovery;
+there is no parallel document cache or relaxation of the pixel predicate.
+World creation is coalesced for the same connection/session/frame/loader. A late
+old-document result or failure cannot replace or retire a newer cached world.
+The restoration proof checks those scope fields and the context as well as
+frame/world identity before opening the fence. `browser-focus-world.mjs` owns
+this shared world lifecycle; the controller delegates to it.
+
+Visible-page previews also reuse the mirror's live connection/session/loader
+reference before native admission. Replacing that reference retires the lease,
+even if a loader value returns. The shared region setup reuses that same live
+binding. Cold bindings still query; native RGB attestation, crop/zoom checks,
+policy and mask fences remain mandatory before delivery. Screenshot capture
+and native attestation also reuse that current owner before/after capture;
+unknown owners still query the renderer. Tab-state preflight also reuses the
+same current owner and reads navigation metadata from the browser process.
+A reference replacement during that metadata read prevents publication or
+saving; unknown bindings retain the renderer query. Same-loader reference replacement or
+session/connection mismatch refuses the image. A delayed page inspection cannot replace an event-owned newer document or
+revive a retired session. Its initial frame and document-map references must
+remain unchanged across focus/frame observations. A cold mismatched cache may
+be repaired only by that fresh, stable inspection. `browser-controller-frames.mjs`
+owns this publication fence. Native read-only inventory may use the browser-process target
+metadata and native active tab when metrics and a previously committed document
+are already known. A loading tab may retain its last committed document label;
+this path never populates the frame-owner cache. Cold targets, changed metrics,
+ordinary/headless state and mutations retain renderer discovery. Pixel and input
+admission continue to require their own current document proof. When native New Tab input discovers
+an unadopted active target, that inventory read also avoids loading background
+renderers. The arbiter then resolves the active target's document independently
+before ledger admission; pending metadata cannot serve as that proof. A visible-page lease may reuse its initial
+layout metrics only with the same event-owned document, applied metric key and
+live native-window observer epoch. Resize, zoom, tab/window changes, observer
+detach or document replacement permanently retire that lease's measurement,
+even if values later return. A late initial measurement is refused. Unknown
+observers/documents/metrics retain fresh renderer queries. Native publication
+still checks the active window/tab freshly, all fill-target masks and exact RGB
+attestation; this cache creates no pixel or input authority.
+
+Screenshot masking policy lives
+in `kernel-browser-screenshot.mjs`; host code delegates to it, and ordinary and
+slice bundles include the same module.
+
+Whole-page previews now also apply the same live Chrome-UI overlap query as
+streamed page regions after readback. While an omnibox list or dialog overlaps
+the crop, only the last unobscured page frame is retained; the existing auxiliary
+stream owns the Chrome UI pixels. An unavailable overlap guard refuses delivery.
+The ordinary/managed path and window-coordinate crop are shared. The focused
+publication regression supplements the required real typing/handover recording.
+
+Security anchors: `browser-capture-presentation.mjs`, `kernel-browser-native.mjs`
+and `kernel-desktop-source.mjs` in `apps/kernel/slice-linux-docker/docker/`.
+The pixel predicate, document/window leases and Vault masks are unchanged.
+Focused regressions cover retry coalescing, cancellation, overlap and failed
+restoration. They supplement real ordinary/managed drills and do not establish
+live acceptance or an independent semantic review of these anchors.
+
 ## MP-08 / MP-10 / MP-11 native global shortcut admission (2026-10-15)
 
 Physical agent keyboard batches probe the exact X11 root passive key grabs
@@ -1648,3 +1836,9 @@ or MP-10 fresh-machine acceptance. Runtime review and deployment comparison
 remain open. Exact commands, source identities, resource samples, intermediate
 RED diagnostics and cleanup are retained under
 `/root/.codex/evidence/browser-resume-20260930/implD2/`.
+
+### MP-08 / MP-10 / MP-11: DOM before font bytes
+
+Opted-in mirror-v2 viewers receive the reset DOM/CSS and its positive native-font requirements before font resource bytes. The existing handover readiness check remains required; the native view stays in place while fonts hydrate. Legacy viewers retain first-packet fonts. The next resource credits prioritize fonts across all document slots before images, and a completed frame-bound font response avoids unrelated renderer image/load queries. Packet budgets, credential-free fallback gates, document/policy checks and input authority stay in the shared kernel path. Deferred packets also pin the browser, connection and session; retaining the same loader string cannot re-admit a retired owner. No serialized protocol shape changes.
+
+Supplementary regressions cover a blocked font response, legacy behavior, main/child font ordering, and response ownership. Real built-client new-tab first-packet, typography/handover, public-site, quiet timing and soak acceptance remain required; source checks alone do not close these items.

@@ -51,19 +51,28 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
-    const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
+    const { connection, sessionId } = await slow('page_target', browser.resolvePageTarget(tab.target_id));
     let observedFrameInput = false;
     const cachedDocument = () => {
       if (!documentCurrent()) throw new BrowserActionError("stale_document_reference", "browser document retired before native input");
     };
+    // The page session's ordered navigation events name its document: a busy renderer is not asked (a person's first
+    // wheel waited 5 s for it, r55). A navigation in flight leaves no proof, then the renderer is asked as before.
+    const eventDocument = () => {
+      const current = browser.currentPageFrame?.(tab.target_id);
+      return current && current.connection === connection && current.sessionId === sessionId ? current.frame.loaderId : null;
+    };
     const check = async (fresh = false) => {
       assertNotCancelled(signal);
+      const proven = fresh || documentCurrent ? null : eventDocument();
       if (documentCurrent && !fresh) cachedDocument();
-      else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      else if (proven === tab.document_id) { /* current by ordered events */ }
+      else if (proven) throw new BrowserActionError("stale_document_reference", "browser document retired before input");
+      else await slow('document_fence', assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id));
       assertNotCancelled(signal);
     };
     // MP-11: all text-producing paths share the Vault-only target fence.
@@ -98,7 +107,9 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (verdict === 'frame') verdict = resolved?.frameSensitive ? await resolved.frameSensitive(sensitiveFocusExpression(false)) : true;
       if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
-    let mirrorGuard=inputGuard;
+    // The guards are awaited right before a physical dispatch: a retirement (parked retry) that arrives inside one must stop it.
+    const guarded = guard => guard && (async () => { assertNotCancelled(signal); await slow('input_guard', guard()); assertNotCancelled(signal); });
+    let mirrorGuard=guarded(inputGuard);
     const admitInput = async (method, params) => {
       // CDP fallbacks retain their fresh document barriers.
       await check(true);
@@ -131,13 +142,14 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       resolved=await resolveMirror(input);
       observedFrameInput=resolved.observedFrameInput===true;
     }
+    // A wheel needs no page focus: it does not wait for the renderer to resume focus emulation.
     return browser.inputCapture.run(connection, sessionId, async () => {
       // MP-08/MP-10/MP-11: a fenced (v2) resolution has its final document
       // fence in perform/sendInput/its guard below. No mutation or await
       // separates this redundant query from that final fence.
       if (!resolved?.fenced) await check();
       if(resolved) {
-        mirrorGuard=inputGuard?async()=>{await inputGuard();await resolved.guard?.();}:resolved.guard;
+        mirrorGuard=guarded(inputGuard?async()=>{await inputGuard();await resolved.guard?.();}:resolved.guard);
         if(resolved.perform) {if(!resolved.fenced)await check();await resolved.perform(sendInput,onDispatch);await check();return;}
         input=resolved.input;
       }
@@ -254,5 +266,5 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }
-    });
+    }, { resumeFocus: input.kind !== 'scroll' });
   }

@@ -1,3 +1,6 @@
+import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
+import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
+import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
@@ -10,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { displayTiming, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
+import { displayTiming, slowMark, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -24,10 +27,10 @@ import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs"
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
-import { BrowserPopupEvidence } from "./kernel-browser-popup-evidence.mjs";
-import { assertNotCancelled, assertCurrentDocument, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureProtectionFence, captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
-import { captureProtectedPage } from "./kernel-browser-pixels.mjs";
+import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
+import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
+import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
+import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
@@ -42,23 +45,31 @@ import { DisplayDocuments } from './kernel-browser-display-document.mjs';
 // to one attempt a minute.
 export const nativeRetryDelayMs = attempts => Math.min(60_000, 1_000 * 2 ** (attempts - 1));
 
-export function scheduleHostRequest(request, browser, viewport = hostViewport()) {
+export function scheduleHostRequest(request, browser, viewport = hostViewport(), nativeDesktop = false) {
   // MP-08/MP-10: App drains wait for enqueue, so the shared bridge lane must
   // stay independent of input and lifecycle barriers on the host as in Rooms.
+  // A native desktop's default page crop never resizes Chrome; its protected
+  // first sample may wait without parking input. Legacy full-page setup still
+  // applies viewport geometry and must retain the barrier.
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
-  return ['browser.app.calls','browser.app.respond'].includes(request.method) ||
+  // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
+  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
-    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && request.params.target) && browser?.canReconcileConcurrently?.(viewport) === true ||
+    (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' ||
-    request.params?.op === 'chrome_window_follow')
+    ['chrome_window_follow', 'note_selection', 'note_reanchor'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
+const SLOW_OP_MS = 1000;
+const POST_INPUT_OBSERVE_MS = 500;
+// `promise`'s value, or null once `ms` have passed (the promise is left to settle on its own).
+const withinMs = (promise, ms) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms, null); })]).finally(() => clearTimeout(timer)); };
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
@@ -74,9 +85,14 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection }) } = {}) {
+  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
+    // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
+    let tick = timestamp();
+    setInterval(() => { const now = timestamp(), late = now - tick - 100; tick = now; if (late > 400) this.timing('node_loop_stall', now - late); }, 100).unref();
+    this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.parkedState(command.observed_by ?? "adapter"), { lane: command => this.inputLane(command), sameDocument: command => command.generation === this.generation && typeof command.document_id === 'string' && this.tabs.get(command.tab_id)?.document_id === command.document_id, event: (name, cause) => this.timing(cause ? hostErrorLabel(cause).replace('host_error', `busy_${name} by`) : `busy_${name}`, timestamp()) });
+    this.retiredEpochs = new Map();
     this.chromium = chromium;
     // MP-08/MP-10/MP-11 (§2b): the native Chrome window binding and its input arbiter.
     this.chromeWindows = new ChromeWindows(this,{inventory:(display,pid,isCurrent)=>nativeWindowInventory({display,pid,isCurrent})});
@@ -99,7 +115,7 @@ export class KernelBrowserHost {
     this.restoring = false;
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
-    this.displayDocuments = new DisplayDocuments();
+    this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
@@ -187,6 +203,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
@@ -242,7 +259,7 @@ export class KernelBrowserHost {
     }
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
-      // Protocol 548: the same subscription wakes parked state reads (a Tab or document changed).
+      // Protocol 556: the same subscription wakes parked state reads (a Tab or document changed).
       if (stateChangingEvent(message)) this.stateSignal.notify();
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
@@ -345,6 +362,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop() {
+    this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
     this.lockdownOff?.(); this.lockdownOff = null;
@@ -392,20 +410,21 @@ export class KernelBrowserHost {
   chromeWindow() {
     const tabbed = this.chromeWindows?.bound?.tabbed;
     // MP-11: only the managed lockdown refuses fullscreen; without it no band is offered.
-    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !tabbed?.isCurrent()) return null;
+    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
     return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
-  async reconcile() {
+  async reconcile({readOnly=false}={}) {
     const observation = ++this.observations;
+    const stateOptions = await nativeStateObservationOptions(this, readOnly);
     let state;
     // MP-08/MP-10/MP-11 (BROWSER-UX-14): the kernel's Tabs keep their window's native tab
     // strip and omnibox (the browser_chrome band); the Room bar's fullscreen policy is not applied.
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(this.viewport()); break; }
+      try { state = await this.browser.reconcile(this.viewport(), stateOptions); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
@@ -483,23 +502,15 @@ export class KernelBrowserHost {
     if (!tab) throw new UserDomainRefusal("not_granted");
     return tab;
   }
-  async displayTarget(command, native = false) {
+  async mirrorTarget(command) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
     if (!stored) throw new UserDomainRefusal("not_granted");
-    if(native)return this.displayDocuments.target(this.browser,stored);
-    const { connection, sessionId } = await this.browser.resolvePageTarget(stored.target_id);
-    const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
-    const document_id = frameTree?.frame?.loaderId;
-    if (typeof document_id !== "string" || !document_id) throw new Error("MD-DISPLAY: document unavailable");
-    // Observe this same native target without building an entire accessibility snapshot.
-    if (stored.document_id !== document_id) {
-      const { targetInfo } = await connection.send("Target.getTargetInfo", { targetId: stored.target_id });
-      Object.assign(stored, { document_id, url: targetInfo.url, title: targetInfo.title });
-      await this.save();
-    }
-    return { ...stored, document_id };
+    const current = this.browser.currentPageFrame?.(stored.target_id);
+    return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
+  displayTarget(command, native = false) { return resolveDisplayTarget(this, command, native); }
+
   sampleLane(tab) {
     let lane=this.sampleLanes.get(tab.tab_id);
     if(!lane){lane=new SampleLane();this.sampleLanes.set(tab.tab_id,lane)}
@@ -510,35 +521,8 @@ export class KernelBrowserHost {
   async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
     return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
   }
-  async screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
-    const started = timestamp();
-    const scale = this.scales.get(tab.tab_id) ?? this.viewport().device_scale_factor;
-    const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const regionMasks = protectedCapture ? this.protection.targets.length || this.browser.fillTargets?.size
-      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...this.protection,targets:[...this.protection.targets,...(this.browser.fillTargets?.values()??[])]},{ record: reason => this.timing('region_frame_masked ' + reason, timestamp()) })
-      : {async afterCapture(){return [];}} : null;
-    const data = await captureProtectedPage(this.browser, tab, this.protection.values,
-      this.protection.targets.filter(target => target.kind === "browser"), async () => {
-        const at = timestamp();
-        const sample = async () => {
-          const compositor=this.compositors.get(tab.tab_id)?.source;
-          if(clip)compositor?.pause();
-          try{return await this.browser.inputCapture.run(connection,sessionId,()=>connection.send("Page.captureScreenshot", { format, ...(format === "jpeg" ? {quality:95} : {}), captureBeyondViewport: false, optimizeForSpeed, ...(clip ? { clip } : {}) }, sessionId),{resumeFocus:false})}
-          finally{if(clip)compositor?.resume()}
-        };
-        const policy=this.protection;
-        const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : this.sampleLane(tab).run("capture",sample));
-        this.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
-        return data;
-      }, scale, clip);
-    await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
-    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
-    const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
-    this.timing('protected_capture', started);
-    if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");
-    return { generation: this.generation, tab_id: tab.tab_id, document_id: tab.document_id, mime_type: `image/${format}`, data_base64: data, width, height, ...(protectedCapture ? { protected_regions } : {}) };
+  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
+    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
   }
   async subscribe(tab, boundFrames = false, owner = null) {
     await this.closeCompositors(tab.tab_id);
@@ -639,6 +623,11 @@ export class KernelBrowserHost {
       await this.browser.connection?.send("Page.stopScreencast", {}, stream.sessionId).catch(() => {});
     }
   }
+  // Protocol 552: input this observer has parked behind a busy renderer; the viewer holds its preview handover until it is admitted.
+  parkedState(scope) {
+    const state = this.observe(this.tabState(), null, scope), parked_input = this.busyInputs.parked(scope);
+    return parked_input ? { ...state, parked_input } : state;
+  }
   observe(result, tab, scope) {
     let observed = this.observedDocuments.get(scope);
     if (!observed) {
@@ -650,7 +639,17 @@ export class KernelBrowserHost {
     for (const id of observed.keys()) if (!this.tabs.has(id)) observed.delete(id);
     return result;
   }
-  async request(command, { signal, inputGuard, nativeDisplay } = {}) {
+  // The surface a person's input acts on: Chrome's own band (no page renderer behind its fences) or the page.
+  inputLane(command) {
+    const stream = typeof command.binding_id === 'string' ? [...this.displays.values()].find(s => s.binding_id === command.binding_id) : null;
+    return ['browser_chrome', 'browser_auxiliary'].includes(stream?.regionTarget?.kind) ? 'band' : 'page';
+  }
+  // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
+  request(command, options) {
+    return command.op === "input" && !command._agent_input && !command.focused_agent
+      ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options);
+  }
+  async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
@@ -668,15 +667,17 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // newest observation, as at a navigation commit
       return this.observe(this.tabState(), tab, scope);
     }
+    // The reconcile below would wait on the busy renderer that parked this observer's input.
+    if (command.op === "state" && this.busyInputs.parked(scope)) return this.parkedState(scope);
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
-    // Protocol 548: the signal count is taken before the read, so a change during it wakes the next wait.
-    const stateSignal = this.stateSignal.count;
+    // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
+    const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
     if (["start", "state"].includes(command.op)) {
-      const state = this.observe(await this.reconcile(), null, scope);
+      const state = this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
       return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
     }
     const agentRequest = command.focused_agent || command._agent_input;
@@ -728,10 +729,10 @@ export class KernelBrowserHost {
     // Explicit physical input already names an observed tab/document. Read
     // that live target directly; whole-tab discovery still runs afterward.
     // Per-dispatch document/cancellation and secret-focus checks remain below.
-    // MP-08/MP-10: a navigation reads only its own Tab's live document: a full
+    // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
-      ? await this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay)) : await this.target(command);
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection', 'note_reanchor'].includes(command.op)
+      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay))) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
@@ -824,13 +825,16 @@ export class KernelBrowserHost {
         // Protocol 530: a page drag is the person's, on a page they are watching.
         if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
-        const candidate=nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source;
-        const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab,{cached:['key','scroll'].includes(command.input?.kind)})?candidate:null;
+        // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
+        const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
+        const candidate=handoverOrdered?null:(nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source);
+        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['key','scroll'].includes(command.input?.kind)}))?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await this.displayDocuments.guard(this.browser,tab):undefined;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
+        const laneAt=timestamp();
+        const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
@@ -839,7 +843,9 @@ export class KernelBrowserHost {
         this.timing('cdp_input', at);
       }
       catch (error) {
-        if (dispatched || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
+        if (dispatched) markDispatched(error);
+        // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
+        if (dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
@@ -851,7 +857,12 @@ export class KernelBrowserHost {
       // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
       // A viewer's key is the same: no input-lane reconcile (the lane serializes the next key behind it).
       if (['scroll', 'key'].includes(command.input.kind) && command._display_input === true) return this.observe(this.tabState(), null, scope);
-      const result = this.observe(await this.reconcile(), null, scope);
+      // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
+      // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
+      // The observation is bounded too: it goes on in the background and a later state read has its result.
+      const observation = this.reconcile().catch(error => { if (error?.code === 'browser_cdp_timeout') return null; throw markDispatched(error); });
+      observation.catch(() => {});
+      const result = this.observe(await withinMs(observation, POST_INPUT_OBSERVE_MS) ?? this.tabState(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
     }
@@ -949,7 +960,18 @@ export class KernelBrowserHost {
         if(request.params.op==='input')this.timing('computer_input '+(/^[a-z_]{1,16}$/.test(request.params.input?.kind)?request.params.input.kind:'other'),at);
         return { id: request.id, ok: true, result };
       }
+      if (request.method === 'host.browser.retire_input') {
+        // Retirements arrive from concurrent takeovers: an older ownership change of a tab must not retire that tab's newer owner's input.
+        const {tab_id,except,epoch}=request.params;
+        if(!(epoch<(this.retiredEpochs.get(tab_id)??0))){this.retiredEpochs.set(tab_id,epoch);this.busyInputs.retire((key, command) => command.tab_id === tab_id && key !== except)}
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
+      if (request.method === 'host.browser.retire_observer') {
+        this.busyInputs.retire(key => key === request.params.observer);
+        return {id:request.id,ok:true,result:{retired:true}};
+      }
       if (request.method === 'host.computer.retire') {
+        this.busyInputs.retire(key => key === request.params.observer);
         await this.desktopDisplay.retire(request.params.observer);
         await this.nativeComputer.retire(request.params.observer);
         this.nativeAccessibility.retire(request.params.observer);
@@ -959,7 +981,7 @@ export class KernelBrowserHost {
         await this.nativeComputer.reset();
         return { id: request.id, ok: true, result: { released: true } };
       }
-      // Protocol 548: the kernel parks here, outside its protection barrier, until a state read could differ.
+      // Protocol 556: the kernel parks here, outside its protection barrier, until a state read could differ.
       if (request.method === "host.browser" && request.params?.op === "state_signal") {
         const {after, wait_ms} = request.params;
         const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);
@@ -977,6 +999,7 @@ export class KernelBrowserHost {
         if (Array.isArray(groups)) void this.syncTabGroups(groups).catch(() => {});
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
+        else if (timestamp() - at > SLOW_OP_MS && /^[a-z_]{1,32}$/.test(request.params.op)) this.timing(`host_op_slow ${request.params.op}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
@@ -1026,5 +1049,5 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport()))).run().finally(() => host.stop());
+  await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport(), Boolean(host.chromium.desktop?.binding?.())))).run().finally(() => host.stop());
 }

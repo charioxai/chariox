@@ -8,6 +8,8 @@ export class NativeTabState {
   this.off=null;
  }
  invalidate(){retireNativeStates();this.epoch++;this.active=null;this.viewport=null;this.onChange?.();}
+ // A frame resize changes geometry, never which Tab is active (the extension raises the window binding for that).
+ invalidateGeometry(){retireNativeStates();this.epoch++;this.viewport=null;this.onChange?.();}
  detach(){this.invalidate();this.session=null;this.ready=false;this.onDetached?.();}
  async attach(session){
   if(this.closed)throw Error('MP-11: native state observer closed');
@@ -20,7 +22,7 @@ export class NativeTabState {
   this.ready=true;
  }
  onCdp(message){
-  if(message?.method==='Page.frameResized'){this.invalidate();return;}
+  if(message?.method==='Page.frameResized'){this.invalidateGeometry();return;}
   if(message?.method==='Chariox.browserDisconnected'){this.detach();return;}
   if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.detach();return;}
   if(message?.sessionId!==this.session||!this.session)return;
@@ -38,6 +40,12 @@ export class NativeTabState {
    this.viewport=valid?Object.freeze({target_id:value.target_id,width:value.width,height:value.height}):null;
    this.active=this.viewport?.target_id??null;
   }
+ }
+ // A caller may reuse its own observation only inside this native epoch.
+ guard(){
+  if(!this.usable())return null;
+  const epoch=this.epoch,session=this.session;
+  return ()=>this.usable()&&this.epoch===epoch&&this.session===session;
  }
  cachedActive(){return this.usable()?this.active:null;}
  cachedViewport(){return this.usable()?this.viewport:null;}

@@ -22,7 +22,7 @@ pub enum KernelBrowserCommand {
         agent_id: Option<String>,
     },
     ListGrants,
-    /// Protocol 548: `State` that waits (<= 2000 ms) until the browser state differs from the one
+    /// Protocol 556: `State` that waits (<= 2000 ms) until the browser state differs from the one
     /// `after` names (the `revision` of the caller's last read; empty reads at once). Replaces a poll.
     StateWait {
         #[serde(default)]
@@ -44,6 +44,12 @@ pub enum KernelBrowserCommand {
         device_scale_factor: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wire: Option<u32>,
+        /// Protocol 550/158: allow protected native video during mirror preparation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        navigation_preview: Option<bool>,
+        /// MP-08/MP-10/MP-11: protocol 550 native document font proof.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font_requirements: Option<bool>,
     },
     /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
     /// poll answered by the next page change; credits apply in sequence.
@@ -53,6 +59,10 @@ pub enum KernelBrowserCommand {
         after_sequence: u64,
         #[serde(default)]
         drift_nodes: Vec<String>,
+        /// Protocol 550/158: immutable sheet digests
+        /// the viewer retains for this subscription (<= 128, each 24 hex chars).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_sheets: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_ms: Option<u32>,
         /// Protocol 501: the viewer lacks the packet after `after_sequence` (a reply
@@ -60,6 +70,9 @@ pub enum KernelBrowserCommand {
         /// its history at once, ending earlier long polls.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resend: Option<bool>,
+        /// End earlier long polls and drain freshly after acknowledged preview input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flush: Option<bool>,
     },
     MirrorClose {
         subscription_id: String,

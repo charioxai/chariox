@@ -1,4 +1,4 @@
-// MP-08/MP-10 (protocol 548): the host wakes a parked state read on change and bounds it otherwise.
+// MP-08/MP-10 (protocol 556): the host wakes a parked state read on change and bounds it otherwise.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {StateSignal,stateChangingEvent} from './kernel-browser-state-signal.mjs';

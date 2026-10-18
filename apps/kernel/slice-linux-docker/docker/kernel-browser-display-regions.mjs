@@ -7,6 +7,9 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {NativeWindowRegionCapture} from './kernel-browser-window-region.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {inputHostTab} from './kernel-browser-input.mjs';
+import {lateInputAck,markDispatched} from './kernel-browser-input-queue.mjs';
+import {popupActionId} from './kernel-browser-popup-evidence.mjs';
+import {slowMark} from './kernel-browser-timing.mjs';
 
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
@@ -35,7 +38,8 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  if(tab.tab_id!==command.tab_id)refuse();
  let lease,args,placement,offset={x:0,y:0},overlayTab=null;
  const windows=host.chromeWindows?.current();
- const window=windows?.tabbed;
+ // A band or popup stream is bound to the window's identity only: a page-only geometry change (r54) leaves it current.
+ const tabbed=windows?.tabbed,window=tabbed&&target.kind!=='region'&&tabbed.isBandCurrent?{...tabbed,isCurrent:tabbed.isBandCurrent}:tabbed;
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent())refuse();
  if(target.kind==='region') {
   if(!host.mirror.v2?.regions)refuse();
@@ -91,6 +95,9 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  }
  return createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset,overlayTab,Capture});
 }
+// A visible page is admitted from the cached native state (a parsing page answers renderer reads late and an unparkable
+// wait here would outlast the viewer's request); every fence before the dispatch still reads live through the input guard.
+const streamAdmitted=stream=>stream.regionTarget.kind==='visible_page'&&stream.regionFrameCurrent?stream.regionFrameCurrent():stream.regionCurrent();
 function inputStream(host,command,scope) {
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  const stream=[...host.displays.values()].find(s=>s.binding_id===command.binding_id);
@@ -104,7 +111,9 @@ function inputStream(host,command,scope) {
 // The ordinary Rust actor ledger still admits every resulting input action.
 export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await (stream.regionInputCurrent??stream.regionCurrent)(command.input))refuse();
+ // MP-11: this only names the stream's own tab/document. A visible page needs no renderer read for that (a parsing
+ // page answers late); the input that follows runs the fresh regionCurrent, input guard and final fences.
+ if(!await streamAdmitted(stream))refuse();
  if(['region','visible_page'].includes(stream.regionTarget.kind))return {tab_id:stream.tab_id,document_id:stream.regionLease.document_id};
  if(typeof host.arbiter?.resolveDisplayInput!=='function')refuse();
  // This window epoch is kernel-issued private adapter data, not an extra
@@ -115,7 +124,7 @@ export async function regionInputTarget(host,command,scope,signal) {
 }
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await (stream.regionInputCurrent??stream.regionCurrent)(command.input))refuse();
+ if(!await slowMark(host.timing,'input_wait region_admit',streamAdmitted(stream)))refuse();
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();
@@ -138,11 +147,11 @@ export async function regionInput(host,command,scope,signal) {
  const tab=await host.displayTarget(command);
  if(tab.document_id!==stream.regionLease.document_id)refuse();
  let dispatched=false;
- try { await host.sampleLane(tab).run('input',()=>host.popupEvidence.capture(host.browser,tab,command._action_id,beginDispatch=>
+ try { await host.sampleLane(tab).run('input',()=>host.popupEvidence.capture(host.browser,tab,popupActionId(command),beginDispatch=>
   inputHostTab(host.browser,tab,{kind:'mirror'},{signal,resolveMirror:async()=>resolved,onDispatch:()=>{
    dispatched=true;
    host.inputEpochs.set(tab.tab_id,(host.inputEpochs.get(tab.tab_id)??0)+1);host.inputChangedAt.set(tab.tab_id,performance.now());stream.regionSource.wake();return beginDispatch();
   }}))); }
- catch(error){if(dispatched||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
- return host.observe(await host.reconcile(),null,scope);
+ catch(error){if(dispatched)markDispatched(error);if(dispatched&&!lateInputAck(error)||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
+ return host.observe(await host.reconcile().catch(error=>{if(error?.code==='browser_cdp_timeout')return host.tabState();throw markDispatched(error);}),null,scope);
 }

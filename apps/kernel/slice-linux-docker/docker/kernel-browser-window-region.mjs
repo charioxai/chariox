@@ -121,6 +121,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
   if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
   this.off=this.connection.subscribe(m=>this.onCdp(m));
   try{
+   await this.connection.presentationFence?.recoverFailed?.();
    const region=this.region;
    if(this.surface==='page'){
     this.regions=regionProtection(this,region.pageLeft,region.pageTop);
@@ -129,12 +130,10 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    await this.regions.refresh();
    this.poolRoot=await this.createRasterPool();
    startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
-   for(let n=0;n<200&&!this.latest&&!this.closed;n++)await delay(10);
-   if(!this.latest||!this.valid())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
+   if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
    if(this.pageOverlay){
     await this.attestOverlay();
-    for(let n=0;n<200&&!this.currentSample()&&!this.closed;n++)await delay(10);
-    if(!this.currentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
+    if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
    }
    if(!this.valid()||this.validateCurrent&&!await this.validateCurrent())throw Error('MP-11: native region lease retired');
    this.attested=true;return this;

@@ -56,45 +56,134 @@ export function hasVisibleMirrorContent(doc: Document): boolean {
   return false
 }
 
+// BROWSER-UX-09: the share of a 16x10 viewport grid that lands on content (text-bearing,
+// replaced or painted boxes). A continuation's lone "Skip to content" link covers ~nothing.
+export function mirrorContentCoverage(doc: Document): number {
+  const view = doc.defaultView
+  if (!doc.body || !view) return 0
+  let hits = 0
+  for (let row = 0; row < 10; row++) for (let column = 0; column < 16; column++) {
+    const element = doc.elementFromPoint((column + 0.5) * view.innerWidth / 16, (row + 0.5) * view.innerHeight / 10)
+    if (!element || element === doc.body || element === doc.documentElement) continue
+    const style = view.getComputedStyle(element)
+    if (['input', 'textarea', 'select', 'button', 'img', 'svg', 'canvas', 'video', 'iframe'].includes(element.localName) || style.backgroundImage !== 'none'
+      || style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'rgb(255, 255, 255)'
+      || [...element.childNodes].some(child => child.nodeType === 3 && child.textContent!.trim())) hits++
+  }
+  return hits / 160
+}
+const MEANINGFUL_COVERAGE = 0.05, SPARSE_HOLD_MS = 2000
+
 export class Mirror2Navigation {
   frame: HTMLIFrameElement
   loaded: Promise<void>
   painted = false
+  readyToPresent = false
+  private filled = false
+  private filledAt = 0
+  private deferred = false
   private held: HTMLIFrameElement | undefined
   private cancelLoad: (() => void) | undefined
-  constructor(private container: HTMLElement) { [this.frame, this.loaded] = this.create() }
-  private create(): [HTMLIFrameElement, Promise<void>] {
+  private spare: [HTMLIFrameElement, Promise<void>] | undefined
+  private cancelSpareLoad: (() => void) | undefined
+  private emptyTimer: ReturnType<typeof setTimeout> | undefined
+  private sparseTimer: ReturnType<typeof setTimeout> | undefined
+  private cancelEmpty(): void { clearTimeout(this.emptyTimer); this.emptyTimer = undefined }
+  private cancelSparse(): void { clearTimeout(this.sparseTimer); this.sparseTimer = undefined }
+  constructor(private container: HTMLElement, private onEmptyPaint?: () => void) { [this.frame, this.loaded] = this.create() }
+  private create(spare = false): [HTMLIFrameElement, Promise<void>] {
     const frame = this.container.ownerDocument.createElement('iframe')
     frame.setAttribute('sandbox', 'allow-same-origin')
     frame.setAttribute('referrerpolicy', 'no-referrer')
     frame.setAttribute('title', 'Mirrored kernel browser page')
-    frame.style.cssText = 'width:1280px;height:800px;border:0;display:block;visibility:hidden'
+    frame.style.cssText = 'width:1280px;height:800px;border:0;display:block;visibility:hidden;background:white'
+    if (spare) { frame.inert = true; frame.style.display = 'none' }
     frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirror2SandboxCsp}"></head><body></body></html>`
     const loaded = new Promise<void>(resolve => {
       const finish = () => { frame.removeEventListener('load', finish); resolve() }
-      this.cancelLoad = finish
+      if (spare) this.cancelSpareLoad = finish; else this.cancelLoad = finish
       frame.addEventListener('load', finish, { once: true })
     })
     this.container.append(frame)
     return [frame, loaded]
   }
   async prepare(): Promise<void> {
+    this.cancelEmpty(); this.cancelSparse()
     this.cancelLoad?.()
     if (this.painted) { this.held?.remove(); this.held = this.frame; this.held.inert = true }
     else this.frame.remove() // a second navigation retires only its unpainted prefix
-    this.painted = false
-    ;[this.frame, this.loaded] = this.create()
+    this.painted = false; this.readyToPresent = false; this.filled = false; this.filledAt = 0
+    if (this.spare) {
+      ;[this.frame, this.loaded] = this.spare; this.spare = undefined
+      this.cancelLoad = this.cancelSpareLoad; this.cancelSpareLoad = undefined
+      this.frame.inert = false; this.frame.style.display = 'block'
+    } else [this.frame, this.loaded] = this.create()
     await this.loaded
   }
-  present(): void {
-    if (this.painted || !this.frame.contentDocument || !hasVisibleMirrorContent(this.frame.contentDocument)) return
+  present(complete = false): void {
+    if (!complete) this.cancelEmpty()
+    // Native video owns paint while incomplete continuation records arrive.
+    // Defer visibility/layout until completion can actually release that view.
+    if (this.painted || !this.frame.contentDocument || this.deferred && !complete) return
+    if (!hasVisibleMirrorContent(this.frame.contentDocument)) {
+      // MP-08/MP-10/MP-11: a body can intentionally stay empty. Bound its
+      // paint hold only after the kernel confirms the initial serialization
+      // has drained and the native document has completed.
+      if (complete && this.frame.contentDocument.body && this.emptyTimer === undefined) {
+        const frame = this.frame
+        this.emptyTimer = setTimeout(() => {
+          this.emptyTimer = undefined
+          if (this.frame === frame && frame.contentDocument?.body) { this.reveal(); this.onEmptyPaint?.() }
+        }, 2000)
+      }
+      return
+    }
+    // An unfinished document holds the prior page until it covers some of the viewport;
+    // a sparse page (or a slow continuation) still presents after a bounded wait.
+    if (!complete && mirrorContentCoverage(this.frame.contentDocument) < MEANINGFUL_COVERAGE) {
+      if (this.sparseTimer === undefined) {
+        const frame = this.frame
+        this.sparseTimer = setTimeout(() => {
+          this.sparseTimer = undefined
+          if (this.frame === frame && !this.painted && frame.contentDocument && hasVisibleMirrorContent(frame.contentDocument)) { this.reveal(); this.onEmptyPaint?.() }
+        }, SPARSE_HOLD_MS)
+      }
+      return
+    }
+    this.reveal()
+  }
+  // A held, still-parsing document is ready once content continues below the fold (so the viewport is fully
+  // serialized, in document order) and covers the viewport. Evaluated at most every 250 ms: it lays out a growing tree.
+  viewportFilled(): boolean {
+    if (this.filled) return true
+    const doc = this.frame.contentDocument, view = doc?.defaultView, now = performance.now()
+    if (!this.deferred || !doc || !view || now - this.filledAt < 250) return false
+    this.filledAt = now
+    if ((doc.scrollingElement?.scrollHeight ?? 0) <= view.innerHeight || !hasVisibleMirrorContent(doc) || mirrorContentCoverage(doc) < MEANINGFUL_COVERAGE) return false
+    this.filled = true; this.reveal()
+    return true
+  }
+  get holding(): boolean { return this.deferred }
+  hold(): void { this.deferred = true }
+  release(): void { this.deferred = false; if (this.readyToPresent) this.reveal() }
+  private reveal(): void {
+    this.readyToPresent = true
+    if (this.deferred) return
+    this.cancelEmpty(); this.cancelSparse()
     this.frame.style.visibility = 'visible'; this.painted = true
     this.held?.remove(); this.held = undefined
+    this.spare ??= this.create(true)
+  }
+  private dropSpare(): void {
+    this.cancelSpareLoad?.(); this.cancelSpareLoad = undefined
+    this.spare?.[0].remove(); this.spare = undefined
   }
   preserve(): void {
+    this.dropSpare()
+    this.cancelEmpty(); this.cancelSparse()
     this.cancelLoad?.()
     if (this.held) { this.frame.remove(); this.frame = this.held; this.held = undefined; this.painted = true }
     this.frame.inert = true; this.frame.style.pointerEvents = 'none'
   }
-  close(): void { this.cancelLoad?.(); this.frame.remove(); this.held?.remove(); this.held = undefined }
+  close(): void { this.dropSpare(); this.cancelEmpty(); this.cancelSparse(); this.cancelLoad?.(); this.frame.remove(); this.held?.remove(); this.held = undefined }
 }

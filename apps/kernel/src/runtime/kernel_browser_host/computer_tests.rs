@@ -229,6 +229,18 @@ fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
     }
 }
 
+// r55: a selection note on a busy page waits for the renderer (5 s per CDP call) and must not hold the controller
+// lock meanwhile: it blocked every other request of the user (screenshots, state, credits, input) for that long.
+#[test]
+fn mp10_selection_note_wait_does_not_block_input_or_cross_responses() {
+    for op in ["note_selection", "note_reanchor"] {
+        held_observation_allows_desktop_input(
+            "host.browser",
+            json!({"op":op,"tab_id":"t","generation":1}),
+        );
+    }
+}
+
 // MP-08/MP-10/MP-11: exercise the actual Rust backend lock and reply registry.
 fn held_observation_allows_desktop_input(method: &str, observation: Value) {
     use std::time::Instant;
@@ -245,7 +257,7 @@ while IFS= read -r request; do
  case "$request" in
  *'"method":"health"'*) printf 'health\n' >> "$root/health"; result='{"state":"ready","process_id":'$$'}' ;;
  *'"method":"host.protect"'*) printf 'policy\n' >> "$root/policy"; result='{}' ;;
- *'"op":"screenshot"'*|*'"op":"mirror_next"'*)
+ *'"op":"screenshot"'*|*'"op":"mirror_next"'*|*'"op":"note_selection"'*|*'"op":"note_reanchor"'*)
    printf 'started\n' > "$root/capture"
    (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"frame_sent":false}}\n' "$id") &
    continue ;;

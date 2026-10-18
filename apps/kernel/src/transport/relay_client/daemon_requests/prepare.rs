@@ -208,8 +208,10 @@ mod tests {
                 generation: 1,
                 after_sequence: 3,
                 drift_nodes: vec![],
+                known_sheets: vec![],
                 wait_ms: Some(1500),
                 resend: None,
+                flush: None,
             })
             .browser_input_key()
             .unwrap()
@@ -245,8 +247,10 @@ mod tests {
             generation: 1,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: None,
+            flush: None,
         })
         .browser_input_key()
         .unwrap();

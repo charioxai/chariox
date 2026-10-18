@@ -3,7 +3,8 @@
 // MutationObserver deltas (rrweb's model): the page's own stylesheets and
 // attributes travel instead of a computed-style dump. Page code never sees
 // this object; raw mutation records, URLs and unsanitized values stay here.
-export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()})`;
+import { nativeFontRequirements } from './kernel-browser-mirror2-fonts.mjs';
+export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()})`;
 
 // Pure CSS sanitizer, shared verbatim with the kernel (cross-origin sheets read
 // through CDP). Every url() becomes a kernel resource key or `none`; nothing
@@ -46,7 +47,7 @@ export function sanitizeMirrorCss(text, base, resource) {
 }
 
 // The sanitizer is passed in: the isolated world has no module scope.
-export function installMirror2(sanitizeMirrorCss) {
+export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements) {
   if (globalThis.__charioxMirror2) return true;
   // One independent observer per subscription (viewer): its own ids, mutation
   // journal and listeners, so one viewer's snapshot never resets another's.
@@ -127,7 +128,24 @@ export function installMirror2(sanitizeMirrorCss) {
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
     let waiters = [];
     const wake = () => { const list = waiters; waiters = []; for (const resolve of list) resolve(true); };
-    const observer = new MutationObserver(list => { revision++; if (records.length + list.length > 100000) overflow = true; else for (const record of list) records.push(record); wake(); });
+    // While a snapshot continues, a record about a node it has not reached is moot (the walk reads that node
+    // live) unless a protected box or a style element holds it; consecutive child-list changes of one parent are
+    // one change. A parsing document (WHATWG, 15.8 MB) otherwise overflows and restarts its whole snapshot.
+    const moot = record => {
+      if (!continuation || record.target.parentNode?.localName === 'style') return false;
+      for (let n = record.target, depth = 0; n && depth < DEPTH; depth++) { const id = mirrored(n); if (id) return n !== record.target && !['mask', 'tile'].includes(kindOf.get(id)); n = n.parentNode ?? n.host; }
+      return true;
+    };
+    const observer = new MutationObserver(list => {
+      revision++;
+      for (const record of list) {
+        const last = records.at(-1);
+        if (record.type === 'childList' && last?.type === 'childList' && last.target === record.target || moot(record)) continue;
+        if (records.length >= 100000) { overflow = true; break; }
+        records.push(record);
+      }
+      wake();
+    });
     const idOf = node => { let id = ids.get(node); if (!id) { if (serial >= 999999) throw new Error('mirror2:node_budget'); id = `n${++serial}`; ids.set(node, id); } return id; };
     const mirrored = node => { const id = ids.get(node); return id && nodes.get(id) === node ? id : null; };
     const resource = (raw, base, kind) => {
@@ -142,13 +160,13 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
-    const sheetText = (sheet, base, depth = 0, clean = null) => {
+    const sheetText = (sheet, base, depth = 0, clean = null, keep = null) => {
       let out = '', chunk = '';
       const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
       for (const rule of sheet.cssRules) {
         if (rule.type === 3) { // @import: inline the imported sheet when readable, under its layer and conditions.
           if (depth < 8 && rule.styleSheet) {
-            let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean); } catch { inner = ''; }
+            let inner = ''; try { inner = sheetText(rule.styleSheet, rule.styleSheet.href ?? base, depth + 1, clean, keep); } catch { inner = ''; }
             const media = rule.media?.mediaText, layer = rule.layerName, supports = rule.supportsText;
             if (media) inner = `@media ${media}{${inner}}`;
             if (supports) inner = `@supports (${supports}){${inner}}`;
@@ -157,10 +175,60 @@ export function installMirror2(sanitizeMirrorCss) {
           }
           continue;
         }
-        chunk += rule.cssText + '\n';
+        chunk += keep ? pruned(rule, keep) : rule.cssText + '\n';
       }
       flush();
       return out;
+    };
+    // GATE-bytes: a first paint carries only the style rules some node under the sheet's root matches now
+    // (state pseudo-classes and pseudo-elements ignored; an unparseable selector is kept); every other rule
+    // (@font-face, @keyframes, ...) stays. The kernel asks for the full text once the page is quiet.
+    const DYNAMIC = /::?(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button|-webkit-[\w-]+|-moz-[\w-]+)|:(?:hover|active|focus-visible|focus-within|focus|visited|target)(?![\w-])/g;
+    // Top-level pieces of a selector, split where `at` says (commas, or combinators for the rightmost compound).
+    const split = (text, at) => { const out = []; let depth = 0, start = 0; for (let i = 0; i < text.length; i++) { const c = text[i]; if (c === '\\') i++; else if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && at(c)) { out.push(text.slice(start, i)); start = i + 1; } } out.push(text.slice(start)); return out; };
+    // The document's classes, ids and tags (per root, until the next mutation) reject most unused selectors
+    // without a query: a member whose rightmost compound names one the document lacks cannot match.
+    let usedIndex = null;
+    const usedBy = root => {
+      if (usedIndex?.root !== root || usedIndex.revision !== revision) {
+        const classes = new Set(), ids = new Set(), tags = new Set();
+        for (const element of root.querySelectorAll('*')) { tags.add(element.localName.toLowerCase()); if (element.id) ids.add(element.id); for (const name of element.classList) classes.add(name); }
+        usedIndex = { root, revision, classes, ids, tags, cache: new Map() };
+      }
+      const { classes, ids, tags, cache } = usedIndex;
+      const possible = member => {
+        const last = split(member.trim(), c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
+        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return true;
+        let flat = '', depth = 0; for (const c of last) { if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') { depth--; continue; } if (!depth) flat += c; }
+        const name = token => token.replace(/\\(.)/g, '$1'), tag = /^[a-zA-Z][\w-]*/.exec(flat)?.[0];
+        if (tag && !tags.has(tag.toLowerCase())) return false;
+        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!classes.has(name(token))) return false;
+        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!ids.has(name(token))) return false;
+        return true;
+      };
+      const matches = selector => {
+        const plain = selector.replace(DYNAMIC, '');
+        if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
+        if (!split(plain, c => c === ',').some(possible)) return false;
+        try { return root.querySelector(plain) !== null; } catch { return true; }
+      };
+      return selector => { let used = cache.get(selector); if (used === undefined) cache.set(selector, used = matches(selector)); return used; };
+    };
+    const pruned = (rule, keep) => {
+      if (rule instanceof CSSStyleRule) return keep(rule.selectorText) ? rule.cssText + '\n' : '';
+      if (!(rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule || rule instanceof CSSContainerRule || rule instanceof CSSLayerBlockRule)) return rule.cssText + '\n';
+      let inner = ''; for (const child of rule.cssRules) inner += pruned(child, keep);
+      // A layer block keeps its place in the layer order.
+      return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
+    };
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map();
+    const firstPaintCss = (node, sheet, base, text) => {
+      const root = node.getRootNode?.();
+      // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
+      // root's :host rules cannot be checked by a query.
+      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
+      const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
+      return used.length < text.length ? used : text;
     };
     const css = (sheet, base) => sheetText(sheet, base, 0, (text, at) => sanitizeMirrorCss(text, at, resource));
     const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
@@ -183,7 +251,7 @@ export function installMirror2(sanitizeMirrorCss) {
     const timed = new Set();
     const timing = new PerformanceObserver(list => { for (const entry of list.getEntries()) { timed.delete(entry.name); timed.add(entry.name); if (timed.size > 20000) timed.delete(timed.values().next().value); } });
     try { timing.observe({ type: 'resource', buffered: true }); } catch {}
-    const dispose = () => { continuation?.return(); continuation = null; progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
+    const dispose = () => { continuation?.return(); continuation = null; open.clear(); deferred.clear(); progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
     const changedForm = control => { dirty.form.add(control); if (control.multiple) for (const option of control.options ?? []) dirty.form.add(option); };
     const watch = (root, rootId) => {
       roots.set(rootId, root);
@@ -191,7 +259,9 @@ export function installMirror2(sanitizeMirrorCss) {
       // Shadow roots too: scroll, change, reset and load events do not cross their boundary.
       if (!listened.has(root)) {
         listened.add(root);
+        if (root.nodeType === 9) for (const type of ['loading', 'loadingdone', 'loadingerror']) root.fonts.addEventListener(type, wake, { signal: listening.signal });
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
+        if (root.nodeType === 9) listen('readystatechange', wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
         if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
@@ -211,12 +281,14 @@ export function installMirror2(sanitizeMirrorCss) {
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
       }
     };
-    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false;
+    let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false, yielded = false;
+    // Nodes the continuation is still walking, and those whose children changed meanwhile: diffed once it leaves them.
+    const open = new Set(), deferred = new Set();
     const spend = (bytes) => { if (bytes > 1024 * 1024) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
-      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
+      nodes.delete(id); kids.delete(id); parentOf.delete(id); kindOf.delete(id); resOf.delete(id); formNodes.delete(id); controlShapes.delete(id); imageNodes.delete(id); stateNodes.delete(id); sentStates.delete(id); shapes.delete(id); styleNodes.delete(id); roots.delete(id); reportedRequirements.delete(id); pendingHosts.delete(id); if (node) closedTodo.delete(node); foreign.delete(id); opaque.delete(id); fragments.delete(id);
       if (node) ids.delete(node);
     };
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
@@ -246,10 +318,15 @@ export function installMirror2(sanitizeMirrorCss) {
     const attributes = (node, base) => {
       const attrs = {}, html = node.namespaceURI === HTML;
       for (const attribute of node.attributes) {
-        const name = attribute.name, lower = name.toLowerCase(), value = attribute.value;
+        // GATE-bytes: a tooltip shows far less than 1 KB (GitHub rows carry 64 KiB commit-message titles).
+        const name = attribute.name, lower = name.toLowerCase(), value = lower === 'title' ? attribute.value.slice(0, 1024) : attribute.value;
         if (!/^[a-zA-Z_:][-a-zA-Z0-9_:.]*$/.test(name) || name.length > 256 || value.length > 65536) continue;
         if (lower === 'style') { const style = inlineStyle(node, base); if (style) attrs.style = style; continue; }
-        if (denied(lower) || !RENDERED.has(lower) && !lower.startsWith('aria-') && value.length > 1024) continue;
+        // MP-08/MP-11: SVG geometry is rendered content, not arbitrary metadata.
+        // Keep the common 64 KiB bound above; HTML and unknown attributes still
+        // use the smaller privacy cap.
+        const geometry = node.namespaceURI === SVG && (lower === 'd' || lower === 'points');
+        if (denied(lower) || !RENDERED.has(lower) && !geometry && !lower.startsWith('aria-') && value.length > 1024) continue;
         // Password and hidden values never leave (form state carries dots / nothing).
         if (lower === 'value' && html && node.localName === 'input' && (node.type === 'password' || node.type === 'hidden')) continue;
         // Presentation attributes may reference paint servers by fragment only.
@@ -336,6 +413,25 @@ export function installMirror2(sanitizeMirrorCss) {
         try { record.css = css(sheet, sheet.href ?? node.baseURI); } catch { if (sheet.href) pendingSheets.push({ id: record.id, url: sheet.href }); }
       }
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
+      if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }
+    };
+    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
+    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
+    const childrenOf = function* (node, id, kind, depth) {
+      const seen = new Set();
+      for (let more = true; more;) {
+        more = false;
+        for (const child of [...node.childNodes]) {
+          if (nodes.get(id) !== node || kindOf.get(id) !== kind) return;
+          if (seen.has(child)) continue;
+          seen.add(child); more = true;
+          if (child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
+          // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
+          const existing = mirrored(child);
+          if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
+          yield* serializeTree(child, id, depth + 1);
+        }
+      }
     };
     // Pre-order records; a record's children are the following records naming it.
     const serializeTree = function* (node, parent, depth = 0) {
@@ -357,7 +453,8 @@ export function installMirror2(sanitizeMirrorCss) {
         spend(32); remember(record, node); yield record;
         if (nodes.get(id) !== node) return null;
         watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        for (const child of node.childNodes) { if (type === 9 && child.nodeType !== 1) continue; yield* serializeTree(child, id, depth + 1); }
+        open.add(id);
+        try { yield* childrenOf(node, id, record.kind, depth); } finally { open.delete(id); }
         return id;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
@@ -382,7 +479,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
         record.kind = 'frame'; record.tag = 'iframe';
         spend(64); remember(record, node); yield record;
-        yield* serializeTree(nested, id, depth + 1);
+        if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
         return id;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
@@ -395,31 +492,36 @@ export function installMirror2(sanitizeMirrorCss) {
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       yield record;
       if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      for (const child of node.childNodes) { if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) break; yield* serializeTree(child, id, depth + 1); }
-      if (node.shadowRoot) yield* serializeTree(node.shadowRoot, id, depth + 1);
+      // Mutations meanwhile are diffed after this node closes (drain).
+      open.add(id);
+      try {
+        yield* childrenOf(node, id, record.kind, depth);
+        if (node.shadowRoot && nodes.get(id) === node && !mirrored(node.shadowRoot)) yield* serializeTree(node.shadowRoot, id, depth + 1);
+      } finally { open.delete(id); }
       return id;
     };
     const serialize = (node, parent, out, depth = 0) => {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
       return mirrored(node) ?? null;
     };
-    // Continuations run only when a viewer gives a credit, never in a background
-    // loop. Yield to Chrome/other Tabs after 8 ms, 4096 visits or 128 KiB.
-    // The head's style sheets precede the viewport: until the body is serialized (bounded by HEAD_BYTES)
-    // they do not count, so a site's large style sheets cannot leave a reset with nothing visible.
+    // MP-08/MP-10: ordinary documents stay atomic up to 8 MiB of records. A
+    // head/header prefix is not a usable navigation. Large documents keep the
+    // bounded viewport prefix and viewer-driven continuations. The 532 transport
+    // interleaves every reply in 16 KiB frames; atomic here never means one wire write.
     const chunk = (visits = 4096, minimum = 256) => {
+      const atomic = !progressive, limit = atomic ? 8 * 1024 * 1024 : 128 * 1024;
       const out = [], end = performance.now() + 8; let bytes = budget.bytes;
-      for (let i = 0; continuation && i < (progressive ? visits : 40000); i++) {
+      for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
-        if (budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
-        // Keep ordinary small pages atomic. The backstop also catches a huge
-        // open shadow tree absent from the document's native element count.
-        // A medium page can have few elements and megabytes of text/attributes.
-        // It needs the same continuation bound as a large element tree.
-        if (budget.nodes >= 20000 || budget.bytes - bytes >= 128 * 1024) progressive = true;
-        if (progressive && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= 128 * 1024) break;
+        // Carry bounded head CSS with the first large-document viewport prefix
+        // (browserux 91599e472); ordinary resets count it inside their 8 MiB cap.
+        if (!atomic && budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
+        // Open shadow trees are absent from the native element count. The node
+        // backstop and byte cap switch those documents to bounded continuation too.
+        if (budget.nodes >= 20000 || budget.bytes - bytes >= limit) progressive = true;
+        if (!atomic && i >= minimum - 1 && performance.now() >= end || budget.bytes - bytes >= limit || atomic && budget.nodes >= 20000) break;
       }
       return out;
     };
@@ -458,12 +560,38 @@ export function installMirror2(sanitizeMirrorCss) {
     };
     // MP-08/MP-10: the focus/selection state the last drain reported. A focus or selection event that leaves it
     // unchanged (focus emulation restoring the same element) does not end the long poll before the input it precedes.
-    let reported = '';
+    // MP-08/MP-10/MP-11: certify only descriptors for which every native
+    // face failed. An unloaded/loading/loaded duplicate prevents certification.
+    const fontDescriptor = font => JSON.stringify([font.family.replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase(), font.style.trim().replace(/\s+/g, ' '), font.weight === 'normal' ? '400' : font.weight.trim().replace(/\s+/g, ' '), font.stretch === 'normal' ? '100%' : font.stretch.trim(), font.unicodeRange.replace(/\s+/g, '').toUpperCase()]);
+    const fontFailures = () => {
+      if (document.fonts.size > 4096) return [];
+      const groups = new Map();
+      for (const font of document.fonts) { const key = fontDescriptor(font); if (key.length > 4096) continue; groups.set(key, (groups.get(key) ?? true) && font.status === 'error'); }
+      return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
+    };
+    let reportedFonts = '[]';
+    const reportedRequirements = new Map();
+    const fontOps = (ops, force = false) => {
+      for (const [id, root] of roots) {
+        if (root.nodeType !== 9) continue;
+        const required = fontRequirements(root, fontDescriptor, sha256), signature = JSON.stringify(required);
+        if (force || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); ops.push({ op: 'fonts', id, required }); }
+      }
+      return ops;
+    };
+    const fontsChanged = () => [...roots].some(([id, root]) => root.nodeType === 9 && reportedRequirements.get(id) !== JSON.stringify(fontRequirements(root, fontDescriptor, sha256)));
+    let reported = '', reportedComplete = false;
+    const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
-      return { scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0 };
+      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
+      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
-    const take = () => { const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets }; };
+    // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
+    const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
+    const take = () => {
+      const resources = newResources, sheets = pendingSheets; newResources = []; pendingSheets = []; return { resources, sheets };
+    };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = () => {
@@ -472,17 +600,17 @@ export function installMirror2(sanitizeMirrorCss) {
       // The producer fences the old epoch before calling snapshot. Reclaim the
       // local id range without walking the previous (possibly huge) document.
       ids = new WeakMap(); serial = 0;
-      nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
-      pendingSheets = []; hostIterator = null; budget = { nodes: 0, bytes: 0 };
+      reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
+      pendingSheets = []; fullSheets.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      continuation?.return(); continuation = serializeTree(document, null);
+      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
       progressive = document.getElementsByTagName('*').length > 10000;
       // A slow task must not publish only half a detailed viewport header.
       // The first prefix has a fixed 1024-visit ceiling; later credits yield
       // by time after 256 visits, with the same byte/document bounds.
       const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
-      return { root, nodes: out, ...take(), ...header() };
+      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header() };
     };
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
@@ -539,7 +667,7 @@ export function installMirror2(sanitizeMirrorCss) {
         if (childId) list.push(childId);
       }
       if (node.nodeType === 1 && node.shadowRoot) { const shadow = mirrored(node.shadowRoot) ?? serialize(node.shadowRoot, id, out, 1); if (shadow) list.push(shadow); pendingHosts.delete(id); }
-      for (const old of previous) if (!list.includes(old) && parentOf.get(old) === id) forget(old);
+      const kept = new Set(list); for (const old of previous) if (!kept.has(old) && parentOf.get(old) === id) forget(old);
       kids.set(id, list);
       // A child list that ends as it was (a node added and removed) sends nothing.
       if (!out.length && list.length === previous.length && list.every((child, i) => child === previous[i])) return;
@@ -549,10 +677,6 @@ export function installMirror2(sanitizeMirrorCss) {
       if (!snapshotted) return { resync: 'evicted' }; // a new instance for a running subscription
       if (overflow) return { resync: 'overflow' };
       if (!progressive && document.getElementsByTagName('*').length > 10000) return { resync: 'growing' };
-      // A snapshot spanning tasks must not publish a subtree captured before a
-      // structural mutation under another parent/protection kind. Restart its bounded
-      // prefix; the viewer retains its last good paint until the reset arrives.
-      if (continuation && records.some(record => record.type === 'childList' && record.target.localName !== 'style')) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       const urgent = records.length > 0 || Object.values(dirty).some(set => set.size > 0);
       if (!continuation) budget = { nodes: nodes.size, bytes: 0 };
       const batch = records; records = [];
@@ -602,7 +726,6 @@ export function installMirror2(sanitizeMirrorCss) {
           ops.push({ op: 'attr', id, name, value: Object.hasOwn(attrs, name) ? attrs[name] : null });
         }
       }
-      if (continuation && (dirty.replace.size || dirty.frames.size || dirty.children.size)) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
       for (const node of dirty.replace) replaceNode(node);
       for (const node of dirty.frames) replaceNode(node);
       for (const node of dirty.text) {
@@ -614,7 +737,16 @@ export function installMirror2(sanitizeMirrorCss) {
       for (const [id, host] of pendingHosts) if (host.shadowRoot) dirty.children.add(host);
       const hostNow = performance.now();
       if (hostNow - lastHostCheck > 2000 && nodes.size) { lastHostCheck = hostNow; for (let i = 0; i < Math.min(5000, nodes.size); i++) { hostIterator ??= nodes.keys(); let item = hostIterator.next(); if (item.done) { hostIterator = nodes.keys(); item = hostIterator.next(); } const id = item.value, node = nodes.get(id); if (node && kindOf.get(id) === 'element') { if (node.shadowRoot && !mirrored(node.shadowRoot)) dirty.children.add(node); else if (pendingHosts.has(id) && (checkedClosed.get(node) !== node.matches(':defined') || node.matches(':defined') && hostNow - lastClosedCheck >= 2000)) closedTodo.add(node); } } }
-      if (continuation && dirty.children.size) { continuation.return(); continuation = null; return { resync: 'mutation' }; }
+      // A snapshot spanning tasks is never restarted by a mutation (MP-10, BROWSER-UX-09): the
+      // continuation reads each node when it reaches it. Children of nodes it already left are diffed
+      // now; those of a node it is still walking wait until it closes, but drop forgotten children now.
+      for (const node of deferred) { const id = mirrored(node); if (!id) deferred.delete(node); else if (!open.has(id)) { deferred.delete(node); dirty.children.add(node); } }
+      for (const node of dirty.children) {
+        const id = mirrored(node); if (!id || !open.has(id)) continue;
+        dirty.children.delete(node); deferred.add(node);
+        const list = kids.get(id), kept = list.filter(child => nodes.has(child));
+        if (kept.length !== list.length) { kids.set(id, kept); ops.push({ op: 'children', id, children: [...kept], nodes: [] }); }
+      }
       for (const node of dirty.children) {
         if (!node.isConnected) continue;
         const id = mirrored(node);
@@ -666,8 +798,9 @@ export function installMirror2(sanitizeMirrorCss) {
       }
       for (const [id, last] of fragments) { const doc = nodes.get(id), now = doc ? fragmentOf(doc) : last; if (now !== last) { fragments.set(id, now); ops.push({ op: 'fragment', id, fragment: now }); } }
       for (const key of Object.keys(dirty)) dirty[key].clear();
-      if (continuation && !urgent && !ops.length) ops.push(...continuationOps(chunk()));
-      return { ops, changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
+      // Echoes and page changes go alone for one credit; the continuation then resumes even on a busy page.
+      if (continuation && (yielded || !urgent && !ops.length)) { yielded = false; ops.push(...continuationOps(chunk())); } else if (continuation) yielded = true;
+      return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
@@ -927,7 +1060,7 @@ export function installMirror2(sanitizeMirrorCss) {
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => continuation !== null || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -939,6 +1072,14 @@ export function installMirror2(sanitizeMirrorCss) {
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
     const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
+    // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
+    const usedCss = (id, text) => {
+      const root = nodes.get(id)?.getRootNode?.();
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
+      const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
+      return out;
+    };
     // URLs this document actually fetched (Resource Timing): the kernel reads
     // only those bytes, never a URL that a stylesheet merely mentions.
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
@@ -1000,6 +1141,6 @@ export function installMirror2(sanitizeMirrorCss) {
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

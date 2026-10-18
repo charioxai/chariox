@@ -201,6 +201,7 @@ impl KernelBrowserHost {
                 let host = KernelBrowserHost {
                     inner,
                     root: root.clone(),
+                    authority_epoch: Arc::default(),
                 };
                 if host.inner.lock().unwrap_or_else(|e| e.into_inner()).stopped {
                     return;

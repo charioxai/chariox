@@ -469,13 +469,13 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
-// MP-08/MP-10 (allocated 548/156): `state_wait` parks a Browser state read until the
+// MP-08/MP-10 (allocated 556/164): `state_wait` parks a Browser state read until the
 // state differs from the `revision` the caller holds; the reply is the state plus a new `revision`.
 #[test]
-fn mp08_mp10_browser_state_wait_548_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 548);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 156);
-    let bytes = include_bytes!("browser-state-wait-548.json");
+fn mp08_mp10_browser_state_wait_556_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 556);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 164);
+    let bytes = include_bytes!("browser-state-wait-556.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
         "4b72ea2ed7ac115e2de252bbf36e612b30016df3dd97bb6b48deef2b1c8eec73"
@@ -531,6 +531,21 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     );
 }
 
+// MP-08/MP-10/MP-11: opaque mirror bodies are carried by the ordinary kernel response.
+#[test]
+fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
+    let bytes = include_bytes!("browser-mirror2-completion-550.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "db0e2aff3d85eb74cb1b2503de71872a7eaf38eeada4d0afb6b0011518cfcc33");
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
+    for name in ["completion_delta", "inherited_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": value[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
 // MP-08/MP-10/MP-11: default page capture uses the existing region lease shape.
 #[test]
 fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
@@ -547,4 +562,20 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
     let ack: LocalDaemonResponse = serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(ack).unwrap(), snapshot["ack_response"]);
+}
+
+// MP-08/MP-10/MP-11: allocated 552/160 adds the Browser reply's `parked_input` count.
+#[test]
+fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 552);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 160);
+    let bytes = include_bytes!("browser-parked-input-552.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "e52a88111dc29c63dbddf377c8a797b264bca205ff89176d596abebf5e99906e");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
 }

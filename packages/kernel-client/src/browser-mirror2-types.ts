@@ -22,11 +22,17 @@ export type Mirror2Op =
   | { op: 'res'; id: string; res: string | null }
   | { op: 'state'; id: string; state: Mirror2State }
   | { op: 'fragment'; id: string; fragment: string | null }
+  /** Unreleased539: native loaded-font descriptors for this document; null while pending. */
+  | { op: 'fonts'; id: string; required: string[] | null }
 // A slice carries `offset`/`total` (base64 characters); slices of a key arrive in order.
 export type Mirror2Resource = { key: string; resource_id: string; mime_type: string; data_base64: string; offset?: number; total?: number }
 export type Mirror2Tile = { node_id: string; x: number; y: number; width: number; height: number; data_base64: string }
 export type Mirror2Selection = { anchor_id: string; anchor_offset: number; focus_id: string; focus_offset: number }
 export type Mirror2Packet = {
+  /** Initial serialization drained and native main document complete. */
+  snapshot_complete?: boolean
+  /** SHA-256 descriptors whose matching native faces have all failed. Unreleased539 extension. */
+  font_failures?: string[]
   wire: 2; subscription_id: string; tab_id: string; generation: number; document_id: string
   sequence: number; base_sequence: number | null; reset: boolean; fallback?: string
   root?: string; nodes?: Mirror2Record[]; ops?: Mirror2Op[]; sheets?: Record<string, string>

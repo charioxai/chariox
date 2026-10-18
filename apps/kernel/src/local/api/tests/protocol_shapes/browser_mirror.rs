@@ -28,36 +28,46 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             device_scale_factor: 2,
             wire: None,
+            navigation_preview: None,
+            font_requirements: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec!["n1".into()],
+            known_sheets: vec![],
             wait_ms: None,
             resend: None,
+            flush: None,
         },
         C::MirrorSubscribe {
             tab_id: "t".into(),
             generation: 2,
             device_scale_factor: 2,
             wire: Some(2),
+            navigation_preview: None,
+            font_requirements: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: None,
+            flush: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
+            flush: None,
         },
         C::MirrorClose {
             subscription_id: "s".into(),
@@ -157,8 +167,10 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             generation: 2,
             after_sequence: 3,
             drift_nodes: vec![],
+            known_sheets: vec![],
             wait_ms: Some(1500),
             resend: Some(true),
+            flush: None,
         },
     });
     assert!(
@@ -179,5 +191,97 @@ fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {
         serde_json::json!({"KernelBrowser":{"command":{"op":"mirror_next","subscription_id":"s","generation":1,"after_sequence":1,"drift_nodes":[],"resend":"1"}}}),
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(value).is_err());
+    }
+}
+
+#[test]
+fn browser_mirror2_sheet_cache_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (known sheets).
+    let snapshot = include_str!("browser-mirror2-sheet-cache-550.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
+        "ce5ca5b3be62a51eabb9e61b14e469b42d4b465d279183be08da6a1d76eb371f"
+    );
+    let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["command"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["command"]);
+    // The pre-extension shape stays accepted and serializes without a dictionary.
+    let mut legacy = fixture["command"].clone();
+    legacy["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("known_sheets");
+    let request: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), legacy);
+}
+
+#[test]
+fn browser_mirror2_navigation_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (preview + causal drain).
+    let snapshot = include_str!("browser-mirror2-navigation-550.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(snapshot.as_bytes())),
+        "d60d4494662ee29a1f7c52cb34aab7437da27c4d89042cb749d52fd1a45f88e8"
+    );
+    let fixture: serde_json::Value = serde_json::from_str(snapshot).unwrap();
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION as u64 >= fixture["protocol_version"].as_u64().unwrap());
+    for value in fixture["commands"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    let preview = serde_json::json!({"KernelBrowser":{"result":fixture["preview"]}});
+    let preview: LocalDaemonResponse = serde_json::from_value(preview).unwrap();
+    assert_eq!(
+        serde_json::to_value(preview).unwrap()["KernelBrowser"]["result"],
+        fixture["preview"]
+    );
+}
+
+#[test]
+fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font failures).
+    let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "4d9ecefd7196be6adc6f1b7a12b0798bb611ee29e0366f3e942dd9a52a0dfb3c"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    for name in ["reset_header", "inherited_delta", "cleared_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font requirements).
+    let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "9ad57a8d3155c7ec5777301b1c770dd20079e41d761e86a270a858642a73cc98"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["subscribed", "reset", "ready_delta", "cleared_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
     }
 }

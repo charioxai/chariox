@@ -25,7 +25,7 @@ test('MP-08 slice image native accessibility module graph imports outside checko
   const dockerfile=await readFile(new URL('Dockerfile',import.meta.url),'utf8');
   const names=new Set([...dockerfile.matchAll(/apps\/kernel\/slice-linux-docker\/docker\/([A-Za-z0-9._-]+\.(?:mjs|py))/g)].map(m=>m[1]));
   for(const name of names)await writeFile(path.join(root,name),await readFile(new URL(name,import.meta.url)));
-  execFileSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify(new URL('file://'+root+'/native-accessibility.mjs').href)})`],{timeout:10000});
+  execFileSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify(new URL('file://'+root+'/native-accessibility.mjs').href)}); await import(${JSON.stringify(new URL('file://'+root+'/kernel-browser-host.mjs').href)})`],{timeout:10000});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

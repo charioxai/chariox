@@ -629,6 +629,36 @@ mod tests {
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
     }
+    // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
+    // must not hold one of the two reply slots until its WAN receipt returns
+    // (appsfix r14: packets 2-3 of one click arrived one RTT apart).
+    #[tokio::test]
+    async fn mp08_mp10_small_replies_do_not_wait_for_receipts() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(32);
+        let (_ack_tx, ack_rx) = mpsc::channel(32);
+        let (_ct, cr) = mpsc::channel(8);
+        for id in 1..=4 {
+            let reply = serde_json::json!({"kind": "client_response", "request_id": format!("m{id}"), "payload": "x".repeat(600)});
+            tx.send(Message::Text(reply.to_string().into()))
+                .await
+                .unwrap();
+        }
+        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut ids = Vec::new();
+        while let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(150), client.next()).await
+        {
+            if let (Some(complete), _) = receiver.receive(&text).unwrap() {
+                let value: serde_json::Value = serde_json::from_str(&complete).unwrap();
+                ids.push(value["request_id"].as_str().unwrap().to_string());
+            }
+        }
+        task.abort();
+        let _ = task.await;
+        assert_eq!(ids, ["m1", "m2", "m3", "m4"], "replies stalled on receipts");
+    }
     #[test]
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();

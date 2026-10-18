@@ -249,6 +249,8 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     device_scale_factor: 1,
                     wire: None,
+                    navigation_preview: None,
+                    font_requirements: None,
                 },
             )
             .await,
@@ -262,8 +264,10 @@ async fn mdnotes_two_local_connections_child() {
                 generation,
                 after_sequence: 0,
                 drift_nodes: vec![],
+                known_sheets: vec![],
                 wait_ms: None,
                 resend: None,
+                flush: None,
             },
         )
         .await;
@@ -283,8 +287,10 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 0,
                     drift_nodes: vec![],
+                    known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,
@@ -310,8 +316,10 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 1,
                     drift_nodes: vec![],
+                    known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,
@@ -347,6 +355,8 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     device_scale_factor: 1,
                     wire: None,
+                    navigation_preview: None,
+                    font_requirements: None,
                 },
             )
             .await,
@@ -364,8 +374,10 @@ async fn mdnotes_two_local_connections_child() {
                     generation,
                     after_sequence: 0,
                     drift_nodes: vec![],
+                    known_sheets: vec![],
                     wait_ms: None,
                     resend: None,
+                    flush: None,
                 },
             )
             .await,
