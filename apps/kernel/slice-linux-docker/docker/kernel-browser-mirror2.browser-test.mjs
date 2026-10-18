@@ -968,6 +968,15 @@ test("MP-10: review #941@36a395b05-6 CSSOM media-list edits of style and no-CORS
     assert(await media(elements(snapshot).filter(([, tag]) => tag === "style")[0][0], null), "MP-10: clearing the media list reaches the viewer");
   }, { "/x.css": { type: "text/css", body: "#r{color:rgb(8, 8, 8)}" } }));
 
+// r61 DuckDuckGo results: result videos sit at opacity 0 (shown on hover) with no data yet. An invisible element paints
+// nothing, so it must never hand the page to video (it did, "region_transform", whenever the carousel scrolled into view).
+test("MP-10: a fully transparent opaque element never hands the page to video", () => mirrored(
+  '<p>results</p><div style="height:20px"></div><div id="row" style="opacity:1"><video id="v" preload="none" style="opacity:0;width:189px;height:122px" src="http://localhost:PORT/none.mp4"></video><div style="opacity:0"><canvas id="c" width="80" height="40"></canvas></div><video id="h" preload="none" style="visibility:hidden;width:100px;height:60px"></video></div><div style="height:2000px"></div>', async ({ next }) => {
+    const until = Date.now() + 4000; let packet = await next();
+    assert.equal(packet.fallback, undefined);
+    while (Date.now() < until) { packet = await next(500); assert.equal(packet.fallback, undefined, "MP-10: invisible media never hands the page to video"); }
+  }, {}));
+
 // r61 DuckDuckGo: a fade or slide distorts a region only while it runs. The page stays mirrored through a short
 // distortion; only a lasting one hands it to video, and the cause is named.
 test("MP-10: a transient distortion of a screenshot-crop region keeps the page mirrored; a lasting one names its cause", () => mirrored(

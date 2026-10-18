@@ -809,7 +809,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
         let [x, y, width, height] = box(node);
         for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
     };
@@ -851,6 +851,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // ancestor or a same-origin frame owner), which the mirrored DOM applies again: such regions are flagged (the service then needs the
     // element's own pixels, else labelled video).
     const linear = transform => { if (transform === 'none') return false; const m = new DOMMatrixReadOnly(transform); return !(m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1); };
+    // A fully transparent or hidden element paints nothing: there is no pixel to capture, and the mirrored element
+    // keeps its own opacity/visibility (DuckDuckGo result videos sit at opacity 0 until hovered).
+    const invisible = node => {
+      if (node.nodeType !== 1 || getComputedStyle(node).visibility !== 'visible') return true;
+      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host ?? at.ownerDocument?.defaultView?.frameElement) if (at.nodeType === 1 && Number(getComputedStyle(at).opacity) === 0) return true;
+      return false;
+    };
     // The cause (a fixed token, never page text) or false: diagnostics and the service's settle window.
     const distorted = node => {
       const [, , width, height] = box(node), [layoutWidth, layoutHeight] = layoutSize(node);
