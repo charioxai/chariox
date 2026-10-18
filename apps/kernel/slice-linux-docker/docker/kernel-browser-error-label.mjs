@@ -95,13 +95,14 @@ export function hostErrorLabel(error) {
  const name=names.has(error?.name)?error.name:'Error';
  const known=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].filter(m=>files.has(m[1])):[];
  // A timeout fires from a timer inside the CDP client: the waiting caller is the first position after it.
- const frame=(error?.code==='browser_cdp_timeout'?known.find(m=>m[1]!=='browser-controller-cdp.mjs'):null)??known[0];
+ const callers=error?.code==='browser_cdp_timeout'?known.filter(m=>m[1]!=='browser-controller-cdp.mjs').slice(0,3):[];
+ const frames=callers.length?callers:known.slice(0,1),frame=frames[0];
  const description=typeof error?.message==='string'?error.message:'';
  const command=error?.code==='browser_cdp_command_failed'?/^([A-Za-z.]+): (.*)$/.exec(description):null;
  const method=error?.code==='browser_cdp_timeout'?/^browser CDP method ([A-Za-z.]+) timed out after [0-9]+ms$/.exec(description)?.[1]:command?.[1];
  const desktopExit=/^MP-08: desktop failed to become ready \((bwrap|Xvfb|dbus-daemon|openbox), exit ([0-9]{1,3}|signal)\)$/.exec(description);
  const navigation=error?.code==='browser_navigation_failed'?/^browser navigation failed: net::([A-Z_]+)$/.exec(description)?.[1]:null;
- return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(desktopExit?' desktop_'+desktopExit[1].toLowerCase().replaceAll('-','_')+'_failed_to_start':'')+(codes.has(error?.code)&&/^note_observer_/.test(error.code)&&Number.isSafeInteger(error?.noteObserverLine)&&error.noteObserverLine>0&&error.noteObserverLine<=256?' note_observer:'+error.noteObserverLine:'')+(nativeStages.has(error?.nativeStage)?' native_worker_'+error.nativeStage:'')+(fixedReasons.has(error?.message)?' '+fixedReasons.get(error.message):'')+(frame?' '+frame[1]+':'+frame[2]+':'+frame[3]:'');
+ return 'host_error '+name+(codes.has(error?.code)?' '+error.code:'')+(method&&methods.has(method)?' '+method:'')+(command&&cdpReasons.has(command[2])?' '+cdpReasons.get(command[2]):'')+(navigation&&navigationReasons.has(navigation)?' net::'+navigation:'')+(observerReasons.has(error?.mirrorReason)?' '+error.mirrorReason:'')+(desktopExit?' desktop_'+desktopExit[1].toLowerCase().replaceAll('-','_')+'_failed_to_start':'')+(codes.has(error?.code)&&/^note_observer_/.test(error.code)&&Number.isSafeInteger(error?.noteObserverLine)&&error.noteObserverLine>0&&error.noteObserverLine<=256?' note_observer:'+error.noteObserverLine:'')+(nativeStages.has(error?.nativeStage)?' native_worker_'+error.nativeStage:'')+(fixedReasons.has(error?.message)?' '+fixedReasons.get(error.message):'')+(frame?' '+frames.map(m=>m[1]+':'+m[2]+':'+m[3]).join(' < '):'');
 }
 
 // MP-08/MP-10/MP-11: shared public reply and log classifier. Exception messages,
