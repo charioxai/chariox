@@ -436,15 +436,19 @@ export class KernelBrowserHost {
     const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
       ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
       : tab.tab_id === intent.tab_id);
+    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
     if (restored) {
-      await this.retireNativeForeground(restored.target_id);
-      const connection = await this.browser.ensureConnection();
       if (this.pendingActive !== intent) return this.reconcile();
-      await connection.send('Target.activateTarget', {targetId:restored.target_id});
+      if (nativeActive !== restored.target_id) {
+        await this.retireNativeForeground(restored.target_id);
+        const connection = await this.browser.ensureConnection();
+        if (this.pendingActive !== intent) return this.reconcile();
+        await connection.send('Target.activateTarget', {targetId:restored.target_id});
+      }
       if (this.pendingActive !== intent) return this.reconcile();
       this.pendingActive = null;
     }
-    this.activeTarget = restored?.target_id ?? await this.tabGroups?.active?.().catch(() => null) ?? null;
+    this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
@@ -801,8 +805,10 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: CDP can type into a background window. Its
         // admitted human selection supersedes older native restore intent.
         const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
-        const selected = intent ? (intent.app_origin ? intent.app_origin === origin : intent.tab_id === tab.tab_id) : this.activeTarget === tab.target_id;
-        if (!agent && !command._agent_input && !command.focused_agent && !selected) {
+        // The cached target can still match while a late native window fold
+        // changed Chrome's selection. Reconcile checks the live native target
+        // before activating, so ordinary keys do not refocus an active tab.
+        if (!agent && !command._agent_input && !command.focused_agent) {
           this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
         }
       };

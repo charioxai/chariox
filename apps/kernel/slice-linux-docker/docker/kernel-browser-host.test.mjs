@@ -1824,3 +1824,18 @@ test('MP-08/MP-11: restoring a selection retires native capture before activatin
  const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')assert(retired,'old native capture must retire before focus moves');return send(method,params,session)};
  await host.reconcile();
 }));
+
+for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'physical'} human input rechecks a stale matching selection`, () => using(async ({host,connection},root) => {
+ const todo=await host.request({op:'open',url:'https://example.com/todo'});
+ const docs=await host.request({op:'open',url:'https://example.com/documents'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(docs.tab_id),activations=0;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(todo.tab_id);
+ const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget'){active=params.targetId;activations++}return send(method,params,session)};
+ if(mirrored)host.mirror.resolveInput=async()=>({perform:async()=>{},fenced:false});
+ const input={op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,input:mirrored?{kind:'mirror',action:{kind:'set',node_id:'n1',value:'draft'}}:{kind:'text',text:'draft'}};
+ await host.request(input);
+ assert.equal(host.activeTarget,target(todo.tab_id),'a delayed native change cannot replace the admitted human selection');
+ assert.equal(active,target(todo.tab_id));assert.equal(activations,1);
+ await host.request(input);assert.equal(activations,1,'already selected native tab requires no activation');
+ const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
+}));
