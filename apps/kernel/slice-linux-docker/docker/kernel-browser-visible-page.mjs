@@ -34,6 +34,7 @@ export class VisiblePageCapture extends LinuxCapture{
   this.occluded=options.occluded??(()=>{throw Error('MP-11: visible page occlusion unavailable');});
  }
  valid(){return super.valid()&&this.window?.isCurrent()===true;}
+ expectedSize(){return [this.region.width,this.region.height];}
  async prepareReadback(){
   if(!this.valid()||typeof this.validateCurrent!=='function'||!await this.validateCurrent())throw Error('MP-11: visible page binding retired');
   return {width:this.region.width,height:this.region.height,window_region:this.region.window_region};

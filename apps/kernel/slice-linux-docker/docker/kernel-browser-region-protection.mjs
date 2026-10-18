@@ -42,10 +42,13 @@ export async function captureRegionMasks(connection,sessionId,options={}) {
   return captureProtectionFence(connection,sessionId,options.targetId,options.policy,options);
 }
 
+// MP-11: a kernel-known protected target: a policy target or a recorded Vault fill (any tab, any frame).
+export const hasProtectedTarget=(policy,browser)=>Boolean(policy?.targets?.length||browser?.fillTargets?.size);
+
 export class NativeRegionProtection {
   constructor(connection,sessionId,options={}) {Object.assign(this,{connection,sessionId,options});this.revision=0;}
   retire() {this.revision++;this.guard=null;}
-  tracker() {return {targets:Boolean(this.options.policy?.targets?.length||this.options.browser?.fillTargets?.size)};}
+  tracker() {return {targets:hasProtectedTarget(this.options.policy,this.options.browser)};}
   get beforeAt() {return this.fencedAt??-Infinity;}
   async measure() {
     const {policy={targets:[],values:[]},browser,tab,scale=1}=this.options;
