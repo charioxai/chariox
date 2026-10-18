@@ -222,6 +222,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -929,6 +930,7 @@ impl KernelRuntimeState {
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                human_control_task_waits: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -1336,6 +1338,7 @@ mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
 mod agent_task_cancellation;
+mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;

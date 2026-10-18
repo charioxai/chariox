@@ -829,6 +829,18 @@ impl KernelRuntimeState {
             );
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        self.owned
+            .human_control_task_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id, revision| {
+                tasks.iter().any(|task| {
+                    task.task_id == *id
+                        && task.state == ExecutionState::Blocked
+                        && task.blocked_revision == *revision
+                        && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+                })
+            });
         let mut rooms = BTreeSet::new();
         for task in tasks.clone() {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.

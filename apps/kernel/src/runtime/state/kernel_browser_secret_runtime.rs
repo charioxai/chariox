@@ -72,8 +72,14 @@ impl KernelRuntimeState {
         let at = std::time::Instant::now();
         let _barrier = protection.barrier(&scope)?.read_owned().await;
         crate::transport::kernel_browser_display::timing("barrier", at);
-        self.kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
-            .await
+        let released = params["op"] == "release";
+        let result = self
+            .kernel_browser_bound_operation(user, admission.as_ref(), method, params, true)
+            .await;
+        if released && result.is_ok() {
+            self.schedule_agent_lifecycle_sweep();
+        }
+        result
     }
 
     // Caller holds the scope's capture/input barrier for every protected operation.
