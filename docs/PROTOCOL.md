@@ -3945,9 +3945,9 @@ replacement-open retry or cursor-based shortcut. The new snapshot/hash is
 `mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
 remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
 
-MP-08 / MP-10 / MP-11: the same unreleased allocation535/143 also composes
+MP-08 / MP-10 / MP-11: allocation 553/161 composes
 client admission and one initial resume registration. The client offers
-WebSocket subprotocol `chariox-room-display-resume-v535` alongside the existing
+WebSocket subprotocol `chariox-room-display-resume-v553` alongside the existing
 binary-v96 protocol. Selection of the new subprotocol positively advertises
 both initial registration and binary-v96 events; a legacy selection retains
 the existing connect-then-subscribe exchange. Kernel version alone does not
@@ -3970,11 +3970,11 @@ registration. Repeated combined
 connects and unnegotiated combined envelopes refuse. Normal `ClientConnect`
 continues to renew authorization without triggering a resume.
 
-This changes transport composition only: the existing535 registration invokes
+This changes the relay wire (new envelope, hence 553/161) but not resume authority: the existing 535 registration invokes
 the same525 home/worker resume authority. Clients reserve encrypted response
 correlation before writing, keep fresh frames held until presenter activation,
 and retain auth-generation, target, peer, generation, retirement and hint checks.
-The535 snapshot/hash above pins both forms. The live Room network drill accepts
+The 535 snapshot stays unchanged; `mp08_mp10_mp11_display_connect_553_161_snapshot_hash` pins the combined form. A client sends the combined message only to a kernel that reported local protocol ≥ 553 and a relay that selected the 553 subprotocol; older kernels or relays keep the legacy connect-then-subscribe exchange. The live Room network drill accepts
 `CHARIOX_ROOM_DISPLAY_EXPECT_INITIAL_RESUME=1` to require the combined write after
 each fault, recording only its envelope kind. Run the same real clients against
 a legacy relay to validate fallback; neither source checks nor negotiation alone

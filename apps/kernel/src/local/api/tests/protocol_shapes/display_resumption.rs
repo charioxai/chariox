@@ -82,7 +82,7 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
     let bytes = include_bytes!("display-registration-535.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "3536030716c9af742a85728784bef7c7cb761e4e0cf9e9ef83dec582e1422a3c"
+        "bd3b96605c2cc8c92f6b1322217abb768aaf62f16a133e6b842e7825d660f45f"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     // The registration shape introduced at 535/143 is carried unchanged by later versions.
@@ -101,6 +101,21 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
         chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE
     );
     assert!(value["registration"]["resume_from_event_id"].is_null());
+    let peer: crate::transport::relay_peer::RelayPeerRequest =
+        serde_json::from_value(value["worker_request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(peer).unwrap(), value["worker_request"]);
+}
+
+// MP-08/MP-10/MP-11: 553/161 composes client admission with one initial 535 registration.
+#[test]
+fn mp08_mp10_mp11_display_connect_553_161_snapshot_hash() {
+    let bytes = include_bytes!("display-connect-553.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "f20f5d967f65a3524beea6f17acb99bb9b6f4d7f06a4ae9bbef92b61ff7eb3d8");
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(value["local_protocol"], 553);
+    assert_eq!(value["peer_protocol"], 161);
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 553);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 161);
     let connect: chariox_relay::protocol::RelayEnvelope =
         serde_json::from_value(value["initial_connect"].clone()).unwrap();
     assert_eq!(
@@ -114,7 +129,4 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
     let mut wrong_scope = value["initial_connect"].clone();
     wrong_scope["registration"]["subscription_scope"] = serde_json::json!("session");
     assert!(serde_json::from_value::<chariox_relay::protocol::RelayEnvelope>(wrong_scope).is_err());
-    let peer: crate::transport::relay_peer::RelayPeerRequest =
-        serde_json::from_value(value["worker_request"].clone()).unwrap();
-    assert_eq!(serde_json::to_value(peer).unwrap(), value["worker_request"]);
 }

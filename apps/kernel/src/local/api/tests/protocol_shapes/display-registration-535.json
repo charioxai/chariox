@@ -32,22 +32,5 @@
       "subscription_id": "delivery-new",
       "resumed": true
     }
-  },
-  "connect_capability": "chariox-room-display-resume-v535",
-  "initial_connect": {
-    "kind": "client_connect_display_resume",
-    "auth_token": "synthetic",
-    "target": {
-      "daemon_id": "home",
-      "daemon_alias": null
-    },
-    "expected_daemon_public_key": "home-public-key",
-    "registration": {
-      "request_id": "delivery-request",
-      "subscription_id": "fresh-relay-id",
-      "session_id": "delivery-old",
-      "attachment_id": "7",
-      "client_public_key": "viewer-key"
-    }
   }
 }
