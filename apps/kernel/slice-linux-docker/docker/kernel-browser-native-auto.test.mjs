@@ -88,3 +88,19 @@ test('L3 a protection change retires the record before any other work',()=>{
  capture.fence();
  assert.deepEqual(writes.at(-1),{state_retire:2});
 });
+
+test('L3 close discards a completed auto packet nobody took',()=>{
+ const {bridge,autoReply}=rig();
+ bridge.autoEntry(2);const done=reply(2);autoReply(2,1,done);
+ bridge.close();
+ assert.ok(gone(done.packet),'the completed unconsumed packet is deleted at close');
+ bridge.dropAuto(2);
+});
+
+test('L3 an auto reply arriving after close is discarded, not thrown',()=>{
+ const {bridge,autoReply}=rig();
+ bridge.close();
+ const late=reply(3);
+ assert.doesNotThrow(()=>autoReply(3,1,late));
+ assert.ok(gone(late.packet),'the late packet is deleted');
+});

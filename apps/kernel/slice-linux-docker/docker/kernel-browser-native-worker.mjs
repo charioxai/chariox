@@ -110,7 +110,10 @@ export class NativeWorkerControl {
   return entry;
  }
  autoReceive(header,bytes){
-  const entry=this.autoEntry(header.auto),value=JSON.parse(bytes);this.spans(value);entry.done=value;
+  const value=JSON.parse(bytes);
+  if(this.closed){discardPacket(value.packet);return;}
+  let entry;try{entry=this.autoEntry(header.auto)}catch(error){discardPacket(value.packet);throw error}
+  this.spans(value);entry.done=value;
   if(entry.dropped){this.autos.delete(header.auto);discardPacket(value.packet);return;}
   entry.resolve({generation:header.generation,value});if(entry.taken)this.autos.delete(header.auto);
  }
@@ -148,5 +151,5 @@ export class NativeWorkerControl {
  }
  delivered(encoder,revision){this.notify({delivered:encoder,revision});}
  commit(encoder,serial,admit=true){this.notify({commit:encoder,serial,...(admit?{}:{admit:false})});}
- close(){if(this.closed)return;this.closed=true;live.delete(this);if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();for(const entry of this.autos.values())entry.reject(Error('MP-11: native worker closed'));this.autos.clear();this.auto=null;}
+ close(){if(this.closed)return;this.closed=true;live.delete(this);if(this.flushScheduled!==null)clearImmediate(this.flushScheduled);this.flushScheduled=null;this.notifications=[];for(const p of this.pending.values())p.reject(Error('MP-11: native worker closed'));this.pending.clear();for(const entry of this.autos.values()){if(entry.done&&!entry.taken)discardPacket(entry.done.packet);entry.reject(Error('MP-11: native worker closed'));}this.autos.clear();this.auto=null;}
 }
