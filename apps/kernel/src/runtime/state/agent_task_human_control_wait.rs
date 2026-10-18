@@ -3,30 +3,25 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 use crate::session::{EnvironmentActorKind, InputTarget};
 
-fn describes_human_control_wait(reason: &str) -> bool {
+// MP-08/MP-11: Release is not an answer to an account/identity decision.
+// Only a concrete input-ownership refusal may create an automatic continuation,
+// whether Blocked arrives before or after the owner releases the desktop.
+fn describes_released_human_control_wait(reason: &str) -> bool {
     let reason = reason.to_ascii_lowercase();
     reason.contains("environment_input_owned")
         || reason.contains("human_takeover")
         || (reason.contains("human")
+            && (reason.contains("computer") || reason.contains("desktop"))
             && [
-                "control",
-                "takeover",
-                "desktop",
-                "release",
-                "input",
-                "took over",
+                "human has control",
+                "owned by the human",
+                "owned by human",
+                "human owns",
+                "belongs to the human",
+                "waiting for human release",
             ]
             .iter()
-            .any(|word| reason.contains(word)))
-}
-
-// A late Blocked event can arrive after Release. Only a concrete Computer
-// ownership refusal authorizes continuation without a current human owner.
-fn describes_released_human_control_wait(reason: &str) -> bool {
-    let reason = reason.to_ascii_lowercase();
-    reason.contains("environment_input_owned") || reason.contains("human_takeover")
-        || (describes_human_control_wait(&reason) && reason.contains("computer")
-            && ["owned", "belongs", "stopped", "refused", "rejected"].iter().any(|word| reason.contains(word)))
+            .any(|cause| reason.contains(cause)))
 }
 
 impl KernelRuntimeState {
@@ -90,14 +85,15 @@ impl KernelRuntimeState {
             // Even a genuine task decision must leave Release accessible. It
             // becomes an owner interaction after Release; only a control wait
             // is eligible for automatic continuation.
-            let control_wait = recorded || describes_human_control_wait(&task.reason);
-            let fresh = control_wait && self
-                .owned
-                .human_control_task_waits
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(task.task_id.clone(), task.blocked_revision)
-                .is_none();
+            let control_wait = recorded || describes_released_human_control_wait(&task.reason);
+            let fresh = control_wait
+                && self
+                    .owned
+                    .human_control_task_waits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(task.task_id.clone(), task.blocked_revision)
+                    .is_none();
             if fresh {
                 self.owned.record_notice_for_agent(
                     &task.room_id,
@@ -120,7 +116,10 @@ impl KernelRuntimeState {
             if !describes_released_human_control_wait(&task.reason) {
                 return false;
             }
-            self.owned.human_control_task_waits.lock().unwrap_or_else(|e| e.into_inner())
+            self.owned
+                .human_control_task_waits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(task.task_id.clone(), task.blocked_revision);
         }
         // The native turn may still be settling after its Blocked event. Never
