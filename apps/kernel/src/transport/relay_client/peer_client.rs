@@ -251,17 +251,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let cleanup_resource =
         cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
     let expected_public_key = target_public_key.to_string();
-    request.rebase_decision_budget();
-    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer request",
-        message: error.to_string(),
-    })?;
-    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
-        &config.relay_private_key,
-        target_public_key,
-        &plaintext,
-    )?;
-    let (request_id, response_rx, outgoing_tx) = {
+    let (request_id, response_rx, outgoing_tx, encrypted_request) = {
         let mut guard = state.write().await;
         // No await separates this check from inserting and enqueuing the request.
         authorize()?;
@@ -271,13 +261,25 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 message: "relay is not connected".to_string(),
             });
         };
+        // Sealed only now, so waiting for the state is charged to a forwarded decision.
+        request.rebase_decision_budget();
+        let plaintext =
+            serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize relay peer request",
+                message: error.to_string(),
+            })?;
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            &config.relay_private_key,
+            target_public_key,
+            &plaintext,
+        )?;
         guard.next_peer_request_id += 1;
         let request_id = format!("daemon-peer-{}", guard.next_peer_request_id);
         let (response_tx, response_rx) = oneshot::channel();
         guard
             .pending_peer_requests
             .insert(request_id.clone(), response_tx);
-        (request_id, response_rx, outgoing_tx)
+        (request_id, response_rx, outgoing_tx, encrypted_request)
     };
     let trace = RelayPeerRequestTrace::new(
         &request_id,

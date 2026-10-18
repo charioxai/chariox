@@ -452,3 +452,87 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn queued_peer_request_charges_state_lock_wait_to_the_decision_expiry() {
+    let config = DaemonConfig::for_tests();
+    let target_private_key = relay_crypto::generate_private_key_base64();
+    let target_public_key = relay_crypto::public_key_from_private_key_base64(&target_private_key)
+        .expect("target public key should derive");
+    let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(4);
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    state.write().await.outgoing_tx = Some(outgoing_tx);
+    let interaction = crate::session::RuntimeInteraction::new(
+        "queued-interaction",
+        "worker-agent",
+        crate::session::RuntimeInteractionKind::Permission,
+        crate::session::RuntimeInteractionLevel::Warning,
+        None,
+        "Approve?",
+        Vec::new(),
+        None,
+        Some(300),
+        None,
+    )
+    .with_decision_expiry(tokio::time::Instant::now() + Duration::from_secs(300));
+    let request = RelayPeerRequest::ForwardNativeTurnInteraction {
+        context: crate::transport::relay_peer::RemoteNativeInteractionContext {
+            home_session_id: "home-session".into(),
+            home_agent_id: "home-agent".into(),
+            leased_agent_id: "leased-agent".into(),
+            worker_provider_run_id: "provider-run".into(),
+            home_prompt_id: None,
+        },
+        interaction,
+    };
+    // Other relay work holds the state lock before this request can be queued.
+    let busy = Arc::clone(&state);
+    let (held_tx, held_rx) = oneshot::channel();
+    let holder = tokio::spawn(async move {
+        let guard = busy.write().await;
+        let _ = held_tx.send(());
+        sleep(Duration::from_millis(1100)).await;
+        drop(guard);
+    });
+    held_rx.await.expect("lock holder should start");
+    let _waiter = super::super::peer_client::enqueue_peer_request_to_known_kernel_via_relay_authorized(
+        &config,
+        &state,
+        ClientTarget {
+            daemon_id: Some("daemon-home".to_string()),
+            daemon_alias: None,
+        },
+        &target_public_key,
+        request,
+        Duration::from_secs(60),
+        || Ok(()),
+    )
+    .await
+    .expect("request should queue");
+    holder.await.expect("lock holder should finish");
+    let envelope = tokio::select! {
+        Some(envelope) = priority_rx.recv() => envelope,
+        Some(envelope) = event_rx.recv() => envelope,
+    };
+    let RelayEnvelope::DaemonPeerRequest {
+        encrypted_request, ..
+    } = envelope
+    else {
+        panic!("a peer request should have been queued");
+    };
+    let decrypted =
+        relay_crypto::decrypt_payload_for_private_key(&target_private_key, &encrypted_request)
+            .expect("target should decrypt the request");
+    let RelayPeerRequest::ForwardNativeTurnInteraction { interaction, .. } =
+        serde_json::from_slice(&decrypted.plaintext).expect("request should decode")
+    else {
+        panic!("forwarded interaction expected");
+    };
+    assert!(
+        interaction
+            .timeout_sec()
+            .is_some_and(|seconds| seconds <= 299),
+        "waiting for the relay state must not restart the 300 s budget: {:?}",
+        interaction.timeout_sec()
+    );
+}
