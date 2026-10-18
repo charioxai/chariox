@@ -1,3 +1,4 @@
+import { installAppDrafts } from "./browser-app-drafts.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -87,6 +88,7 @@ const BRIDGE_SOURCE = `(() => {
       get() { return request("chariox.panel", {}); },
     }),
   }) });
+  (${installAppDrafts.toString()})();
 })();`;
 
 function invalid(message) {

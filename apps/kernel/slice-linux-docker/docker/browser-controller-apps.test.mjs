@@ -773,3 +773,28 @@ test("retained unpublished calls are discarded after failed Open or document rep
     assert.deepEqual(tabs.calls, [], "a failed opening or old document cannot regain authority");
   }
 });
+
+// MP-08/MP-10/MP-11: App form drafts survive a new document, with no RPC replay.
+test('App bridge restores ordinary draft fields and clears a reset form', async () => {
+  const {browser,connection}=fakeBrowser();const tabs=new AppTabs(browser);
+  await tabs.open({origin_label:'todo-draft',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  const source=connection.sent.find(m=>m.method==='Page.addScriptToEvaluateOnNewDocument').params.source;
+  const storage=new Map();
+  function document(value='') {
+    const listeners=new Map(),form={id:'new-todo',autocomplete:'on'};
+    const title={tagName:'INPUT',type:'text',id:'title',name:'title',value,defaultValue:'',form,disabled:false,readOnly:false,getAttribute:()=>null};
+    const password={...title,type:'password',id:'password',value:'private-password'};
+    const off={...title,id:'off',value:'private-opt-out',getAttribute:()=> 'off'};
+    const doc={readyState:'complete',querySelectorAll:()=>[title,password,off],addEventListener:(name,fn)=>listeners.set(name,fn)};
+    const context={document:doc,location:{pathname:'/'},crypto:{randomUUID:()=> 'doc'},__charioxAppCall:()=>assert.fail('draft restore must not call tools'),localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},addEventListener(){},queueMicrotask,MutationObserver:class{observe(){}},setTimeout};
+    // Use the exact runtime binding name from the generated bridge.
+    const binding=source.match(/const call = globalThis\.([A-Za-z0-9_]+)/)[1];context[binding]=context.__charioxAppCall;
+    vm.runInNewContext(source,context);
+    return {title,listeners,form};
+  }
+  const first=document();first.title.value='unsubmitted draft';first.listeners.get('input')?.({target:first.title});
+  assert.equal(document().title.value,'unsubmitted draft');
+  assert(!JSON.stringify([...storage]).includes('private-'));
+  first.listeners.get('reset')?.({target:first.form});first.title.value='';await new Promise(r=>queueMicrotask(r));
+  assert.equal(document().title.value,'');
+});

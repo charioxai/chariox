@@ -1,3 +1,4 @@
+import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
@@ -134,6 +135,11 @@ export class KernelBrowserHost {
   async write() {
     const name = path.join(this.root, "tabs.json");
     const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
+    // App intent remains kernel-owned; only its origin selects the restored view.
+    data.app_origins = this.pendingActive?.apps ?? [...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean);
+    data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
+    data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -180,6 +186,10 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.protectedValues = new Set(this.protection.values);
+    this.pendingActive = { tab_id: typeof saved.active_tab_id === 'string' ? saved.active_tab_id : null,
+      app_origin: appRestoreOrigin(saved.active_app_origin),
+      apps: Array.isArray(saved.app_origins) ? saved.app_origins.map(appRestoreOrigin).filter(Boolean).slice(0, TAB_LIMIT) : [],
+      until: Date.now() + 30_000 };
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
@@ -206,6 +216,8 @@ export class KernelBrowserHost {
         assertNotCancelled(signal);
         await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
       }
+      this.restoring = false;
+      await this.reconcile();
       await this.save();
       await this.rebindWindows();
     } catch (error) { await this.stop(); throw error; }
@@ -417,7 +429,16 @@ export class KernelBrowserHost {
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     const previous = this.activeTarget;
-    this.activeTarget = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].map(app => app.origin));
+    const restoreReady = this.pendingActive && (this.pendingActive.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= this.pendingActive.until);
+    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => this.pendingActive.app_origin
+      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.targetId === tab.target_id && app.origin === this.pendingActive.app_origin)
+      : tab.tab_id === this.pendingActive.tab_id);
+    if (restored) {
+      await (await this.browser.ensureConnection()).send('Target.activateTarget', {targetId:restored.target_id});
+      this.pendingActive = null;
+    }
+    this.activeTarget = restored?.target_id ?? await this.tabGroups?.active?.().catch(() => null) ?? null;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
