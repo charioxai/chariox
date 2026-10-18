@@ -2140,3 +2140,20 @@ test('MP-08/MP-10/MP-11 a scroll installs no popup-evidence observer in the page
   sent.length = 0; await input('click');
   assert.equal(sent.some(x => x.method === 'Page.addScriptToEvaluateOnNewDocument'), true, 'a click keeps its popup evidence');
 }));
+
+// r55: during a navigation preview a person's wheel goes by CDP (the handover flush must follow CDP acks). A busy
+// renderer never acks it: awaiting the ack held the input lane 5-9 s and ended in an error. The dispatch order is
+// CDP's own, so the wheel is sent without awaiting the ack, as for the native path.
+test('MP-08/MP-10/MP-11 a person\'s wheel during a navigation preview does not wait for the renderer\'s ack', () => using(async ({ host, connection }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  host.displays.set('viewer', { tab_id: tab.tab_id, observed_by: 'terminal:a', expires: Date.now() + 60_000, close: async () => {} });
+  host.mirror.streams.set('m', { tab_id: tab.tab_id, scope: 'terminal:a', navigationPreview: true });
+  let released; const neverAcked = new Promise(resolve => { released = resolve; });
+  connection.beforeSend = async method => { if (method === 'Input.dispatchMouseEvent') await neverAcked; };
+  const started = performance.now();
+  try { await Promise.race([
+    host.request({ op: 'input', observed_by: 'terminal:a', _display_input: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'scroll', x: 10, y: 20, delta_x: 0, delta_y: 120 } }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('the wheel waited for the renderer ack')), 1500)),
+  ]); assert.ok(performance.now() - started < 1500); }
+  finally { released(); host.displays.clear(); host.mirror.streams.clear(); }
+}));
