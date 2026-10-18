@@ -173,7 +173,7 @@ impl CommandRouter {
                 serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
                     crate::runtime::kernel_access::error("kernel_request needs request")
                 })?)
-                .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request"))?;
+                .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
             self.runtime_state
                 .confirm_sudo_scope(&turn, &request)
                 .await?;
