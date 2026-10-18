@@ -1799,3 +1799,27 @@ test('MP-08/MP-10/MP-11: selection waits for all verified App rebindings', () =>
   assert.equal(host.activeTarget,host.tabs.get(reboundTodo.tab_id).target_id);
   assert.equal(host.pendingActive,null);
 }));
+
+// MP-08/MP-10/MP-11: mirrored input can target a page in a background Chrome window.
+// Its admitted human intent must supersede a pending native-window restoration.
+for (const actor of ['human','agent','denied']) test(`MP-08/MP-10/MP-11: ${actor} input preserves the correct pending selection`, () => using(async ({host,connection},root) => {
+  const todo=await host.request({op:'open',url:'https://example.com/todo'});
+  const docs=await host.request({op:'open',url:'https://example.com/documents'});
+  const target=id=>host.tabs.get(id).target_id;let active=target(docs.tab_id);
+  host.tabGroups={active:async()=>active};host.activeTarget=active;
+  const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')active=params.targetId;return send(method,params,session)};
+  const pending={tab_id:docs.tab_id,app_origin:null,apps:[],until:Date.now()+30000};host.pendingActive=pending;
+  fixture.secretFocused=actor==='denied';
+  const input=host.request({op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,...(actor==='agent'?{_agent_input:true}:{}),input:{kind:'text',text:'unsent draft'}});
+  if(actor==='denied'){await assert.rejects(input,error=>error.code==='user_domain_sensitive_requires_focus');assert.equal(host.pendingActive,pending)}
+  else {await input;const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,actor==='human'?todo.tab_id:docs.tab_id)}
+}));
+
+test('MP-08/MP-11: restoring a selection retires native capture before activating its window', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'});
+ await host.request({op:'open',url:'https://example.com/second'});
+ host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:[],until:Date.now()};
+ let retired=false;host.retireNativeForeground=async()=>{retired=true};
+ const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')assert(retired,'old native capture must retire before focus moves');return send(method,params,session)};
+ await host.reconcile();
+}));

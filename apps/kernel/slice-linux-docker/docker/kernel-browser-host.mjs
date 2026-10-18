@@ -430,13 +430,18 @@ export class KernelBrowserHost {
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     const previous = this.activeTarget;
+    const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
-    const restoreReady = this.pendingActive && (this.pendingActive.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= this.pendingActive.until);
-    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => this.pendingActive.app_origin
-      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === this.pendingActive.app_origin)
-      : tab.tab_id === this.pendingActive.tab_id);
+    const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
+    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
+      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
+      : tab.tab_id === intent.tab_id);
     if (restored) {
-      await (await this.browser.ensureConnection()).send('Target.activateTarget', {targetId:restored.target_id});
+      await this.retireNativeForeground(restored.target_id);
+      const connection = await this.browser.ensureConnection();
+      if (this.pendingActive !== intent) return this.reconcile();
+      await connection.send('Target.activateTarget', {targetId:restored.target_id});
+      if (this.pendingActive !== intent) return this.reconcile();
       this.pendingActive = null;
     }
     this.activeTarget = restored?.target_id ?? await this.tabGroups?.active?.().catch(() => null) ?? null;
@@ -795,6 +800,13 @@ export class KernelBrowserHost {
       const onDispatch = () => {
         if (dispatched) return;
         dispatched = true;
+        // MP-08/MP-10/MP-11: CDP can type into a background window. Its
+        // admitted human selection supersedes older native restore intent.
+        const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
+        const selected = intent ? (intent.app_origin ? intent.app_origin === origin : intent.tab_id === tab.tab_id) : this.activeTarget === tab.target_id;
+        if (!agent && !command._agent_input && !command.focused_agent && !selected) {
+          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
+        }
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
