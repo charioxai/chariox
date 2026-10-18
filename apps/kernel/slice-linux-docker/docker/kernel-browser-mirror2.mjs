@@ -333,14 +333,14 @@ export class Mirror2 {
   // A renderer that stays busy past the bounded wait is not an observer verdict: while a native preview covers the document
   // the viewer is told to keep waiting (the credit stays on this subscription) instead of being sent to a video fallback.
   async packet(stream, command, scope, signal, deadline, hurry, hard) {
-    try { return await this.withinDeadline(stream, signal, hard ?? (deadline ?? Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), limit => this.build(stream, command, scope, limit, deadline, hurry)); }
+    try { return await this.withinDeadline(stream, signal, hard ?? (deadline ?? Date.now()) + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), async limit => { await stream.abandoned; return this.build(stream, command, scope, limit, deadline, hurry); }); }
     catch (error) {
       if (error?.code !== 'browser_cdp_timeout' || !stream.navigationPreview || !stream.previewDocument || stream.previewDocument === stream.document_id) throw error;
       return this.previewPacket(stream, command, scope, stream.tab_id, stream.previewDocument, timestamp());
     } finally { if (stream.world) stream.world.patience = null; }
   }
   // A credit that outlasts its deadline ends as a busy renderer; the abandoned build stops at its next checkpoint
-  // (it may still hold a renderer call) and issues nothing, so the next credit rebuilds.
+  // (it may still hold a renderer call) and issues nothing, so the next credit rebuilds once it has settled.
   async withinDeadline(stream, signal, end, run) {
     const limit = new AbortController(), ms = Math.max(0, end - Date.now());
     let timer;
@@ -348,7 +348,15 @@ export class Mirror2 {
     const running = run(signal ? AbortSignal.any([signal, limit.signal]) : limit.signal);
     running.catch(() => {});
     try { return await Promise.race([running, expired]); }
-    catch (error) { if (limit.signal.aborted && !signal?.aborted) stream.resetAt = Math.max(stream.resetAt ?? 0, stream.issued + 1); throw error; }
+    catch (error) {
+      if (limit.signal.aborted && !signal?.aborted) {
+        stream.resetAt = Math.max(stream.resetAt ?? 0, stream.issued + 1);
+        // The abandoned build may still commit an awaited read to the stream: the next credit builds after it settled.
+        const settled = running.then(() => {}, () => {}).then(() => { if (stream.abandoned === settled) stream.abandoned = null; });
+        stream.abandoned = settled;
+      }
+      throw error;
+    }
     finally { clearTimeout(timer); }
   }
   async build(stream, command, scope, signal, deadline = Date.now(), hurry = stream.hurry) {

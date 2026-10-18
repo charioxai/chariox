@@ -812,6 +812,24 @@ test('MP-08/MP-10/MP-11 one overall deadline per credit: a call that never answe
  } finally { process.off('unhandledRejection', note); }
 });
 
+// #1016 @d46740fe4 P2: an expired credit's build may still hold a renderer call that, once answered, commits to the shared
+// stream (a resource's sent offset, frame and sheet state). The next credit builds only after it has stopped.
+test('MP-08/MP-10/MP-11 the credit after an expired one builds only once the abandoned build has settled', async () => {
+ const { mirror, stream } = busyFixture();
+ mirror.busyMs = 30; mirror.creditSlackMs = 20;
+ let release; const hang = new Promise(resolve => { release = resolve; });
+ const events = []; let first = true;
+ mirror.evaluate = async (_, expression) => { if (expression === 'm.snapshot()') events.push('snapshot'); return expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] }; };
+ mirror.sheetOps = () => first ? (first = false, hang.then(() => (events.push('abandoned settled'), []))) : Promise.resolve([]);
+ const credit = () => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 0, wait_ms: 0 }, 'scope').catch(error => error);
+ assert.equal((await credit()).code, 'browser_cdp_timeout'); events.length = 0;
+ const next = credit();
+ await new Promise(resolve => setTimeout(resolve, 15));
+ assert.deepEqual(events, [], 'the next credit does not build while the abandoned build is live');
+ release(); await next;
+ assert.ok(events.indexOf('abandoned settled') >= 0 && events.indexOf('abandoned settled') < (events.indexOf('snapshot') < 0 ? Infinity : events.indexOf('snapshot')), 'abandoned build settled first');
+});
+
 test('MP-08/MP-10/MP-11 a credit that answers in time is not touched by the deadline', async () => {
  const { mirror, stream } = busyFixture();
  mirror.busyMs = 30; mirror.creditSlackMs = 20;
