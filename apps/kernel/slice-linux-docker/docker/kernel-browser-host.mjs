@@ -65,6 +65,9 @@ const TAB_LIMIT = 128;
 const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
+const POST_INPUT_OBSERVE_MS = 500;
+// `promise`'s value, or null once `ms` have passed (the promise is left to settle on its own).
+const withinMs = (promise, ms) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms, null); })]).finally(() => clearTimeout(timer)); };
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
@@ -839,7 +842,10 @@ export class KernelBrowserHost {
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
       // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
       // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
-      const result = this.observe(await this.reconcile().catch(error => { if (error?.code === 'browser_cdp_timeout') return this.tabState(); throw markDispatched(error); }), null, scope);
+      // The observation is bounded too: it goes on in the background and a later state read has its result.
+      const observation = this.reconcile().catch(error => { if (error?.code === 'browser_cdp_timeout') return null; throw markDispatched(error); });
+      observation.catch(() => {});
+      const result = this.observe(await withinMs(observation, POST_INPUT_OBSERVE_MS) ?? this.tabState(), null, scope);
       this.timing('input_post_reconcile', post);
       return result;
     }

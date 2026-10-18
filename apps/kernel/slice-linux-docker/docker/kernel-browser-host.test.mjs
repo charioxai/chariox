@@ -2160,3 +2160,15 @@ test('MP-08/MP-10/MP-11 a person\'s wheel during a navigation preview does not w
   ]); assert.ok(performance.now() - started < 1500); }
   finally { released(); host.displays.clear(); host.mirror.streams.clear(); }
 }));
+
+// r55: the observation after a page-acknowledged input does not hold the person's reply (and with it the whole input
+// lane) while a busy renderer takes its 5 s CDP timeouts; the reply carries the last observed Tab state.
+test('MP-08/MP-10/MP-11 the post-input observation is bounded, the input reply does not wait for a busy page', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' }), tab = opened.tabs[0];
+  const reconcile = host.browser.reconcile.bind(host.browser);
+  host.browser.reconcile = (...args) => sent.some(x => x.method === 'Input.insertText') ? new Promise(() => {}) : reconcile(...args);
+  const started = performance.now();
+  const reply = await host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'text', text: 'a' } });
+  assert.ok(performance.now() - started < 1500, `the reply waited for the observation: ${Math.round(performance.now() - started)} ms`);
+  assert.ok(Array.isArray(reply.tabs));
+}));
