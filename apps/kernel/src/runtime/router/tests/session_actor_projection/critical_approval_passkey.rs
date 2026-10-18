@@ -185,7 +185,7 @@ impl Fixture {
         let manage_agent = agent.clone();
         let manage = tokio::spawn(async move {
             runtime
-                .manage_credential_vault_unlock(&session, &manage_agent)
+                .manage_credential_vault_unlock(&session, &manage_agent, false)
                 .await
         });
         let answers = std::iter::once(("change_passphrase", None))

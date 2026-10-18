@@ -392,7 +392,11 @@ impl KernelRuntimeState {
                             }
                         })?;
                         let (status, action) = self
-                            .manage_credential_vault_unlock(provider_run.session_id(), agent_id)
+                            .manage_credential_vault_unlock(
+                                provider_run.session_id(),
+                                agent_id,
+                                false,
+                            )
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
@@ -801,7 +805,7 @@ impl KernelRuntimeState {
                     }
                     "popup" => {
                         let (status, action) = self
-                            .manage_credential_vault_unlock(&context.home_session_id, agent.id())
+                            .manage_credential_vault_unlock(&context.home_session_id, agent.id(), false)
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,

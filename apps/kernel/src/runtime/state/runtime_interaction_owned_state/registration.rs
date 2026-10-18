@@ -154,7 +154,13 @@ impl KernelRuntimeOwnedState {
         let agent_lifetime = interaction
             .agent_id()
             .filter(|_| {
-                !super::super::runtime_vault_unlock_state::is_panel_vault_interaction(&interaction)
+                // Only a prompt this kernel raised for a person's Vault panel
+                // is exempt; a worker- or API-chosen id never is.
+                !(terminal_credential_owner.is_some()
+                    && forwarding.is_none()
+                    && super::super::runtime_vault_unlock_state::is_panel_vault_interaction(
+                        &interaction,
+                    ))
             })
             .map(|agent_id| {
                 if let Some(origin) = interaction.native_origin() {

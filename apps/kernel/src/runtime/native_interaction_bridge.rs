@@ -202,10 +202,23 @@ pub(crate) fn install_provider_native_interaction_bridge(
     Some(bridge)
 }
 
+/// `vault-…` ids are the kernel's own Vault prompts, whose lifetime rules (and
+/// panel exemption) a worker- or API-chosen id must not borrow.
+fn reject_vault_interaction_id(id: &str) -> Result<(), DaemonError> {
+    if id.starts_with("vault-") {
+        return Err(DaemonError::LocalTransport {
+            operation: "native_provider_interaction",
+            message: "interaction ids starting with `vault-` are reserved".to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) async fn execute_native_provider_interaction_request(
     state: &KernelRuntimeState,
     request: RequestNativeProviderTurnInteractionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    reject_vault_interaction_id(&request.interaction_id)?;
     let session_id = request.session_id.clone();
     let interaction = RuntimeInteraction::new(
         request.interaction_id,
@@ -243,6 +256,7 @@ pub(crate) async fn forward_relay_native_interaction(
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     use crate::session::NativeInteractionOrigin;
+    reject_vault_interaction_id(interaction.id())?;
     if interaction
         .native_origin()
         .is_none_or(|origin| origin.provider_run_id() != context.worker_provider_run_id)

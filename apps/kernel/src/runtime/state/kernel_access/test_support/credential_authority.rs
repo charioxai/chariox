@@ -136,7 +136,9 @@ impl KernelRuntimeState {
                 .unwrap();
                 let state = self.clone();
                 tokio::spawn(async move {
-                    let result = state.manage_credential_vault_unlock(SESSION, AGENT).await;
+                    let result = state
+                        .manage_credential_vault_unlock(SESSION, AGENT, false)
+                        .await;
                     std::fs::write(
                         root.join("vault-result"),
                         if result.is_ok() { "ok" } else { "cancelled" },

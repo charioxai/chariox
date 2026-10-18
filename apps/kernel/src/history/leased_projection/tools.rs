@@ -53,13 +53,13 @@ fn output_ends(payload: Option<&serde_json::Value>) -> Vec<(&'static str, u64)> 
         .into_iter()
         .filter_map(|field| {
             // A capped string keeps its original length; the shortened display
-            // text is not the end of the stream.
-            let shown = payload.get(field)?.as_str()?.len() as u64;
+            // text is not the end of the stream, and an omitted one still has
+            // its bound.
             let len = payload
                 .get(PROVIDER_TOOL_FIELD_BYTES)
                 .and_then(|fields| fields.get(field))
                 .and_then(|v| v.as_u64())
-                .unwrap_or(shown);
+                .or_else(|| Some(payload.get(field)?.as_str()?.len() as u64))?;
             Some((
                 field,
                 len.saturating_add(if owner == Some(field) { start } else { 0 }),

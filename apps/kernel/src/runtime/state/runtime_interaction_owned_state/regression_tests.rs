@@ -397,9 +397,18 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
                 "allow", "Install", "allow", None,
             )],
         ));
-        // A vault prompt's responder also lives only in the kernel process;
-        // other interactions are left alone.
-        for id in ["vault-unlock-agent-1-1", "provider-notice-1"] {
+        // Every vault prompt's responder also lives only in the kernel
+        // process; other interactions are left alone.
+        for id in [
+            "vault-unlock-agent-1-1",
+            "vault-unlock-lease-agent-1-1",
+            "vault-manage-agent-1-1",
+            "vault-passphrase-new-agent-1-1",
+            "vault-panel-unlock-agent-1-1",
+            "vault-panel-manage-agent-1-1",
+            "vault-panel-passphrase-repeat-agent-1-1",
+            "provider-notice-1",
+        ] {
             session.add_active_interaction(RuntimeInteraction::new(
                 id,
                 "agent-1",

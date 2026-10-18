@@ -9,7 +9,8 @@ const MAX_PROVIDER_TOOL_STRING_BYTES: usize = 12 * 1024;
 /// Tool payload strings that carry a stream of output.
 pub(crate) const PROVIDER_TOOL_OUTPUT_FIELDS: [&str; 5] =
     ["output", "stdout", "stderr", "result", "content"];
-/// Original byte length of each output field that a cap shortened.
+/// Logical byte length of each output field: the original length where a cap
+/// shortened it, and what the whole-record summary omitted entirely.
 pub(crate) const PROVIDER_TOOL_FIELD_BYTES: &str = "chariox_field_bytes";
 const PROVIDER_TOOL_DELTA_GATE_LIMIT: usize = 4096;
 const PROVIDER_TOOL_DELTA_TAIL_SAMPLE_BYTES: usize = 256;
@@ -310,6 +311,26 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
             if let Some(value) = object.get(key).cloned() {
                 fallback.insert(key.to_string(), value);
             }
+        }
+        // The output strings are dropped, their logical bounds are not.
+        let capped = object.get(PROVIDER_TOOL_FIELD_BYTES);
+        let bounds: serde_json::Map<String, Value> = PROVIDER_TOOL_OUTPUT_FIELDS
+            .iter()
+            .filter_map(|field| {
+                let len = capped
+                    .and_then(|fields| fields.get(*field))
+                    .and_then(Value::as_u64)
+                    .or_else(|| {
+                        object
+                            .get(*field)
+                            .and_then(Value::as_str)
+                            .map(|t| t.len() as u64)
+                    })?;
+                Some(((*field).to_string(), Value::Number(len.into())))
+            })
+            .collect();
+        if !bounds.is_empty() {
+            fallback.insert(PROVIDER_TOOL_FIELD_BYTES.to_string(), Value::Object(bounds));
         }
     }
     fallback.insert("chariox_truncated".to_string(), Value::Bool(true));

@@ -442,6 +442,26 @@ fn history_owned_tool_ignores_late_terminal_records(field: &str, stderr: Option<
 
 #[test]
 fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
+    capped_output_keeps_history_bounds(|status, len| {
+        serde_json::json!({
+            "id": "big-tool", "name": "Bash", "status": status, "output": "x".repeat(len),
+        })
+    });
+}
+
+// Two large fields push the capped record past 16 KiB, so the whole-record
+// summary replaces the strings: it must still carry both logical bounds.
+#[test]
+fn mp08_history_owned_tool_keeps_logical_bounds_through_the_whole_record_summary() {
+    capped_output_keeps_history_bounds(|status, len| {
+        serde_json::json!({
+            "id": "big-tool", "name": "Bash", "status": status,
+            "stdout": "x".repeat(len), "stderr": "e".repeat(20_000),
+        })
+    });
+}
+
+fn capped_output_keeps_history_bounds(tool_json: impl Fn(&str, usize) -> serde_json::Value) {
     let (mut app, leased) = worker_lease();
     let run = super::explicit_completion_tests::provider_run(
         "run",
@@ -452,12 +472,7 @@ fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
         crate::provider::ProviderClientInterface::Chariox,
     );
     app.providers_mut().insert_run_for_test(run);
-    let tool = |status: &str, len: usize| {
-        serde_json::to_vec(&serde_json::json!({
-            "id": "big-tool", "name": "Bash", "status": status, "output": "x".repeat(len),
-        }))
-        .unwrap()
-    };
+    let tool = |status: &str, len: usize| serde_json::to_vec(&tool_json(status, len)).unwrap();
     // The real producer: output grows past the 16 KiB record cap, then a
     // status-only completion repeats it as a snapshot the cap shortens.
     let produce = |payload: Vec<u8>| {
@@ -481,7 +496,10 @@ fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
         produce(tool("completed", 30_100)),
     ];
     let completed = records.last().unwrap();
-    assert!(completed.len() < 16 * 1024, "the cap shortened the snapshot");
+    assert!(
+        completed.len() < 16 * 1024,
+        "the cap shortened the snapshot"
+    );
     app.append_history_entry(
         &leased.backing_session_id,
         crate::history::SessionHistoryEntry::provider_output(

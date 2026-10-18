@@ -378,6 +378,19 @@ impl KernelRuntimeState {
         agent_id: &str,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        self.ensure_vault_unlocked(session_id, agent_id, operation, false)
+            .await
+    }
+
+    /// `panel` marks a prompt a person opened from the Vault panel (see
+    /// `PANEL_VAULT_PREFIX`); everything an agent starts stays bound to it.
+    async fn ensure_vault_unlocked(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        operation: &'static str,
+        panel: bool,
+    ) -> Result<VaultUnlockGuard, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
         if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
@@ -400,7 +413,7 @@ impl KernelRuntimeState {
         let resolution = self
             .await_vault_interaction(
                 session_id,
-                vault_passphrase_interaction(session_id, agent_id, operation),
+                vault_passphrase_interaction(session_id, agent_id, operation, panel),
                 operation,
                 "vault unlock",
             )
@@ -413,7 +426,7 @@ impl KernelRuntimeState {
             vault_lease_choice_from_resolution(
                 self.await_vault_interaction(
                     session_id,
-                    vault_unlock_lease_interaction(session_id, agent_id, operation, &vault_config),
+                    vault_unlock_lease_interaction(session_id, agent_id, &vault_config, panel),
                     operation,
                     "vault unlock lease",
                 )
@@ -460,6 +473,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        panel: bool,
     ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
@@ -473,7 +487,7 @@ impl KernelRuntimeState {
         let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
         if !status.unlocked {
             let _guard = self
-                .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
+                .ensure_vault_unlocked(session_id, agent_id, "credential_vault_manage", panel)
                 .await?;
             let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
             return Ok((status, "unlocked".to_string()));
@@ -482,7 +496,7 @@ impl KernelRuntimeState {
         let resolution = self
             .await_vault_interaction(
                 session_id,
-                vault_manage_interaction(session_id, agent_id),
+                vault_manage_interaction(session_id, agent_id, panel),
                 "credential_vault_manage",
                 "vault management",
             )
@@ -490,7 +504,7 @@ impl KernelRuntimeState {
         let choice_id = resolution.choice_id.as_deref().unwrap_or("dismiss");
         if choice_id == "change_passphrase" {
             return self
-                .change_credential_vault_passphrase(session_id, agent_id, &vault_path)
+                .change_credential_vault_passphrase(session_id, agent_id, &vault_path, panel)
                 .await;
         }
         apply_vault_manage_choice(&vault_path, choice_id, &vault_config)
@@ -505,6 +519,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         vault_path: &std::path::Path,
+        panel: bool,
     ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
         let unlock_request_lock = vault_unlock_request_lock(vault_path);
         let _dedupe_guard = unlock_request_lock.lock().await;
@@ -515,13 +530,28 @@ impl KernelRuntimeState {
             .owner_user_id()
             .to_owned();
         let current = self
-            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::Current)
+            .vault_passphrase_change_entry(
+                session_id,
+                agent_id,
+                VaultPassphraseChangeStep::Current,
+                panel,
+            )
             .await?;
         let new = self
-            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::New)
+            .vault_passphrase_change_entry(
+                session_id,
+                agent_id,
+                VaultPassphraseChangeStep::New,
+                panel,
+            )
             .await?;
         let repeat = self
-            .vault_passphrase_change_entry(session_id, agent_id, VaultPassphraseChangeStep::Repeat)
+            .vault_passphrase_change_entry(
+                session_id,
+                agent_id,
+                VaultPassphraseChangeStep::Repeat,
+                panel,
+            )
             .await?;
         if new.as_str() != repeat.as_str() {
             return Err(DaemonError::LocalTransport {
@@ -551,11 +581,12 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         step: VaultPassphraseChangeStep,
+        panel: bool,
     ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
         let resolution = self
             .await_vault_interaction(
                 session_id,
-                vault_passphrase_change_interaction(session_id, agent_id, step),
+                vault_passphrase_change_interaction(session_id, agent_id, step, panel),
                 VAULT_PASSPHRASE_CHANGE,
                 "vault passphrase change",
             )
@@ -567,16 +598,17 @@ impl KernelRuntimeState {
 const VAULT_PASSPHRASE_CHANGE: &str = "credential_vault_change_passphrase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VaultPassphraseChangeStep {
+pub(super) enum VaultPassphraseChangeStep {
     Current,
     New,
     Repeat,
 }
 
-fn vault_passphrase_change_interaction(
+pub(super) fn vault_passphrase_change_interaction(
     session_id: &str,
     agent_id: &str,
     step: VaultPassphraseChangeStep,
+    panel: bool,
 ) -> crate::session::RuntimeInteraction {
     let (slug, label, message) = match step {
         VaultPassphraseChangeStep::Current => (
@@ -596,11 +628,7 @@ fn vault_passphrase_change_interaction(
         ),
     };
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-passphrase-{slug}-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
+        vault_prompt_id(&format!("passphrase-{slug}"), agent_id, panel),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -624,34 +652,30 @@ fn vault_passphrase_change_interaction(
     )
 }
 
-/// The Vault panel's own unlock and management prompts are the user's, not an
-/// agent turn's: a turn ending (or a restart settling its receipt) must not
-/// withdraw the prompt mid-entry and fail the panel with "unlock timed out".
-const PANEL_VAULT_OPERATION: &str = "credential_vault_manage";
+/// The Vault panel's own prompts are the user's, not an agent turn's: a turn
+/// ending (or a restart settling its receipt) must not withdraw one mid-entry
+/// and fail the panel with "unlock timed out". Only the caller decides this
+/// (a person's terminal opening the panel), never the operation name: agents
+/// manage the Vault too, and their prompts stay bound to their lifetime.
+const PANEL_VAULT_PREFIX: &str = "vault-panel-";
 
-fn vault_prompt_id(kind: &str, agent_id: &str, operation: &str) -> String {
-    let scope = if operation == PANEL_VAULT_OPERATION {
-        "-panel"
-    } else {
-        ""
-    };
+fn vault_prompt_id(kind: &str, agent_id: &str, panel: bool) -> String {
+    let scope = if panel { "panel-" } else { "" };
     format!(
-        "vault-{kind}{scope}-{agent_id}-{}",
+        "vault-{scope}{kind}-{agent_id}-{}",
         crate::session::unix_epoch_ms()
     )
 }
 
 pub(super) fn is_panel_vault_interaction(interaction: &crate::session::RuntimeInteraction) -> bool {
-    let id = interaction.id();
-    id.starts_with("vault-unlock-panel-")
-        || id.starts_with("vault-unlock-lease-panel-")
-        || id.starts_with("vault-manage-")
+    interaction.id().starts_with(PANEL_VAULT_PREFIX)
 }
 
 pub(super) fn vault_passphrase_interaction(
     session_id: &str,
     agent_id: &str,
     operation: &'static str,
+    panel: bool,
 ) -> crate::session::RuntimeInteraction {
     let choices = vec![crate::session::RuntimeInteractionChoice::new(
         "cancel",
@@ -660,7 +684,7 @@ pub(super) fn vault_passphrase_interaction(
         Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
     )];
     crate::session::RuntimeInteraction::new(
-        vault_prompt_id("unlock", agent_id, operation),
+        vault_prompt_id("unlock", agent_id, panel),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -681,14 +705,14 @@ pub(super) fn vault_passphrase_interaction(
     )
 }
 
-fn vault_unlock_lease_interaction(
+pub(super) fn vault_unlock_lease_interaction(
     session_id: &str,
     agent_id: &str,
-    operation: &str,
     config: &crate::config::UserCredentialVaultConfig,
+    panel: bool,
 ) -> crate::session::RuntimeInteraction {
     crate::session::RuntimeInteraction::new(
-        vault_prompt_id("unlock-lease", agent_id, operation),
+        vault_prompt_id("unlock-lease", agent_id, panel),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -832,16 +856,13 @@ fn unlock_lease_for_choice(
     }
 }
 
-fn vault_manage_interaction(
+pub(super) fn vault_manage_interaction(
     session_id: &str,
     agent_id: &str,
+    panel: bool,
 ) -> crate::session::RuntimeInteraction {
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-manage-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
+        vault_prompt_id("manage", agent_id, panel),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Info,
@@ -992,7 +1013,7 @@ mod tests {
                 crate::secret::VaultUnlockLease::KernelShutdown,
             )
             .unwrap();
-            let call = state.manage_credential_vault_unlock(session.id(), agent.id());
+            let call = state.manage_credential_vault_unlock(session.id(), agent.id(), true);
             tokio::pin!(call);
             let interaction = tokio::select! {
                 result = &mut call => panic!("management must await reply: {result:?}"),
@@ -1032,9 +1053,94 @@ mod tests {
         }
     }
 
+    // Only a person's terminal opens the panel; the metaagent's `credential
+    // vault manage` runs the same request but keeps an agent-bound prompt.
+    #[tokio::test]
+    async fn only_a_terminal_caller_opens_a_panel_manage_prompt() {
+        use crate::local::{
+            KernelConnectionClass, LocalDaemonRequest, ManageCredentialVaultRequest,
+        };
+        use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+        let workspace = crate::test_support::TestWorktree::new("vault-panel-caller");
+        let private_state = crate::test_support::TestWorktree::new("vault-panel-caller-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        for (metaagent, prefix) in [
+            (None, "vault-panel-manage-"),
+            (Some(agent.id()), "vault-manage-"),
+        ] {
+            crate::secret::unlock_chariox_encrypted_vault(
+                &path,
+                "test passphrase",
+                crate::secret::VaultUnlockLease::KernelShutdown,
+            )
+            .unwrap();
+            let request = ManageCredentialVaultRequest {
+                session_id: session.id().to_owned(),
+                agent_id: Some(agent.id().to_owned()),
+            };
+            let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalIpc);
+            caller.connection_class = Some(KernelConnectionClass::Terminal);
+            caller.metaagent_id = metaagent.map(str::to_owned);
+            let request = LocalDaemonRequest::ManageCredentialVault(request);
+            let command = KernelCommand::from_local_request_with_caller(
+                "manage",
+                KernelCommandSource::LocalIpc,
+                caller,
+                None,
+                None,
+                &request,
+            );
+            let LocalDaemonRequest::ManageCredentialVault(request) = request else {
+                unreachable!()
+            };
+            let call =
+                crate::runtime::user_config_executor::execute_manage_credential_vault_request(
+                    &state, &command, request,
+                );
+            tokio::pin!(call);
+            let interaction = tokio::select! {
+                result = &mut call => panic!("management must await reply: {result:?}"),
+                result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    loop {
+                        let snapshot = state.owned.session_store.get_session(session.id()).unwrap();
+                        if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                            break interaction.clone();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                }) => result.expect("management interaction"),
+            };
+            assert!(interaction.id().starts_with(prefix), "{}", interaction.id());
+            state
+                .owned
+                .resolve_runtime_interaction(
+                    session.id(),
+                    interaction.id(),
+                    "dismiss",
+                    None,
+                    Some(session.owner_user_id()),
+                    false,
+                )
+                .unwrap();
+            call.await.unwrap();
+        }
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+    }
+
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
-        let interaction = vault_passphrase_interaction("session-1", "agent-1", "test");
+        let interaction = vault_passphrase_interaction("session-1", "agent-1", "test", false);
 
         assert_eq!(
             interaction
@@ -1078,7 +1184,7 @@ mod tests {
 
     #[test]
     fn vault_manage_offers_a_passphrase_change_through_secret_prompts() {
-        let manage = vault_manage_interaction("session-1", "agent-1");
+        let manage = vault_manage_interaction("session-1", "agent-1", false);
         assert!(manage
             .choices()
             .iter()
@@ -1089,7 +1195,8 @@ mod tests {
             VaultPassphraseChangeStep::New,
             VaultPassphraseChangeStep::Repeat,
         ] {
-            let interaction = vault_passphrase_change_interaction("session-1", "agent-1", step);
+            let interaction =
+                vault_passphrase_change_interaction("session-1", "agent-1", step, false);
             assert_eq!(
                 interaction
                     .choices()
@@ -1123,7 +1230,7 @@ mod tests {
     #[test]
     fn vault_duration_prompt_is_a_separate_non_secret_interaction() {
         let config = crate::config::UserCredentialVaultConfig::default();
-        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", "test", &config);
+        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", &config, false);
 
         assert!(interaction.custom_choice().is_none());
         assert_eq!(
