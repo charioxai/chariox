@@ -1130,6 +1130,15 @@ trees and registered private state fail closed. Protection changes retire
 capture and encoder state before acknowledgement. This does not assert that the
 live protection matrix has passed.
 
+Audience: the kernel names the Room owner's own lease `audience: owner`. That
+lease reads the desktop as it is (the person may reveal a password to
+themselves), needs no protection proof, and keeps painting while protection is
+uncertain. Every other viewer reads the masked source, and so does everything
+the model receives: agent captures are separate protected observations, and the
+video stream has no agent consumer. A lost oracle or ownership read is rebuilt
+in place from a fresh scope; masked frames are withheld meanwhile, never
+published unmasked, and the source is not closed.
+
 A human actor's Desktop ownership (takeover or human Computer input) lasts while
 one of its desktop video leases is live. Relay clients have no gone event: a
 lease lapses 60 s after the last display request on it, or ends on unsubscribe,
