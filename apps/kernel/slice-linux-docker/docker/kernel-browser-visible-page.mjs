@@ -29,7 +29,7 @@ export class VisiblePageCapture extends LinuxCapture{
    }).filter(r=>r.width>0&&r.height>0);
    return {...cropProtectedPng(shot.data_base64,clip,options.scale),[displayMaskRegions]:masks};
   }});
-  this.region=region;this.window=window;this.validateCurrent=options.validateCurrent;
+  this.region=region;this.window=window;this.validateCurrent=options.validateCurrent;this.publishCurrent=options.publishCurrent;
   // MP-08/MP-11: a navigation preview shares the region capture's live Chrome-UI fence.
   this.occluded=options.occluded??(()=>{throw Error('MP-11: visible page occlusion unavailable');});
  }

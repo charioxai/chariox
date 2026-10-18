@@ -60,10 +60,11 @@ export class DesktopSource {
   async start() {
     try { await this.binding.browser?.()?.connection?.presentationFence?.recoverFailed?.(); if(this.native)await this.startNative();else await this.startHelper(); }
     catch(error) { await this.close(); throw error; }
+    // The gate measures from the start: with a tracked Vault fill the first frame waits for its adopted measurement.
+    void this.verify();
     // The first native frame waits for the oracle's start and two snapshots.
     for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);
     if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
-    void this.verify();
     if(this.worker)void this.heartbeat();
     return this;
   }

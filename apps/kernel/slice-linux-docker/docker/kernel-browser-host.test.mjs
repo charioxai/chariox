@@ -336,6 +336,22 @@ test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and rese
 
 }));
 
+// MP-08/MP-10 (vidlat r23): a person's wheel cannot change the Tab list, so it does not pay a full reconcile per event;
+// a click, an agent's scroll and every state read still do.
+test('MP-08 a displayed wheel replies from the last observation, other input reconciles', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const reconcile=host.browser.reconcile;let reconciles=0;
+ host.browser.reconcile=async(...args)=>{reconciles++;return reconcile(...args)};
+ const scroll=extra=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,...extra,input:{kind:'scroll',x:2,y:2,delta_x:0,delta_y:120}});
+ const wheel=await host.request(scroll({_display_input:true}));
+ assert.equal(reconciles,0,'a displayed wheel must not reconcile');
+ assert.equal(wheel.tabs[0].tab_id,tab.tab_id);
+ await host.request(scroll({_agent_input:true}));
+ assert.equal(reconciles,1,'an agent scroll still reconciles');
+ await host.request({...scroll({}),input:{kind:'click',x:2,y:2}});
+ assert.equal(reconciles,2,'a click still reconciles');
+}));
+
 test('MD-DISPLAY-02 bound input checks its document before dispatch without a full preflight reconciliation', () => using(async ({host, sent, pages}) => {
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  const reconcile=host.browser.reconcile;let reconciles=0;
@@ -1869,6 +1885,71 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
  }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));
 
+// vidlat r34: a warm native key admits from the event-bound owner snapshot; coordinate input still reads live.
+function keyAdmission(host,tab,connection,{cachedActive}={}){
+ const keys=[],reads={fresh:0,key:0,active:0};
+ const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},click:()=>true,wheel:(...args)=>{keys.push(['wheel',...args]);return true},wake(){}};
+ const stream={close:async()=>{},subscription_id:'key-admit',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
+  regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,css_width:1280,css_height:712,
+  regionCurrent:async()=>{reads.fresh++;return true},regionInputCurrent:async input=>{if(['key','scroll'].includes(input?.kind)){reads.key++;return true}reads.fresh++;return true}};
+ host.displays.set(stream.subscription_id,stream);
+ host.tabGroups={active:async()=>{reads.active++;return tab.target_id},cachedActive:()=>cachedActive===undefined?tab.target_id:cachedActive};
+ const original=connection.send;connection.send=async(method,params,session)=>method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")?{result:{value:true}}:original(method,params,session);
+ return {keys,reads,stream,restore:()=>{host.displays.delete(stream.subscription_id);connection.send=original;}};
+}
+const keyCommand=(host,tab,kind='key')=>({op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:kind==='key'?{kind:'key',key:'a'}:kind==='scroll'?{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}:{kind:'click',x:10,y:20}});
+test('MP-08/MP-10/MP-11 a warm native key makes no live active-Tab or geometry read',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection);
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
+  assert.deepEqual(f.keys,[[97,false]]);assert.equal(f.reads.fresh,0,'no fresh geometry/layout read');assert.equal(f.reads.active,0,'no live active-Tab read');assert(f.reads.key>0);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a warm native wheel notch makes no live active-Tab, geometry or loader read',()=>using(async({host,connection,sent})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection);
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'scroll'),'terminal:a');Object.assign(f.reads,{fresh:0,key:0,active:0});sent.length=0;f.keys.length=0;
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'scroll'),'terminal:a');
+  assert.deepEqual(f.keys,[['wheel',10,20,0,1]]);assert.equal(f.reads.fresh,0,'no fresh geometry/layout read');assert.equal(f.reads.active,0,'no live active-Tab read');
+  assert.equal(sent.filter(call=>call.method==='Page.getFrameTree').length,0,'no live loader read');assert(f.reads.key>0);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a native key still refuses when the snapshot says another Tab is in front or the admission fails',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:'another-target'});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a').catch(()=>{});
+  assert.deepEqual(f.keys,[],'no native key for a Tab that is not in front');assert.equal(f.reads.active,0);
+  f.stream.regionInputCurrent=async()=>false;host.tabGroups.cachedActive=()=>tab.target_id;
+  await assert.rejects(inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a'),{code:'user_domain_stale_reference'});
+  assert.deepEqual(f.keys,[]);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a native wheel notch is not native when the snapshot says another Tab is in front or its admission fails; clicks still read live',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:'another-target'});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'scroll'),'terminal:a').catch(()=>{});
+  assert.deepEqual(f.keys,[],'no native wheel for a Tab that is not in front');assert.equal(f.reads.active,0);
+  f.stream.regionInputCurrent=async()=>false;host.tabGroups.cachedActive=()=>tab.target_id;
+  await assert.rejects(inputVisiblePage(host,f.stream,keyCommand(host,tab,'scroll'),'terminal:a'),{code:'user_domain_stale_reference'});
+  assert.deepEqual(f.keys,[]);
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot miss; coordinate input always does',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:null});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
+  assert.equal(f.reads.active,1,'a miss reads live');assert.equal(f.keys.length,1);
+  f.reads.active=0;host.tabGroups.cachedActive=()=>tab.target_id;
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a');
+  assert(f.reads.active>=1,'a click ignores the snapshot');assert(f.reads.fresh>0,'a click reads geometry live');
+ }finally{f.restore();}
+}));
+
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
@@ -2022,6 +2103,20 @@ test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover 
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
 }));
 
+test('MP-08/MP-10/MP-11 stopping the browser ends a parked input and a later retry cannot relaunch it',()=>using(async({host,chromium,connection,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.busyInputs.retryMs=30;let busy=true;
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ await host.request({op:'input',observed_by:'terminal:a',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'a'}});
+ assert.equal(host.busyInputs.queues.size,1);
+ let starts=0;const start=chromium.start;chromium.start=async(...args)=>{starts++;return start(...args)};
+ await host.request({op:'stop'});busy=false;
+ await new Promise(r=>setTimeout(r,120));
+ assert.equal(starts,0,'a stopped browser is not relaunched by a parked input');
+ assert.equal(chromium.child,null);assert.equal(host.busyInputs.queues.size,0);
+ assert.equal(sent.filter(x=>x.method==='Input.insertText').length,0);
+}));
+
 test('MP-08/MP-10/MP-11 the parking reply and the observer\'s state report its parked input (protocol 552), nobody else\'s',()=>using(async({host,connection,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;let busy=true;
@@ -2171,4 +2266,42 @@ test('MP-08/MP-10/MP-11 the post-input observation is bounded, the input reply d
   const reply = await host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'text', text: 'a' } });
   assert.ok(performance.now() - started < 1500, `the reply waited for the observation: ${Math.round(performance.now() - started)} ms`);
   assert.ok(Array.isArray(reply.tabs));
+}));
+
+// Protocol 556: the viewer's 250 ms state poll becomes one parked wait per change plus one read.
+const parkSignal=(host,after,wait_ms)=>host.handle({id:'p',method:'host.browser',params:{op:'state_signal',after,wait_ms}}).then(reply=>reply.result.signal);
+test('MP-08/MP-10 a state read reports the signal taken before it and a parked wait ends on a Tab change',()=>using(async({host,handlers})=>{
+ await host.request({op:'open',url:'https://example.com/a'});
+ const first=await host.request({op:'state',state_wait:true});
+ assert.equal(typeof first._state_signal,'number');
+ assert.equal('_state_signal' in await host.request({op:'state'}),false,'a plain state read is unchanged');
+ let answered;const parked=parkSignal(host,first._state_signal,5000).then(signal=>answered=signal);
+ await new Promise(r=>setTimeout(r,60));assert.equal(answered,undefined,'parked');
+ for(const method of ['Network.requestWillBeSent','Page.screencastFrame','DOM.childNodeInserted'])for(const handler of handlers)handler({method,params:{}});
+ await new Promise(r=>setTimeout(r,30));assert.equal(answered,undefined,'unrelated events leave it parked');
+ for(const handler of handlers)handler({method:'Target.targetInfoChanged',params:{targetInfo:{targetId:'target-1',type:'page'}}});
+ assert.equal(await parked,first._state_signal+1);
+ assert.equal(await parkSignal(host,first._state_signal,5000),first._state_signal+1,'a change before the wait arrived is not lost');
+}));
+test('MP-08/MP-10 a parked wait is answered at its deadline and by Tab or agent requests, not by a person\'s input',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://example.com/a'});
+ const signal=(await host.request({op:'state',state_wait:true}))._state_signal;
+ const started=performance.now();assert.equal(await parkSignal(host,signal,80),signal);assert(performance.now()-started>=70,'an idle wait lasts its deadline');
+ assert.equal(await parkSignal(host,null,5000),signal,'no baseline: answers at once');
+ const tab=opened.tabs[0];
+ const input=(extra={})=>host.handle({id:'i',method:'host.browser',params:{op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text:'x'},...extra}});
+ let woke=false;const parked=parkSignal(host,signal,400).then(()=>woke=true);
+ await input();await new Promise(r=>setTimeout(r,60));assert.equal(woke,false,'a person\'s input leaves it parked');
+ await input({_agent_input:true,observed_by:'agent:a'}).catch(()=>{});await parked;assert.equal(woke,true,'an agent acting wakes it');
+ const second=(await host.request({op:'state',state_wait:true}))._state_signal;
+ const waiting=parkSignal(host,second,5000);
+ await host.handle({id:'n',method:'host.browser',params:{op:'navigate',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,url:'https://example.com/b'}});
+ assert((await waiting)>second,'a navigation wakes it');
+}));
+test('MP-08/MP-10 a parked wait starts no browser and never queues behind the host barrier lane',()=>using(async({host,chromium})=>{
+ assert.equal(chromium.child,null);
+ assert.equal(await parkSignal(host,0,20),0);assert.equal(chromium.child,null,'waiting never launches Chromium');
+ const parked={method:'host.browser',params:{op:'state_signal',after:3,wait_ms:2000}};
+ for(const reconcilable of [true,false,undefined])assert.deepEqual(scheduleHostRequest(parked,{canReconcileConcurrently:()=>reconcilable}),{kind:'bridge'});
+ assert.deepEqual(scheduleHostRequest({method:'host.browser',params:{op:'state'}},{canReconcileConcurrently:()=>false}),{kind:'barrier'},'a plain state read keeps its viewport barrier');
 }));

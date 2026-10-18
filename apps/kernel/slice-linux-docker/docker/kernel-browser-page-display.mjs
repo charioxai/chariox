@@ -7,6 +7,7 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
+import {observeLayout} from './kernel-browser-layout-observer.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
 // selecting cached document metadata. It grants no input by itself.
@@ -14,8 +15,8 @@ export function viewerPageInputActive(host,command,scope){
  return command._display_input===true&&!command._agent_input&&!command.focused_agent&&
   [...host.displays.values()].some(s=>s.tab_id===command.tab_id&&s.observed_by===scope&&s.expires>Date.now());
 }
-export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
- if(command.op!=='input'||command.input?.kind!=='key'||!viewerPageInputActive(host,command,scope))return false;
+export function nativeInputDocumentTarget(host,command,scope,nativeDisplay){
+ if(command.op!=='input'||!['key','scroll'].includes(command.input?.kind)||!viewerPageInputActive(host,command,scope))return false;
  const source=nativeDisplay?.regionSource??host.compositors.get(command.tab_id)?.source;
  return source?.native===true&&source.attested===true&&source.valid?.()===true;
 }
@@ -64,18 +65,26 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const alive=()=>!differs&&host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
+  // Publication reuses the layout read while a page-side observer proves it current. A native-state guard already answers
+  // without a read; the observer installs in the background so a busy renderer delays nothing.
+  let observer=null,observerClosed=false;
+  const closeObserver=()=>{observerClosed=true;observer?.close();observer=null;};
+  const layoutRead=async()=>JSON.stringify(await measure())===JSON.stringify(viewport);
+  const publishLayout=()=>viewportGuard?viewportGuard():observer?observer.valid()||observer.confirm(layoutRead):layoutRead();
+  const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await publishLayout()&&alive();
   // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
   // The crop is not part of it: a new document without a scrollbar widens the crop inside the same page rect.
   const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1]);
   const attestation={proven:()=>proofs.get(connection)?.get(tab.target_id)===proofKey,
    prove:()=>{const proven=proofs.get(connection)??new Map();proven.set(tab.target_id,proofKey);proofs.set(connection,proven);}};
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
-   isAlive:alive,isCurrent:current,close:async()=>{closed=true;}};
-  return createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,attestation,validateCurrent:current,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
+   isAlive:alive,isCurrent:current,close:async()=>{closed=true;closeObserver();}};
+  if(!viewportGuard)observeLayout(connection,sessionId).then(o=>{if(observerClosed)o?.close();else observer=o;});
+  try{return await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
+   args:{window,viewport,attestation,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
-   }},window,tab,policy,generation,Capture});
+   }},window,tab,policy,generation,Capture});}catch(error){closeObserver();throw error;}
 
  });
 }
@@ -102,7 +111,7 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
   assertNotCancelled(signal);
   const tab=host.tabs.get(command.tab_id);if(!tab)refuse();
   visiblePageInputSource(host,stream,tab,scope);
-  if(!await stream.regionCurrent())refuse();
+  if(!await (stream.regionInputCurrent??stream.regionCurrent)(input))refuse();
   visiblePageInputSource(host,stream,tab,scope);
  };
  // The live crop check runs as a fence before the dispatch, where a busy renderer parks the input.

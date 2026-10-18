@@ -4292,6 +4292,21 @@ never re-resolves or re-binds a display for parked input. The
 `browser-parked-input-552.json` fixture pins the shape. Older kernels never park
 (they refuse the input), so the field is simply absent.
 
+MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
+viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
+`revision`, an opaque string the viewer sends back as `after` (empty or invalid:
+read at once). The kernel answers when the state, as the caller sees it, differs
+from `after`, or after `wait_ms` (at most 2000), and re-reads Chromium once per
+wake, not per tick. The host raises a signal on Tab creation, destruction, retitle
+and navigation, loads, native window/active-Tab/zoom/resize events, popup and
+window changes, Tab or agent requests and a policy change; a person's keys and
+wheel raise none. A signal only means "read again": the reply's content decides, so
+a missed signal costs at most `wait_ms`. The wait holds no protection barrier, so
+Vault insertion never waits on a parked viewer. `state` itself is unchanged.
+`browser-state-wait-556.json` pins the shape (Rust hash test
+`mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
+older kernels as before; no client floor moves.
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;

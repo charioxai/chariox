@@ -1,7 +1,7 @@
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
-import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeKeyDocumentTarget} from './kernel-browser-page-display.mjs';
+import {captureVisiblePage,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -24,6 +24,7 @@ import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_R
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
+import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
@@ -57,6 +58,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
+    request.params?.op === 'state_signal' ||
     ['chrome_window_follow', 'note_selection', 'note_reanchor'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -114,6 +116,7 @@ export class KernelBrowserHost {
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
+    this.stateSignal = new StateSignal();
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -131,6 +134,7 @@ export class KernelBrowserHost {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
     if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
     this.protection = policy;
+    this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
     this.nativeAccessibility.clear();
     this.mirror.invalidate();
@@ -210,7 +214,7 @@ export class KernelBrowserHost {
       await this.lockdown(connection);
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
-      this.tabGroups = new ChromeTabGroups(connection);
+      this.tabGroups = new ChromeTabGroups(connection, () => this.stateSignal.notify());
       try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
@@ -255,6 +259,8 @@ export class KernelBrowserHost {
     }
     this.lockdownOff?.();
     this.lockdownOff = connection.subscribe(message => {
+      // Protocol 556: the same subscription wakes parked state reads (a Tab or document changed).
+      if (stateChangingEvent(message)) this.stateSignal.notify();
       const info = message?.params?.targetInfo;
       if (!["Target.targetCreated", "Target.targetInfoChanged"].includes(message?.method) || info?.type !== "page") return;
       if (blockedUrl(info.url)) void this.closeBlocked(connection, info.targetId);
@@ -356,9 +362,11 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop() {
+    this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
     this.lockdownOff?.(); this.lockdownOff = null;
+    this.stateSignal.notify();
     await this.closeCompositors();
     this.sampleLanes.clear();
 
@@ -459,8 +467,9 @@ export class KernelBrowserHost {
     return result;
   }
   /** Review #1016 P1: whether `tab` is Chrome's active Tab right now (live, not the last observation). */
-  async nativeFront(tab) {
-    const active = await this.tabGroups?.active?.().catch(() => null);
+  // `cached`: a key or wheel notch may use the owner snapshot until an activation/resize/detach event retires it (a miss reads live).
+  async nativeFront(tab, { cached = false } = {}) {
+    const active = (cached ? this.tabGroups?.cachedActive?.() : null) ?? await this.tabGroups?.active?.().catch(() => null);
     return !!active && active === tab.target_id;
   }
   // MP-08/MP-10/MP-11 (review #1016 P1): Chrome's own strip, wheel or shortcuts, or another actor,
@@ -662,11 +671,16 @@ export class KernelBrowserHost {
     if (command.op === "state" && this.busyInputs.parked(scope)) return this.parkedState(scope);
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
+    // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
+    const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
     if (command.op === "state") await this.chromeWindows?.refreshStale?.();
-    if (["start", "state"].includes(command.op)) return this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
+    if (["start", "state"].includes(command.op)) {
+      const state = this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
+      return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
+    }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
     if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
@@ -719,7 +733,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection', 'note_reanchor'].includes(command.op)
-      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeKeyDocumentTarget(this,command,scope,nativeDisplay))) : await this.target(command);
+      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay))) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
@@ -815,11 +829,11 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
         const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
         const candidate=handoverOrdered?null:(nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source);
-        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab))?candidate:null;
+        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['key','scroll'].includes(command.input?.kind)}))?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const documentCurrent=nativeKey&&command.input?.kind==='key'?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
+        const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
@@ -841,6 +855,9 @@ export class KernelBrowserHost {
       }
       const post = timestamp();
       if(command.input.kind === 'scroll')this.scrolling.set(tab.tab_id,{document_id:tab.document_id,until:performance.now()+400});
+      // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
+      // A viewer's key is the same: no input-lane reconcile (the lane serializes the next key behind it).
+      if (['scroll', 'key'].includes(command.input.kind) && command._display_input === true) return this.observe(this.tabState(), null, scope);
       // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
       // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
       // The observation is bounded too: it goes on in the background and a later state read has its result.
@@ -965,12 +982,21 @@ export class KernelBrowserHost {
         await this.nativeComputer.reset();
         return { id: request.id, ok: true, result: { released: true } };
       }
+      // Protocol 556: the kernel parks here, outside its protection barrier, until a state read could differ.
+      if (request.method === "host.browser" && request.params?.op === "state_signal") {
+        const {after, wait_ms} = request.params;
+        const parked = await this.stateSignal.wait(Number.isSafeInteger(after) ? after : null, Math.min(Number(wait_ms) || 0, 5000), signal);
+        return { id: request.id, ok: true, result: { signal: parked } };
+      }
       if (request.method === "host.browser") {
         if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
         const { _tab_groups: groups, ...params } = request.params ?? {};
-        const result = await this.request(params, { signal });
+        let result;
+        try { result = await this.request(params, { signal }); }
+        // A person's keys and wheel never wake a state read; Tab changes and an agent acting do.
+        finally { if (['open', 'close', 'navigate', 'stop'].includes(params.op) || params.op === 'input' && (params._agent_input || params.focused_agent)) this.stateSignal.notify(); }
         if (Array.isArray(groups)) void this.syncTabGroups(groups).catch(() => {});
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);

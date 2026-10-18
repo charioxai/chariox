@@ -54,3 +54,15 @@ test('MP-08/MP-10/MP-11 generated extension invalidates native metadata on owner
   assert.deepEqual(payloads,['','','','',''],'owner events invalidate only; no identity or page content is pushed');
  }finally{await rm(root,{recursive:true,force:true})}
 });
+
+// Protocol 556: every retirement of the native snapshot also wakes a parked state read.
+test('MP-08/MP-10 owner events, resize and detach wake the state signal',async()=>{
+ const woke=[];const h=fixture();
+ const groups=new ChromeTabGroups({subscribe:fn=>h.groups.connection.subscribe(fn),send:(...a)=>h.groups.connection.send(...a)},()=>woke.push(1));
+ await groups.viewport();const base=woke.length;
+ h.event({method:'Runtime.bindingCalled',sessionId:'worker-session',params:{name:'__charioxNativeWindowChanged',payload:''}});
+ assert.equal(woke.length,base+1,'owner API event');
+ h.event({method:'Page.frameResized',sessionId:'page'});assert.equal(woke.length,base+2,'page resize');
+ h.event({method:'Target.detachedFromTarget',params:{sessionId:'worker-session'}});assert.equal(woke.length,base+3,'extension detach');
+ groups.close();h.groups.close();
+});

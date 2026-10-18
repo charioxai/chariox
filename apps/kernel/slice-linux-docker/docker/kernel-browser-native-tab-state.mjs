@@ -1,14 +1,15 @@
 // MP-08/MP-10/MP-11: metadata from fresh native extension reads, reusable only
 // until the owned extension/window changes. Page worlds never supply this state.
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 export const nativeWindowChangedBinding='__charioxNativeWindowChanged';
 export class NativeTabState {
- constructor(connection,onDetached){
-  this.connection=connection;this.onDetached=onDetached;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
+ constructor(connection,onDetached,onChange){
+  this.connection=connection;this.onDetached=onDetached;this.onChange=onChange;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
   this.off=null;
  }
- invalidate(){this.epoch++;this.active=null;this.viewport=null;}
+ invalidate(){retireNativeStates();this.epoch++;this.active=null;this.viewport=null;this.onChange?.();}
  // A frame resize changes geometry, never which Tab is active (the extension raises the window binding for that).
- invalidateGeometry(){this.epoch++;this.viewport=null;}
+ invalidateGeometry(){retireNativeStates();this.epoch++;this.viewport=null;this.onChange?.();}
  detach(){this.invalidate();this.session=null;this.ready=false;this.onDetached?.();}
  async attach(session){
   if(this.closed)throw Error('MP-11: native state observer closed');
