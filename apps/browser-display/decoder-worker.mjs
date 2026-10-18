@@ -1,12 +1,13 @@
 // MP-08/MP-10/MP-11: one worker, eight repair chains and a <=3 video queue.
 const inWorker=typeof WorkerGlobalScope!=='undefined'&&globalThis instanceof WorkerGlobalScope;
 if(inWorker){
- const channels=new Map();let writer=null,writing=Promise.resolve(),lastTimestamp=0;
+ const channels=new Map();let writer=null,canvas=null,context=null,writing=Promise.resolve(),lastTimestamp=0;
  const now=()=>globalThis.performance?performance.timeOrigin+performance.now():Date.now();
  const retire=channel=>{const state=channels.get(channel);channels.delete(channel);if(state?.decoder?.state!=='closed')state?.decoder?.close();return state;};
  const fail=channel=>{const state=retire(channel);for(const job of state?.pending?.values()??[])self.postMessage({id:job.id,error:'MD-DISPLAY: worker decode failed'});};
  self.onmessage=({data})=>{
   if(data.op==='sink'){writer=data.writable.getWriter();return;}
+  if(data.op==='canvas'){canvas=data.canvas;context=canvas.getContext('2d',{desynchronized:true});return;}
   const {id,codec,key,sequence,width,height,bytes}=data,channel=data.channel??0;
   if(!Number.isSafeInteger(channel)||channel<0||channel>8){self.postMessage({id,error:'MD-DISPLAY: worker channel bound'});return;}
   if(data.op==='reset'){fail(channel);return;}
@@ -31,6 +32,8 @@ if(inWorker){
       let image=frame,writtenAt;
       try{
        if(job.sink&&writer){image=frame.clone();await writer.ready;await writer.write(frame);writtenAt=now();}
+       // The page crop is drawn here, off the viewer main thread; the frame still returns for snapshots.
+       else if(job.sink&&context){if(canvas.width!==job.width)canvas.width=job.width;if(canvas.height!==job.height)canvas.height=job.height;context.drawImage(frame,0,0,job.width,job.height);writtenAt=now();}
        if(channels.get(channel)!==current){image.close();return;}
        current.pending.delete(timestamp);
        self.postMessage({id:job.id,frame:image,decodedAt,writtenAt},[image]);
@@ -59,6 +62,7 @@ export class WorkerVideoDecoder {
   this.worker.onerror=()=>this.close();
  }
  setSink(writable){this.worker.postMessage({op:'sink',writable},[writable]);}
+ setCanvas(canvas){this.worker.postMessage({op:'canvas',canvas},[canvas]);}
  decode(frame,bytes,channel=0,sink=false){
   if(this.closed||!Number.isSafeInteger(channel)||channel<0||channel>8||(this.channels.get(channel)??0)>=(channel===8?3:1)||this.jobs.size>=11)return Promise.reject(Error('MD-DISPLAY: worker decoder unavailable/busy'));
   return new Promise((resolve,reject)=>{
