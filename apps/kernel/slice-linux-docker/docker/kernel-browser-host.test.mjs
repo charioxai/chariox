@@ -1255,6 +1255,19 @@ test('MP-08/MP-10 navigate reports the committed URL after a redirect', () => us
   assert.equal(pages.get(target).document_id, 'doc-next');
 }));
 
+// r55: a selection note names its Tab and reads only that Tab live. The all-tab reconcile behind it waited for a
+// parsing page's renderer (5 s CDP timeouts, 6-24 s per note) while the kernel held its backend for the request.
+for (const op of ['note_selection', 'note_reanchor']) test(`MP-08/MP-10/MP-11 ${op} reads only its own Tab`, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const browser = host.browser, reconcile = browser.reconcile;
+  let reconciles = 0;
+  browser.reconcile = async (...args) => { reconciles++; return reconcile(...args); };
+  browser.observeNote = async () => ({ quote: 'q' });
+  const result = await host.request({ op, tab_id: opened.tab_id, generation: opened.generation, observed_by: 'terminal:fixture' });
+  assert.equal(reconciles, 0, 'no all-tab reconcile');
+  assert.deepEqual(result.observation, { quote: 'q' });
+}));
+
 // MP-08/MP-10 (review #1009 P2): the kernel's navigate/subscribe preflight names its Tab and reads only that
 // Tab live; an all-tab reconcile waits for every busy page and held the controller lock meanwhile.
 test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => using(async ({ host }) => {

@@ -704,9 +704,9 @@ export class KernelBrowserHost {
     // Explicit physical input already names an observed tab/document. Read
     // that live target directly; whole-tab discovery still runs afterward.
     // Per-dispatch document/cancellation and secret-focus checks remain below.
-    // MP-08/MP-10: a navigation reads only its own Tab's live document: a full
+    // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || command.op === 'navigate'
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection', 'note_reanchor'].includes(command.op)
       ? await this.displayTarget(command,nativeKeyDocumentTarget(this,command,scope,nativeDisplay)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
