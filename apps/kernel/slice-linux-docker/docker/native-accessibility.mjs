@@ -28,9 +28,11 @@ export class NativeAccessibility {
     // MP-08 / MP-11: official harnesses truncate large single-line tool output.
     // Prioritize named controls over structural Chromium nodes, which also
     // advertise generic actions/focus. The full tree still fences every action.
+    const toolbars=(tree.nodes??[]).filter(node=>node.browser && node.role==='tool bar');
+    const navigation=node=>Boolean(node.browser && node.name && toolbars.some(bar=>bar.pid===node.pid && bar.started===node.started && bar.path.length<node.path.length && bar.path.every((part,index)=>node.path[index]===part)));
     const priority=node=>node.states?.includes('showing')
       ? (['frame','window','dialog'].includes(node.role)
-        ? 0 : node.name && (node.actions?.length || node.states.includes('editable') || node.states.includes('focused')) ? 1 : 2) : 3;
+        ? 0 : navigation(node) ? 0.5 : node.name && (node.actions?.length || node.states.includes('editable') || node.states.includes('focused')) ? 1 : 2) : 3;
     // MP-08 / MP-11: AT-SPI browser descendants can retain focused/showing
     // states after minimization. The private X11 selector binds the actual
     // owned foreground frame; rank its subtree before applying public limits.

@@ -166,3 +166,12 @@ test('MP-08 / MP-11 named browser navigation survives unnamed structural actions
  for(const name of ['Back','Reload','Address and search bar'])assert(seen.nodes.some(n=>n.name===name),name);
  assert.equal(seen.complete,false);
 });
+// MP-08 / MP-11: tabs and window controls must not crowd out browser toolbar.
+test('MP-08 / MP-11 browser toolbar survives named tabs and window controls',async()=>{
+ const nodes=Array.from({length:60},(_,i)=>({...tree.nodes[0],browser:true,path:[0,i],name:'Tab control '+i,states:['showing','enabled'],actions:['press']}));
+ nodes.push({...tree.nodes[0],browser:true,path:[0,90],role:'tool bar',name:'',states:['showing'],actions:[]});
+ for(const [i,name] of ['Back','Reload','Address and search bar'].entries())nodes.push({...tree.nodes[0],browser:true,path:[0,90,i],role:i===2?'entry':'button',name,states:['showing','enabled'],actions:['press']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>({...tree,active_window:{pid:200,started:'1',path:[0]},nodes})});
+ const seen=await native.snapshot('agent:a',{});
+ for(const name of ['Back','Reload','Address and search bar'])assert(seen.nodes.some(n=>n.name===name),name);
+});
