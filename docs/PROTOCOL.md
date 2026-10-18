@@ -527,6 +527,15 @@ replayed active turn; changing it requires an idle agent. This makes the next pr
 use the profile committed at home even if an earlier worker update acknowledgement
 was lost. Incompatible peer versions must be rebound before dispatch.
 
+A worker refuses a `SubmitLeasedPrompt` before the receipt fence and provider launch
+when the selected account cannot start work there (not authenticated, or no usable
+credential) with the non-retryable relay error code `provider_account_unusable`. It
+is an additive error code in the existing error field, so it carries no peer protocol
+number. The home treats it as a known pre-admission rejection and settles the prompt
+as failed with the worker's message instead of reconciling it as indeterminate. A home
+that predates the code treats it as an unknown error and reconciles through the
+worker's `Rejected` receipt.
+
 Version 25 also removes the separate `ForwardWorkflowProviderFailure` request and
 its acknowledgement. Workers settle failed leased turns locally without waiting
 for a home RPC. The existing runtime projection carries the terminal diagnostic
