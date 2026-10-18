@@ -68,13 +68,14 @@ impl KernelRuntimeState {
         let target = self
             .computer_secret_input_target(session_id, agent_id)
             .await?;
-        self.ensure_computer_secret_input_approved(
-            session_id,
-            agent_id,
-            &args.credential_id,
-            &target,
-        )
-        .await?;
+        let approval = self
+            .ensure_computer_secret_input_approved(
+                session_id,
+                agent_id,
+                &args.credential_id,
+                &target,
+            )
+            .await?;
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 session_id,
@@ -95,6 +96,19 @@ impl KernelRuntimeState {
                     .into(),
             });
         }
+        let check_approval = || {
+            if approval
+                .as_ref()
+                .is_some_and(|turn| !self.sudo_turn_live(turn))
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "computer_secret_input.approval",
+                    message: "sudo permission expired or was revoked".into(),
+                });
+            }
+            Ok(())
+        };
+        check_approval()?;
         let (service, _vault_observation_guard) = self
             .room_secret_input_service(session_id, &args.credential_id)
             .await?;
@@ -108,7 +122,16 @@ impl KernelRuntimeState {
             })
             .await?;
         self.authorize_current_forwarded_binding()?;
-        let execution = self
+        check_approval()?;
+        let bound = if let Some(turn) = &approval {
+            let authority =
+                crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+            self.with_external_command_authority(Some((&turn.entry_id, &authority)))
+                .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()))
+        } else {
+            self.clone()
+        };
+        let execution = bound
             .execute_computer_input_as_agent_for_generation(
                 session_id,
                 agent_id,
@@ -126,6 +149,7 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({
                 "submitted": true,
+                "permission_authority": if approval.is_some() { "sudo" } else { "user_interaction" },
                 "credential_id": args.credential_id,
                 "target": "desktop_focus",
                 "action_id": execution.action_id,

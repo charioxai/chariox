@@ -92,17 +92,35 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(&user);
         let epoch = protection.revision(&scope)?;
         let target = self.host_computer_secret_target(&user, &admission).await?;
-        self.ensure_computer_secret_input_approved_for_field(
-            session,
-            agent_id,
-            credential,
-            &target.target,
-            Some(&format!(
-                "AT-SPI process {} (start {}), field {}",
-                target.field.pid, target.field.started, target.field.path
-            )),
-        )
-        .await?;
+        let approval = self
+            .ensure_computer_secret_input_approved_for_field(
+                session,
+                agent_id,
+                credential,
+                &target.target,
+                Some(&format!(
+                    "AT-SPI process {} (start {}), field {}",
+                    target.field.pid, target.field.started, target.field.path
+                )),
+            )
+            .await?;
+        let authority = if approval.is_some() {
+            "sudo"
+        } else {
+            "user_interaction"
+        };
+        let state = self.clone();
+        let admission = admission.with_authority(move || {
+            approval
+                .as_ref()
+                .is_none_or(|turn| state.sudo_turn_live(turn))
+        });
+        let check = || {
+            self.owned
+                .kernel_browser_host
+                .check_admission(Some(&admission))
+                .map_err(host_error)
+        };
         let _unlock = self
             .ensure_vault_unlocked_for_agent(
                 session,
@@ -170,7 +188,7 @@ impl KernelRuntimeState {
             .await?;
         Ok(RuntimeToolResult {
             ok: true,
-            payload: json!({"submitted":true,"credential_id":credential,"target":"desktop_focus","filled_field":{"window":target.target.active_window,"pid":target.field.pid,"started":target.field.started,"path":target.field.path}}),
+            payload: json!({"submitted":true,"permission_authority":authority,"credential_id":credential,"target":"desktop_focus","filled_field":{"window":target.target.active_window,"pid":target.field.pid,"started":target.field.started,"path":target.field.path}}),
         })
     }
 

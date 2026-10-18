@@ -60,7 +60,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         credential_id: &str,
         target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<crate::local::KernelSudoTurn>, DaemonError> {
         self.ensure_computer_secret_input_approved_for_field(
             session_id,
             agent_id,
@@ -78,7 +78,18 @@ impl KernelRuntimeState {
         credential_id: &str,
         target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
         field: Option<&str>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<crate::local::KernelSudoTurn>, DaemonError> {
+        // MP-08 / MP-10 / MP-11: the owner's existing sudo consent covers
+        // this exact current provider turn; it does not mint another grant.
+        if let Some(run) = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+        {
+            if let Ok(turn) = self.sudo_for_provider_run(run.id()) {
+                return Ok(Some(turn));
+            }
+        }
         let interaction = crate::session::RuntimeInteraction::new(
             format!(
                 "computer-secret-input-{agent_id}-{}",
@@ -132,7 +143,7 @@ impl KernelRuntimeState {
             ))
         })?;
         if resolution.choice_id.as_deref() == Some("allow") {
-            return Ok(());
+            return Ok(None);
         }
         Err(computer_secret_approval_error(
             "computer credential input was denied or timed out",

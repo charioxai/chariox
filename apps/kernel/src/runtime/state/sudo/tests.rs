@@ -1745,3 +1745,53 @@ async fn sudo_review_control_verbs_in_tasks_reach_authorization() {
         assert!(task.await.unwrap().is_err());
     }
 }
+
+// MP-08 / MP-10 / MP-11: existing user sudo approval covers private Vault paste.
+#[tokio::test]
+async fn sudo_computer_secret_uses_existing_authority_without_interaction() {
+    let f = fixture();
+    let turn = running(&f);
+    let target = crate::transport::room_browser_controller::RoomComputerSecretTarget {
+        active_window: 3,
+        focus_window: 4,
+        geometry: [0, 0, 100, 30],
+        window_geometry: [0, 0, 200, 200],
+    };
+    let approved = tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_secret_input_approved_for_field(
+            &turn.session_id,
+            &turn.agent_id,
+            "fixture-handle",
+            &target,
+            None,
+        ),
+    )
+    .await
+    .expect("active sudo must not wait for another user approval")
+    .unwrap();
+    let approved = approved.expect("the existing sudo permission must be recorded");
+    assert!(f.state.sudo_turn_live(&approved));
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .remove(&turn.entry_id);
+    assert!(!f.state.sudo_turn_live(&approved));
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            f.state.ensure_computer_secret_input_approved_for_field(
+                &turn.session_id,
+                &turn.agent_id,
+                "fixture-handle",
+                &target,
+                None,
+            )
+        )
+        .await
+        .is_err(),
+        "revoked sudo must require owner approval again"
+    );
+}
