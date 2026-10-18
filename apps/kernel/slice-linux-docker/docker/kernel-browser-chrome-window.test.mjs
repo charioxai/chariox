@@ -34,6 +34,33 @@ test("MP-08/MP-10/MP-11 the band binds on the shared owned desktop where the win
     assert.deepEqual(windows.band().rect, { left: 0, top: 0, width: 1280, height: 86 });
   } finally { await real.close(); }
 });
+// MP-11 (r54): the first paint of a loading page changes its native rect (GTK insets, width) but not the band.
+// The band's window generation and streams survive, so keys parked for the band are never made stale by it; every
+// page-bound binding and stream is retired at once.
+test("MP-11 a page-only geometry change keeps the band window generation and retires page-bound bindings", async t => {
+  const viewport = { width: 1280, height: 800 };
+  const rows = [{ id: 0x600001, x: 0, y: 0, width: 2560, height: 1774, visible: true, focused: true, override_redirect: false, transient_for: 0 }];
+  const { host, windows } = fake({ rows, viewport });
+  const real = new OwnedDisplay((await import("node:os")).tmpdir());
+  try { await real.start(); } catch { return t.skip("no Xvfb"); }
+  try {
+    host.chromium.display = real;
+    const bound = await windows.resolve();
+    const band = windows.band(bound.tabbed), retired = []; windows.onRetire(event => retired.push(event));
+    Object.assign(rows[0], { frame_insets: [4, 4, 0, 0] }); viewport.width = 1276;
+    assert.equal(await bound.tabbed.isPageCurrent("tb"), false, "the page rect moved");
+    await windows.resolving;
+    const next = windows.current();
+    assert.equal(next.tabbed.window_generation, bound.tabbed.window_generation, "same band, same window generation");
+    assert.notDeepEqual(next.tabbed.page_rect, bound.tabbed.page_rect);
+    assert.equal(band.isCurrent(), true, "the band source stays current");
+    assert.equal(bound.tabbed.isCurrent(), false, "page-bound bindings and streams are retired");
+    assert.equal(next.tabbed.isCurrent(), true);
+    assert.deepEqual(retired.map(event => event.reason), ["page_geometry_changed"]);
+    assert.equal(await next.tabbed.isPageCurrent("tb"), true);
+    assert.equal(retired.length, 1, "one notification, not one per call");
+  } finally { await real.close(); }
+});
 test("MP-11 resolution with an owned display: band, auxiliary, generations and retirement", async t => {
   const { host, windows } = fake();
   const real = new OwnedDisplay((await import("node:os")).tmpdir());
@@ -46,7 +73,7 @@ test("MP-11 resolution with an owned display: band, auxiliary, generations and r
     assert.equal(bound.tabbed.xid, 0x600001);
     assert.equal(bound.tabbed.content_top, 174, "1774 − 800×2");
     assert.equal(bound.tabbed.role, "tabbed");
-    assert.deepEqual(windows.band(), { surface: "browser_chrome", window: { id: 0x600001, width: 2560, height: 1774 }, rect: { left: 0, top: 0, width: 2560, height: 174 }, contentHeight: 1600, isCurrent: bound.tabbed.isCurrent });
+    assert.deepEqual(windows.band(), { surface: "browser_chrome", window: { id: 0x600001, width: 2560, height: 1774 }, rect: { left: 0, top: 0, width: 2560, height: 174 }, contentHeight: 1600, isCurrent: bound.tabbed.isBandCurrent });
     assert.equal(bound.auxiliary.length, 1, "the omnibox dropdown below the band is admitted; the keepalive popup is not");
     assert.deepEqual(windows.auxiliaryRegion(bound.auxiliary[0]).rect, { left: 0, top: 0, width: 1600, height: 400 });
     const retired = []; windows.onRetire(event => retired.push(event));
@@ -704,6 +731,28 @@ test('MP-08/MP-10/MP-11 a fresh ledger observation preserves omnibox text after 
  liveDocument='home';
  await send({kind:'text',text:'https'});
  assert.equal(String.fromCharCode(...sent),'https');
+});
+
+// MP-11 (r54): band typing never depends on a busy page renderer. The person's own toolbar click or Ctrl+L is the
+// kernel's record that Chrome's UI owns the keys; the page's physical focus is read only while the page answers.
+for (const hang of ['focus read', 'focus world']) test(`MP-11 omnibox typing is not parked behind a page that cannot answer (${hang})`, async () => {
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
+ const never=new Promise(()=>{});
+ const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:false}}};
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{
+  inputCapture:{physicalFocus:async(_c,_s,read)=>hang==='focus read'?never:read()},resolvePageTarget:async()=>({connection,sessionId:'s'}),
+  ensureFocusWorld:async()=>hang==='focus world'?never:({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
+ const send=input=>Promise.race([arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}}),
+  new Promise((_,reject)=>setTimeout(()=>reject(new Error('parked behind the page renderer')),1500))]);
+ await send({kind:'key',key:'l',modifiers:2});sent.length=0;
+ const started=performance.now();
+ await send({kind:'text',text:'a'});
+ const second=performance.now();
+ await send({kind:'text',text:'bc'});
+ assert.equal(String.fromCharCode(...sent),'abc');
+ assert.ok(performance.now()-second<100,'only the first key of a claim waits for the page; the rest use the kernel record');
+ assert.ok(second-started<1200,'the first key waits a bounded time');
 });
 
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.

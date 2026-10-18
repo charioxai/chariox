@@ -36,7 +36,8 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  if(tab.tab_id!==command.tab_id)refuse();
  let lease,args,placement,offset={x:0,y:0},overlayTab=null;
  const windows=host.chromeWindows?.current();
- const window=windows?.tabbed;
+ // A band or popup stream is bound to the window's identity only: a page-only geometry change (r54) leaves it current.
+ const tabbed=windows?.tabbed,window=tabbed&&target.kind!=='region'&&tabbed.isBandCurrent?{...tabbed,isCurrent:tabbed.isBandCurrent}:tabbed;
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent())refuse();
  if(target.kind==='region') {
   if(!host.mirror.v2?.regions)refuse();

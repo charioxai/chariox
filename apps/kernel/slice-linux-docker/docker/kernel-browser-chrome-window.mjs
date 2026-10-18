@@ -49,12 +49,18 @@ export function rowMode(bgr0) {
 
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
+const FOCUS_READ_MS = 250, timedOut = Symbol('timed out');
+/** `operation`'s result, or `timedOut` after `ms` (the operation is left to settle on its own). */
+async function within(ms, operation) {
+  let timer;
+  try { return await Promise.race([operation(), new Promise(resolve => { timer = setTimeout(resolve, ms, timedOut); })]); } finally { clearTimeout(timer); }
+}
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
 
 export class ChromeWindows {
   constructor(host, {inventory = noInventory} = {}) {
     this.host = host; this.inventory = inventory;
-    this.windowGeneration = 0; this.omniboxSeen = new Map(); this.bound = null; this.listeners = new Set();
+    this.windowGeneration = 0; this.pageEpoch = 0; this.omniboxSeen = new Map(); this.bound = null; this.listeners = new Set();
     this.auxiliaryIds = new Map(); this.auxiliarySequence = 0;
   }
   onRetire(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -70,6 +76,13 @@ export class ChromeWindows {
     const {window_generation} = this.bound.tabbed; this.bound = null;
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
+  }
+  /** The page rect moved under an unchanged band: page-bound bindings go stale, the band keeps its generation. */
+  retirePage() {
+    if (!this.bound) return;
+    const {window_generation} = this.bound.tabbed; this.pageEpoch++;
+    this.host.timing?.('chrome_window_page_retired', performance.timeOrigin + performance.now());
+    for (const listener of this.listeners) listener({window_generation, reason: 'page_geometry_changed'});
   }
   current() {
     if (!this.bound || !this.bound.tabbed.isCurrent()) throw new UserDomainRefusal('stale_reference');
@@ -112,16 +125,20 @@ export class ChromeWindows {
     const contentTop = Math.floor(pageRect.top / 2) * 2;
     if (!(contentTop > 0 && contentTop < row.height)) throw new UserDomainRefusal('stale_reference');
     const previous = this.bound?.tabbed;
-    const same = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration && JSON.stringify(previous.page_rect) === JSON.stringify(pageRect);
-    if (!same) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
-    const windowGeneration = this.windowGeneration;
-    const isCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    // The band is the window's top `content_top` rows: a page-only change (insets, width) leaves its identity
+    // and generation alone and retires only what is bound to the page rect (r54).
+    const sameBand = previous && previous.xid === row.id && previous.bounds.width === row.width && previous.bounds.height === row.height && previous.content_top === contentTop && previous.browser_generation === browserGeneration;
+    if (!sameBand) { if (previous) this.retire('window_changed'); this.windowGeneration++; }
+    else if (previous.isCurrent() && JSON.stringify(previous.page_rect) !== JSON.stringify(pageRect)) this.retirePage();
+    const windowGeneration = this.windowGeneration, pageEpoch = this.pageEpoch;
+    const isBandCurrent = () => live() && this.windowGeneration === windowGeneration && this.bound?.tabbed.xid === row.id;
+    const isCurrent = () => isBandCurrent() && this.pageEpoch === pageEpoch;
     // MP-08/MP-10/MP-11: identity and geometry share one fresh native query.
     const isPageCurrent = async target_id => {
       if (!isCurrent()) return false;
       try { const next=await measure();if (JSON.stringify(next.rect) === JSON.stringify(pageRect)) return (target_id===undefined||next.target_id===target_id)&&isCurrent(); } catch {}
       // Rebind at the real geometry: no other path may notice (r13 union3: the band never came back).
-      if (isCurrent()) { this.retire('page_geometry_changed'); this.resolve().catch(() => {}); }
+      if (isCurrent()) { this.retirePage(); this.resolve().catch(() => {}); }
       return false;
     };
     // MP-11: source publication still calls the fresh check above. Delivery
@@ -135,7 +152,7 @@ export class ChromeWindows {
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent, isPageCurrent,isPageCurrentCached});
+      scale, pid, isCurrent: role === 'tabbed' ? isCurrent : isBandCurrent, isBandCurrent, isPageCurrent,isPageCurrentCached});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -380,7 +397,7 @@ export class ChromeWindows {
   band(binding = this.current().tabbed) {
     return {surface: 'browser_chrome', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
       rect: {left: 0, top: 0, width: binding.bounds.width, height: binding.content_top},
-      contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isCurrent};
+      contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isBandCurrent ?? binding.isCurrent};
   }
   auxiliaryRegion(binding) {
     const tabbed = this.current().tabbed;
@@ -529,22 +546,34 @@ export class InputArbiter {
         return frame;
       };
       const {frameTree} = await currentProof();
-      const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
-      const evaluate = expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      const focusWorld = async () => {
+        const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
+        return expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
+      };
       // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
       // The person's own native action (a toolbar click, Ctrl+L) puts them in Chrome's UI; the page's
       // physical focus confirms it (read with focus emulation suspended: a mirror keeps it on, so
       // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
+      // r54: band keys never wait on a renderer that cannot answer. The kernel's own record of the person's
+      // action (bound to the Tab, browser and band window, the document proven above by ordered events) stands
+      // for the proof once the page failed to answer one bounded read; Enter, Tab, a page click or a Tab switch clear it.
+      let evaluate;
       if (ownsUiFocus) {
-        const capture = this.host.browser.inputCapture;
+        const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
         if (typeof capture?.physicalFocus !== 'function') { await currentProof(); return; }
-        const pageFocused = await capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
-        await currentProof();
-        if (!pageFocused) {
-          return;
+        let pageFocused = false;
+        if (!claim.unread) {
+          const read = await within(FOCUS_READ_MS, async () => {
+            evaluate = await focusWorld();
+            return capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
+          });
+          if (read === timedOut) claim.unread = true; else pageFocused = read;
         }
+        await currentProof();
+        if (!pageFocused) return;
         this.chromeFocus = null;
       }
+      evaluate ??= await focusWorld();
       const {result} = await evaluate(sensitiveFocusExpression(false));
       await currentProof();
       if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');

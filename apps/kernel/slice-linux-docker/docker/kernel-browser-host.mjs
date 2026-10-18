@@ -395,7 +395,7 @@ export class KernelBrowserHost {
   chromeWindow() {
     const tabbed = this.chromeWindows?.bound?.tabbed;
     // MP-11: only the managed lockdown refuses fullscreen; without it no band is offered.
-    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !tabbed?.isCurrent()) return null;
+    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
     return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
