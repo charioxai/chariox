@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 pub const DISPLAY_EVENT_SCOPE: &str = "kernel_browser_display";
 /// MP-08/MP-10/MP-11: allocated535/143, delivery registration invoking525 resume.
 pub const DISPLAY_RESUME_SCOPE: &str = "kernel_browser_display_resume";
+/// MP-08/MP-10/MP-11: 553/161, initial resume plus binary-v96 event transport.
+pub const DISPLAY_RESUME_CONNECT_CAPABILITY: &str = "chariox-room-display-resume-v553";
 pub fn is_display_scope(scope: Option<&str>) -> bool {
     matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
 }

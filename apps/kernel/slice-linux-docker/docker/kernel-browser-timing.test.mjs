@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: bounded timing records must survive batching/shutdown.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';
-import {displayTiming,timedHostRequests} from './kernel-browser-timing.mjs';
+import {displayTiming,roomDisplayTiming,timedHostRequests} from './kernel-browser-timing.mjs';
 test('MP-08/MP-10 native diagnostics batch without losing order or final shutdown records',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'chariox-mp24-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
  const timing=displayTiming(root),file=path.join(root,'display-timing.jsonl');
@@ -74,4 +74,16 @@ test('MP-08/MP-10/MP-11 display attribution exposes only a fixed numeric source 
  assert.equal(events[0][0],'host_display_queue');gate.resolve('frame');assert.equal(await result,'frame');
  assert.equal(events[1][0],'host_display');assert.equal(events[1][1].source_kind,2);assert(Number.isFinite(events[1][1].at));
  assert(!JSON.stringify(events).includes('private-'));
+});
+
+test('MP-08/MP-10/MP-11 Room worker trace uses the kernel-owned packet root after environment scrubbing',()=>{
+ const root=mkdtempSync(path.join(tmpdir(),'chariox-room-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
+ try{
+  process.env.CHARIOX_BROWSER_DISPLAY_TIMING='1';
+  const timing=roomDisplayTiming({CHARIOX_BROWSER_DISPLAY_PACKET_ROOT:root});
+  timing.event('room_display_queue',{at:1,viewer:2,delivery:1});timing.flush();
+  const [row]=readFileSync(path.join(root,'display-timing.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(row.viewer,2);assert.equal(row.delivery,1);
+  const disabled=roomDisplayTiming({});assert.doesNotThrow(()=>disabled('room_display_queue',1));
+ }finally{if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(root,{recursive:true,force:true})}
 });

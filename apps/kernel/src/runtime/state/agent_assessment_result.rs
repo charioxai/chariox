@@ -8,8 +8,52 @@ use zeroize::Zeroize;
 
 mod cache;
 pub(super) use cache::AssessmentResults;
-impl KernelRuntimeOwnedState {
-    pub(super) fn private_evidence_for_dispatch(
+
+/// MP-11: App queue/promotion and runtime actors share this exact private cell.
+/// No App pointer or runtime actor is captured, so this cannot create an ownership cycle.
+#[derive(Clone)]
+pub(crate) struct PrivateAssessmentDispatch {
+    pub(super) work_results: AssessmentResults,
+    config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+    durable_state_store: crate::durable_state::DurableKernelStateStore,
+    room_secret_observations: super::room_secret_observation::RoomSecretObservations,
+}
+impl PrivateAssessmentDispatch {
+    pub(super) fn new(
+        config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+        durable_state_store: crate::durable_state::DurableKernelStateStore,
+        room_secret_observations: super::room_secret_observation::RoomSecretObservations,
+    ) -> Self {
+        Self {
+            work_results: Default::default(),
+            config_projection,
+            durable_state_store,
+            room_secret_observations,
+        }
+    }
+    pub(crate) fn for_app_dispatch(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+        origin: crate::session::PromptOrigin,
+    ) -> Result<Option<crate::prompt_assembly::AssessmentEvidence>, crate::error::DaemonError> {
+        if self.config_projection.snapshot().room_agent_tools {
+            self.durable_state_store.agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::Begin {
+                    owner: session.owner_user_id().into(),
+                    room: session.id().into(),
+                    agent: agent.into(),
+                    prompt: prompt.into(),
+                    run: Some(run.into()),
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )?;
+        }
+        Ok(self.for_dispatch(session.id(), agent, prompt, run, origin, false))
+    }
+    pub(crate) fn for_dispatch(
         &self,
         room: &str,
         agent: &str,
@@ -22,11 +66,65 @@ impl KernelRuntimeOwnedState {
             self.take_private_assessment_evidence(room, agent, prompt, run)
         } else {
             if !steering && self.config_projection.snapshot().room_agent_tools {
-                self.private_work_results
-                    .begin_work(room, agent, prompt, run);
+                self.work_results.begin_work(room, agent, prompt, run);
             }
             None
         }
+    }
+    fn take_private_assessment_evidence(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
+        let task = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))
+            .ok()?
+            .into_iter()
+            .find(|t| {
+                t.state == ExecutionState::Working
+                    && t.prompt_id == prompt
+                    && t.provider_run_id.as_deref() == Some(run)
+                    && goals::is_check(t, prompt)
+            })?;
+        let check = crate::durable_state::agent_lifecycle::completion::evaluation(&task)?;
+        let work_run = check.work_provider_run_id.as_deref()?;
+        if work_run != run || work_run.starts_with("leased:") {
+            return None;
+        }
+        let bytes = self
+            .work_results
+            .take(room, agent, &check.work_prompt_id, work_run)?;
+        if !self.room_secret_observations.protects_bytes(room) {
+            return None;
+        }
+        let text = std::str::from_utf8(&bytes).ok()?.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let text = self
+            .room_secret_observations
+            .scrub(room, text.to_string())
+            .ok()?;
+        let text = crate::secret_redaction::redact_secrets(&text);
+        crate::prompt_assembly::AssessmentEvidence::new(serde_json::json!({"task_id":task.task_id,"work_prompt_id":check.work_prompt_id,"provider_run_id":work_run,"complete":true,"provider_assistant_result":text}).to_string())
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    pub(super) fn private_evidence_for_dispatch(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+        origin: crate::session::PromptOrigin,
+        steering: bool,
+    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
+        self.private_assessment_dispatch
+            .for_dispatch(room, agent, prompt, run, origin, steering)
     }
     pub(super) fn collect_private_assessment(
         &self,
@@ -86,6 +184,7 @@ impl KernelRuntimeOwnedState {
             &output.bytes,
         );
     }
+    #[cfg(test)]
     pub(super) fn take_private_assessment_evidence(
         &self,
         room: &str,
@@ -93,38 +192,8 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         run: &str,
     ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
-        let task = self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))
-            .ok()?
-            .into_iter()
-            .find(|t| {
-                t.state == ExecutionState::Working
-                    && t.prompt_id == prompt
-                    && t.provider_run_id.as_deref() == Some(run)
-                    && goals::is_check(t, prompt)
-            })?;
-        let check = crate::durable_state::agent_lifecycle::completion::evaluation(&task)?;
-        let work_run = check.work_provider_run_id.as_deref()?;
-        if work_run != run || work_run.starts_with("leased:") {
-            return None;
-        }
-        let bytes = self
-            .private_work_results
-            .take(room, agent, &check.work_prompt_id, work_run)?;
-        if !self.room_secret_observations.protects_bytes(room) {
-            return None;
-        }
-        let text = std::str::from_utf8(&bytes).ok()?.trim();
-        if text.is_empty() {
-            return None;
-        }
-        let text = self
-            .room_secret_observations
-            .scrub(room, text.to_string())
-            .ok()?;
-        let text = crate::secret_redaction::redact_secrets(&text);
-        crate::prompt_assembly::AssessmentEvidence::new(serde_json::json!({"task_id":task.task_id,"work_prompt_id":check.work_prompt_id,"provider_run_id":work_run,"complete":true,"provider_assistant_result":text}).to_string())
+        self.private_assessment_dispatch
+            .take_private_assessment_evidence(room, agent, prompt, run)
     }
     pub(super) fn take_private_assessment(
         &self,

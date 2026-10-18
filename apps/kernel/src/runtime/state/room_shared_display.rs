@@ -1,4 +1,7 @@
 //! MP-08/MP-10/MP-11: home owns leases; worker owns the exact Room producer.
+#[cfg(test)]
+mod admission_tests;
+pub(super) mod timing;
 mod worker;
 use super::*;
 use crate::runtime::command::KernelCaller;
@@ -74,8 +77,16 @@ impl KernelRuntimeState {
         if let Some(hint) = &offer.resume_hint {
             let lease = self.home_display_lease(hint)?;
             let mut lease = lease.lock().await;
-            let (slice, _guard) = self
-                .admit_room_display(caller, session, attachment, viewer, &request.slice_ref)
+            let (slice, mut guard) = self
+                .admit_room_display(
+                    caller,
+                    session,
+                    attachment,
+                    viewer,
+                    &request.slice_ref,
+                    true,
+                    None,
+                )
                 .await?;
             if lease.session_id != session
                 || lease.attachment_id != attachment
@@ -90,13 +101,23 @@ impl KernelRuntimeState {
             if lease.viewer_public_key != viewer {
                 return Err(error());
             }
+            guard.release_queue();
             self.resume_room_display(&mut lease, hint, &slice, false)
                 .await?;
             return self.room_display_endpoint(&slice, &lease);
         }
-        let (slice, _guard) = self
-            .admit_room_display(caller, session, attachment, viewer, &request.slice_ref)
+        let (slice, mut guard) = self
+            .admit_room_display(
+                caller,
+                session,
+                attachment,
+                viewer,
+                &request.slice_ref,
+                false,
+                None,
+            )
             .await?;
+        guard.release_queue();
         let id = format!("room-display-{:032x}", rand::random::<u128>());
         let room = self
             .room_environment_snapshot(session)
@@ -340,31 +361,56 @@ impl KernelRuntimeState {
         generation: u64,
         command: RoomDisplayCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        let timing = if matches!(
+            &command,
+            RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
+        ) {
+            timing::ResumeTiming::start()
+        } else {
+            None
+        };
+        if let Some(timing) = &timing {
+            timing.mark("entered");
+        }
         let lease = self.home_display_lease(id)?;
         let mut lease = lease.lock().await;
+        if let Some(timing) = &timing {
+            timing.mark("lease_acquired");
+        }
         if lease.binding.generation != generation || lease.used.elapsed() >= Duration::from_secs(60)
         {
             return Err(error());
         }
-        let (slice, _guard) = self
+        let (slice, mut guard) = self
             .admit_room_display(
                 caller,
                 &lease.session_id,
                 &lease.attachment_id,
                 &lease.viewer_public_key,
                 &lease.slice_id,
+                matches!(
+                    command,
+                    RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
+                ),
+                timing.as_ref(),
             )
             .await?;
+        guard.release_queue();
+        if let Some(timing) = &timing {
+            timing.mark("admitted");
+        }
         if matches!(
             command,
             RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
         ) {
             let attach = matches!(command, RoomDisplayCommand::ResumeAttach {});
-            return serde_json::to_value(
-                self.resume_room_display(&mut lease, id, &slice, attach)
-                    .await?,
-            )
-            .map_err(|_| error());
+            let resumed = self
+                .resume_room_display(&mut lease, id, &slice, attach)
+                .await;
+            if let Some(timing) = &timing {
+                timing.mark("peer_returned");
+            }
+            return serde_json::to_value(resumed?).map_err(|_| error());
         }
         let close = matches!(command, RoomDisplayCommand::Close {});
         let result = self
@@ -414,6 +460,8 @@ impl KernelRuntimeState {
                 &lease.attachment_id,
                 &lease.viewer_public_key,
                 &lease.slice_id,
+                true,
+                None,
             )
             .await?;
         let result = self

@@ -1,4 +1,5 @@
 // MP-08 / MP-10 / MP-11: desktop viewer leases use shared codecs and frame transport.
+import {timestamp} from './kernel-browser-timing.mjs';
 import { randomUUID } from 'node:crypto';
 import { DesktopSource, nativeDesktopWorker } from './kernel-desktop-source.mjs';
 import { DisplayStream, exactPatchLimit } from './kernel-browser-display.mjs';
@@ -61,7 +62,9 @@ export class DesktopDisplay {
     // briefly for the next frame (the kernel pump paces the stream).
     if(command.push?.reset)stream.resetForDelivery();
     stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
+    const waiting=timestamp();
     await stream.producer.waitReady(command.push?100:20,signal);
+    this.host.timing.event?.('desktop_producer_wait',{at:waiting,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0});
     if(!valid())throw new UserDomainRefusal('not_granted');
     const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
@@ -69,8 +72,11 @@ export class DesktopDisplay {
     const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
     // MP-08/MP-10: the shared kernel ACK pump bounds pushed bytes. Legacy
     // display credits keep the stream's byte pacing, as Browser does.
+    const building=timestamp();
     const frame=await stream.frame({...sample,generation:this.host.generation,push_delivery:Boolean(command.push)},binding.generation,command.after_sequence,async()=>current(),current);
-    if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
+    this.host.timing.event?.('desktop_frame_build',{at:building,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sent:frame?1:0});
+    if(frame&&frame.sequence===1)this.host.timing.event?.('desktop_delivery_first_frame',{at:stream.timingDeliveryStarted??building,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sequence:frame.sequence});
+    if(frame)this.host.timing.event?.('desktop_frame_out',{at:sample.captured_ms??sample.raw?.captured_ms,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0,sequence:frame.sequence,serial:sample.serial,captured_ms:sample.captured_ms??sample.raw?.captured_ms,published_ms:sample.published_ms,encoded_ms:sample.encoded_ms});
     return {generation:this.host.generation,frame_sent:frame!==null,display_frame:frame};
   }
   // MP-08/MP-10: a quiet lossy desktop settles to exact repair tiles of the

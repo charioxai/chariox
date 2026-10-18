@@ -36,6 +36,7 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
 mod display_admission;
+mod display_delivery;
 mod browser_input_order;
 mod connection_config;
 mod connection_state;

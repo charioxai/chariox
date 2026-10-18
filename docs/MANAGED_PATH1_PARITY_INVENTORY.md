@@ -204,6 +204,19 @@ and checks owner-positive/agent-negative input with both awake and sleeping
 workers, plus ordinary native editing. This is supplementary fixture proof;
 MP-10 live provider/client acceptance and independent MP-11 security review
 remain required on the resulting source.
+## MP-08 / MP-09 / MP-10 / MP-11 private assessment review corrections (2026-10-16)
+
+App queue advancement, project promotion and runtime prompt dispatch must share
+one kernel-private work-result cache and the same exact-turn assessment binding.
+Private evidence must never enter the provider's durable session store. Codex
+uses its official ephemeral thread mode; Claude assessments use a fresh official
+child with `--no-session-persistence`. The current OpenCode utility endpoint
+creates durable sessions, so private-evidence assessments reject before provider
+I/O until a documented nonpersistent seam is verified. Ordinary provider work
+and public-metadata utility checks retain their existing behavior.
+
+These source corrections and regression checks do not establish real-provider
+privacy acceptance, protected OpenCode completion parity or full MP-10 acceptance.
 
 ## MP-08 / MP-10 / MP-11 private completion control (2026-10-15)
 

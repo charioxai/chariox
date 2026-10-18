@@ -45,6 +45,31 @@ pub(super) async fn handle_client_packet_route_envelope(
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
 ) -> Result<ConnectionAction, std::io::Error> {
+    handle_client_packet_route_envelope_with_target_pin(
+        envelope,
+        registry,
+        routes,
+        auth_verifier,
+        peer_addr,
+        outgoing_tx,
+        relay_request_counter,
+        None,
+    )
+    .await
+}
+
+/// MP-11: initial535 may bind only the previously admitted home key. Keep
+/// that check in the same transaction that selects the subscription sender.
+pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
+    envelope: RelayEnvelope,
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
+    auth_verifier: &RelayAuthVerifier,
+    peer_addr: SocketAddr,
+    outgoing_tx: &RelaySender,
+    relay_request_counter: &AtomicU64,
+    expected_daemon_public_key: Option<&str>,
+) -> Result<ConnectionAction, std::io::Error> {
     match envelope {
         RelayEnvelope::ClientRequest {
             request_id,
@@ -347,6 +372,18 @@ pub(super) async fn handle_client_packet_route_envelope(
             );
             let (subscription_conflict, daemon_sender) = {
                 let guard = registry.write().await;
+                if expected_daemon_public_key.is_some_and(|expected| {
+                    !guard
+                        .daemons
+                        .get(&daemon_key)
+                        .is_some_and(|registration| registration.public_key == expected)
+                }) {
+                    send_close(
+                        outgoing_tx,
+                        "initial display resume target key changed".into(),
+                    );
+                    return Ok(ConnectionAction::Break);
+                }
                 if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
                 } else if !daemon_route_is_admitted(&guard, auth_verifier, &daemon_key) {
@@ -359,7 +396,9 @@ pub(super) async fn handle_client_packet_route_envelope(
                             client_request_id: request_id.clone(),
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
-                                display: crate::frame_transport::is_display_scope(subscription_scope.as_deref()),
+                                display: crate::frame_transport::is_display_scope(
+                                    subscription_scope.as_deref(),
+                                ),
                                 subscription_id: subscription_id.clone(),
                                 client_public_key: client_public_key.clone(),
                             },

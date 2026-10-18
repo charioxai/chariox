@@ -333,4 +333,6 @@ pub use workspace::*;
 /// font requirements, known sheets, flush, snapshot completion); clients require it for mirror v2.
 /// MP-08/MP-10/MP-11: allocated 552 adds the Browser reply's `parked_input` (input this observer has
 /// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 552;
+/// MP-08/MP-10/MP-11: allocated 553 adds the relay `client_connect_display_resume` envelope (initial
+/// Room display resume composed with client admission).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 553;

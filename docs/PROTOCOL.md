@@ -3945,6 +3945,41 @@ replacement-open retry or cursor-based shortcut. The new snapshot/hash is
 `mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
 remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
 
+MP-08 / MP-10 / MP-11: allocation 553/161 composes
+client admission and one initial resume registration. The client offers
+WebSocket subprotocol `chariox-room-display-resume-v553` alongside the existing
+binary-v96 protocol. Selection of the new subprotocol positively advertises
+both initial registration and binary-v96 events; a legacy selection retains
+the existing connect-then-subscribe exchange. Kernel version alone does not
+advertise relay support.
+
+On a fresh negotiated socket, `ClientConnectDisplayResume` contains the ordinary
+`auth_token` and `target`, the previously admitted `expected_daemon_public_key`,
+and a strict `registration` record with `request_id`, `subscription_id`,
+`session_id` (the prior delivery lease), `attachment_id` (its generation) and
+`client_public_key`. The nested record cannot select another target, scope or
+cursor. Normal client admission verifies token, realm, live target, retained
+authority and the expected home key pin. It sends normal `ClientConnected`,
+rechecks expiry/revocation, then passes a normal `ClientSubscribe` with fixed
+`kernel_browser_display_resume` scope and null cursor to the existing route
+handler. Packet-route permission, identifiers, capacity, caller projection,
+response ownership and subscription cleanup remain there. The expected home
+key is rechecked in the transaction that selects the subscription sender, so
+a registration replaced after `ClientConnected` cannot receive the initial
+registration. Repeated combined
+connects and unnegotiated combined envelopes refuse. Normal `ClientConnect`
+continues to renew authorization without triggering a resume.
+
+This changes the relay wire (new envelope, hence 553/161) but not resume authority: the existing 535 registration invokes
+the same525 home/worker resume authority. Clients reserve encrypted response
+correlation before writing, keep fresh frames held until presenter activation,
+and retain auth-generation, target, peer, generation, retirement and hint checks.
+The 535 snapshot stays unchanged; `mp08_mp10_mp11_display_connect_553_161_snapshot_hash` pins the combined form. A client sends the combined message only to a kernel that reported local protocol ≥ 553 and a relay that selected the 553 subprotocol; older kernels or relays keep the legacy connect-then-subscribe exchange. The live Room network drill accepts
+`CHARIOX_ROOM_DISPLAY_EXPECT_INITIAL_RESUME=1` to require the combined write after
+each fault, recording only its envelope kind. Run the same real clients against
+a legacy relay to validate fallback; neither source checks nor negotiation alone
+establish repaint or stability acceptance.
+
 ### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
 
 The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",

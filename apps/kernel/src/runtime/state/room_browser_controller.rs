@@ -21,6 +21,21 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let timing = if matches!(
+            &request,
+            RelayPeerRequest::RoomSharedDisplay {
+                command: crate::transport::room_shared_display::RoomDisplayCommand::Resume {}
+                    | crate::transport::room_shared_display::RoomDisplayCommand::ResumeAttach {},
+                ..
+            }
+        ) {
+            super::room_shared_display::timing::ResumeTiming::start()
+        } else {
+            None
+        };
+        if let Some(timing) = &timing {
+            timing.mark("peer_entered");
+        }
         // All Room display/observation routes share worker revocation admission.
         let slice_id = match &request {
             RelayPeerRequest::RoomBrowserController {
@@ -37,8 +52,16 @@ impl KernelRuntimeState {
         if let Some(slice_id) = slice_id {
             self.settle_slice_observation_revocations(slice_id).await?;
         }
-        self.send_room_slice_peer_request_unchecked(config, target, request, timeout)
-            .await
+        if let Some(timing) = &timing {
+            timing.mark("revocations_ready");
+        }
+        let result = self
+            .send_room_slice_peer_request_unchecked(config, target, request, timeout)
+            .await;
+        if let Some(timing) = &timing {
+            timing.mark("relay_returned");
+        }
+        result
     }
 
     pub(super) async fn send_room_slice_peer_request_unchecked(
@@ -282,7 +305,8 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        let (slice, _guard) = self
+        let route_started = crate::session::unix_epoch_ms();
+        let (slice, mut guard) = self
             .admit_room_browser_controller_route(
                 session_id,
                 &slice.id,
@@ -291,6 +315,12 @@ impl KernelRuntimeState {
                 admission_deadline,
             )
             .await?;
+        let _route_trace = RouteTrace::start(&command, route_started);
+        // MP-08/MP-10/MP-11: release queue ownership before peer I/O; the
+        // retained operation marker still orders input and excludes lifecycle.
+        if let Some(guard) = guard.as_mut() {
+            guard.release_queue();
+        }
         if matches!(command, Command::ClearSecretObservation { .. }) {
             self.settle_slice_observation_revocations(&slice.id).await?;
             return Ok(Response::SecretObservationCleared);
@@ -1201,5 +1231,34 @@ mod tests {
         };
 
         assert_eq!(receipt_recovery_command(&command), None);
+    }
+}
+
+/// MP-10: numeric timing of controller routes that hold the route marker.
+struct RouteTrace(Option<(String, u64, u64)>);
+
+impl RouteTrace {
+    fn start(command: &Command, requested_ms: u64) -> Self {
+        if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() != Ok("1") {
+            return Self(None);
+        }
+        let debug = format!("{command:?}");
+        let kind = debug
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Self(Some((kind, requested_ms, crate::session::unix_epoch_ms())))
+    }
+}
+
+impl Drop for RouteTrace {
+    fn drop(&mut self) {
+        if let Some((kind, requested_ms, admitted_ms)) = self.0.take() {
+            eprintln!(
+                "[chariox.browser_route] {kind} requested={requested_ms} admitted={admitted_ms} ended={}",
+                crate::session::unix_epoch_ms()
+            );
+        }
     }
 }
