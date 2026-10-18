@@ -2013,7 +2013,7 @@ test('MP-08/MP-10/MP-11 parked input dies with its terminal and with a takeover 
  assert.equal(host.busyInputs.queues.size,3);
  await host.handle({id:1,method:'host.computer.retire',params:{observer:'terminal:a'}});
  await host.handle({id:2,method:'host.browser.retire_input',params:{tab_id:tab.tab_id,except:'terminal:c'}});
- assert.deepEqual([...host.busyInputs.queues.keys()].filter(key=>host.busyInputs.queues.get(key).entries.length),['terminal:c']);
+ assert.deepEqual([...host.busyInputs.queues.values()].filter(queue=>queue.entries.length).map(queue=>queue.key),['terminal:c']);
  busy=false;
  for(let n=0;n<200&&host.busyInputs.queues.size;n++)await new Promise(r=>setTimeout(r,5));
  assert.deepEqual(sent.filter(x=>x.method==='Input.insertText').map(x=>x.params.text),['c']);
@@ -2119,4 +2119,13 @@ test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click neve
  assert.ok(sent.some(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseReleased'),'the release was queued with the press');
  connection.beforeSend=null;
  assert.ok((await host.request({op:'state'})).tabs.length,'the browser is still there');
+}));
+
+// r55: Chrome's band input has its own busy lane; page input and unbound input share the page lane.
+test('MP-08/MP-10/MP-11 inputLane separates Chrome band input from page input', () => using(async ({ host }) => {
+  host.displays.set('band', { binding_id: 'b1', regionTarget: { kind: 'browser_chrome' } });
+  host.displays.set('popup', { binding_id: 'b2', regionTarget: { kind: 'browser_auxiliary' } });
+  host.displays.set('page', { binding_id: 'b3', regionTarget: { kind: 'visible_page' } });
+  assert.deepEqual(['b1', 'b2', 'b3', 'unknown', undefined].map(binding_id => host.inputLane({ op: 'input', binding_id })), ['band', 'band', 'page', 'page', 'page']);
+  host.displays.clear();
 }));

@@ -19,19 +19,24 @@ const sameScroll = (a, b) => a.input?.kind === 'scroll' && b.input?.kind === 'sc
   && a.binding_id === b.binding_id && a.input.x === b.input.x && a.input.y === b.input.y;
 
 export class BusyInputQueue {
-  constructor(run, reply, { retryMs = 500, limit = LIMIT, ttlMs = TTL_MS, staleMs = STALE_MS, sameDocument = () => false, event = () => {} } = {}) {
-    Object.assign(this, { run, reply, retryMs, limit, ttlMs, staleMs, sameDocument, event }); this.queues = new Map(); this.stopped = false;
+  // `lane` names the surface an input acts on (the page, or Chrome's own band): each observer has one queue per lane, so an
+  // input that waits for the page's renderer never holds back the band's keys, which do not depend on it.
+  constructor(run, reply, { retryMs = 500, limit = LIMIT, ttlMs = TTL_MS, staleMs = STALE_MS, sameDocument = () => false, event = () => {}, lane = () => '' } = {}) {
+    Object.assign(this, { run, reply, retryMs, limit, ttlMs, staleMs, sameDocument, event, lane }); this.queues = new Map(); this.stopped = false;
   }
 
+  /** How many inputs of `key` (an observer) wait, across its lanes. */
+  parked(key) { let count = 0; for (const queue of this.queues.values()) if (queue.key === key) count += queue.entries.length; return count; }
+
   async submit(key, command, options) {
-    const queue = this.queues.get(key);
+    const slot = `${key}\0${this.lane(command)}`, queue = this.queues.get(slot);
     if (queue) return this.park(queue, command, options);
     try { return await this.run(command, options); }
     catch (error) {
       if (this.stopped || !busy(error)) throw error;
-      const created = { key, entries: [], draining: false };
-      this.queues.set(key, created);
-      try { return this.park(created, command, options, error); } catch (refused) { this.queues.delete(key); throw refused; }
+      const created = { key, slot, entries: [], draining: false };
+      this.queues.set(slot, created);
+      try { return this.park(created, command, options, error); } catch (refused) { this.queues.delete(slot); throw refused; }
     }
   }
 
@@ -65,7 +70,7 @@ export class BusyInputQueue {
         if (typed(entry.command)) while (queue.entries.length && typed(queue.entries[0].command)) { queue.entries.shift(); this.event('input_dropped'); }
       }
     }
-    this.queues.delete(queue.key);
+    this.queues.delete(queue.slot);
   }
 
   // The parking reply ended the kernel's action for this input, so its authority ends here: the terminal that parked it
