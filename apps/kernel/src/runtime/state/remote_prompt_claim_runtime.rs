@@ -796,7 +796,7 @@ impl KernelRuntimeState {
         Ok(prompt_is_current && binding_is_current)
     }
 
-    fn finish_stale_remote_prompt_recovery(
+    pub(super) fn finish_stale_remote_prompt_recovery(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -828,6 +828,12 @@ impl KernelRuntimeState {
             self.owned.clear_prompt_activity(stale_run.id());
             self.owned.provider_run_projection.update(stale_run);
         }
+        // The replay re-entered Dispatching. Acknowledge it like a first delivery, or
+        // the next claim pass holds the delivered prompt as an unreconciled receipt.
+        self.owned.settle_remote_dispatch_if_current(
+            recovered_dispatch,
+            Some(recovered_provider_run_id),
+        )?;
         self.owned
             .agent_store
             .set_remote_execution_active_worker_provider_run_id(

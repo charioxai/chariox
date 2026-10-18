@@ -4850,6 +4850,56 @@ mod dispatch_settlement {
     }
 
     #[tokio::test]
+    async fn stale_binding_replay_is_acknowledged_so_the_claim_loop_does_not_hold_it() {
+        // The replay onto a restarted worker re-enters Dispatching; once the
+        // worker accepted it, the next claim pass must see a delivered prompt.
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let (session_id, agent_id) = (dispatch.session_id.clone(), dispatch.agent_id.clone());
+        let stale_binding = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .clone();
+        runtime
+            .finish_stale_remote_prompt_recovery(
+                &session_id,
+                &agent_id,
+                &stale_binding,
+                "worker-run-b",
+                &dispatch,
+                "worker-run-new",
+            )
+            .unwrap();
+        assert!(runtime
+            .remote_prompt_dispatch_after_claim_restart(&session_id, &agent_id)
+            .await
+            .unwrap()
+            .is_none());
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_run_id(),
+            Some("worker-run-new")
+        );
+        assert!(!prompt.durable_delivery_reconciliation_pending());
+    }
+
+    #[tokio::test]
     async fn late_remote_dispatch_error_after_delivered_is_inert() {
         assert_duplicate_remote_settlement_is_inert(Err(DaemonError::LocalTransport {
             operation: "submit remote prompt",
