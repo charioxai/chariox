@@ -106,8 +106,18 @@ impl KernelRuntimeState {
                 .await
             }
             SLICE_BROWSER_STATUS_TOOL => {
-                self.controller_browser_status_tool_result(session_id, slice_id, agent_id)
-                    .await
+                let args = if arguments.is_null() {
+                    SliceBrowserStatusArgs::default()
+                } else {
+                    parse_controller_tool_arguments::<SliceBrowserStatusArgs>(
+                        arguments,
+                        "runtime_tool_slice_browser_status",
+                    )?
+                };
+                self.controller_browser_status_tool_result(
+                    session_id, slice_id, agent_id, args.cursor,
+                )
+                .await
             }
             SLICE_BROWSER_TAB_TOOL => {
                 let args = parse_controller_tool_arguments::<SliceBrowserTabArgs>(
