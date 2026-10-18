@@ -1478,3 +1478,32 @@ test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during 
     }
     assert(section, 'the continuation reaches the section'); assert(restored, 'the moved paragraph is mirrored under its new parent');
   }));
+
+// maskleak r3 (MP-11): a Vault fill into a password field that the page then flips to type=text must never put the
+// value on the mirror wire: every packet from the first snapshot on is scanned for the secret (plain, UTF-16, base64).
+const secretForms = secret => { const utf16 = Buffer.from(secret, "utf16le"); return [secret, utf16.toString("latin1"), Buffer.from(secret).toString("base64").replace(/=+$/, ""), utf16.toString("base64").replace(/=+$/, ""), Buffer.from(secret).toString("hex")]; };
+for (const [name, html, fillAndFlip] of [
+  ["the page flips the field after the fill", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate) => { await fill(); await evaluate("f.type='text';true"); }],
+  ["the page flips the field in the fill's own task", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate, secret) => { await evaluate(`f.value=${JSON.stringify(secret)};f.dispatchEvent(new Event('input',{bubbles:true}));f.type='text';true`); }],
+]) test(`MP-11 maskleak: Vault fill into a password field, then ${name}: the value never travels`, () => mirrored(html, async ({ next, evaluate, host, subscribe }) => {
+  const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#f" }, sessionId);
+  const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId), node_ref = `backend:${node.backendNodeId}`;
+  const secret = "magenta-secret-" + Math.random().toString(36).slice(2, 8), value_hash = createHash("sha256").update(secret).digest("hex");
+  await host.protect({ values: [secret], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref, value_hash, fill_revision: 1 }] });
+  const seen = [JSON.stringify(await next(0, true))];
+  // The Vault paste (host.secret) types the value into the field with physical keys when the kernel owns a desktop; a
+  // headless run types it with one input event per character.
+  const fill = async () => process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === "1"
+    ? await host.handle({ id: 7, method: "host.secret", params: { tab_id: tab.tab_id, generation: (await host.request({ op: "state" })).generation, document_id: tab.document_id, node_ref, observed_by: "terminal:owner", action: { kind: "fill", text: secret, expected_document_url: tab.url } } }).then(reply => assert.ok(reply.ok, `the Vault paste lands: ${JSON.stringify(reply).slice(0, 200)}`))
+    : evaluate(`f.focus();for(const c of ${JSON.stringify(secret)}){f.value+=c;f.dispatchEvent(new Event('input',{bubbles:true}))}true`);
+  await fillAndFlip(fill, evaluate, secret);
+  assert.equal(await evaluate("document.querySelector('input').value"), secret, "the page holds the fill");
+  for (let i = 0; i < 6; i++) seen.push(JSON.stringify(await next(250)));
+  seen.push(JSON.stringify(await next(0, true)));
+  // A viewer that attaches after the flip (reconnect, second tab of the page) gets a snapshot from the same serializer.
+  const late = await subscribe();
+  seen.push(JSON.stringify(await late.next(0, true)));
+  for (const form of secretForms(secret)) assert(!seen.some(text => text.includes(form)), `MP-11: the fill never travels (${form.slice(0, 6)}…)`);
+  assert(seen.some(text => JSON.parse(text).nodes?.some?.(row => row[2] === 4) || JSON.parse(text).ops?.some?.(op => op.op === "children" && op.nodes.some(row => row[2] === 4))) || JSON.parse(seen.at(-1)).nodes.some(row => row[2] === 4), "MP-11: the flipped field ends as a mask");
+}));
