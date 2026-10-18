@@ -242,6 +242,9 @@ pub struct RuntimeInteraction {
     /// Ephemeral provider-native login UI, never model context or history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_login: Option<RuntimeProviderLogin>,
+    /// Local only: when a forwarded decision stops being actionable.
+    #[serde(skip)]
+    decision_expires_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +296,7 @@ impl RuntimeInteraction {
             project_environment_review: None,
             provider_login: None,
             requester: None,
+            decision_expires_at: None,
         }
     }
 
@@ -369,6 +373,7 @@ impl RuntimeInteraction {
             project_environment_review: None,
             provider_login: None,
             requester: None,
+            decision_expires_at: None,
         }
     }
 
@@ -376,6 +381,25 @@ impl RuntimeInteraction {
     pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
         self.timeout_sec = Some(seconds);
         self
+    }
+
+    /// Fixes the instant the decision expires, however long it takes to reach
+    /// the kernel that shows it.
+    pub(crate) fn with_decision_expiry(mut self, expires_at: tokio::time::Instant) -> Self {
+        self.decision_expires_at = Some(expires_at);
+        self.rebase_decision_budget();
+        self
+    }
+
+    /// Restates the relative timeout from the fixed expiry; transports call it
+    /// right before serializing so setup time is not handed to the receiver.
+    pub(crate) fn rebase_decision_budget(&mut self) {
+        let Some(expires_at) = self.decision_expires_at else {
+            return;
+        };
+        let left = expires_at.saturating_duration_since(tokio::time::Instant::now());
+        let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+        self.timeout_sec = Some(seconds.max(1));
     }
 
     pub fn with_provider_login(mut self, login: RuntimeProviderLogin) -> Self {

@@ -224,7 +224,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
     target_public_key: &str,
-    request: RelayPeerRequest,
+    mut request: RelayPeerRequest,
     response_timeout: Duration,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
@@ -251,6 +251,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let cleanup_resource =
         cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
     let expected_public_key = target_public_key.to_string();
+    request.rebase_decision_budget();
     let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay peer request",
         message: error.to_string(),
@@ -772,7 +773,7 @@ async fn send_peer_request_via_temporary_connection_with_optional_timeout_authen
 async fn send_peer_request_via_temporary_connection_authorized_inner(
     config: &crate::config::DaemonConfig,
     target: ClientTarget,
-    request: RelayPeerRequest,
+    mut request: RelayPeerRequest,
     response_timeout: Option<Duration>,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
     #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
@@ -834,15 +835,6 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     #[cfg(not(test))]
     let kernel = relay_discovery::get_live_kernel(&discovery_config, target_ref).await?;
     authorize()?;
-    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer request",
-        message: error.to_string(),
-    })?;
-    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
-        &config.relay_private_key,
-        &kernel.public_key,
-        &plaintext,
-    )?;
     #[cfg(test)]
     test_trace.record("registered_peer_connect_started", None);
     let transport_timeout = Duration::from_millis(config.relay_request_timeout_ms);
@@ -915,6 +907,16 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         let _ = socket.close(None).await;
         return Err(error);
     }
+    request.rebase_decision_budget();
+    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize relay peer request",
+        message: error.to_string(),
+    })?;
+    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+        &config.relay_private_key,
+        &kernel.public_key,
+        &plaintext,
+    )?;
     socket
         .send(Message::Text(
             serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {

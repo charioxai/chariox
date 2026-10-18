@@ -1027,6 +1027,13 @@ impl RelayPeerRequest {
             configured
         }
     }
+
+    /// Charges transport setup to a forwarded decision's fixed expiry.
+    pub(crate) fn rebase_decision_budget(&mut self) {
+        if let Self::ForwardNativeTurnInteraction { interaction, .. } = self {
+            interaction.rebase_decision_budget();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

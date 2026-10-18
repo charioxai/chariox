@@ -114,16 +114,18 @@ async fn forward_native_interaction_to_home(
     mut target: RemoteNativeInteractionTarget,
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    let deadline = interaction.timeout_sec().map(|seconds| {
-        tokio::time::Instant::now()
-            + Duration::from_secs(seconds)
-            + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER
-    });
+    // The home's card expires at `expires_at`; the worker outwaits it by the buffer.
+    let expires_at = interaction
+        .timeout_sec()
+        .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
+    let deadline = expires_at.map(|at| at + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER);
     let mut backoff = Duration::from_secs(1);
     let mut attempt = 1_u32;
     loop {
-        let Some(forwarded) = interaction_with_remaining_budget(&interaction, deadline) else {
-            return Ok(timed_out_resolution());
+        let forwarded = match expires_at {
+            Some(at) if at <= tokio::time::Instant::now() => return Ok(timed_out_resolution()),
+            Some(at) => interaction.clone().with_decision_expiry(at),
+            None => interaction.clone(),
         };
         let (config, target_daemon_id, context) = &target;
         let forward = forward_native_interaction_once(
@@ -289,23 +291,6 @@ fn remote_native_interaction_response_timeout(
         .map(Duration::from_secs)
         .map(|timeout| timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER))
         .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms))
-}
-
-/// The interaction as the home must see it now: its decision budget is what
-/// is left of the original one, so a late first delivery or a retry never
-/// restarts the home card's deadline. `None` once the budget is spent.
-fn interaction_with_remaining_budget(
-    interaction: &RuntimeInteraction,
-    deadline: Option<tokio::time::Instant>,
-) -> Option<RuntimeInteraction> {
-    let Some(deadline) = deadline else {
-        return Some(interaction.clone());
-    };
-    let left = deadline
-        .saturating_duration_since(tokio::time::Instant::now())
-        .saturating_sub(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER);
-    let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
-    (seconds > 0).then(|| interaction.clone().with_timeout_sec(seconds))
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
@@ -594,24 +579,20 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn forwarded_interaction_carries_only_the_remaining_decision_budget() {
-        let original = interaction(Some(300));
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(315);
-        tokio::time::advance(Duration::from_secs(60)).await;
-        let forwarded = interaction_with_remaining_budget(&original, Some(deadline)).unwrap();
-        assert_eq!(forwarded.timeout_sec(), Some(240));
-        assert_eq!(forwarded.id(), original.id());
-        tokio::time::advance(Duration::from_millis(239_500)).await;
-        let forwarded = interaction_with_remaining_budget(&original, Some(deadline)).unwrap();
+    async fn forwarded_interaction_restates_the_remaining_budget_at_every_rebase() {
+        let expires_at = tokio::time::Instant::now() + Duration::from_secs(300);
+        let mut forwarded = interaction(Some(300)).with_decision_expiry(expires_at);
+        assert_eq!(forwarded.timeout_sec(), Some(300));
+        tokio::time::advance(Duration::from_secs(40)).await;
+        assert_eq!(forwarded.timeout_sec(), Some(300));
+        forwarded.rebase_decision_budget();
+        assert_eq!(forwarded.timeout_sec(), Some(260));
+        tokio::time::advance(Duration::from_millis(259_500)).await;
+        forwarded.rebase_decision_budget();
         assert_eq!(forwarded.timeout_sec(), Some(1));
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert!(interaction_with_remaining_budget(&original, Some(deadline)).is_none());
-        assert_eq!(
-            interaction_with_remaining_budget(&interaction(None), None)
-                .unwrap()
-                .timeout_sec(),
-            None
-        );
+        let mut open_ended = interaction(None);
+        open_ended.rebase_decision_budget();
+        assert_eq!(open_ended.timeout_sec(), None);
     }
 
     #[test]

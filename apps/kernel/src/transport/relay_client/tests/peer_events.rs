@@ -307,14 +307,16 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
             Some(8),
             Some(128),
         )),
-        None,
+        Some(300),
         None,
     );
-    let interaction = interaction.with_native_origin(Some(
-        crate::session::NativeInteractionOrigin::ProviderStartup {
-            provider_run_id: "provider-run-test".into(),
-        },
-    ));
+    let interaction = interaction
+        .with_decision_expiry(tokio::time::Instant::now() + Duration::from_secs(300))
+        .with_native_origin(Some(
+            crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "provider-run-test".into(),
+            },
+        ));
     {
         let app = app_home.lock().await;
         app.agents
@@ -350,7 +352,10 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
     let worker_request = {
         let config_worker = config_worker.clone();
         tokio::spawn(async move {
-            send_peer_request_via_temporary_connection(
+            // Setup after the interaction was built: the second authorization
+            // check follows metadata discovery, so the delay precedes the write.
+            let checks = std::sync::atomic::AtomicUsize::new(0);
+            send_peer_request_via_temporary_connection_authorized(
                 &config_worker,
                 ClientTarget {
                     daemon_id: Some("daemon-home".to_string()),
@@ -359,6 +364,13 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
                 RelayPeerRequest::ForwardNativeTurnInteraction {
                     context,
                     interaction,
+                },
+                Duration::from_secs(60),
+                move || {
+                    if checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                        std::thread::sleep(Duration::from_millis(1100));
+                    }
+                    Ok(())
                 },
             )
             .await
@@ -379,6 +391,13 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         let custom_choice = interaction
             .custom_choice()
             .expect("forwarded interaction should preserve custom input");
+        assert!(
+            interaction
+                .timeout_sec()
+                .is_some_and(|seconds| seconds <= 299),
+            "the home card must not restart the 300 s budget after worker setup: {:?}",
+            interaction.timeout_sec()
+        );
         assert_eq!(custom_choice.id(), "secret");
         assert_eq!(
             custom_choice.input_kind(),
