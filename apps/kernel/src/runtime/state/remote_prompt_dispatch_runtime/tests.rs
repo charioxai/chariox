@@ -2955,6 +2955,72 @@ mod projection_drain {
     }
 
     #[tokio::test]
+    async fn concurrent_projection_drains_reach_the_worker_one_at_a_time() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "serial-drain").await;
+        fixture
+            .app
+            .lock()
+            .await
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("worker-run-serial-drain".to_string()),
+                None,
+            )
+            .expect("delivered phase should persist");
+        let drain = || {
+            let runtime = fixture.runtime.clone();
+            let (session_id, agent_id) = (fixture.session_id.clone(), fixture.agent_id.clone());
+            tokio::spawn(async move {
+                runtime
+                    .drain_remote_prompt_projection_once(&session_id, &agent_id)
+                    .await
+            })
+        };
+        let next_request = || {
+            receive_fake_worker_peer_request(
+                &listener,
+                &fixture.worker_id,
+                &fixture.worker_machine_id,
+                &fixture.worker_public_key,
+                &fixture.worker_private_key,
+                None,
+            )
+        };
+        let answer = |request| {
+            send_fake_worker_peer_response(
+                request,
+                &fixture.worker_id,
+                &fixture.worker_private_key,
+                &fixture.home_public_key,
+                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+            )
+        };
+
+        // A reply applied out of order would put a later output chunk before an
+        // earlier one, so a second drain must wait for the first reply.
+        let first = drain();
+        let first_request = next_request().await;
+        let second = drain();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), next_request())
+                .await
+                .is_err(),
+            "a second drain reached the worker while the first reply was outstanding"
+        );
+        answer(first_request).await;
+        assert!(first.await.unwrap().unwrap());
+        answer(next_request().await).await;
+        assert!(second.await.unwrap().unwrap());
+    }
+
+    #[tokio::test]
     async fn delivered_remote_prompt_restores_worker_run_before_restart_drain() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");

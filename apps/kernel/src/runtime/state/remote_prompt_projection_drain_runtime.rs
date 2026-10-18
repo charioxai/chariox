@@ -23,6 +23,11 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         worker_provider_run_id: &str,
     ) -> Result<(), String> {
+        let _serial = self
+            .owned
+            .remote_prompt_projection_serial
+            .lock(&dispatch.session_id, &dispatch.agent_id)
+            .await;
         let binding = self.remote_prompt_receipt_binding(dispatch)?;
         if binding.active_worker_provider_run_id.as_deref() != Some(worker_provider_run_id) {
             return Err(
@@ -338,11 +343,16 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    async fn drain_remote_prompt_projection_once(
+    pub(in crate::runtime::state) async fn drain_remote_prompt_projection_once(
         &self,
         session_id: &str,
         agent_id: &str,
     ) -> Result<bool, DaemonError> {
+        let _serial = self
+            .owned
+            .remote_prompt_projection_serial
+            .lock(session_id, agent_id)
+            .await;
         let Some((remote_execution, provider_run_id)) =
             self.remote_prompt_projection_drain_target(session_id, agent_id)
         else {
