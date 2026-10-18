@@ -13,6 +13,7 @@ fn mp08_projection_delivery_531_139_snapshot_and_hash() {
         "bytes": serde_json::to_vec(&serde_json::json!({
             "stdout": "tail", "stderr": "", "chariox_delta": true,
             "chariox_delta_offset_bytes": 50, "chariox_delta_field": "stdout",
+            "chariox_field_bytes": {"stdout": 30000},
         })).unwrap(),
     }]);
     let request: RelayPeerRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -21,7 +22,7 @@ fn mp08_projection_delivery_531_139_snapshot_and_hash() {
     assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
     assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
     assert_eq!(serde_json::to_value(event).unwrap(), snapshot["event"]);
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())), "bc5b348d72cf07c4c663b1aaddd6d3b64c8fd6fb12ff5346f3093cb3f30d2081");
+    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())), "746373ac47415df37e53dfcc8dcfbceda84ec2814707b9f2c0b6d2f79b06fd26");
     for missing in ["delivery", "provider_run_id", "leased_agent_id"] {
         let mut old = snapshot["request"].clone(); old.as_object_mut().unwrap().remove(missing);
         assert!(serde_json::from_value::<RelayPeerRequest>(old).is_err());
