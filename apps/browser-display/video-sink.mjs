@@ -108,9 +108,10 @@ export class VideoSink {
  }
  // vidlat r39: a page crop shows one decoded frame per compositor frame. Frames that arrive within
  // one frame used to overwrite each other (~15 % of the draws never reached the screen); each later
- // one now waits for the next frame, in order. Decode-ahead can queue a few; the oldest beyond three are skipped.
+ // one now waits for the next frame. Decode-ahead hands over several at once: only the newest of them waits.
  commitPaced(view){
-  while(this.pending.length>3){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
+  // At most one frame waits: a burst never queues the page up behind the compositor (latency stays under one frame).
+  while(this.frameDrawn&&this.pending.length>1){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
   if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitOldest();return;}
   this.armFrame(view);
  }
