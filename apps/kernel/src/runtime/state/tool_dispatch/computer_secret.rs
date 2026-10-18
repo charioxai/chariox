@@ -46,6 +46,18 @@ impl KernelRuntimeState {
         })?;
         self.home_runtime_secret_service()?
             .validate_computer_secret_input(&args.credential_id)?;
+        // A host desktop has no Room environment. Never fall back after a
+        // Room failure: slices keep their home-owned generation and approval.
+        match self.room_environment_snapshot(session_id) {
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. })
+                if self.slice_kernel_id().is_none() =>
+            {
+                return self
+                    .dispatch_host_computer_secret_input(session_id, agent_id, &args.credential_id)
+                    .await;
+            }
+            _ => {}
+        }
         let approved_generation = self
             .reconcile_room_environment_actors(session_id, None)
             .map_err(|error| DaemonError::LocalTransport {
@@ -120,5 +132,86 @@ impl KernelRuntimeState {
                 "actor_id": execution.actor_id,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn mp08_mp11_host_secret_reaches_computer_admission_without_room() {
+        use crate::runtime::state::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+        let _lock = crate::env_lock::lock();
+        let root =
+            std::env::temp_dir().join(format!("cufill-host-admission-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Restore(Option<std::ffi::OsString>, std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.1);
+                match &self.0 {
+                    Some(value) => std::env::set_var("CHARIOX_HOME", value),
+                    None => std::env::remove_var("CHARIOX_HOME"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os("CHARIOX_HOME"), root.clone());
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let fixture = TestRoom::new("host-vault-no-room");
+        let (session, agent) = {
+            let mut app = fixture.runtime.app.lock().await;
+            let (session, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    workspace.to_str().unwrap(),
+                    workspace.to_str().unwrap(),
+                ))
+                .unwrap();
+            let agent = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(crate::agent::CreateAgentRequest::new(
+                    session.id(),
+                    "dev-stub",
+                ))
+                .unwrap();
+            (session, agent)
+        };
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: "native-login".into(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault {
+                    key: "not-resolved".into(),
+                },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Computer],
+                injection: crate::config::UserCredentialInjectionConfig::Computer,
+                metadata: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            fixture.runtime.room_environment_snapshot(session.id()),
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. })
+        ));
+        let error = fixture
+            .runtime
+            .dispatch_computer_secret_input_for_authority(
+                session.id(),
+                agent.id(),
+                serde_json::json!({"credential_id":"native-login"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::error::DaemonError::UserDomainRefused { .. }),
+            "host input must reach Computer admission, without a Room or Vault read: {error}"
+        );
+        assert!(fixture
+            .runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_interactions()
+            .is_empty());
     }
 }

@@ -132,6 +132,30 @@ def main(request, connection=None):
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
         return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
+    if op in ('secret_target', 'secret_input'):
+        # MP-08/MP-11: internal Vault operations. No clipboard, argv secret,
+        # unscoped desktop, or X-window-only approval of a GTK field change.
+        fills=load('native-fill-targets')
+        connection=load('native-x11').open_display(display)
+        try:
+            target=keyboard.focused_target(connection)
+            node=fills.focused_field(target['active_window'], connection)
+            field=fills.identity(node)
+            accessibility=load('native-accessibility')
+            processes=request['processes']
+            if not any(item['pid']==field['pid'] and str(item['started'])==str(field['started'])
+                       and not item.get('browser') and accessibility.alive(item) for item in processes):
+                raise ValueError('Vault fill field is not an owned native application')
+            if op=='secret_target': return {'target':target,'field':field}
+            if target!=request['expected_target'] or field!=request['expected_field']:
+                raise ValueError('Vault fill field changed')
+            def same_field():
+                current=fills.focused_field(target['active_window'], connection)
+                if fills.identity(current)!=field: raise ValueError('Vault fill field changed')
+            keyboard.type_text(request['text'], target, before_press=same_field,
+                               key_guard=load('native-input-destination').key_destinations)
+            return {'inserted':True,'field':field}
+        finally: connection.close()
     if op == 'input':
         started=time.time_ns()/1000000
         input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)

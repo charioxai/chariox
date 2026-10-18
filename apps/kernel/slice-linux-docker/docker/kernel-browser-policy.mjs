@@ -98,7 +98,7 @@ export const EXTENSIONS_REFUSED = "MP-11: extensions are the person's own; an ag
 // confirmation. A cached active Tab is insufficient. Fence the whole owned desktop
 // while ANY live extension surface is open; an unreadable inventory cannot prove safety.
 export async function admitComputerMutation(host, command) {
-  if (!(command._agent_input || command.focused_agent) || !['input', 'target_action', 'launch_application'].includes(command.op)) return;
+  if (!(command._agent_input || command.focused_agent) || !['input', 'secret_input', 'target_action', 'launch_application'].includes(command.op)) return;
   const browser = host.browser;
   if (!browser && !host.chromium.child) return; // Native applications without a browser.
   try {

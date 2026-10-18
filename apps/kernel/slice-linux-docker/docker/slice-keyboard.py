@@ -166,7 +166,10 @@ def type_text(text, expected_target=None, before_press=None, *, pace_seconds=0.0
         vault_input = expected_target is not None
         fill_record = None
         if before_press is not None:
-            expected_target=focused_target(connection)
+            # MP-11: the native leaf guard supplements Vault consent; it must
+            # never retarget an already approved X window after a focus race.
+            if expected_target is None:
+                expected_target=focused_target(connection)
             before_press()
         if expected_target is not None:
             assert_secret_target(connection, expected_target)

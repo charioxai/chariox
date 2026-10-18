@@ -80,7 +80,7 @@ def open_display(display):
     return display.Display()
 
 
-def begin(expected_window, value, connection=None):
+def focused_field(expected_window, connection=None):
     # The kernel already bound X11 focus; match the owning native application.
     try:
         if store_path() is None:
@@ -113,7 +113,13 @@ def begin(expected_window, value, connection=None):
             if count > 8192-visited: complete = False
             pending.extend(node.getChildAtIndex(i) for i in range(min(count, 8192-visited)))
         if not complete or pending or len(candidates) != 1: raise ValueError('Vault fill field unavailable')
-        node = candidates[0]
+        return candidates[0]
+    except Exception: raise ValueError('Vault fill field unavailable') from None
+
+
+def begin(expected_window, value, connection=None):
+    try:
+        node = focused_field(expected_window, connection)
         target = {**identity(node), 'window': expected_window, 'pending': True,
                   'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
         text = node.queryText()

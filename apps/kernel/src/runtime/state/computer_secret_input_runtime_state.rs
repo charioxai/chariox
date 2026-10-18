@@ -61,6 +61,24 @@ impl KernelRuntimeState {
         credential_id: &str,
         target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
     ) -> Result<(), DaemonError> {
+        self.ensure_computer_secret_input_approved_for_field(
+            session_id,
+            agent_id,
+            credential_id,
+            target,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn ensure_computer_secret_input_approved_for_field(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        credential_id: &str,
+        target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
+        field: Option<&str>,
+    ) -> Result<(), DaemonError> {
         let interaction = crate::session::RuntimeInteraction::new(
             format!(
                 "computer-secret-input-{agent_id}-{}",
@@ -71,8 +89,8 @@ impl KernelRuntimeState {
             crate::session::RuntimeInteractionLevel::Critical,
             Some("Computer credential input".to_string()),
             format!(
-                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes uses no clipboard, and masks the inserted region before agent screen observations.",
-                target.active_window, target.focus_window, target.geometry
+                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}{}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes uses no clipboard, and masks the inserted region before agent screen observations.",
+                target.active_window, target.focus_window, target.geometry, field.map(|field| format!(", {field}")).unwrap_or_default()
             ),
             vec![
                 crate::session::RuntimeInteractionChoice::new(

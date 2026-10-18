@@ -80,6 +80,16 @@ def helper(connection):
 
 
 class KeyboardTextTests(unittest.TestCase):
+    def test_mp11_vault_leaf_guard_never_replaces_the_approved_x_window(self):
+        connection=Display();module=helper(connection)
+        approved={'focus_window':42,'active_window':41}
+        moved={'focus_window':52,'active_window':51}
+        with patch.object(module,'focused_target',return_value=moved),patch.object(module,'assert_secret_target',side_effect=RuntimeError('stop before keys')) as check:
+            with self.assertRaisesRegex(RuntimeError,'stop before keys'):
+                module.type_text('synthetic',approved,before_press=lambda:None,connection=connection)
+        self.assertEqual(check.call_args.args[1],approved)
+        self.assertEqual(connection.delivered,[])
+
     def test_delivery_acknowledgement_runs_after_the_protected_server_grab(self):
         connection=Display();connection.grabbed=False;module=helper(connection)
         connection.grab_server=lambda:setattr(connection,'grabbed',True)

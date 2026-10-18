@@ -893,6 +893,8 @@ export class KernelBrowserHost {
         if(request.params._agent_input && this.browser?.appTabs?.apps?.size)throw new UserDomainRefusal('not_granted');
         await admitComputerMutation(this, request.params);
         const nativeParams={...request.params,observed_by:observer};
+        if(request.params.op==='secret_target')return {id:request.id,ok:true,result:await this.nativeComputer.secretTarget(this.protection,{signal})};
+        if(request.params.op==='secret_input')return {id:request.id,ok:true,result:await this.nativeComputer.secretInput(request.params,this.protection,{signal})};
         if (request.params.op === 'display_subscribe') {
           if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
           return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};

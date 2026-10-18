@@ -512,6 +512,7 @@ mod kernel_browser_secret_runtime;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod kernel_computer_runtime;
+mod kernel_computer_secret_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;

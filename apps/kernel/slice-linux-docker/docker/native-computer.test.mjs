@@ -194,3 +194,25 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
   await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy),e=>e.code==='user_domain_sensitive_requires_focus','agent input stays refused under a registry');
 });
+
+test('MP-08 / MP-11 host Vault target and insertion use the bound native helper', async () => {
+  const target={focus_window:42,active_window:41,geometry:[0,0,100,50],window_geometry:[0,0,100,50]};
+  const field={pid:123,started:'45',path:'/app/field'};
+  const sent=[];
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{sent.push(request);return request.op==='secret_target'?{target,field}:{inserted:true,field};}});
+  const at={surface_id:'surface',generation:'generation'};
+  assert.deepEqual(await adapter.secretTarget({},{}),{...at,target,field});
+  assert.deepEqual(await adapter.secretInput({...at,target,field,text:'synthetic'}, {}, {}),{inserted:true,field});
+  assert.equal(sent[1].op,'secret_input');
+  assert.deepEqual(sent[1].expected_target,target);
+  assert.deepEqual(sent[1].expected_field,field);
+  await assert.rejects(adapter.secretInput({...at,generation:'old',target,field,text:'synthetic'},{},{}),/stale/);
+  await assert.rejects(adapter.secretTarget({unknown:true},{}),/protection/);
+  assert.equal(sent.length,2);
+});
+
+test('MP-11 Vault native discovery identifies owned browser processes for refusal', async () => {
+  const processes=[{pid:10,started:'1'},{pid:11,started:'2'}];
+  const adapter=new NativeComputer({placement:'host',binding:()=>({...binding,ownedProcesses:async()=>processes,browserProcesses:async()=>[processes[1]]}),execute:async()=>({})});
+  assert.deepEqual(await adapter.secretProcesses(adapter.binding()),[{pid:10,started:'1',browser:false},{pid:11,started:'2',browser:true}]);
+});
