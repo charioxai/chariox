@@ -260,6 +260,14 @@ test('MP-08/MP-10/MP-11 a warm omnibox key has no live active-Tab or loader read
  const target=await f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'key',key:'a'}});
  assert.equal(target.tab_id,'tab');assert.equal(f.reads.active,0,'the ledger target reads the snapshot too');
 });
+// vidlat r38: typed omnibox text is a 'text' input; its ledger target reads the same snapshot as a key (the dispatch fence already did).
+test('MP-08/MP-10/MP-11 typed text resolves its ledger target from the snapshot; a miss or another front Tab is read/refused as for a key',async()=>{
+ const f=await keyFixture();
+ const target=await f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'text',text:'m'}});
+ assert.equal(target.tab_id,'tab');assert.equal(f.reads.active,0,'typed text reads the owner snapshot');
+ f.setCached(null);await f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'text',text:'m'}});assert.equal(f.reads.active,1,'a miss reads live');
+ f.setCached('other');await assert.rejects(f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'text',text:'m'}}),{code:'user_domain_stale_reference'});
+});
 test('MP-08/MP-10/MP-11 a key refuses when the snapshot says another Tab is in front; a snapshot miss reads live',async()=>{
  const f=await keyFixture({cachedActive:'other'});
  await assert.rejects(f.send({kind:'key',key:'a'}),{code:'user_domain_stale_reference'});assert.equal(f.reads.active,0);

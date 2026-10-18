@@ -419,7 +419,7 @@ export class InputArbiter {
     if (InputArbiter.agent(command)) throw new UserDomainRefusal('not_granted');
     const binding = this.windows.current().tabbed;
     if (command.window_generation !== binding.window_generation) throw new UserDomainRefusal('stale_reference');
-    const tab = await this.activeTab({cached: command.input?.kind === 'key'});
+    const tab = await this.activeTab({cached: ['key', 'text'].includes(command.input?.kind)});
     if (!tab || !binding.isCurrent()) throw new UserDomainRefusal('stale_reference');
     return {tab_id: tab.tab_id, document_id: tab.document_id, generation: this.host.generation};
   }
