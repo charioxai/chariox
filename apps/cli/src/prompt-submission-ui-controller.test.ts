@@ -21,6 +21,7 @@ test("begin snapshots prompt state and clears submitted prompt UI", () => {
   const calls: string[] = []
   const scheduledDrafts: unknown[] = []
   const controller = createPromptSubmissionUiController({
+    getPromptText: () => "",
     getSessionId: () => sessionId,
     getPendingAttachments: () => pendingAttachments,
     resetPromptHistoryNavigation: () => calls.push("reset-history"),
@@ -71,6 +72,7 @@ test("begin snapshots prompt state and clears submitted prompt UI", () => {
 test("begin skips draft persistence when detached", () => {
   const scheduledDrafts: unknown[] = []
   const controller = createPromptSubmissionUiController({
+    getPromptText: () => "",
     getSessionId: () => null,
     getPendingAttachments: () => [],
     resetPromptHistoryNavigation: () => {},
@@ -103,6 +105,7 @@ test("restore reapplies failed prompt UI and persists the restored draft", () =>
   const calls: string[] = []
   const scheduledDrafts: unknown[] = []
   const controller = createPromptSubmissionUiController({
+    getPromptText: () => "",
     getSessionId: () => null,
     getPendingAttachments: () => [],
     resetPromptHistoryNavigation: () => calls.push("reset-history"),
@@ -151,6 +154,7 @@ test("restore reapplies failed prompt UI and persists the restored draft", () =>
 test("restore is idle without a snapshot", () => {
   let called = false
   const controller = createPromptSubmissionUiController({
+    getPromptText: () => "",
     getSessionId: () => null,
     getPendingAttachments: () => [],
     resetPromptHistoryNavigation: () => {
@@ -173,3 +177,34 @@ test("restore is idle without a snapshot", () => {
   assert.equal(controller.restore(null), false)
   assert.equal(called, false)
 })
+
+for (const next of ["text", "attachment"] as const) {
+  test(`a failed submission preserves the next ${next} draft`, () => {
+    let text = "submitted"
+    let files = [attachment("submitted")]
+    const controller = createPromptSubmissionUiController({
+      getPromptText: () => text,
+      getSessionId: () => "session-1",
+      getPendingAttachments: () => files,
+      resetPromptHistoryNavigation: () => {},
+      clearDraftPersistQueue: () => {},
+      clearPromptText: () => { text = "" },
+      setPromptText: (value) => { text = value },
+      syncPromptTextSnapshot: () => {},
+      clearPendingAttachments: () => { files = [] },
+      setPendingAttachments: (value) => { files = value },
+      refreshAttachmentHighlights: () => {},
+      syncCommandCenter: () => {},
+      retainPromptFocus: () => {},
+      clearCommandCenter: () => {},
+      schedulePromptDraftPersist: () => {},
+      updateSessionChrome: () => {},
+    })
+    const submitted = controller.begin("submitted")
+    text = next === "text" ? "next draft" : ""
+    files = next === "attachment" ? [attachment("next")] : []
+    assert.equal(controller.restore(submitted), false)
+    assert.equal(text, next === "text" ? "next draft" : "")
+    assert.deepEqual(files, next === "attachment" ? [attachment("next")] : [])
+  })
+}

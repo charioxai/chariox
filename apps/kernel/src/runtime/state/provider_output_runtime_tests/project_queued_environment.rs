@@ -8,6 +8,7 @@ enum Case {
     SynchronousCompletion,
     ReplacementFailure,
     VaultCancellation,
+    PromotionRetry,
 }
 
 #[tokio::test]
@@ -30,6 +31,11 @@ async fn mp08_mp10_mp11_queued_project_synchronous_completion_defers_activation(
     run_case(Case::SynchronousCompletion).await;
 }
 
+#[tokio::test]
+async fn ordinary_submission_retries_failed_project_promotion_in_fifo_order() {
+    run_case(Case::PromotionRetry).await;
+}
+
 async fn run_case(case: Case) {
     use std::os::unix::fs::PermissionsExt;
     let _env = crate::env_lock::lock();
@@ -48,7 +54,7 @@ async fn run_case(case: Case) {
     let vault_path = config
         .private_runtime_state_root()
         .join("project-vault.json");
-    if matches!(case, Case::VaultCancellation) {
+    if matches!(case, Case::VaultCancellation | Case::PromotionRetry) {
         config.user_config.credential_vault.path = vault_path.to_string_lossy().into_owned();
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,
@@ -122,11 +128,13 @@ async fn run_case(case: Case) {
         .provider_store
         .get_run_for_agent(session.id(), agent.id())
         .unwrap();
-    std::fs::write(workspace.path().join(".env"), "APP_LABEL=after\n").unwrap();
+    if !matches!(case, Case::PromotionRetry) {
+        std::fs::write(workspace.path().join(".env"), "APP_LABEL=after\n").unwrap();
+    }
     if matches!(case, Case::ReplacementFailure) {
         std::fs::remove_file(&fixture).unwrap();
     }
-    if matches!(case, Case::VaultCancellation) {
+    if matches!(case, Case::VaultCancellation | Case::PromotionRetry) {
         crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
     }
     if matches!(case, Case::SynchronousCompletion) {
@@ -190,7 +198,7 @@ async fn run_case(case: Case) {
             cancelled_prompt: false,
             started_next_prompt: true,
         }
-    } else if matches!(case, Case::VaultCancellation) {
+    } else if matches!(case, Case::VaultCancellation | Case::PromotionRetry) {
         let cancel = async {
             loop {
                 let sequence = runtime
@@ -246,6 +254,126 @@ async fn run_case(case: Case) {
     } else {
         settle.await.unwrap()
     };
+    if matches!(case, Case::PromotionRetry) {
+        assert!(!settlement.started_next_prompt);
+        let retained = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert_eq!(retained.id(), first_run.id());
+        assert_eq!(retained.state(), crate::provider::ProviderRunState::Running);
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .is_none());
+        // Resolve the temporary preparation failure without replacing the run or
+        // changing its Project revision. Only an ordinary submission retries it.
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "synthetic-fixture-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let submitted = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().into(),
+                prompt: crate::session::PromptQueueItem::new(
+                    "normal-retry",
+                    attachment.id(),
+                    agent.id(),
+                    "newer ordinary request",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            submitted.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        assert!(submitted.dispatch.is_none());
+        let promoted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let sequence = runtime
+                    .owned
+                    .session_projection
+                    .session_change_sequence(session.id());
+                let state = runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap();
+                if let Some(active) = state.active_prompt_for_agent(agent.id()) {
+                    break active.clone();
+                }
+                runtime
+                    .owned
+                    .session_projection
+                    .wait_for_session_change_after(session.id(), sequence)
+                    .await;
+            }
+        })
+        .await;
+        // Stop the isolated fixture even on the fail-first timeout.
+        if promoted.is_err() {
+            app.lock()
+                .await
+                .end_agent_provider_run(session.id(), agent.id())
+                .unwrap();
+        }
+        let older =
+            promoted.expect("normal submission must restart the failed idle backlog promotion");
+        assert_eq!(older.prompt(), queued.prompt());
+        wait_for_prompt_delivery(&runtime, session.id(), agent.id(), older.id()).await;
+        let next = runtime
+            .settle_owned_provider_prompt(session.id(), first_run.id(), true, false, true)
+            .await
+            .unwrap();
+        assert!(next.started_next_prompt);
+        let state = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let newer = state.active_prompt_for_agent(agent.id()).unwrap();
+        assert_eq!(newer.prompt(), "newer ordinary request");
+        wait_for_prompt_delivery(&runtime, session.id(), agent.id(), newer.id()).await;
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(session.id(), agent.id())
+                .unwrap()
+                .id(),
+            first_run.id()
+        );
+        app.lock()
+            .await
+            .end_agent_provider_run(session.id(), agent.id())
+            .unwrap();
+        let native: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.with_extension("json")).unwrap())
+                .unwrap();
+        let turns = native["threads"]["native-thread-1"].as_array().unwrap();
+        assert_eq!(
+            turns.len(),
+            3,
+            "older then newer are delivered exactly once"
+        );
+        assert!(turns[1]["input"].to_string().contains(queued.prompt()));
+        assert!(turns[2]["input"]
+            .to_string()
+            .contains("newer ordinary request"));
+        assert_eq!(turns[1]["project_label"], "before");
+        assert!(native["resumes"].as_array().unwrap().is_empty());
+        return;
+    }
     if matches!(case, Case::ReplacementFailure | Case::VaultCancellation) {
         app.lock()
             .await

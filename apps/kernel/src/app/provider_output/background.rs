@@ -30,20 +30,12 @@ pub(super) fn pump_session_active_prompt_outputs(
             provider_run_ids.insert(provider_run_id);
         }
     }
-    provider_run_ids.extend(
-        app.providers
-            .list_runs()
-            .into_iter()
-            .filter(|run| run.session_id() == session.id())
-            .filter(should_pump_background_provider_run)
-            .map(|run| run.id().to_string()),
-    );
     // Keep the final set defensive: every discovery path above must obey the
     // single-owner rule before any legacy pump is invoked.
     provider_run_ids.retain(|provider_run_id| {
         app.providers
             .get_run(provider_run_id)
-            .is_ok_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
+            .is_ok_and(|run| !provider_run_requires_runtime_pump(&run))
     });
     let mut pumped_provider_run_ids = Vec::new();
     for provider_run_id in provider_run_ids {
@@ -76,13 +68,9 @@ pub(super) fn pump_session_active_prompt_outputs(
     pumped_provider_run_ids
 }
 
-fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
-    !crate::provider::provider_run_uses_structured_prompt_io(run)
-        && crate::provider::provider_run_uses_claude_native_bridge(run)
-        && matches!(
-            run.state(),
-            ProviderRunState::Starting | ProviderRunState::Running
-        )
+pub(super) fn provider_run_requires_runtime_pump(run: &RuntimeProviderRun) -> bool {
+    crate::provider::provider_run_uses_structured_prompt_io(run)
+        || crate::provider::provider_run_uses_claude_native_bridge(run)
 }
 
 fn provider_run_requires_background_pump(
@@ -90,14 +78,14 @@ fn provider_run_requires_background_pump(
     session: &crate::session::RuntimeSession,
     run: &RuntimeProviderRun,
 ) -> bool {
-    // Structured provider output is owned by KernelRuntimeState's single
+    // Structured IO and native hook mailboxes are owned by KernelRuntimeState's single
     // transport-runtime pump. Letting this legacy app/transport path poll the
     // same provider socket races notification consumption and can strand the
     // provider turn without its terminal completion transition.
-    if crate::provider::provider_run_uses_structured_prompt_io(run) {
+    if provider_run_requires_runtime_pump(run) {
         return false;
     }
-    if run.state() == ProviderRunState::Starting || should_pump_background_provider_run(run) {
+    if run.state() == ProviderRunState::Starting {
         return true;
     }
     run.agent_instance_id().is_some_and(|agent_id| {
@@ -109,7 +97,7 @@ fn provider_run_requires_background_pump(
 
 #[cfg(test)]
 mod tests {
-    use super::should_pump_background_provider_run;
+    use super::provider_run_requires_runtime_pump;
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
@@ -150,7 +138,7 @@ mod tests {
             ("dev-stub", "slow-structured"),
         ] {
             assert!(
-                !should_pump_background_provider_run(&structured_run(adapter_key, provider)),
+                provider_run_requires_runtime_pump(&structured_run(adapter_key, provider)),
                 "{adapter_key}/{provider} must be owned by the runtime structured pump",
             );
         }

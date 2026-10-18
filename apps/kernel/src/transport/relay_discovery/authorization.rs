@@ -67,12 +67,10 @@ fn cloud_directory_discovery_targets(
             message: "Cloud returned an invalid kernel directory".into(),
         })?
         .iter()
-        // The owner directory retains revoked rows for account history, but
-        // Cloud rejects discovery grants containing any revoked target. An
-        // unlinked sibling must not prevent the remaining kernels renewing.
-        .filter(|target| {
-            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
-        })
+        // The owner directory retains enrollment history. Live discovery needs
+        // only Cloud-fresh online targets; dormant history must not exhaust the
+        // bounded inventory grant or make an offline sibling look available.
+        .filter(|target| target.get("status").and_then(serde_json::Value::as_str) == Some("ONLINE"))
         .filter_map(|target| {
             target
                 .get("daemonId")
@@ -86,7 +84,7 @@ fn cloud_directory_discovery_targets(
 mod tests {
     use super::*;
     #[test]
-    fn cloud_directory_excludes_revoked_siblings_from_discovery_grants() {
+    fn cloud_directory_excludes_inactive_siblings_from_discovery_grants() {
         let targets = cloud_directory_discovery_targets(&serde_json::json!({
             "targets": [
                 {"daemonId": "owner", "status": "ONLINE"},
@@ -97,11 +95,27 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert_eq!(targets, ["owner".to_string(), "sibling".to_string()].into());
+        assert_eq!(targets, ["owner".to_string()].into());
     }
 
     #[test]
     fn malformed_directory_fails_closed() {
         assert!(cloud_directory_discovery_targets(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn live_discovery_does_not_grant_offline_enrollment_history() {
+        let mut targets = (0..71)
+            .map(|id| serde_json::json!({"daemonId": format!("retired-run-{id}"), "status": "OFFLINE"}))
+            .collect::<Vec<_>>();
+        targets.extend([
+            serde_json::json!({"daemonId": "owner", "status": "ONLINE"}),
+            serde_json::json!({"daemonId": "worker", "status": "ONLINE"}),
+            serde_json::json!({"daemonId": "stale", "status": "STALE"}),
+            serde_json::json!({"daemonId": "unknown"}),
+        ]);
+        let visible =
+            cloud_directory_discovery_targets(&serde_json::json!({"targets": targets})).unwrap();
+        assert_eq!(visible, ["owner".to_string(), "worker".to_string()].into());
     }
 }

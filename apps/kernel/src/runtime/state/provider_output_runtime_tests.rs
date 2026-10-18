@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod inert_pty;
+mod native_pty_projection;
 use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
 
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -392,3 +393,7 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
 mod credential_copy_recovery;
 
 mod popup_notices;
+
+mod native_context_rejection;
+
+mod native_startup_trust;

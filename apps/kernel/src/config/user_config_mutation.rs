@@ -140,6 +140,18 @@ impl CharioxUserConfig {
                 self.history.archive.url =
                     Some(non_empty_config_string("history.archive.url", value)?)
             }
+            "history.handoff.codex_brief_model" => {
+                self.history.handoff.codex_brief_model = Some(non_empty_config_string(
+                    "history.handoff.codex_brief_model",
+                    value,
+                )?)
+            }
+            "history.handoff.claude_brief_model" => {
+                self.history.handoff.claude_brief_model = Some(non_empty_config_string(
+                    "history.handoff.claude_brief_model",
+                    value,
+                )?)
+            }
             "history.archive.token_env" => {
                 self.history.archive.token_env =
                     Some(non_empty_config_string("history.archive.token_env", value)?)
@@ -529,6 +541,8 @@ impl CharioxUserConfig {
             }
             "history.archive.mode" => self.history.archive.mode = HistoryArchiveMode::Disabled,
             "history.archive.url" => self.history.archive.url = None,
+            "history.handoff.codex_brief_model" => self.history.handoff.codex_brief_model = None,
+            "history.handoff.claude_brief_model" => self.history.handoff.claude_brief_model = None,
             "history.archive.token_env" => self.history.archive.token_env = None,
             "history.archive.archive_deleted_agents" => {
                 self.history.archive.archive_deleted_agents = None

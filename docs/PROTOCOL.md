@@ -1,5 +1,22 @@
 # Chariox v1 Protocol
 
+### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
+
+`UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
+carry optional `codex_brief_model` and `claude_brief_model` strings. Unset keys
+are omitted; the entire `handoff` object is omitted when both keys are unset.
+Normal `/config set history.handoff.<key> <model>` writes use the shared kernel
+config service and persist across restarts. No kernel-to-kernel peer shape changes
+or client minimum-version changes are required for this optional config surface.
+
+The populated response snapshot/hash is in
+`apps/kernel/src/local/api/tests/protocol_shapes/handoff_config.rs`. The focused
+live drill is `scripts/e2e-stack/context-switch/handoff-config-live.mjs` in the
+companion validation-tooling change; it drives the built TUI over hosted WSS,
+checks both populated response variants and protocol advertisements, and verifies
+persistence after restart. Source tests alone do not establish live acceptance.
+
+
 ### Hosted terminal renewal (local protocol 472)
 
 `RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
@@ -509,6 +526,15 @@ prompt ownership assignment. Confirming an unchanged profile is safe during a
 replayed active turn; changing it requires an idle agent. This makes the next prompt
 use the profile committed at home even if an earlier worker update acknowledgement
 was lost. Incompatible peer versions must be rebound before dispatch.
+
+A worker refuses a `SubmitLeasedPrompt` before the receipt fence and provider launch
+when the selected account cannot start work there (not authenticated, or no usable
+credential) with the non-retryable relay error code `provider_account_unusable`. It
+is an additive error code in the existing error field, so it carries no peer protocol
+number. The home treats it as a known pre-admission rejection and settles the prompt
+as failed with the worker's message instead of reconciling it as indeterminate. A home
+that predates the code treats it as an unknown error and reconciles through the
+worker's `Rejected` receipt.
 
 Version 25 also removes the separate `ForwardWorkflowProviderFailure` request and
 its acknowledgement. Workers settle failed leased turns locally without waiting

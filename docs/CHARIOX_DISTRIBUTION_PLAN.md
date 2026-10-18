@@ -11,7 +11,9 @@ codesigned runtime inventory (#681).
 - **One release bundle per platform**, built and signed by CI from one tagged
   commit. Phase 1 platforms: **macOS arm64** (`darwin-arm64`) and **Linux x86_64**
   (`linux-x64`).
-- **Everything prebuilt.** Users need no Rust, Node, Bun or pnpm.
+- **Prebuilt CLI and kernel (MP-07 / MP-08 / MP-11).** Users need no Rust, Bun
+  or pnpm. Claude native-TUI hooks require Node on the provider execution
+  machine; the kernel owns those hooks.
 - **One version number** for the whole bundle and everything in it.
 - **Keys stay with the owner.** CI signs with keys held in a protected GitHub
   environment. No agent or script creates, stores or prints a release key.

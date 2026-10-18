@@ -268,3 +268,43 @@ fn reads_claude_observed_reasoning_tools_and_status_metadata() {
         .iter()
         .all(|turn| !turn.text.contains("file-history-snapshot")));
 }
+
+#[test]
+fn compact_command_echoes_do_not_split_the_real_claude_user_turn() {
+    let temp = temp_dir("claude-compact-control-echoes");
+    let root = temp.path();
+    let session_dir = root.join("projects").join("-repo");
+    fs::create_dir_all(&session_dir).unwrap();
+    let prompts = [
+        ("compact-command", "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>Keep the latest accepted decisions.</command-args>"),
+        ("real-probe", "Recall the earlier accepted decisions."),
+        ("compact-output", "<local-command-stdout>Compacted </local-command-stdout>"),
+    ];
+    let mut lines = prompts
+        .into_iter()
+        .map(|(id, prompt)| {
+            serde_json::json!({
+                "type": "user", "uuid": id, "sessionId": "session-compact",
+                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            })
+            .to_string()
+        })
+        .collect::<Vec<_>>();
+    lines.push(serde_json::json!({
+        "type": "assistant", "uuid": "reply", "sessionId": "session-compact",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "The accepted decisions are preserved."}]}
+    }).to_string());
+    fs::write(
+        session_dir.join("session-compact.jsonl"),
+        format!("{}\n", lines.join("\n")),
+    )
+    .unwrap();
+    let turns = read_claude_observed_turns(root, "session-compact");
+    assert_eq!(
+        turns.len(),
+        2,
+        "compact control echoes must not create user turns"
+    );
+    assert_eq!(turns[0].provider_turn_id.as_deref(), Some("real-probe"));
+    assert_eq!(turns[1].text, "The accepted decisions are preserved.");
+}

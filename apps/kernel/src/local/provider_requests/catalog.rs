@@ -17,7 +17,11 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+#[cfg(test)]
+mod codex_refresh_tests;
+mod opencode_model_cache;
 mod probe_capture;
+pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -153,17 +157,14 @@ fn resolve_catalog_profiles(
     owner_user_id: &str,
     request: &GetProviderCatalogRequest,
 ) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
-    let focus_provider = match request.provider.as_deref() {
-        Some(provider) => Some(
-            crate::provider::canonical_provider_family(provider).ok_or_else(|| {
-                DaemonError::LocalTransport {
-                    operation: "get_provider_catalog",
-                    message: format!("unsupported provider `{provider}` in catalog request"),
-                }
-            })?,
-        ),
-        None => None,
-    };
+    if let Some(provider) = request.provider.as_deref() {
+        crate::provider::canonical_provider_family(provider).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: format!("unsupported provider `{provider}` in catalog request"),
+            }
+        })?;
+    }
     let mut overrides = BTreeMap::new();
     for (provider, profile_id) in &request.account_profiles {
         let provider = crate::provider::canonical_provider_family(provider).ok_or_else(|| {
@@ -201,39 +202,9 @@ fn resolve_catalog_profiles(
                     ),
                 })?
         };
-        if focus_provider == Some(provider) {
-            validate_catalog_materialization(&profile, &request.execution_location)?;
-        }
         selected.insert(provider.to_string(), profile);
     }
     Ok(selected)
-}
-
-fn validate_catalog_materialization(
-    profile: &crate::account_profile::ProviderAccountProfile,
-    location: &ProviderCatalogExecutionLocation,
-) -> Result<(), DaemonError> {
-    let target = match location {
-        ProviderCatalogExecutionLocation::Local => return Ok(()),
-        ProviderCatalogExecutionLocation::Worker { kernel_ref } => (
-            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
-            kernel_ref.as_str(),
-        ),
-        ProviderCatalogExecutionLocation::Slice { slice_ref } => (
-            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-            slice_ref.as_str(),
-        ),
-    };
-    if profile.is_installed_at(target.0, target.1) {
-        return Ok(());
-    }
-    Err(DaemonError::LocalTransport {
-        operation: "get_provider_catalog",
-        message: format!(
-            "account profile `{}` is not materialized at the selected execution location",
-            profile.profile_id
-        ),
-    })
 }
 
 pub(crate) fn provider_auth_status_response(
@@ -317,12 +288,13 @@ pub(crate) fn refresh_provider_account_profile_with_config(
     {
         return Ok(profile);
     }
-    refresh_provider_account_profile_explicitly(
+    refresh_provider_account_profile_observation(
         registry,
         owner_user_id,
         provider,
         account_profile,
         config,
+        false,
     )
 }
 
@@ -369,6 +341,24 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
     account_profile: &str,
     config: &DaemonConfig,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    refresh_provider_account_profile_observation(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+        true,
+    )
+}
+
+fn refresh_provider_account_profile_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+    reload_codex_endpoint: bool,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
@@ -376,6 +366,17 @@ pub(crate) fn refresh_provider_account_profile_explicitly(
         (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
     let (status, usage) = match provider_family {
         Some("codex") => {
+            // The official app-server caches its login at startup. An explicit
+            // account refresh must observe a native login imported since the
+            // catalog last started this profile's utility server.
+            // MP-08 / MP-10 / MP-11: automatic login observations must retain
+            // the native server that owns the pending device challenge.
+            if reload_codex_endpoint {
+                crate::provider::invalidate_codex_account_endpoint(
+                    owner_user_id,
+                    &profile.profile_id,
+                );
+            }
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
@@ -629,10 +630,14 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
+    // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
+    // settles, which can strand its native lock ahead of explicit provisioning.
+    let mut auth_environment = environment.clone();
+    auth_environment.insert("OPENCODE_DISABLE_MODELS_FETCH".into(), "1".into());
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
         vec!["auth".to_string(), "list".to_string()],
-        environment.clone(),
+        auth_environment,
         None,
         "opencode:auth-status",
     )?;
@@ -1463,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_profile_resolution_uses_override_and_requires_target_materialization() {
+    fn catalog_profile_resolution_selects_an_account_the_target_has_not_received_yet() {
         let root = std::env::temp_dir().join(format!(
             "chariox-catalog-profile-selection-{}-{}",
             std::process::id(),
@@ -1479,54 +1484,25 @@ mod tests {
         let work = registry
             .create_managed("owner-a", "codex", "Work")
             .expect("work profile should be created");
-        let request = GetProviderCatalogRequest {
-            provider: Some("codex".to_string()),
-            account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
-            execution_location: ProviderCatalogExecutionLocation::Slice {
+        for execution_location in [
+            ProviderCatalogExecutionLocation::Slice {
                 slice_ref: "slice-a".to_string(),
             },
-        };
-
-        let error = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect_err("unmaterialized profile should be rejected");
-        assert!(error.to_string().contains("not materialized"));
-        registry
-            .update_materialization_status(
-                "owner-a",
-                "codex",
-                &work.profile_id,
-                crate::account_profile::ProviderAccountMaterializationStatus {
-                    target_kind:
-                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-                    target_ref: "slice-a".to_string(),
-                    state:
-                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
-                    observed_at_ms: 1,
-                    last_error: None,
-                },
-            )
-            .expect("materialization should be recorded");
-        let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect("materialized selection should resolve");
-        assert_eq!(selected["codex"].profile_id, work.profile_id);
-
-        registry
-            .update_materialization_status(
-                "owner-a",
-                "codex",
-                &work.profile_id,
-                crate::account_profile::ProviderAccountMaterializationStatus {
-                    target_kind:
-                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-                    target_ref: "slice-a".to_string(),
-                    state: crate::account_profile::ProviderAccountMaterializationState::Stale,
-                    observed_at_ms: 2,
-                    last_error: None,
-                },
-            )
-            .expect("legacy stale installation should be recorded");
-        resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect("a previously installed independent profile remains selectable");
+            ProviderCatalogExecutionLocation::Worker {
+                kernel_ref: "worker-a".to_string(),
+            },
+        ] {
+            let request = GetProviderCatalogRequest {
+                provider: Some("codex".to_string()),
+                account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
+                execution_location,
+            };
+            // The profile change transfers the selected account to the worker,
+            // so choosing it must not require an earlier transfer.
+            let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
+                .expect("an account not yet installed at the target stays selectable");
+            assert_eq!(selected["codex"].profile_id, work.profile_id);
+        }
         let _ = fs::remove_dir_all(root);
     }
 

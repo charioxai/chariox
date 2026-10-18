@@ -111,6 +111,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
+/// The worker refused a leased prompt before admission because the selected
+/// account cannot start work there; repeating the prompt cannot repair it.
+pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
+pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -1008,6 +1012,28 @@ pub enum RelayPeerRequest {
         transfer_id: String,
         capability: RelayManagedContextCapability,
     },
+}
+
+impl RelayPeerRequest {
+    /// Off-lock callers can wait for both bounded native account probes plus
+    /// reply cleanup. App-locked callers retain their configured response bound.
+    pub(crate) fn off_lock_response_timeout(
+        &self,
+        configured: std::time::Duration,
+    ) -> std::time::Duration {
+        if matches!(self, Self::EnsureRemoteProviderAccount { .. }) {
+            configured.max(std::time::Duration::from_secs(150))
+        } else {
+            configured
+        }
+    }
+
+    /// Charges transport setup to a forwarded decision's fixed expiry.
+    pub(crate) fn rebase_decision_budget(&mut self) {
+        if let Self::ForwardNativeTurnInteraction { interaction, .. } = self {
+            interaction.rebase_decision_budget();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1962,7 +1988,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 527);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},

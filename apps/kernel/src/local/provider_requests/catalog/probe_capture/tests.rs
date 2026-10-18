@@ -116,13 +116,9 @@ mod escaped {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            if let Ok(pid) = std::fs::read_to_string(self.0.join("pid")) {
-                if let Ok(pid) = pid.trim().parse::<i32>() {
-                    unsafe {
-                        libc::kill(-pid, libc::SIGKILL);
-                    }
-                }
-            }
+            // The capture operation owns and stops the helper through its exact
+            // output pipes, including error paths. A saved PID alone is never
+            // authority to signal a possibly reused process during cleanup.
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }

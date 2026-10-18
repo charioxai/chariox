@@ -115,7 +115,7 @@ jobs:
           pnpm --filter @chariox/cli run build
           pnpm --filter @chariox/cli run test:compile
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
-          # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
+          # MP-07 / MP-08 / MP-11: standalone --version/--help with no Node or Bun on PATH.
           node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
       - name: Compile generic Chariox Setup (MP-07 / MP-08 / MP-11)
         env:

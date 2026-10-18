@@ -36,7 +36,9 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 mod failed_request_owned_state;
-use context_handoff::*;
+mod native_prompt_handoff;
+use context_handoff::PendingAgentContextHandoff;
+pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_runtime;
@@ -151,6 +153,8 @@ pub(crate) struct KernelRuntimeState {
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
+    queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
@@ -267,6 +271,7 @@ struct KernelRuntimeOwnedState {
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
+    remote_prompt_projection_serial: Arc<remote_prompt_claim_runtime::RemotePromptProjectionSerialStore>,
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
@@ -351,6 +356,7 @@ struct SlicePrivateRelayConnector {
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
@@ -376,6 +382,7 @@ use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
+mod structured_prompt_dispatch;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
@@ -417,6 +424,7 @@ mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
+mod leased_profile_transition_runtime;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -630,6 +638,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            pending_agent_context_handoffs,
         ) = {
             let started = Instant::now();
             loop {
@@ -645,6 +654,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.pending_agent_context_handoff_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -773,6 +783,8 @@ impl KernelRuntimeState {
             forwarded_peer_binding: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            queue_promotion_exit_probe: None,
             app,
             provider_runtime_lanes,
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
@@ -860,7 +872,7 @@ impl KernelRuntimeState {
                     crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
-                pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
+                pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
@@ -886,6 +898,7 @@ impl KernelRuntimeState {
                 relay_state,
                 notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                remote_prompt_projection_serial: Arc::default(),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
                     BTreeSet::new(),

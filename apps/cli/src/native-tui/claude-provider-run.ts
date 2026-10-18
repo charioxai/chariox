@@ -1,4 +1,3 @@
-import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
@@ -7,25 +6,6 @@ import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
 } from "./provider-run-control.js"
-
-export async function launchClaudeNativeRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  model: string,
-  effort: string,
-): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(client, {
-    sessionId,
-    provider: "claude",
-    model,
-    effort,
-    agentId,
-    native: {
-      structuredEndpoint: `native://claude/${process.pid}`,
-    },
-  })
-}
 
 export async function launchClaudeRemoteRenderedRun(
   client: LocalIpcClient,

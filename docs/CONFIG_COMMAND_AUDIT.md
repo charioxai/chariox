@@ -49,6 +49,8 @@ Status meanings:
 | `kernel.websocket_port` | Yes | remove/fix | Same as websocket host. | Same as websocket host. | No. Daemon restart if wired. |
 | `kernel.runtime_mcp_host` | Yes | remove/fix | Parsed into user config, but runtime MCP URL uses top-level `runtime_mcp_host` from env/default. | Remove from user config or wire at daemon boot with clear restart semantics. | If live-wired, provider reload would be required, but daemon restart is simpler. |
 | `kernel.runtime_mcp_port` | Yes | remove/fix | Same as runtime MCP host. | Same as runtime MCP host. | If live-wired, provider reload would be required, but daemon restart is simpler. |
+| `history.handoff.codex_brief_model` | Yes | keep | Model for Codex provider-switch briefs; unset defaults to `gpt-6-luna`, then retries on the target model if unavailable. | Live; applies at the next handoff refresh. | No. |
+| `history.handoff.claude_brief_model` | Yes | keep | Model for Claude provider-switch briefs; unset uses a same-family source model, otherwise the target model. | Live; applies at the next handoff refresh. | No. |
 | `history.operational.backend` | Set only, unset blocked | keep as placeholder | Only legal value is `sqlite`; store opens on daemon boot. | Keep if backend expansion is planned; otherwise hide from command help. | No. Restart required for backend changes. |
 | `history.operational.path` | Yes | keep/restart | Used to open the operational history SQLite DB on daemon boot. | Keep, but surface restart-required. | No. Restart required. |
 | `history.operational.retention_days` | Yes | fix/remove | Parsed and validated; no clear pruning job using it was found. | Wire retention pruning or remove. | No. |
