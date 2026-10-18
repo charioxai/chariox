@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11: service epochs, privacy, bounded streams and resource admission.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { MirrorService } from './kernel-browser-mirror.mjs';
 import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-resources.mjs';
 import { encodePng,decodePng } from './kernel-browser-pixels.mjs';
@@ -405,11 +406,23 @@ test('MP-08/MP-10/MP-11: App draft fence finishes before publication and recheck
 });
 
 test('MP-08/MP-10/MP-11: publishing an App draft also waits for saved browser selection',async()=>{
- const {service,host}=fixture(),committed=Promise.withResolvers();let saving=false,published=false;
+ const {service,host}=fixture(),committed=Promise.withResolvers();let saving=false,published=false;const lane=new SampleLane();host.sampleLane=()=>lane;
  host.browser.appTabs={async flushDrafts(){return true}};
  host.save=async()=>{saving=true;await committed.promise};
  const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
  const packet=service.next(next(sub.subscription_id),'a').then(value=>{published=true;return value});
  await new Promise(resolve=>setTimeout(resolve,30));assert(saving,'the selection write must start before publishing the draft');assert.equal(published,false);
  committed.resolve();await packet;assert.equal(published,true);
+});
+
+test('MP-08/MP-10/MP-11: an App capture waits for a successful DOM input before saving its selection',async()=>{
+ const {service,host}=fixture(),lane=new SampleLane(),input=Promise.withResolvers(),commit=Promise.withResolvers();let selected=false,saving=false,published=false;
+ host.sampleLane=()=>lane;host.browser.appTabs={async flushDrafts(){return true}};
+ const editing=lane.run('input',async()=>{await input.promise;selected=true});
+ host.save=async()=>{saving=true;assert(selected,'save must observe the admitted DOM input selection');await commit.promise};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const packet=service.next(next(sub.subscription_id),'a').then(value=>{published=true;return value});packet.catch(()=>{});
+ await new Promise(resolve=>setTimeout(resolve,30));assert.equal(saving,false);assert.equal(published,false);
+ input.resolve();await editing;await new Promise(resolve=>setImmediate(resolve));assert(saving);assert.equal(published,false);
+ commit.resolve();await packet;assert(published);
 });

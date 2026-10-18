@@ -797,9 +797,7 @@ export class KernelBrowserHost {
       // Retiring an encoded row on each key forces an IDR and can delay echo
       // behind its byte budget. Epochs still retire exact work; policy/document
       // retirement still closes the source/producer and resets every row.
-      const onDispatch = () => {
-        if (dispatched) return;
-        dispatched = true;
+      const rememberSelection = () => {
         // MP-08/MP-10/MP-11: CDP can type into a background window. Its
         // admitted human selection supersedes older native restore intent.
         const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
@@ -807,6 +805,11 @@ export class KernelBrowserHost {
         if (!agent && !command._agent_input && !command.focused_agent && !selected) {
           this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
         }
+      };
+      const onDispatch = () => {
+        if (dispatched) return;
+        dispatched = true;
+        rememberSelection();
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
@@ -828,7 +831,13 @@ export class KernelBrowserHost {
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const deferred=await this.sampleLane(tab).run("input", async () => {
+          const result=await this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          // Native DOM controls commit without sending a physical key. Record
+          // their successful intent before a queued capture can publish it.
+          rememberSelection();
+          return result;
+        });
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
