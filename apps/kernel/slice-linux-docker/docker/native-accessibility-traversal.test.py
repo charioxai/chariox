@@ -140,7 +140,7 @@ class TraversalTest(unittest.TestCase):
         processes=[{'pid':200,'started':'1'}]
         self.assertEqual(self.driver.input_target(processes)['path'],[0,0])
         self.driver.input_guard(processes)()
-        for change in ['title','geometry','nested','ambiguous','password','browser']:
+        for change in ['title','geometry','nested','ambiguous']:
             with self.subTest(change=change):
                 chooser.name='Writer';chooser.rect.width=300;leaf.secret=False;leaf.role='text'
                 roots=[chooser]
@@ -280,8 +280,8 @@ class TraversalTest(unittest.TestCase):
         for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'url': 'https://other.test/'}]}]:
             self.assertEqual(snapshot(protection)['masks'], [])
             self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
-        # Browser accessibility content remains withheld from the structured tree.
-        self.assertTrue(all(node['name'] == '[protected]' for node in snapshot({'pages': [page]})['nodes']))
+        # MP-08/MP-11: harmless Chromium navigation remains available.
+        self.assertIn('Page', [node['name'] for node in snapshot({'pages': [page]})['nodes']])
 
     def test_mp08_other_window_before_deep_hidden_menu_budget(self):
         self.driver.MAX_NODES = 512
@@ -458,33 +458,43 @@ class TraversalTest(unittest.TestCase):
                 with patch.object(self.driver,'snapshot',return_value=changed):
                     with self.assertRaises(ValueError):self.driver.input_target([],expected)
 
-    def test_mp11_finding2_browser_dom_privacy_is_withheld_without_coordinate_mapping(self):
-        self.terminal(200)
-        browser=Node('Chromium','application',[Node('xterm','frame',[
-            Node('human-entered-otp-canary','text'),Node('private-ancestor-canary','label'),
-            Node('nested-frame-canary','document web'),Node('shadow-private-canary','text')])])
-        tree=self.snapshot([browser])
-        self.assertNotIn('canary',str(tree))
-        self.assertEqual(tree['masks'], [])
-        self.assertTrue(all(node['protected'] and not node['actions'] for node in tree['nodes']))
+    def test_mp08_mp11_browser_navigation_exposes_labels_and_redacts_secret_fields(self):
+        self.foreground(pid=200,name='Chromium')
+        otp=Node('test-otp-value','text',[Node('test-otp-value','text')])
+        otp.getAttributes=lambda:['tag:input','text-input-type:text','autocomplete:one-time-code']
+        password=Node('test-password-value','password text',secret=True)
+        vault=Node('test-vault-value','text')
+        browser=Node('Chromium','application',[Node('Chromium','frame',[
+            Node('Accept cookies','push button'),Node('Address and search bar','text'),
+            otp,password,vault,Node('Public article','document web')])])
+        self.desktop=Node('Desktop','desktop',[browser]);processes=[{'pid':200,'started':'1'}]
+        with patch.object(self.driver._fills,'read',return_value=[]):
+            tree=self.driver.snapshot(processes,browser_processes=processes,values=['test-vault-value'])
+        names=[node['name'] for node in tree['nodes']]
+        self.assertIn('Accept cookies',names);self.assertIn('Address and search bar',names)
+        self.assertIn('Public article',names)
+        self.assertNotIn('test-otp-value',str(tree));self.assertNotIn('test-password-value',str(tree))
+        self.assertNotIn('test-vault-value',str(tree))
+        self.assertTrue(tree['protected']);self.assertIsNotNone(tree['active_window'])
 
-    def test_mp08_mp11_known_browser_content_is_opaque_without_accessibility_queries(self):
-        # MP-10 real Wikipedia capture timed out walking content already masked.
-        from unittest.mock import Mock
-        self.terminal(200)
-        browser=Node('private browser application', 'application', pid=200)
-        browser.getRoleName=Mock(side_effect=AssertionError('browser content must not be queried'))
-        self.desktop=Node('Desktop','desktop',[browser])
-        processes=[{'pid':200,'started':'1'}]
-        tree=self.driver.snapshot(processes, browser_processes=processes)
-        self.assertTrue(tree['available'])
-        self.assertTrue(tree['complete'])
-        self.assertEqual(tree['masks'], [])
-        self.assertEqual(tree['nodes'][0]['name'],'[protected]')
-        self.assertTrue(tree['nodes'][0]['protected'])
-        self.assertEqual(tree['nodes'][0]['actions'],[])
-        self.assertIsNone(tree['active_window'])
-        browser.getRoleName.assert_not_called()
+    def test_mp11_vault_value_is_scrubbed_before_native_label_truncation(self):
+        value='test-vault-'+'x'*5000
+        self.desktop=Node('Desktop','desktop',[Node('Chromium','application',[Node(value,'text')])])
+        tree=self.driver.snapshot([{'pid':200,'started':'1'}],values=[value])
+        self.assertNotIn('test-vault-',str(tree))
+        self.assertIn('[redacted]',str(tree))
+
+    def test_mp08_mp11_native_keyboard_accepts_owned_browser_and_secret_focus(self):
+        self.foreground(pid=200,name='Chromium')
+        for role,secret in [('text',False),('document web',False),('password text',True)]:
+            with self.subTest(role=role):
+                leaf=Node('field','%s'%role,secret=secret)
+                leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+                leaf.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda coords:types.SimpleNamespace(x=110,y=100,width=100,height=30))
+                self.desktop=Node('Desktop','desktop',[Node('Chromium','application',[Node('Chromium','frame',[leaf])])])
+                processes=[{'pid':200,'started':'1'}]
+                target=self.driver.input_target(processes)
+                self.assertEqual(target['path'],[0,0]);self.assertEqual(self.driver.input_target(processes,target),target)
 
     def test_mp11_finding3_popup_has_no_visual_mask(self):
         popup=types.SimpleNamespace(get_attributes=lambda:types.SimpleNamespace(map_state=2,override_redirect=1),
@@ -526,9 +536,9 @@ class TraversalTest(unittest.TestCase):
         processes=[{'pid':200,'started':'1'}]
         self.assertEqual(self.driver.input_target(processes,expected),expected)
         frame.role='document web'
-        with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
+        self.assertEqual(self.driver.input_target(processes,expected),expected)
         frame.role='frame';leaf.secret=True
-        with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
+        self.assertEqual(self.driver.input_target(processes,expected),expected)
         leaf.secret=False;leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:False)
         with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
 

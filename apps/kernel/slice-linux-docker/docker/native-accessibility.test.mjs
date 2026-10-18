@@ -62,8 +62,8 @@ test('MP-11 target protection invalidates cached snapshots and direct old handle
   }, policy));
   const after = await native.snapshot('agent:a', policy);
   assert.notEqual(after.tree_revision, before.tree_revision);
-  assert.equal(after.nodes[0].name, '[protected]');
-  assert.deepEqual(after.nodes[0].actions, []);
+  assert.equal(after.nodes[0].name, tree.nodes[0].name);
+  assert.deepEqual(after.nodes[0].actions, tree.nodes[0].actions);
   assert.equal(actions, 0);
 });
 
@@ -142,4 +142,16 @@ test('MP-08 / MP-11 host and Room scaled snapshot centers reach the physical poi
   await computer.request({op:'input',surface_id:scoped.surface_id,generation:scoped.generation,input:{kind:'click',x:x+w/2,y:y+h/2}},policy);
   assert.deepEqual(clicked,{kind:'click',x:220,y:110});
  }
+});
+
+test('MP-08/MP-11 browser navigation remains actionable beside a Vault-filled field without exposing its value',async()=>{
+ const policy={values:['test-vault-canary'],targets:[{kind:'browser',target_id:'filled'}]};let applied=0;
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+  if(request.op==='accessibility_action'){applied++;return {applied:true};}
+  return {...tree,nodes:[{...tree.nodes[0],name:'Accept cookies'},{...tree.nodes[0],path:[1],role:'text',name:'test-vault-canary',actions:[]},{...tree.nodes[0],path:[2],role:'password text',protected:true,name:'test-password-canary',actions:[]}]};
+ }});
+ const seen=await native.snapshot('agent:a',policy);assert(!JSON.stringify(seen).includes('canary'));
+ const button=seen.nodes.find(node=>node.name==='Accept cookies');assert(button?.actions.includes('click'));
+ await native.action('agent:a',{tree_revision:seen.tree_revision,target_id:button.target_id,action:'click'},policy);
+ assert.equal(applied,1);
 });
