@@ -142,6 +142,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       resolved=await resolveMirror(input);
       observedFrameInput=resolved.observedFrameInput===true;
     }
+    // A wheel needs no page focus: it does not wait for the renderer to resume focus emulation.
     return browser.inputCapture.run(connection, sessionId, async () => {
       // MP-08/MP-10/MP-11: a fenced (v2) resolution has its final document
       // fence in perform/sendInput/its guard below. No mutation or await
@@ -265,5 +266,5 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }
-    });
+    }, { resumeFocus: input.kind !== 'scroll' });
   }

@@ -149,6 +149,14 @@ test('MP-08/MP-10/MP-11 a native wheel is fenced by the ordered navigation event
   await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true}});
   assert.equal(sent.some(x=>x.method==='Page.getFrameTree'),true,'no proof: the renderer is asked');
 });
+// r55: a wheel needs no page focus: it must not wait for the renderer to re-enable focus emulation (5 s on a busy page).
+test('MP-08/MP-10/MP-11 a wheel does not resume focus emulation before it is sent, a key does',async()=>{
+  const {browser}=fixture();const options=[];
+  browser.inputCapture.run=async(_c,_s,fn,opts)=>{options.push(opts);return fn()};
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120},{});
+  await inputHostTab(browser,tab,{kind:'key',key:'Tab'},{});
+  assert.equal(options[0]?.resumeFocus,false);assert.notEqual(options[1]?.resumeFocus,false);
+});
 // MP-08/MP-10: wheel notches use the owned display after the same fences;
 // unavailable native input keeps precise CDP deltas or fails closed.
 test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{
