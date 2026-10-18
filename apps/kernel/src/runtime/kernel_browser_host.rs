@@ -441,6 +441,12 @@ impl KernelBrowserHost {
             None
         };
         let input = method == "host.browser" && params["op"] == "input";
+        let op_label = params["op"]
+            .as_str()
+            .filter(|op| op.len() <= 32 && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+            .unwrap_or("other")
+            .to_string();
+        let requested = std::time::Instant::now();
         let queued = std::time::Instant::now();
         let _mutation_guard = mutation_lane
             .as_ref()
@@ -450,6 +456,7 @@ impl KernelBrowserHost {
         if input {
             crate::transport::kernel_browser_display::timing("input_mutation_queue", queued);
         }
+        crate::transport::kernel_browser_display::slow("rust_mutation_queue", &op_label, queued);
         let queued = std::time::Instant::now();
         let mut backend = browser
             .lock()
@@ -457,6 +464,7 @@ impl KernelBrowserHost {
         if input {
             crate::transport::kernel_browser_display::timing("input_backend_queue", queued);
         }
+        crate::transport::kernel_browser_display::slow("rust_backend_queue", &op_label, queued);
         self.require_running()?;
         self.check_admission(admission)?;
         self.scope_browser_request(admission, method, &params)?;
@@ -727,6 +735,7 @@ impl KernelBrowserHost {
         } else {
             backend.host_request_cancellable(method, params, cancellation.clone())
         };
+        crate::transport::kernel_browser_display::slow("rust_request", &op_label, requested);
         if let Some(action) = action {
             let terminal = if cancellation
                 .as_ref()

@@ -17,6 +17,24 @@ pub(crate) fn timing(stage: &'static str, started: std::time::Instant) {
     }
 }
 
+/// r55: a wait that took 250 ms or more, as `MD-DISPLAY-SLOW <json>`, apart from the per-frame timing lines so a
+/// bounded diagnostic buffer keeps it. `op` is a fixed lowercase label, never a value.
+pub(crate) fn slow(stage: &str, op: &str, started: std::time::Instant) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() >= 250
+        && *ENABLED
+            .get_or_init(|| std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1"))
+    {
+        let duration = elapsed.as_secs_f64() * 1000.0;
+        let ended = crate::session::unix_epoch_ms() as f64;
+        eprintln!(
+            "MD-DISPLAY-SLOW {}",
+            serde_json::json!({"stage":format!("{stage} {op}"),"started_ms":ended-duration,"ended_ms":ended,"duration_ms":duration})
+        );
+    }
+}
+
 /// MP-08/MP-10: protocol 466 binary display event. Layout: magic `CXD1`,
 /// big-endian u32 header length, UTF-8 JSON header
 /// `{"event":"kernel_browser_frame","subscription_id",frame}`, then raw payload
