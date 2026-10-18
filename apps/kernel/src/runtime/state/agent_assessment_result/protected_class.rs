@@ -16,6 +16,8 @@ pub(crate) enum ProtectedFact {
     ApprovalDenied,
     ApprovalTimedOut,
     FieldNotFound,
+    /// A protected step failed for a reason the kernel does not classify.
+    Failed,
 }
 
 #[derive(Clone, Default)]
@@ -28,7 +30,18 @@ impl ProtectedFacts {
         let mut facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         facts.insert((room.to_string(), agent.to_string()), fact);
     }
-    pub(super) fn peek(&self, room: &str, agent: &str) -> Option<ProtectedFact> {
+    /// Unclassified failure: replaces an earlier success, keeps a specific failure.
+    pub(in crate::runtime::state) fn record_failure(&self, room: &str, agent: &str) {
+        let mut facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = facts.entry((room.to_string(), agent.to_string()));
+        slot.and_modify(|fact| {
+            if *fact == ProtectedFact::Submitted {
+                *fact = ProtectedFact::Failed;
+            }
+        })
+        .or_insert(ProtectedFact::Failed);
+    }
+    pub(in crate::runtime::state) fn peek(&self, room: &str, agent: &str) -> Option<ProtectedFact> {
         let facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         facts.get(&(room.to_string(), agent.to_string())).copied()
     }
@@ -47,9 +60,10 @@ pub(super) fn public_text(value: &Assessment, fact: Option<ProtectedFact>) -> &'
     use ProtectedFact::*;
     match (value, fact) {
         (Assessment::Achieved { .. }, None | Some(Submitted)) => "[protected task: completed]",
-        (Assessment::Achieved { .. }, _) => WITHHELD,
+        // The kernel's own denial or timeout outranks the agent's "achieved" claim.
         (_, Some(ApprovalDenied)) => "[protected task: approval denied]",
         (_, Some(ApprovalTimedOut)) => "[protected task: timed out]",
+        (Assessment::Achieved { .. }, _) => WITHHELD,
         (_, Some(FieldNotFound)) => "[protected task: protected field not found]",
         (Assessment::Waiting { .. }, _) => "[protected task: waiting]",
         _ => "[protected task: agent did not complete the protected step]",

@@ -47,7 +47,10 @@ impl KernelRuntimeState {
                 session_id,
                 RoomBrowserControllerCommand::ComputerSecretTarget,
             )
-            .await?;
+            .await
+            .inspect_err(|_| {
+                self.record_protected_fact(session_id, agent_id, ProtectedFact::FieldNotFound)
+            })?;
         let target = match result {
             RoomBrowserControllerResult::ComputerSecretTarget { target } if target.valid() => {
                 target

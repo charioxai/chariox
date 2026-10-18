@@ -32,7 +32,26 @@ impl KernelRuntimeState {
         .await
     }
 
-    async fn dispatch_computer_secret_input_for_authority(
+    pub(in crate::runtime::state) async fn dispatch_computer_secret_input_for_authority(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let result = self
+            .paste_secret_to_computer(session_id, agent_id, arguments)
+            .await;
+        if result.is_err() {
+            // A failed attempt must not leave an earlier paste reading as success.
+            self.owned
+                .private_assessment_dispatch
+                .protected_facts
+                .record_failure(session_id, agent_id);
+        }
+        result
+    }
+
+    async fn paste_secret_to_computer(
         &self,
         session_id: &str,
         agent_id: &str,

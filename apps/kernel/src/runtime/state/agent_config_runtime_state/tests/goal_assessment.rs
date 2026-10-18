@@ -625,14 +625,21 @@ async fn mp11_protected_blocked_result_shows_kernel_reason_class() {
     }
 }
 
-// An achieved claim that contradicts a failed kernel step fails closed.
+// An achieved claim that contradicts a kernel-observed step never reads as success.
 #[tokio::test]
-async fn mp11_protected_achieved_against_failed_step_stays_withheld() {
+async fn mp11_protected_achieved_against_failed_step_shows_kernel_fact_or_withholds() {
     use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
     let raw = r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
-    let (_, receipt) = settle_protected_check(raw, Some(ApprovalDenied)).await;
-    assert!(receipt.contains("[protected completion details withheld]"));
-    assert!(!receipt.contains("[protected task:") && !receipt.contains("PRIVATE_"));
+    for (fact, text) in [
+        (ApprovalDenied, "[protected task: approval denied]"),
+        (ApprovalTimedOut, "[protected task: timed out]"),
+        (FieldNotFound, "[protected completion details withheld]"),
+        (Failed, "[protected completion details withheld]"),
+    ] {
+        let (_, receipt) = settle_protected_check(raw, Some(fact)).await;
+        assert!(receipt.contains(text), "{fact:?}: {receipt}");
+        assert!(!receipt.contains("[protected task: completed]") && !receipt.contains("PRIVATE_"));
+    }
 }
 
 // MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.

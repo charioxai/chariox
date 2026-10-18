@@ -380,7 +380,9 @@ mod tests {
         assert!(class(waiting, Some(ApprovalDenied)).contains("approval denied"));
         assert!(class(cont, Some(FieldNotFound)).contains("protected field not found"));
         assert!(class(achieved, Some(Submitted)).contains("[protected task: completed]"));
-        for fact in [ApprovalDenied, ApprovalTimedOut, FieldNotFound] {
+        assert!(class(achieved, Some(ApprovalDenied)).contains("[protected task: approval denied]"));
+        assert!(class(achieved, Some(ApprovalTimedOut)).contains("[protected task: timed out]"));
+        for fact in [FieldNotFound, Failed] {
             let out = class(achieved, Some(fact));
             assert!(out.contains("[protected completion details withheld]"), "{out}");
         }
