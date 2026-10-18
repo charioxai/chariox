@@ -535,7 +535,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "be98a1b33d961f9023e2404b32148dc471712c2fc958375ae25e676a0280e92f");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "db0e2aff3d85eb74cb1b2503de71872a7eaf38eeada4d0afb6b0011518cfcc33");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
