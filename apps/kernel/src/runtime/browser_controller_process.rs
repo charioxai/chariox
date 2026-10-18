@@ -335,6 +335,7 @@ impl BrowserControllerProcessStdioBackend {
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
                 "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE",
+                "CHARIOX_DESKTOP_ROOT_PRESENTED",
                 "LIBVA_DRIVER_NAME",
                 "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
                 "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",

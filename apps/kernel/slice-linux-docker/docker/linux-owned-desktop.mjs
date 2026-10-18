@@ -180,7 +180,7 @@ export class LinuxOwnedDesktop {
       await delay(100);
       const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
       if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env), root: newRoot() });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env), root: newRoot(this.source.CHARIOX_DESKTOP_ROOT_PRESENTED === '1') });
       readyDesktops.add(this);
       return this.current;
     } catch (error) { await this.stop(); throw error; }
