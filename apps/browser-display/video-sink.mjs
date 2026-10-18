@@ -117,15 +117,21 @@ export class VideoSink {
  armFrame(view){
   if(this.frameRaf!==undefined||!view.requestAnimationFrame)return;
   this.cancelFrame=view.cancelAnimationFrame?.bind(view);
-  this.frameRaf=view.requestAnimationFrame(()=>{
+  // A document whose animation frames do not run (throttled or detached) must not hold decoded frames: a timer ends the frame too.
+  let ended=false,timer;
+  const end=()=>{
+   if(ended)return;ended=true;clearTimeout(timer);
    this.frameRaf=undefined;this.frameDrawn=false;
    if(this.closed||!this.pending.length)return;
    // The waiting frame is drawn after this frame's commit, so the next compositor frame shows it.
    this.frameDrawn=true;this.armFrame(view);
    setTimeout(()=>{if(!this.closed)this.commitOldest();},0);
-  });
+  };
+  this.frameRaf=view.requestAnimationFrame(end);
+  timer=setTimeout(()=>{if(!ended){this.cancelFrame?.(this.frameRaf);end();}},50);
+  this.frameTimer=()=>{ended=true;clearTimeout(timer);};
  }
- endFrame(){if(this.frameRaf!==undefined)this.cancelFrame?.(this.frameRaf);this.frameRaf=undefined;this.frameDrawn=false;}
+ endFrame(){if(this.frameRaf!==undefined)this.cancelFrame?.(this.frameRaf);this.frameTimer?.();this.frameRaf=undefined;this.frameDrawn=false;}
  commitOldest(){const job=this.pending.shift();if(!job)return;const rest=this.pending;this.pending=[job];this.commitPending(true);this.pending=rest;}
  commitPending(visible){
   this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);

@@ -176,3 +176,15 @@ test('MP-08/MP-10 paced page crop leaves nothing waiting when the document hides
   assert.equal((await waiting).drawn,false);assert.equal(sink.frameDrawn,false);
  }finally{sink.close()}
 });
+
+test('MP-08/MP-10 paced page crop does not hold frames in a document whose animation frames never run',async()=>{
+ const draws=[],view={requestAnimationFrame:()=>1,cancelAnimationFrame(){}};
+ const canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:view},getContext:()=>({drawImage:image=>draws.push(image.n)})};
+ const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
+ const sink=new VideoSink(canvas,()=>{},{direct:true,paced:true});
+ try{
+  const jobs=[1,2].map(n=>sink.commit(frame(n),{width:8,height:8}));
+  assert.deepEqual(draws,[1]);
+  assert.equal((await jobs[1]).drawn,true);assert.deepEqual(draws,[1,2],'the timer hands the next frame over within about 50 ms');
+ }finally{sink.close()}
+});
