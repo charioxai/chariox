@@ -292,6 +292,32 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     Ok(())
 }
 
+/// The arguments of a fresh provider child that starts empty-handed. A managed
+/// launch keeps its bubblewrap prefix through the provider program and starts
+/// in the namespace's empty `/tmp` rather than the workspace; an unmanaged one
+/// is just the provider's own arguments.
+pub(crate) fn fresh_provider_child_args(
+    current: &[String],
+    provider_args: Vec<String>,
+) -> Vec<String> {
+    let separator = current.iter().position(|arg| arg == "--");
+    let Some(separator) = separator.filter(|separator| {
+        current[..*separator]
+            .windows(3)
+            .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+    }) else {
+        return provider_args;
+    };
+    let mut args = current[..current.len().min(separator + 2)].to_vec();
+    if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
+        if let Some(directory) = args.get_mut(chdir + 1) {
+            *directory = "/tmp".to_string();
+        }
+    }
+    args.extend(provider_args);
+    args
+}
+
 pub(crate) fn managed_launch_has_preparation_home(args: &[String], host_home: &Path) -> bool {
     let separator = args
         .iter()
