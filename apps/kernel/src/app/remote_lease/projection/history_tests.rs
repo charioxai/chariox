@@ -441,6 +441,101 @@ fn history_owned_tool_ignores_late_terminal_records(field: &str, stderr: Option<
 }
 
 #[test]
+fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
+    let (mut app, leased) = worker_lease();
+    let run = super::explicit_completion_tests::provider_run(
+        "run",
+        &leased.backing_session_id,
+        &leased.backing_agent_id,
+        "managed-dev-stub",
+        "managed-dev-stub",
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.providers_mut().insert_run_for_test(run);
+    let tool = |status: &str, len: usize| {
+        serde_json::to_vec(&serde_json::json!({
+            "id": "big-tool", "name": "Bash", "status": status, "output": "x".repeat(len),
+        }))
+        .unwrap()
+    };
+    // The real producer: output grows past the 16 KiB record cap, then a
+    // status-only completion repeats it as a snapshot the cap shortens.
+    let produce = |payload: Vec<u8>| {
+        let delta = crate::provider_output_policy::output_bounds::terminal_output_delta_bytes(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            &TerminalOutputKind::ProviderTool,
+            &Some("big-tool".into()),
+            &payload,
+        );
+        crate::provider_output_policy::output_bounds::bounded_terminal_output_bytes(
+            &TerminalOutputKind::ProviderTool,
+            &delta,
+        )
+    };
+    let records = [
+        produce(tool("running", 5_000)),
+        produce(tool("running", 30_000)),
+        produce(tool("running", 30_100)),
+        produce(tool("completed", 30_100)),
+    ];
+    let completed = records.last().unwrap();
+    assert!(completed.len() < 16 * 1024, "the cap shortened the snapshot");
+    app.append_history_entry(
+        &leased.backing_session_id,
+        crate::history::SessionHistoryEntry::provider_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderTool,
+            Some("big-tool".into()),
+            String::from_utf8(completed.clone()).unwrap(),
+        ),
+    );
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap()
+        .expect("history projects the completed snapshot")
+        .1;
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        delivery: Some(receipt),
+        ..
+    } = &first
+    else {
+        panic!("receipted history projection required")
+    };
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .acknowledge_leased_runtime_projection(&leased.id, "run", receipt)
+        .unwrap());
+    // The bounded terminal batch is still queued behind history.
+    for record in &records {
+        app.terminal_mut().fan_out_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            TerminalOutputKind::ProviderTool,
+            Some("big-tool".into()),
+            vec![leased.backing_attachment_id.clone()],
+            record,
+        );
+    }
+    let late = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap();
+    assert!(
+        late.is_none_or(|(_, event)| {
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+            output_chunks.is_empty()
+        }),
+        "delayed pre-completion deltas must not follow the completed history snapshot"
+    );
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}
+
+#[test]
 fn mp08_history_owned_running_tool_keeps_forwarding_new_output() {
     history_owned_running_tool_keeps_forwarding("output", false);
 }

@@ -20,7 +20,9 @@ pub(crate) struct ToolProjectionState {
     history_end: std::collections::BTreeMap<String, u64>,
 }
 
-const OUTPUT_FIELDS: [&str; 5] = ["output", "stdout", "stderr", "result", "content"];
+use crate::provider_output_policy::output_bounds::{
+    PROVIDER_TOOL_FIELD_BYTES, PROVIDER_TOOL_OUTPUT_FIELDS as OUTPUT_FIELDS,
+};
 
 /// The producer deltas one selected field; every other string stays cumulative.
 /// Legacy single-field deltas remain unambiguous. A legacy multi-field offset
@@ -50,7 +52,14 @@ fn output_ends(payload: Option<&serde_json::Value>) -> Vec<(&'static str, u64)> 
     OUTPUT_FIELDS
         .into_iter()
         .filter_map(|field| {
-            let len = payload.get(field)?.as_str()?.len() as u64;
+            // A capped string keeps its original length; the shortened display
+            // text is not the end of the stream.
+            let shown = payload.get(field)?.as_str()?.len() as u64;
+            let len = payload
+                .get(PROVIDER_TOOL_FIELD_BYTES)
+                .and_then(|fields| fields.get(field))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(shown);
             Some((
                 field,
                 len.saturating_add(if owner == Some(field) { start } else { 0 }),
@@ -91,7 +100,7 @@ impl ToolProjectionState {
             if let Some(field) = field {
                 self.delta_offsets.remove(field);
             } else {
-                for field in ["output", "stdout", "stderr", "result", "content"] {
+                for field in OUTPUT_FIELDS {
                     if payload
                         .as_ref()
                         .is_some_and(|p| p.get(field).is_some_and(|v| v.is_string()))

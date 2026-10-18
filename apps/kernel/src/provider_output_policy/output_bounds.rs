@@ -6,6 +6,11 @@ use serde_json::Value;
 
 pub(crate) const MAX_PROVIDER_OUTPUT_RECORD_BYTES: usize = 16 * 1024;
 const MAX_PROVIDER_TOOL_STRING_BYTES: usize = 12 * 1024;
+/// Tool payload strings that carry a stream of output.
+pub(crate) const PROVIDER_TOOL_OUTPUT_FIELDS: [&str; 5] =
+    ["output", "stdout", "stderr", "result", "content"];
+/// Original byte length of each output field that a cap shortened.
+pub(crate) const PROVIDER_TOOL_FIELD_BYTES: &str = "chariox_field_bytes";
 const PROVIDER_TOOL_DELTA_GATE_LIMIT: usize = 4096;
 const PROVIDER_TOOL_DELTA_TAIL_SAMPLE_BYTES: usize = 256;
 const PROVIDER_TOOL_LARGE_PAYLOAD_BYTES: usize = 512 * 1024;
@@ -188,6 +193,7 @@ fn provider_tool_delta_bytes(
             MAX_PROVIDER_TOOL_STRING_BYTES,
             current_len,
         ));
+        note_field_bytes(object, &field, current_len);
         object.insert("chariox_truncated".to_string(), Value::Bool(true));
         object.insert(
             "chariox_original_bytes".to_string(),
@@ -203,7 +209,7 @@ fn provider_tool_delta_bytes(
 }
 
 fn provider_tool_output_field(object: &serde_json::Map<String, Value>) -> Option<String> {
-    ["output", "stdout", "stderr", "result", "content"]
+    PROVIDER_TOOL_OUTPUT_FIELDS
         .iter()
         .filter_map(|field| {
             object
@@ -275,6 +281,14 @@ fn hash_bounded_string(hash: u64, value: &str) -> u64 {
 
 fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut value = serde_json::from_slice::<Value>(bytes).ok()?;
+    if let Value::Object(object) = &mut value {
+        for field in PROVIDER_TOOL_OUTPUT_FIELDS {
+            let len = object.get(field).and_then(Value::as_str).map(str::len);
+            if let Some(len) = len.filter(|len| *len > MAX_PROVIDER_TOOL_STRING_BYTES) {
+                note_field_bytes(object, field, len);
+            }
+        }
+    }
     let mut truncated = false;
     truncate_json_strings(&mut value, &mut truncated);
     if truncated {
@@ -311,6 +325,15 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
         ),
     );
     serde_json::to_vec(&Value::Object(fallback)).ok()
+}
+
+fn note_field_bytes(object: &mut serde_json::Map<String, Value>, field: &str, len: usize) {
+    let fields = object
+        .entry(PROVIDER_TOOL_FIELD_BYTES)
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Value::Object(fields) = fields {
+        fields.insert(field.to_string(), Value::Number((len as u64).into()));
+    }
 }
 
 fn truncate_json_strings(value: &mut Value, truncated: &mut bool) {
