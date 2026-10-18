@@ -131,6 +131,7 @@ export class AppTabs {
       expression: 'globalThis.__charioxAppDraftFlushed?.() ?? true', awaitPromise: true, returnByValue: true,
     }, sessionId);
     if (reply.exceptionDetails || reply.result?.value !== true) throw new Error('App draft commit unavailable');
+    return true;
   }
 
   constructor(browser, { restoreGraceMs = 30_000 } = {}) {

@@ -206,7 +206,7 @@ export class MirrorService {
       }
     }
     mark('tile_decode_mask_encode');
-    await this.host.browser.appTabs?.flushDrafts(tab.target_id);
+    if (await this.host.browser.appTabs?.flushDrafts(tab.target_id)) await this.host.save();
     await assertCurrentDocument(world.connection,world.sessionId,tab.target_id,tab.document_id);assertNotCancelled(signal);
     mark('document_fence');
     // MP-11: protection updates may interleave with awaited CDP/resource work.

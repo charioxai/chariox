@@ -403,3 +403,13 @@ test('MP-08/MP-10/MP-11: App draft fence finishes before publication and recheck
  await entered.promise;assert.equal(published,false);host.protection={revision:2,values:[],targets:[]};commit.resolve();
  await assert.rejects(packet,/stale mirror protection/);assert.equal(published,false);
 });
+
+test('MP-08/MP-10/MP-11: publishing an App draft also waits for saved browser selection',async()=>{
+ const {service,host}=fixture(),committed=Promise.withResolvers();let saving=false,published=false;
+ host.browser.appTabs={async flushDrafts(){return true}};
+ host.save=async()=>{saving=true;await committed.promise};
+ const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ const packet=service.next(next(sub.subscription_id),'a').then(value=>{published=true;return value});
+ await new Promise(resolve=>setTimeout(resolve,30));assert(saving,'the selection write must start before publishing the draft');assert.equal(published,false);
+ committed.resolve();await packet;assert.equal(published,true);
+});
