@@ -44,6 +44,7 @@ const PAINT_HOLD_MS = 2500;
 // A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
 // (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
 const BUSY_RENDERER_MS = 20_000;
+const CREDIT_PATIENCE_MS = 6_500;
 // A hung renderer still ends: the one snapshot in flight is abandoned after this.
 const SNAPSHOT_MS = 120_000;
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
@@ -334,6 +335,7 @@ export class Mirror2 {
     const started = timestamp(); let stage = started;
     const mark = name => { this.host.timing?.(`mirror2_${name}`, stage); stage = timestamp(); };
     const busyMs = this.busyMs ?? BUSY_RENDERER_MS, patience = () => Math.max(Math.min(1000, busyMs), busyMs - (timestamp() - started));
+    const delta = () => Math.max(1000, Math.min(busyMs, CREDIT_PATIENCE_MS) - (timestamp() - started));
     this.service.require(command.subscription_id, scope, command.generation);
     // MP-08/MP-10: between packets the page session's navigation events keep the document current, so an
     // unchanged document reuses its world without renderer round trips (a busy page answers those only after
@@ -370,8 +372,9 @@ export class Mirror2 {
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
     const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
-    // Every renderer call of a credit waits for a busy page (the viewer's credit has 30 s): a slow answer is not an error.
-    world.patience = patience;
+    // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
+    // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
+    world.patience = reset ? patience : delta;
     if (reset) this.host.timing?.(`mirror2_reset ${resetReason}`, started);
     // The hold follows the document transition itself: a credit that also resets (a resynchronizing viewer)
     // still keeps the previous page. A new subscription has no previous page to keep.

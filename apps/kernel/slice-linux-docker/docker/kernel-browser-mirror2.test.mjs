@@ -769,13 +769,13 @@ test('MP-08/MP-10/MP-11 a snapshot the busy page has not answered is awaited by 
  assert.equal(real.reset, true); assert(!real.fallback);
 });
 
-test('MP-08/MP-10/MP-11 a delta credit waits for a busy renderer like a snapshot does', async () => {
+test('MP-08/MP-10/MP-11 a delta credit waits a little longer than the default for a busy renderer, inside the viewer\'s own request timeout', async () => {
  const { mirror, stream, world } = busyFixture({ issued: 1, document_id: 'D1', policy: {}, resetAt: 1 });
  stream.policy = mirror.host.protection;
  let patient;
- mirror.evaluate = async (w, expression) => { if (expression.includes('drain')) patient = typeof w.patience; return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, pressed: 0 }; };
+ mirror.evaluate = async (w, expression) => { if (expression.includes('drain')) patient = w.patience?.(); return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, pressed: 0 }; };
  await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 0 }, 'scope');
- assert.equal(patient, 'function');
+ assert(patient > 5000 && patient <= 6500, `a delta credit waits past the 5 s default and answers inside the viewer's 8 s: ${patient}`);
 });
 
 test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, any other read keeps the short timeout',async()=>{
