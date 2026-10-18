@@ -1035,7 +1035,10 @@ export class LocalIpcClient {
           }
           let frame: RelayConnectedFrame | RelayCloseFrame
           try {
-            frame = JSON.parse(String(data)) as RelayConnectedFrame | RelayCloseFrame
+            // The relay frames every reply, including this acknowledgement, as chunks-v2.
+            const text = relayFrames.receive(String(data), receipt => socket.send(receipt))
+            if (text === null) return
+            frame = JSON.parse(text) as RelayConnectedFrame | RelayCloseFrame
           } catch (error) {
             fail("connect relay transport", error)
             return
