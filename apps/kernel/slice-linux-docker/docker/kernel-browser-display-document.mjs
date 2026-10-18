@@ -65,11 +65,14 @@ export class DisplayDocuments {
  }
  // MP-08/MP-10/MP-11: the event-bound frame of `stored`'s requested loader, or null (the caller reads live):
  // no observer yet (it attaches now), a navigation pending, or the loader is not the current one.
- async frame(browser,stored){
+ async frame(browser,stored){return (await this.bound(browser,stored))?.frame??null;}
+ // vidlat r38: the same event-bound entry also carries the target's CDP session (retired by target destroy/detach, Inspector.detached
+ // and browser disconnect), so a key need not re-list the browser's targets to find it.
+ async bound(browser,stored){
   let tab;
   try{tab=await this.target(browser,stored);}catch{return null;}
   const entry=this.connection(tab);
-  return tab.document_id===stored.document_id&&this.current(tab)&&entry.frame?{id:entry.frame,loaderId:entry.document}:null;
+  return tab.document_id===stored.document_id&&this.current(tab)&&entry.frame?{frame:{id:entry.frame,loaderId:entry.document},connection:entry.connection,sessionId:entry.sessionId}:null;
  }
  connection(tab){const s=tab[snapshot];if(!s)throw Error('MP-11: display document unbound');return s.entry;}
  async validate(tab){

@@ -475,9 +475,10 @@ export class InputArbiter {
     const current = async () => {
       const tab = await activeAdmitted(input.kind === 'key' || input.kind === 'text');
       if (tab.document_id !== command.document_id) throw new UserDomainRefusal('stale_reference');
-      const {connection, sessionId} = await this.host.browser.resolvePageTarget(tab.target_id);
-      // A key reads the loader from the event-bound document state when it is current (a miss reads live).
-      const frame = input.kind === 'key' || input.kind === 'text' ? await this.host.displayDocuments?.frame(this.host.browser, tab) : null;
+      // A key reads the loader and the target session from the event-bound document state when it is current (a miss reads live).
+      const bound = input.kind === 'key' || input.kind === 'text' ? await this.host.displayDocuments?.bound(this.host.browser, tab) : null;
+      const {connection, sessionId} = bound ?? await this.host.browser.resolvePageTarget(tab.target_id);
+      const frame = bound?.frame ?? null;
       const {frameTree} = frame ? {frameTree: {frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       return {connection, sessionId, tab, frameTree};
     };

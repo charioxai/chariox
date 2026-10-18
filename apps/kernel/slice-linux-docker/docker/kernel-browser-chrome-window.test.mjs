@@ -236,7 +236,7 @@ test('MP-11 a held mirror does not make an unfocused page appear to own omnibox 
 async function keyFixture({cachedActive='target'}={}){
  const {BrowserInputCapture}=await import('./browser-controller-input.mjs');
  const {DisplayDocuments}=await import('./kernel-browser-display-document.mjs');
- const reads={active:0,frameTree:0,focus:0};let listener,pageFocus=false;
+ const reads={active:0,frameTree:0,focus:0};let listener,pageFocus=false,targets=0;
  const connection={isOpen:()=>true,subscribe:fn=>{listener=fn;return()=>{}},send:async(method,p)=>{
   if(method==='Page.getFrameTree'){reads.frameTree++;return{frameTree:{frame:{id:'f',loaderId:docs.loader}}}}
   if(method==='Runtime.evaluate'&&p.expression==='document.hasFocus()'){reads.focus++;return{result:{value:pageFocus}}}
@@ -246,11 +246,11 @@ async function keyFixture({cachedActive='target'}={}){
  const tab={tab_id:'tab',target_id:'target',document_id:'doc'};
  const host={generation:3,tabs:new Map([['tab',tab]]),displayDocuments:docs,
   tabGroups:{active:async()=>{reads.active++;return'target'},cachedActive:()=>cachedActive},
-  browser:{inputCapture:new BrowserInputCapture(),resolvePageTarget:async()=>({connection,sessionId:'s'}),ensureFocusWorld:async()=>({contextId:77})}};
+  browser:{inputCapture:new BrowserInputCapture(),resolvePageTarget:async()=>{targets++;return{connection,sessionId:'s'}},ensureFocusWorld:async()=>({contextId:77})}};
  const arbiter=new InputArbiter(host,{current:()=>({tabbed:{window_generation:1,isCurrent:()=>true}})});arbiter.chromeFocus='tab:doc';
  const source={surface:'browser_chrome',isCurrent:()=>true,chord:async()=>true,click:async()=>true};
  const send=input=>arbiter.input({stream:{regionSource:source},command:{tab_id:'tab',document_id:'doc',generation:3,input}});
- return {reads,send,arbiter,docs,emit:m=>listener({sessionId:'s',...m}),host,setCached:v=>{host.tabGroups.cachedActive=()=>v}};
+ return {reads,targets:()=>targets,send,arbiter,docs,emit:m=>listener({sessionId:'s',...m}),host,setCached:v=>{host.tabGroups.cachedActive=()=>v}};
 }
 test('MP-08/MP-10/MP-11 a warm omnibox key has no live active-Tab or loader read; the physical-focus read stays',async()=>{
  const f=await keyFixture();
@@ -267,6 +267,15 @@ test('MP-08/MP-10/MP-11 typed text resolves its ledger target from the snapshot;
  assert.equal(target.tab_id,'tab');assert.equal(f.reads.active,0,'typed text reads the owner snapshot');
  f.setCached(null);await f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'text',text:'m'}});assert.equal(f.reads.active,1,'a miss reads live');
  f.setCached('other');await assert.rejects(f.arbiter.resolveDisplayInput({window_generation:1,tab_id:'tab',document_id:'doc',generation:3,input:{kind:'text',text:'m'}}),{code:'user_domain_stale_reference'});
+});
+// vidlat r38: the page's CDP session comes from the event-bound document entry; the browser's target list is not read per key.
+test('MP-08/MP-10/MP-11 a warm typed char does not list the browser targets; a destroyed target is resolved again',async()=>{
+ const f=await keyFixture();
+ await f.send({kind:'text',text:'a'});const warm=f.targets();
+ await f.send({kind:'text',text:'b'});await f.send({kind:'key',key:'c'});
+ assert.equal(f.targets(),warm,'no per-key Target.getTargets');
+ f.emit({method:'Target.targetDestroyed',params:{targetId:'target'}});
+ await f.send({kind:'text',text:'d'});assert.equal(f.targets(),warm+1,'a retired entry resolves the target live again');
 });
 test('MP-08/MP-10/MP-11 a key refuses when the snapshot says another Tab is in front; a snapshot miss reads live',async()=>{
  const f=await keyFixture({cachedActive:'other'});
