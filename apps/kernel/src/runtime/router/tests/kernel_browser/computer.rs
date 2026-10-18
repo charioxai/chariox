@@ -51,10 +51,13 @@ async fn check() {
     focus(&router, session.id(), first.id()).await;
     assert!(names().contains(&"chariox.load_kernel_computer".into()));
     assert!(!names().contains(&"chariox.kernel_computer".into()));
-    router
+    let loaded = router
         .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_computer", json!({}))
         .await
         .unwrap();
+    // MP-08/MP-10/MP-11: every loader reports the existing provider catalog contract.
+    assert_eq!(loaded.payload["effective"], "now");
+    assert_eq!(loaded.payload["requires_provider_restart"], false);
     assert!(names().contains(&"chariox.kernel_computer".into()));
     // MP-08/MP-11 V18: reload reuses this live capability after focus moves.
     focus(&router, session.id(), second.id()).await;
