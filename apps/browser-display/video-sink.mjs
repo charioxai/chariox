@@ -2,8 +2,8 @@
 // canvas overlay until the next complete decoded video image (key or delta).
 // No producer or protection-policy changes.
 export class VideoSink {
- constructor(canvas,onTiming,{direct=false,offscreen=false}={}){
-  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.offscreen=offscreen;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
+ constructor(canvas,onTiming,{direct=false}={}){
+  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
   this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
@@ -19,10 +19,7 @@ export class VideoSink {
   }
   const video=document.createElement(track?'video':'canvas');
   // MP-08/MP-10/MP-11: video pixels use this sibling, not the repair overlay.
-  // vidlat r37: the page crop is drawn by the decoder worker, so this canvas has no main-thread context.
-  this.offscreenSink=false;
-  if(this.offscreen&&!track&&video.transferControlToOffscreen){try{decoder.setCanvas(video.transferControlToOffscreen());this.offscreenSink=true;}catch{/* The main-thread canvas below stays the fallback. */}}
-  if(this.direct&&!track&&!this.offscreenSink)video.getContext?.('2d',{desynchronized:true});
+  if(this.direct&&!track)video.getContext?.('2d',{desynchronized:true});
   this.track=track;this.video=video;
   if(this.canvas.dataset){delete this.canvas.dataset.displayPresentedSequence;delete this.canvas.dataset.displayCommittedAt;}
   if(track){video.muted=true;video.autoplay=true;video.playsInline=true;video.srcObject=new MediaStream([track]);}
@@ -91,7 +88,6 @@ export class VideoSink {
     this.publishPresentation(image.timestamp);
     while(this.presentationJobs.size>32)this.presentationJobs.delete(this.presentationJobs.keys().next().value);
    }
-   if(this.offscreenSink)this.onTiming('client_present',result.writtenAt,{sequence:frame.sequence,committedAt:result.writtenAt,decodedAt,writtenAt:result.writtenAt});
    return outcome;
   }
   return new Promise(resolve=>{

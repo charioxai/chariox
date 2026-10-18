@@ -308,10 +308,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   const onTiming = options.onTiming ?? (() => {});
   // MP-08/MP-10/MP-11: crops and Chrome UI paint into their actual canvas.
   // Avoid an intermediate media-track compositor and another rAF for regions.
-  // vidlat r37: only the page crop is drawn in the decoder worker; Chrome UI keeps the main-thread low-latency canvas.
-  const direct=!options.desktop&&(binding.source_kind==='region'||['region','browser_chrome','browser_auxiliary'].includes(options.target?.kind));
   const presenter = new BrowserDisplayPresenter(canvas, binding, onTiming, warmDecoder,
-    {direct,offscreen:direct&&!['browser_chrome','browser_auxiliary'].includes(options.target?.kind)});
+    {direct:!options.desktop&&(binding.source_kind==='region'||['region','browser_chrome','browser_auxiliary'].includes(options.target?.kind))});
   if(options.scrollPredictionRegion)presenter.prediction=new ScrollPrediction(canvas,options.scrollPredictionRegion,context=>presenter.videoSink.snapshot(context));
   let pending = null, stopped = false, creditOutstanding = false, predictionEpoch=0;
   let running = false, failure = null, active = new Set();
