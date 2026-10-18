@@ -84,7 +84,7 @@ const colors = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "ora
 const colorOf = label => colors[[...label].reduce((sum, c) => (sum * 31 + c.codePointAt(0)) >>> 0, 7) % colors.length];
 
 export class ChromeTabGroups {
-  constructor(connection) { this.connection = connection; this.session = null; this.signature = "[]"; this.nativeState=new NativeTabState(connection,()=>{this.session=null;}); }
+  constructor(connection, onChange) { this.connection = connection; this.session = null; this.signature = "[]"; this.nativeState=new NativeTabState(connection,()=>{this.session=null;},onChange); }
   async load(directory) {
     const { id } = await this.connection.send("Extensions.loadUnpacked", { path: directory });
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");

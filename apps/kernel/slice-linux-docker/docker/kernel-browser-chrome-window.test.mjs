@@ -1040,3 +1040,109 @@ test("MP-11 band input admission uses the cached active Tab and asks the browser
   assert.equal((await arbiter.activeTab()).tab_id, "tab");
   assert.equal(fresh, 1, "a retired record is read again");
 });
+
+// vidlat r22 (coordinator 22:55Z): source publication may reuse the native owner verdict only while nothing
+// it depends on changed. Every owner/resize/detach/geometry/window trigger forces the next publication fresh.
+const publishFixture=async()=>{
+ const {ChromeTabGroups,TAB_GROUPS_EXTENSION_ID}=await import('./kernel-browser-tab-groups.mjs');
+ let listener,viewport={target_id:'tb',width:1280,height:800},reads=0;
+ const connection={subscribe(fn){listener=fn;return()=>{listener=null}},isOpen:()=>true,async send(method,params){
+  if(method==='Target.getTargets')return {targetInfos:[{type:'service_worker',targetId:'worker',url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
+  if(method==='Target.attachToTarget')return {sessionId:'worker-session'};
+  if(method==='Runtime.evaluate'){reads++;return {result:{value:viewport}};}
+  if(method==='Browser.getWindowForTarget')return {windowId:1,bounds:{left:0,top:0,width:1280,height:887,windowState:'normal'}};
+  return {};
+ }};
+ const {host,windows}=fake(),display=new OwnedDisplay(process.env.TMPDIR??'/tmp');await display.start();
+ host.chromium.display=display;host.browser.connection=connection;host.tabGroups=new ChromeTabGroups(connection);
+ const b=(await windows.resolve()).tabbed;
+ return {b,windows,reads:()=>reads,event:m=>listener?.(m),move:next=>{viewport=next},close:async()=>{host.tabGroups.close();await display.close()}};
+};
+const ownerChanged={method:'Runtime.bindingCalled',sessionId:'worker-session',params:{name:'__charioxNativeWindowChanged',payload:''}};
+test('MP-08/MP-10/MP-11 source publication reuses the native owner verdict until an owner trigger retires it',async()=>{
+ const f=await publishFixture();
+ try{
+  assert.equal(await f.b.isPagePublishable('tb'),true);const first=f.reads();
+  for(let n=0;n<5;n++)assert.equal(await f.b.isPagePublishable('tb'),true);
+  assert.equal(f.reads(),first,'no extension read while no owner event arrived');
+  assert.equal(await f.b.isPageCurrent('tb'),true);assert.equal(f.reads(),first+1,'input and admission stay fresh');
+  for(const [name,trigger] of [['owner API event',()=>f.event(ownerChanged)],['page resize',()=>f.event({method:'Page.frameResized',sessionId:'page'})],
+   ['extension detached',()=>f.event({method:'Target.detachedFromTarget',params:{sessionId:'worker-session'}})],['browser disconnected',()=>f.event({method:'Chariox.browserDisconnected'})]]){
+   assert.equal(await f.b.isPagePublishable('tb'),true);const before=f.reads();
+   trigger();assert.equal(await f.b.isPagePublishable('tb'),true,name);assert.equal(f.reads(),before+1,`${name}: next publication reads fresh once`);
+   assert.equal(await f.b.isPagePublishable('tb'),true);assert.equal(f.reads(),before+1,`${name}: and then reuses it`);
+  }
+ }finally{await f.close()}
+});
+test('MP-08/MP-10/MP-11 a geometry or Tab change behind an owner event is refused and rebinds the window',async()=>{
+ const f=await publishFixture();
+ try{
+  assert.equal(await f.b.isPagePublishable('tb'),true);
+  f.move({target_id:'tb',width:1280,height:780});f.event(ownerChanged);
+  assert.equal(await f.b.isPagePublishable('tb'),false,'the old page rect is refused after the event');
+  assert.equal(f.b.isCurrent(),false,'and the window binding retires');
+ }finally{await f.close()}
+ const g=await publishFixture();
+ try{
+  assert.equal(await g.b.isPagePublishable('tb'),true);g.move({target_id:'ta',width:1280,height:800});g.event(ownerChanged);
+  assert.equal(await g.b.isPagePublishable('tb'),false,'a foreign active Tab is refused');assert.equal(g.b.isCurrent(),true);
+ }finally{await g.close()}
+});
+test('MP-08/MP-10/MP-11 a retired window or an unsupported owner never publishes from a cache',async()=>{
+ const f=await publishFixture();
+ try{
+  assert.equal(await f.b.isPagePublishable('tb'),true);f.windows.retire('test');
+  assert.equal(await f.b.isPagePublishable('tb'),false,'window generation changed');
+ }finally{await f.close()}
+ const g=await publishFixture();
+ try{
+  await g.b.isPagePublishable('tb');
+  const {host}=g.windows;host.tabGroups.nativeStateSupported=()=>false;
+  assert.equal(await (await g.windows.resolve()).tabbed.isPagePublishable('tb'),true);
+  const before=g.reads();assert.equal(await (await g.windows.resolve()).tabbed.isPagePublishable('tb'),true);assert(g.reads()>before,'no native observer: always fresh');
+ }finally{await g.close()}
+});
+
+// Protocol 556: a parked state read wakes on a window retirement or a change of the popups, not on every poll.
+test('MP-08/MP-10 window retirement and popup changes wake a parked state read once per change',async()=>{
+ const f=await publishFixture(),woken=[];
+ try{
+  f.windows.host.stateSignal={notify:()=>woken.push(1)};
+  const rows=[...f.windows.rows];
+  assert.equal(f.windows.bound.auxiliary.length,1,'the fixture window has a popup');
+  f.windows.refreshAuxiliary(rows);const first=woken.length;f.windows.refreshAuxiliary(rows);f.windows.refreshAuxiliary(rows);
+  assert.equal(woken.length,first,'an unchanged inventory poll wakes nothing after the first report');
+  f.windows.refreshAuxiliary(rows.filter(r=>!r.override_redirect));
+  assert.equal(woken.length,first+1,'a popup closing wakes it');
+  f.windows.refreshAuxiliary(rows.filter(r=>!r.override_redirect));assert.equal(woken.length,first+1);
+  f.windows.retire('test');assert.equal(woken.length,first+2,'a retirement wakes it');
+ }finally{await f.close()}
+});
+
+// L1: the inventory poll is a backstop; the worker's change header reads at once and coalesces.
+test("L1 a watched band reads on the worker's change report, not on a timer", async () => {
+  const { windows } = fake();
+  let reads = 0, wake = null, release = null;
+  const read = async () => { reads++; if (release) await new Promise(r => { release = r; }); return []; };
+  const stop = windows.watch(read, 10_000, fn => { wake = fn; return () => { wake = null; }; });
+  await new Promise(r => setTimeout(r, 120));
+  assert.equal(reads, 0, "an idle band is not polled between backstops");
+  wake(); await new Promise(r => setTimeout(r, 20));
+  assert.equal(reads, 1, "a report reads within 20 ms");
+  release = () => {}; wake();                       // a read in flight; two more reports arrive meanwhile
+  await new Promise(r => setTimeout(r, 5)); wake(); wake();
+  const pending = release; release = null; pending();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(reads, 3, "reports during a read coalesce into one more read");
+  stop(); assert.equal(wake, null, "the last viewer drops the subscription");
+  const before = reads; await new Promise(r => setTimeout(r, 30));
+  assert.equal(reads, before, "and the watch stops");
+});
+test("L1 the backstop still reads without any report", async () => {
+  const { windows } = fake();
+  let reads = 0;
+  const stop = windows.watch(async () => (reads++, []), 20, () => () => {});
+  await new Promise(r => setTimeout(r, 100));
+  stop();
+  assert(reads >= 3 && reads <= 6, `backstop cadence, got ${reads}`);
+});

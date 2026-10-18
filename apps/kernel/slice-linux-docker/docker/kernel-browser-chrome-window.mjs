@@ -9,6 +9,7 @@ import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
+import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
 // the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
@@ -59,6 +60,8 @@ async function within(ms, operation) {
 }
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
 
+/** The inventory poll is a backstop: the worker announces its changes. */
+const INVENTORY_BACKSTOP_MS = 1000;
 export class ChromeWindows {
   constructor(host, {inventory = noInventory} = {}) {
     this.host = host; this.inventory = inventory;
@@ -75,13 +78,16 @@ export class ChromeWindows {
   }
   retire(reason) {
     if (!this.bound) return;
+    retireNativeStates();
     const {window_generation} = this.bound.tabbed; this.bound = null;
     this.host.timing?.(`chrome_window_retired ${reason}`, performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason});
+    this.host.stateSignal?.notify();
   }
   /** The page rect moved under an unchanged band: page-bound bindings go stale, the band keeps its generation. */
   retirePage() {
     if (!this.bound) return;
+    retireNativeStates();
     const {window_generation} = this.bound.tabbed; this.pageEpoch++;
     this.host.timing?.('chrome_window_page_retired', performance.timeOrigin + performance.now());
     for (const listener of this.listeners) listener({window_generation, reason: 'page_geometry_changed'});
@@ -151,10 +157,13 @@ export class ChromeWindows {
       if(!cached||(target_id!==undefined&&cached.target_id!==target_id))return false;
       try{return JSON.stringify(nativePageRect(row,cached,scale))===JSON.stringify(pageRect)&&isCurrent();}catch{return false;}
     }:undefined;
+    // MP-11: source publication reuses the native owner snapshot only while no extension, resize or
+    // detach event has retired it (same window generation, same Tab, same page rect); a miss reads fresh.
+    const isPagePublishable=isPageCurrentCached?async target_id=>isPageCurrentCached(target_id)||isPageCurrent(target_id):isPageCurrent;
     const binding = role => r => Object.freeze({browser_generation: browserGeneration, window_generation: windowGeneration, role, xid: r.id,
       parent_xid: role === 'auxiliary' ? row.id : null, bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height}),
       content_top: role === 'tabbed' ? contentTop : null, page_rect: role === 'tabbed' ? pageRect : null,
-      scale, pid, isCurrent: role === 'tabbed' ? isCurrent : isBandCurrent, isBandCurrent, isPageCurrent,isPageCurrentCached});
+      scale, pid, isCurrent: role === 'tabbed' ? isCurrent : isBandCurrent, isBandCurrent, isPageCurrent,isPageCurrentCached,isPagePublishable});
     const tabbedBinding = binding('tabbed')(row);
     this.bound = Object.freeze({tabbed: tabbedBinding, auxiliary: this.auxiliaryOf(tabbedBinding, rows, binding('auxiliary'))});
     return this.bound;
@@ -299,6 +308,9 @@ export class ChromeWindows {
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
     if (this.bound.auxiliary.length !== this.auxiliaryCount) { this.auxiliaryCount = this.bound.auxiliary.length; this.host.timing?.(`aux_count ${this.auxiliaryCount}`, performance.timeOrigin + performance.now()); }
+    // Protocol 556: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    const popups = JSON.stringify(this.auxiliaryState());
+    if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }
   /** Review #1016 P1: an in-window popup closes without an X event, its rect then being the page
    * itself. Input on it re-reads Chrome's dropdown now; a closed or changed one retires at once. */
@@ -348,17 +360,27 @@ export class ChromeWindows {
     return this.inWindowOver(rect, live);
   }
   /** While a band is watched, follow its popups (one poller per host, shared by viewers). The newest
-   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes. */
-  watch(read, interval = 150) {
-    const watcher = this.watcher ??= {reads: new Set(), timer: null};
+   * band that still reads wins: an older band's capture can retire before its viewer unsubscribes.
+   * The worker reports inventory changes (`wakes(fn)` subscribes to them): a report reads at once,
+   * and `interval` is only the backstop for a change no event announces. Exactness never lives
+   * here: every consumer still proves its window with isCurrent(). */
+  watch(read, interval = INVENTORY_BACKSTOP_MS, wakes = null) {
+    const watcher = this.watcher ??= {reads: new Set(), timer: null, running: false, again: false, offs: new Set()};
     watcher.reads.add(read);
+    const arm = () => { clearTimeout(watcher.timer); watcher.timer = setTimeout(tick, interval).unref(); };
     const tick = async () => {
-      await this.observeRows();
-      if (watcher.reads.size) watcher.timer = setTimeout(tick, interval).unref();
+      clearTimeout(watcher.timer); watcher.running = true;
+      try { await this.observeRows(); } finally { watcher.running = false; }
+      if (!watcher.reads.size) return;
+      if (watcher.again) { watcher.again = false; void tick(); } else arm();
     };
-    if (!watcher.timer) watcher.timer = setTimeout(tick, interval).unref();
+    const wake = () => { if (watcher.running) watcher.again = true; else if (watcher.reads.size) void tick(); };
+    const off = wakes?.(wake);
+    if (off) watcher.offs.add(off);
+    if (!watcher.timer && !watcher.running) arm();
     return () => {
       watcher.reads.delete(read);
+      if (off) { watcher.offs.delete(off); off(); }
       if (!watcher.reads.size) { clearTimeout(watcher.timer); this.watcher = null; }
     };
   }

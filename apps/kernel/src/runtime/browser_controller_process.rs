@@ -39,7 +39,9 @@ pub(crate) use retire_lane::RetireLane;
 mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
+mod display_frames;
 mod display_packets;
+pub(crate) use display_frames::{DirectFrames, Next as DirectFrame};
 /// MP-08/MP-10/MP-11: native capture slot files (`<pool>/<index>`). Defined
 /// here, outside the optional native worker, because crash cleanup runs in
 /// every Unix build; the worker allocates exactly these.
@@ -367,12 +369,24 @@ impl BrowserControllerProcessStdioBackend {
         if let Some(packets) = &display_packets {
             command.env("CHARIOX_BROWSER_DISPLAY_PACKET_ROOT", packets.root());
         }
+        // L3: native workers this controller spawns hand whole frames straight to the pump.
+        let direct_frames = match &display_packets {
+            // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
+            Some(packets) => display_frames::DirectFrames::listen(packets.clone()).ok(),
+            None => None,
+        };
+        if let Some(frames) = &direct_frames {
+            command.env("CHARIOX_BROWSER_DISPLAY_FRAMES", frames.path());
+        }
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "failed to spawn browser controller `{}`: {error}",
                 self.command.display()
             )
         })?;
+        if let Some(frames) = &direct_frames {
+            frames.bind_controller(child.id());
+        }
         let mut owned_group = owned_process_group::OwnedProcessGroup::new(child.id());
         if self.host {
             if let Err(error) = owned_group.start_tracking() {
@@ -431,6 +445,7 @@ impl BrowserControllerProcessStdioBackend {
             responses,
             pending_responses,
             host_policy: None,
+            direct_frames,
         });
         Ok(())
     }
@@ -506,6 +521,11 @@ impl BrowserControllerProcessStdioBackend {
 
     // MP-08/MP-10/MP-11: per-credit liveness never joins the controller's
     // barrier lane. Startup still validates health; requests validate replies.
+    /// L3: the running controller's direct frame channel (native display leases).
+    pub(crate) fn direct_frames(&self) -> Option<Arc<DirectFrames>> {
+        self.process.as_ref()?.direct_frames.clone()
+    }
+
     pub(crate) fn host_is_live(&mut self) -> Result<bool, String> {
         self.take_exited_process()?;
         Ok(self.process.is_some())
@@ -1235,6 +1255,7 @@ struct BrowserControllerChild {
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
     host_policy: Option<serde_json::Value>,
+    direct_frames: Option<Arc<display_frames::DirectFrames>>,
 }
 
 #[derive(Deserialize)]

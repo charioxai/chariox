@@ -469,6 +469,40 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
+// MP-08/MP-10 (allocated 556/164): `state_wait` parks a Browser state read until the
+// state differs from the `revision` the caller holds; the reply is the state plus a new `revision`.
+#[test]
+fn mp08_mp10_browser_state_wait_556_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 556);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 164);
+    let bytes = include_bytes!("browser-state-wait-556.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "4b72ea2ed7ac115e2de252bbf36e612b30016df3dd97bb6b48deef2b1c8eec73"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for key in ["request", "first_request"] {
+        let request: crate::local::LocalDaemonRequest =
+            serde_json::from_value(snapshot[key].clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), snapshot[key]);
+    }
+    // A caller with no state yet may omit `after`.
+    let omitted: crate::local::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"KernelBrowser":{"command":{"op":"state_wait","wait_ms":0}}}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(omitted).unwrap(),
+        snapshot["first_request"]
+    );
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
@@ -501,7 +535,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "be98a1b33d961f9023e2404b32148dc471712c2fc958375ae25e676a0280e92f");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "db0e2aff3d85eb74cb1b2503de71872a7eaf38eeada4d0afb6b0011518cfcc33");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);

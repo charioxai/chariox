@@ -35,6 +35,18 @@ impl Default for RowResult {
     }
 }
 extern "C" {
+    #[cfg(test)]
+    pub(super) fn cx_openh264_slice_threads(width: i32, height: i32, limit: i32) -> i32;
+    #[cfg(test)]
+    pub(super) fn cx_openh264_activity(
+        y: *const u8,
+        stride: i32,
+        previous: *mut u8,
+        compare: i32,
+        width: i32,
+        height: i32,
+        changed: *mut i32,
+    ) -> f64;
     pub(super) fn cx_codec_decoder_library() -> *const std::ffi::c_char;
     pub(super) fn cx_codec_available() -> i32;
     #[cfg(test)]
@@ -90,6 +102,9 @@ extern "C" {
         height: i32,
     ) -> *mut c_void;
     pub(super) fn cx_capture_inventory(owner: libc::c_ulong, out: *mut i64, limit: i32) -> i32;
+    pub(super) fn cx_inventory_open(owner: libc::c_ulong) -> *mut c_void;
+    pub(super) fn cx_inventory_read(v: *mut c_void, out: *mut i64, limit: i32) -> i32;
+    pub(super) fn cx_inventory_wait(v: *mut c_void, wake: i32, timeout_ms: i32) -> i32;
     pub(super) fn cx_capture_close(c: *mut c_void);
     pub(super) fn cx_capture_admit(c: *mut c_void, pixels: *const u8);
     pub(super) fn cx_capture_tiles(c: *mut c_void, out: *mut i32) -> i32;
@@ -144,6 +159,8 @@ extern "C" {
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_openh264(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
+    pub(super) fn cx_codec_unprotected(c: *mut c_void, unprotected: i32);
+    pub(super) fn cx_codec_guard_decodes(c: *mut c_void) -> u64;
     pub(super) fn cx_codec_rate(c: *mut c_void, bitrate: i32) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);
     pub(super) fn cx_codec_close(c: *mut c_void);
