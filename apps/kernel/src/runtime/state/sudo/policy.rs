@@ -44,6 +44,13 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return Err(error("sudo requires one active provider run"));
         };
+        self.sudo_for_provider_run(run.id())
+    }
+
+    pub(in crate::runtime::state) fn sudo_for_provider_run(
+        &self,
+        run_id: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         self.sweep_sudo();
         let turns = self
             .owned
@@ -55,7 +62,7 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         turns
             .into_iter()
-            .find(|turn| turn.provider_run_id.as_deref() == Some(run.id()) && self.sudo_live(turn))
+            .find(|turn| turn.provider_run_id.as_deref() == Some(run_id) && self.sudo_live(turn))
             .ok_or_else(|| error("this provider turn has no sudo authority"))
     }
 

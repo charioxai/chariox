@@ -152,19 +152,25 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             let provider = provider_label(run.adapter_key());
-            let receiver = if setup_token {
+            let sudo_entry = self
+                .sudo_for_provider_run(run.id())
+                .ok()
+                .map(|turn| turn.entry_id);
+            let receiver = if setup_token || sudo_entry.is_some() {
                 // An official authentication refusal is already enough to
                 // start OAuth. The shared popup shows its link directly.
-                let _ = self.owned.provider_account_profiles.update_observation(
-                    &owner,
-                    "claude",
-                    run.account_profile(),
-                    crate::account_profile::ProviderAccountAuthState::Expired,
-                    None,
-                    None,
-                    None,
-                    None,
-                );
+                if setup_token {
+                    let _ = self.owned.provider_account_profiles.update_observation(
+                        &owner,
+                        "claude",
+                        run.account_profile(),
+                        crate::account_profile::ProviderAccountAuthState::Expired,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 None
             } else {
                 Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
@@ -181,7 +187,9 @@ impl KernelRuntimeState {
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
-                let outcome = state.recover_provider_login(&run, &id, receiver).await;
+                let outcome = state
+                    .recover_provider_login(&run, &id, receiver, sudo_entry)
+                    .await;
                 if outcome.is_ok_and(|succeeded| succeeded) {
                     let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
                     let current = state
@@ -404,6 +412,7 @@ impl KernelRuntimeState {
         run: &crate::provider::RuntimeProviderRun,
         id: &str,
         receiver: Option<tokio::sync::oneshot::Receiver<PendingInteractionResolution>>,
+        sudo_entry: Option<String>,
     ) -> Result<bool, DaemonError> {
         let automatic = receiver.is_none();
         if let Some(receiver) = receiver {
@@ -414,6 +423,14 @@ impl KernelRuntimeState {
             }) {
                 return Ok(false);
             }
+        }
+        // A queued recovery must not outlive the work that authorized it.
+        if sudo_entry.as_deref().is_some_and(|entry| {
+            self.sudo_for_provider_run(run.id())
+                .ok()
+                .is_none_or(|turn| turn.entry_id != entry)
+        }) {
+            return Ok(false);
         }
         let owner = crate::account_profile::provider_account_authority_for_run(
             &self.owned.config_projection.snapshot(),
