@@ -342,6 +342,12 @@ fn mp08_history_only_tool_snapshots_survive_retained_delivery_and_reopen() {
 
 #[test]
 fn mp08_history_owned_tool_ignores_late_terminal_records() {
+    history_owned_tool_ignores_late_terminal_records("output", None);
+    history_owned_tool_ignores_late_terminal_records("stdout", Some(""));
+    history_owned_tool_ignores_late_terminal_records("stdout", Some("warning"));
+}
+
+fn history_owned_tool_ignores_late_terminal_records(field: &str, stderr: Option<&str>) {
     let (mut app, leased) = worker_lease();
     let run = super::explicit_completion_tests::provider_run(
         "run",
@@ -352,12 +358,18 @@ fn mp08_history_owned_tool_ignores_late_terminal_records() {
         crate::provider::ProviderClientInterface::Chariox,
     );
     app.providers_mut().insert_run_for_test(run);
-    let payloads = ["running", "completed"].map(|status| {
-        serde_json::to_vec(&serde_json::json!({
-            "id": "late-tool", "name": "Read", "status": status, "output": "public source",
-        }))
-        .unwrap()
-    });
+    // The real fanout selects stdout before slicing its cumulative output;
+    // secondary fields stay cumulative, including an unchanged empty stderr.
+    let tool = |status: &str, len: usize| {
+        let mut payload = serde_json::json!({
+            "id": "late-tool", "name": "Read", "status": status, field: "x".repeat(len),
+        });
+        if let Some(stderr) = stderr {
+            payload["stderr"] = stderr.into();
+        }
+        serde_json::to_vec(&payload).unwrap()
+    };
+    let payloads = [tool("running", 50), tool("completed", 100)];
     for payload in &payloads {
         app.append_history_entry(
             &leased.backing_session_id,
@@ -388,8 +400,21 @@ fn mp08_history_owned_tool_ignores_late_terminal_records() {
     assert!(RemoteLeaseRuntime::new(&mut app)
         .acknowledge_leased_runtime_projection(&leased.id, "run", receipt)
         .unwrap());
-    // A bounded terminal drain delivers the same snapshots in a later batch.
-    for payload in &payloads {
+    // These include the real 50..60 stdout delta after history has already
+    // delivered 100 bytes and completion. None may regress home to running.
+    for payload in [
+        tool("running", 50),
+        tool("running", 60),
+        tool("completed", 100),
+    ] {
+        let payload = crate::provider_output_policy::output_bounds::terminal_output_delta_bytes(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            &TerminalOutputKind::ProviderTool,
+            &Some("late-tool".into()),
+            &payload,
+        );
         app.terminal_mut().fan_out_output(
             &leased.backing_session_id,
             "run",
@@ -397,7 +422,7 @@ fn mp08_history_owned_tool_ignores_late_terminal_records() {
             TerminalOutputKind::ProviderTool,
             Some("late-tool".into()),
             vec![leased.backing_attachment_id.clone()],
-            payload,
+            &payload,
         );
     }
     let late = RemoteLeaseRuntime::new(&mut app)

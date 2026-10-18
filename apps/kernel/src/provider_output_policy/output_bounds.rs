@@ -156,6 +156,10 @@ fn provider_tool_delta_bytes(
                     Some(String::from_utf8_lossy(&current_bytes[previous.byte_len..]).into_owned());
                 object.insert("chariox_delta".to_string(), Value::Bool(true));
                 object.insert(
+                    "chariox_delta_field".to_string(),
+                    Value::String(field.clone()),
+                );
+                object.insert(
                     "chariox_delta_offset_bytes".to_string(),
                     Value::Number((previous.byte_len as u64).into()),
                 );
@@ -591,6 +595,10 @@ mod tests {
         let second: Value = serde_json::from_slice(&second).expect("second delta should be json");
         assert_eq!(first.get("output").and_then(Value::as_str), Some("hello "));
         assert_eq!(second.get("output").and_then(Value::as_str), Some("world"));
+        assert_eq!(
+            second.get("chariox_delta_field").and_then(Value::as_str),
+            Some("output")
+        );
         assert_eq!(
             second.get("chariox_delta").and_then(Value::as_bool),
             Some(true)

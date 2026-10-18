@@ -599,3 +599,21 @@ worker tool-row multisets after a backlog that spans several retained pages.
 A bounded terminal batch can lag the 64-event history window, so a tool already
 projected from durable snapshots must not be projected again from its later
 terminal records; row counts alone hide this.
+
+
+### MP-08 / MP-10 / MP-11: delayed multi-field tool deltas (531/139)
+
+The allocated, unmerged 531/139 tool payload identifies its delta field with
+`chariox_delta_field`. Its byte offset applies only to that field; secondary
+strings remain cumulative. Worker-local history watermarks and stream duplicate
+checks share that ownership. Legacy single-field offsets remain readable;
+ambiguous legacy multi-field offsets cannot establish a history extension.
+The projection snapshot/hash includes this payload; no new protocol allocation.
+
+Fail-first guard: `mp08_history_owned_tool_ignores_late_terminal_records` sends
+real producer-gate deltas for stdout with empty and nonempty stderr after a
+completed history snapshot. A delayed running record must produce no retained
+output. Fresh running output and independent field offsets must still progress,
+including after projection-state reload. These are supplementary regressions.
+The real hosted backlog/reload and native queued-steer/reconnect cells must also
+pass on the exact candidate; source tests do not establish MP-10 acceptance.
